@@ -2,16 +2,23 @@
 
 A feature is a capability the user turns on or off for themselves, such as
 emoji reactions. Each one is a yes/no switch stored in
-``PersistedSettings.experimental_features``. The tools a feature gives the agent are chosen
-when a conversation starts, so they follow the switch for conversations started
-after it; a route that checks the switch (such as the person's reactions)
-follows it at once. Child conversations reuse their parent's agent and tools.
-Unknown keys are refused, so the list below is the whole set.
+``PersistedSettings.experimental_features``. The tools a feature gives the
+agent are chosen when a conversation starts, so they follow the switch for
+conversations started after it; a route that checks the switch (such as the
+person's reactions) follows it at once. Child conversations reuse their
+parent's agent and tools. Unknown keys are refused, so the list below is the
+whole set.
 
-To add a feature, append a :class:`ExperimentalFeatureDefinition` to ``EXPERIMENTAL_FEATURES`` and read
-it where it takes effect with :func:`is_enabled`.
+To add a feature, append a :class:`ExperimentalFeatureDefinition` to
+``EXPERIMENTAL_FEATURES`` and read it where it takes effect with :func:`is_enabled`.
+
+A Docker runtime's server has its own, empty settings: the host passes it the
+person's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
+ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 
+import json
+import os
 from collections.abc import Mapping
 from typing import Literal
 
@@ -96,3 +103,29 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
         if is_enabled(features, f.key)
         for name in f.tools
     ]
+
+
+RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"
+
+
+def host_experimental_features() -> dict[str, bool] | None:
+    """The host's switches, in a Docker runtime's server; None elsewhere.
+
+    The host sets them when it starts the runtime's container, so they pick
+    the tools of the conversations started there. A route that follows a
+    switch at once is checked by the host before it forwards the request.
+    """
+    raw = os.getenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        key: value
+        for key, value in parsed.items()
+        if key in EXPERIMENTAL_FEATURES_BY_KEY and isinstance(value, bool)
+    }

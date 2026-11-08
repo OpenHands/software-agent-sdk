@@ -26,6 +26,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RuntimeArchivedError,
 )
+from openhands.agent_server.event_router import require_reactions_enabled
 from openhands.agent_server.launch import (
     forward_to_runtime,
     launch_http_exception,
@@ -428,6 +429,10 @@ async def proxy_conversation(
     }:
         raise HTTPException(501, "This operation is unavailable in Docker runtime mode")
     registry = get_registry(request)
+    if tail == "reactions" and request.method == "POST":
+        # The runtime's server has no settings of its own to check: the
+        # person's switch lives here and follows the switch at once.
+        await require_reactions_enabled(registry.config)
     container = await _container(registry, conversation_id)
     upstream_path = _upstream_path(
         request,

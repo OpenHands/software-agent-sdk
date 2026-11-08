@@ -11,6 +11,9 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
+from openhands.agent_server.experimental_features import (
+    RUNTIME_EXPERIMENTAL_FEATURES_ENV,
+)
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk import LLM, Agent, Message, TextContent
@@ -131,3 +134,20 @@ async def test_reactions_are_refused_while_the_feature_is_off(
 
     assert response.status_code == 409
     assert await _reactions(service, cid) == []
+
+
+@pytest.mark.asyncio
+async def test_a_docker_runtime_leaves_the_switch_to_its_host(
+    client, service, tmp_path, monkeypatch
+):
+    # In a runtime container the host checks the switch before forwarding;
+    # the container's own settings are empty.
+    monkeypatch.setenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV, "{}")
+    cid, _ = await _conversation_with_answer(service, tmp_path)
+    _set_reactions(False)
+
+    response = await client.post(
+        f"/api/conversations/{cid}/reactions", json={"emoji": "+1"}
+    )
+
+    assert response.status_code == 200, response.text

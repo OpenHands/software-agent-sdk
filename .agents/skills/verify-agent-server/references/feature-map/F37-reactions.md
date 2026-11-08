@@ -120,8 +120,10 @@ Preconditions:
   ```sh
   LAST_ACTION=$(control-agent-server api GET "/api/conversations/$AC/events/search" --query source=agent --query sort_order=TIMESTAMP_DESC \
     --query kind=ActionEvent --field items.0.id)
+  # An agent that answered with `finish` has no MessageEvent: --field then
+  # prints an error, so fall back to a value that matches nothing.
   LAST_MESSAGE=$(control-agent-server api GET "/api/conversations/$AC/events/search" --query source=agent --query sort_order=TIMESTAMP_DESC \
-    --query kind=MessageEvent --field items.0.id || echo none)
+    --query kind=MessageEvent --field items.0.id 2>/dev/null) || LAST_MESSAGE=none
   control-agent-server api POST "/api/conversations/$AC/reactions" --json '{"emoji": "+1"}' --expect 200 \
     --check source eq user --check target_event_id matches "^($LAST_ACTION|$LAST_MESSAGE)\$" --save F37.rest-default/add
   ```

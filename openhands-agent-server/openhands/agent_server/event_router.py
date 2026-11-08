@@ -20,13 +20,17 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_event_service,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.experimental_features import is_enabled
+from openhands.agent_server.experimental_features import (
+    host_experimental_features,
+    is_enabled,
+)
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventSortOrder,
@@ -360,6 +364,24 @@ reaction_router = APIRouter(
 )
 
 
+async def require_reactions_enabled(config: Config) -> None:
+    """Refuse with 409 unless the person has conversation reactions on."""
+    try:
+        settings = await asyncio.to_thread(
+            lambda: get_settings_store(config).load() or PersistedSettings()
+        )
+    except (PermissionError, OSError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot read the settings file to check the feature flag",
+        )
+    if not is_enabled(settings.experimental_features, "conversation_reactions"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation reactions are turned off",
+        )
+
+
 @reaction_router.post(
     "",
     responses={
@@ -381,21 +403,10 @@ async def react_to_message(
     unlike the agent's tools, which a conversation gets when it starts, this
     check follows the switch at once.
     """
-    try:
-        settings = await asyncio.to_thread(
-            lambda: get_settings_store(get_config(http_request)).load()
-            or PersistedSettings()
-        )
-    except (PermissionError, OSError):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot read the settings file to check the feature flag",
-        )
-    if not is_enabled(settings.experimental_features, "conversation_reactions"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conversation reactions are turned off",
-        )
+    # A Docker runtime's server finds the person's switch on the host, which
+    # checks it before forwarding the request.
+    if host_experimental_features() is None:
+        await require_reactions_enabled(get_config(http_request))
     try:
         return await event_service.react(
             request.emoji, request.target_event_id, removed=request.removed

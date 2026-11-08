@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 import time
@@ -20,12 +21,16 @@ from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
+from openhands.agent_server.experimental_features import (
+    RUNTIME_EXPERIMENTAL_FEATURES_ENV,
+)
 from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.local_storage import remove_conversation_worktree
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
+from openhands.agent_server.persistence import get_settings_store
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.request import ConversationContainerOptions
@@ -614,6 +619,18 @@ class DockerConversationRegistry(ConversationRegistry):
             )
             await service.refresh_persisted_conversation(conversation_id)
 
+    def _experimental_features(self) -> dict[str, bool]:
+        """The person's experimental-feature switches, for a new container."""
+        try:
+            settings = get_settings_store(self.config).load()
+        except (PermissionError, OSError):
+            logger.warning(
+                "Cannot read settings; the runtime starts with features off",
+                exc_info=True,
+            )
+            return {}
+        return dict(settings.experimental_features) if settings else {}
+
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
         options = identity.container or ConversationContainerOptions()
@@ -653,6 +670,9 @@ class DockerConversationRegistry(ConversationRegistry):
                     if identity.launched_agent_profile
                     else ""
                 ),
+                RUNTIME_EXPERIMENTAL_FEATURES_ENV: json.dumps(
+                    self._experimental_features()
+                ),
             }
         )
         if "DEBUG" in os.environ:
@@ -678,6 +698,7 @@ class DockerConversationRegistry(ConversationRegistry):
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",
+            RUNTIME_EXPERIMENTAL_FEATURES_ENV,
             "DEBUG",
         ]
         forwarded_env_names.extend(

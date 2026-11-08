@@ -28,6 +28,7 @@ from openhands.agent_server.docker_runtime.routers import (
 )
 from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
@@ -849,3 +850,52 @@ def test_invalid_container_options_are_rejected(tmp_path, monkeypatch):
 
     assert response.status_code == 422
     assert registry.provisioning.load_optional(conversation_id) is None
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_reactions_follow_the_host_switch_before_reaching_the_runtime(
+    tmp_path, monkeypatch, enabled
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+
+    def apply(settings: PersistedSettings) -> PersistedSettings:
+        settings.experimental_features = {"conversation_reactions": enabled}
+        return settings
+
+    get_settings_store(config).update(apply)
+    app = FastAPI()
+    app.state.conversation_registry = DockerConversationRegistry(config)
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    conversation_id = uuid4()
+    forwarded = []
+
+    async def container(*_args):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def proxy(*_args, **kwargs):
+        forwarded.append(kwargs["upstream_path"])
+        return Response()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.routers._container", container
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.routers.proxy_http", proxy
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/conversations/{conversation_id}/reactions", json={"emoji": "+1"}
+        )
+
+    if enabled:
+        assert response.status_code == 200
+        assert forwarded == [f"/api/conversations/{conversation_id}/reactions"]
+    else:
+        assert response.status_code == 409
+        assert forwarded == []

@@ -1,5 +1,6 @@
 """Tests for the user-facing feature flags and the tools they turn on."""
 
+import json
 from collections.abc import AsyncIterator
 
 import httpx
@@ -8,7 +9,11 @@ from fastapi import FastAPI
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.experimental_features import experimental_feature_tools
+from openhands.agent_server.experimental_features import (
+    RUNTIME_EXPERIMENTAL_FEATURES_ENV,
+    experimental_feature_tools,
+    host_experimental_features,
+)
 from openhands.agent_server.experimental_features_router import (
     experimental_features_router,
 )
@@ -137,3 +142,43 @@ async def test_new_conversations_get_reaction_tools_only_while_on(tmp_path):
 
     assert tool_names[off.id] == []
     assert tool_names[on.id] == ["react", "unreact"]
+
+
+def test_host_switches_are_read_only_inside_a_runtime(monkeypatch):
+    monkeypatch.delenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV, raising=False)
+    assert host_experimental_features() is None
+
+    monkeypatch.setenv(
+        RUNTIME_EXPERIMENTAL_FEATURES_ENV,
+        json.dumps({"conversation_reactions": True, "unknown": True}),
+    )
+    assert host_experimental_features() == {"conversation_reactions": True}
+
+    for broken in ("", "not json", "[1]", '{"conversation_reactions": "yes"}'):
+        monkeypatch.setenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV, broken)
+        assert host_experimental_features() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_takes_its_tools_from_the_host_switches(tmp_path, monkeypatch):
+    # The runtime container's own settings are empty (flag off); the host
+    # passes the person's switches in the environment.
+    monkeypatch.setenv(
+        RUNTIME_EXPERIMENTAL_FEATURES_ENV, json.dumps({"conversation_reactions": True})
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace)),
+            )
+        )
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        agent = event_service.get_conversation().agent
+
+    assert [t.name for t in agent.tools] == ["react", "unreact"]
