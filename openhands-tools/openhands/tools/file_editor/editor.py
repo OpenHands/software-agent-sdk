@@ -217,7 +217,8 @@ class FileEditor:
 
         # Read the entire file first to handle both single-line and multi-line
         # replacements
-        file_content = self.read_file(path)
+        encoding = self._encoding_manager.get_encoding(path)
+        file_content = self.read_file(path, encoding=encoding)
 
         # Find every occurrence, including overlapping ones ("aa" occurs twice
         # in "aaa"), so an ambiguous old_str is refused instead of silently
@@ -268,7 +269,7 @@ class FileEditor:
         )
 
         # Write the new content to the file
-        self.write_file(path, new_file_content)
+        self.write_file(path, new_file_content, encoding=encoding)
 
         # Save the content to history
         self._history_manager.add_history(path, file_content)
@@ -508,6 +509,7 @@ class FileEditor:
         UTF-8. Editing through a symlink writes to the link's target: a rename
         onto the link path would replace the link with a regular file.
         """
+        requested_path = path
         if path.is_symlink():
             path = path.resolve()
 
@@ -525,7 +527,10 @@ class FileEditor:
             # Preserve the original file's permission bits when it already exists.
             if path.exists():
                 os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
+            # Capture the staged file's version before publishing it.
+            mtime = os.path.getmtime(tmp_path)
             Path.replace(tmp_path, path)
+        self._encoding_manager.remember_encoding(requested_path, encoding, mtime)
 
     @contextmanager
     def _temp_file(

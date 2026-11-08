@@ -184,8 +184,12 @@ class EncodingManager:
                 encoding = recovered
 
         # Cache the result with current modification time
-        self._encoding_cache[path_str] = (encoding, current_mtime)
+        self.remember_encoding(path, encoding, current_mtime)
         return encoding
+
+    def remember_encoding(self, path: Path, encoding: str, mtime: float) -> None:
+        """Associate a known encoding with a specific file modification time."""
+        self._encoding_cache[str(path)] = (encoding, mtime)
 
 
 def with_encoding(method):
