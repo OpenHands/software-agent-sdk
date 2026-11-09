@@ -404,12 +404,12 @@ def test_mcp_tools_are_session_authenticated_over_real_http(authenticated_server
             json=payload,
             headers={
                 **headers,
-                "Authorization": f"Bearer {authenticated_server_env['api_key']}",
+                "X-Session-API-Key": authenticated_server_env["api_key"],
             },
         )
         assert response.status_code == 200
         assert {tool["name"] for tool in response.json()["result"]["tools"]} == {
-            "create_conversation",
+            "start_conversation",
             "get_conversation",
             "send_message",
         }
