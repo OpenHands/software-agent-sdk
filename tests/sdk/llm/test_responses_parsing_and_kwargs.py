@@ -7,6 +7,7 @@ from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
     GenericEvent,
     OutputTextDeltaEvent,
+    ReasoningSummaryTextDeltaEvent,
     ResponseAPIUsage,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
@@ -21,6 +22,8 @@ from openai.types.responses.response_reasoning_item import (
 )
 from pydantic import SecretStr, ValidationError
 
+from openhands.sdk.agent.stream_context import StreamContext, StreamDelta
+from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.llm import LLM, LLMCallContext
 from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMTimeoutError
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
@@ -715,40 +718,35 @@ async def test_aresponses_ignored_events_keep_stream_alive():
     assert chunks == []
 
 
-def test_stream_delta_chunks_carry_the_output_item_id():
-    """All deltas of one output item must share a chunk id.
+def test_stream_deltas_share_one_chunk_id_per_stream():
+    """All deltas of one streamed response share a chunk id, across items.
 
     A changed chunk id reads as a retry (``StreamContext._emit_delta``), which
-    resets the slot and drops text the stream masker is holding.
+    supersedes the slot, so the reasoning item (``rs_*``) and the message item
+    (``msg_*``) of one response must not differ.
     """
     llm = LLM(model="gpt-5-mini", usage_id="test-stream-id")
 
     ids = []
-    for text in ("one ", "two ", "three"):
+    for item_id, text in (
+        ("rs_abc", "think "),
+        ("msg_abc", "one "),
+        ("msg_def", "two"),
+    ):
         event = OutputTextDeltaEvent(
             type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
-            item_id="msg_abc",
+            item_id=item_id,
             output_index=0,
             content_index=0,
             delta=text,
         )
-        _, chunk = llm._process_stream_event(event, emit_deltas=True)
+        _, chunk = llm._process_stream_event(
+            event, stream_id="stream-1", emit_deltas=True
+        )
         assert chunk is not None
         ids.append(chunk.id)
 
-    assert ids == ["msg_abc"] * 3
-
-    # A different output item is a different stream, so its id must differ.
-    other = OutputTextDeltaEvent(
-        type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
-        item_id="msg_def",
-        output_index=1,
-        content_index=0,
-        delta="four",
-    )
-    _, chunk = llm._process_stream_event(other, emit_deltas=True)
-    assert chunk is not None
-    assert chunk.id == "msg_def"
+    assert ids == ["stream-1"] * 3
 
 
 @pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
@@ -853,3 +851,46 @@ async def test_responses_reconstructs_output_without_callback(mode, event_type):
     assert result.raw_response is completed
     assert completed.output[0] is output_item
     assert result.message.content == [TextContent(text="Hello wrapped stream")]
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_reasoning_summary_streams_as_reasoning_in_the_same_attempt(mock_responses):
+    events, _ = _make_wrapped_response_stream_events("Answer")
+    events.insert(
+        0,
+        ReasoningSummaryTextDeltaEvent(
+            type=ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA,
+            item_id="rs_1",
+            output_index=0,
+            summary_index=0,
+            delta="Thinking it over",
+        ),
+    )
+    mock_responses.return_value = iter(events)
+    llm = LLM(model="gpt-5-mini", api_key=SecretStr("test_key"), num_retries=0)
+    received = []
+    frames = []
+    stream = StreamContext(
+        item_id="item",
+        anchor_seq=None,
+        on_token=received.append,
+        on_stream=frames.append,
+        mask=lambda: StreamOutputMask(None, 0),
+    )
+
+    llm.responses(
+        [Message(role="user", content=[TextContent(text="Hello")])],
+        stream=True,
+        on_token=stream.on_chunk,
+    )
+
+    summary, answer = (chunk.choices[0].delta for chunk in received)
+    assert summary.reasoning_content == "Thinking it over"
+    assert summary.content is None
+    assert answer.content == "Answer"
+    assert "reasoning_content" not in answer.model_fields_set
+    deltas = [f for f in frames if isinstance(f, StreamDelta)]
+    assert [(d.kind, d.content, d.attempt) for d in deltas] == [
+        ("reasoning", "Thinking it over", 1),
+        ("text", "Answer", 1),
+    ]

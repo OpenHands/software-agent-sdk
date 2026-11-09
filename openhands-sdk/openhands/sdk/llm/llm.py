@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import threading
+import uuid
 import warnings
 from collections.abc import (
     AsyncIterable,
@@ -1285,12 +1286,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     def _process_stream_event(
-        self, event: ResponseStreamEvent, *, emit_deltas: bool = True
+        self,
+        event: ResponseStreamEvent,
+        *,
+        stream_id: str,
+        emit_deltas: bool = True,
     ) -> tuple[object | None, ModelResponseStream | None]:
         """Extract output item and delta chunk from a Responses stream event.
 
         Args:
             event: A single Responses streaming event.
+            stream_id: Chunk id shared by every delta of one streamed attempt,
+                across its output items (reasoning, then message).
             emit_deltas: When ``False`` the delta chunk is never built — skip
                 the allocation when there is no stream callback to receive it.
 
@@ -1317,11 +1324,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             delta = event.delta
             if delta:
+                stream_delta = (
+                    Delta(reasoning_content=delta)
+                    if isinstance(event, ReasoningSummaryTextDeltaEvent)
+                    else Delta(content=delta)
+                )
                 # ModelResponseStream mints a fresh id per instance, and a
-                # changed chunk id reads as a retry (StreamContext._emit_delta).
+                # changed chunk id reads as a retry (StreamContext._emit_delta),
+                # so neither that nor the per-item id may vary within a stream.
                 delta_chunk = ModelResponseStream(
-                    id=event.item_id,
-                    choices=[StreamingChoices(delta=Delta(content=delta))],
+                    id=stream_id,
+                    choices=[StreamingChoices(delta=stream_delta)],
                 )
 
         return output_item, delta_chunk
@@ -2118,11 +2131,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 completed_response = get_completed_response(ret)
                 if not isinstance(ret, Iterable):
                     raise TypeError(f"Expected a response stream, got {type(ret)}")
+                stream_id = f"resp-stream-{uuid.uuid4().hex}"
                 for event in response_events(ret):
                     if isinstance(event, ResponseCompletedEvent):
                         completed_response = event
                     output_item, delta_chunk = self._process_stream_event(
-                        event, emit_deltas=stream_callback is not None
+                        event,
+                        stream_id=stream_id,
+                        emit_deltas=stream_callback is not None,
                     )
                     if output_item is not None:
                         collected_output_items.append(output_item)
@@ -2290,6 +2306,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response if needed.
                 collected_output_items: list[object] = []
                 completed_response = get_completed_response(ret)
+                stream_id = f"resp-stream-{uuid.uuid4().hex}"
                 if isinstance(ret, AsyncIterable):
                     async for event in async_response_events(
                         self._aiter_with_idle_timeout(ret)
@@ -2297,7 +2314,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
-                            event, emit_deltas=stream_cb is not None
+                            event,
+                            stream_id=stream_id,
+                            emit_deltas=stream_cb is not None,
                         )
                         if output_item is not None:
                             collected_output_items.append(output_item)
@@ -2314,7 +2333,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
-                            event, emit_deltas=stream_cb is not None
+                            event,
+                            stream_id=stream_id,
+                            emit_deltas=stream_cb is not None,
                         )
                         if output_item is not None:
                             collected_output_items.append(output_item)
