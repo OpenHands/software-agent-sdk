@@ -573,6 +573,65 @@ async def test_outcome_reports_real_bucketed_usage(factory):
     assert "0.42" not in str(payload)
 
 
+def _stats_update_with_usage():
+    """The ``stats`` update EventService publishes after each LLM call."""
+    from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    state = _real_state()
+    metrics = Metrics(model_name="deepseek/deepseek-chat")
+    metrics.add_cost(0.42)
+    metrics.add_token_usage(
+        prompt_tokens=12000,
+        completion_tokens=3000,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=200000,
+        response_id="r",
+    )
+    state.stats.usage_to_metrics["default"] = metrics
+    return ConversationStateUpdateEvent(key="stats", value=state.stats)
+
+
+async def test_outcome_reports_usage_from_the_live_event_order(factory):
+    """Regression: a live run's terminal status is a bare string update.
+
+    The server publishes ``stats`` key updates after each LLM call, then the
+    ``execution_status`` update (a bare string), and the ``full_state``
+    snapshot only afterwards. Usage must come from the ``stats`` updates seen
+    before the terminal status, not only from a terminal ``full_state``.
+    """
+    from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+    await sub(ConversationStateUpdateEvent.from_conversation_state(_real_state()))
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="running"))
+    await sub(_stats_update_with_usage())
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="finished"))
+
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
+    payload = sink.events[0].to_payload()
+    assert payload["total_tokens_bucket"] == "10000-50000"
+    assert payload["cost_bucket"] == "0p1-1"
+
+
+async def test_interrupted_fallback_reports_usage_seen_before_close(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="running"))
+    await sub(_stats_update_with_usage())
+    await sub.close()
+
+    assert sink.names == [m.EventName.CONVERSATION_FAILED]
+    payload = sink.events[0].to_payload()
+    assert payload["terminal_status"] == "interrupted"
+    assert payload["total_tokens_bucket"] == "10000-50000"
+    assert payload["cost_bucket"] == "0p1-1"
+
+
 def test_confirmation_policy_is_read_from_the_field_that_exists():
     """Regression: the field is confirmation_policy, not confirmation_mode.
 

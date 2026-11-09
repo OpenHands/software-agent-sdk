@@ -272,7 +272,7 @@ def test_build_seed_profile_disables_nothing_even_with_inline_global_skills():
     deny-list, so the migrated default profile launches with all discovered
     skills. Freezing by name was the #4017 launch-break: an inline global skill
     absent from the launch catalog would have dangled. See the seed->resolve
-    regression in test_resolver.py."""
+    regression in test_resolve_legacy_parity.py."""
     settings = validate_agent_settings(
         {
             "agent_kind": "openhands",

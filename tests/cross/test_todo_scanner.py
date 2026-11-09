@@ -4,6 +4,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 # Import the scanner functions
 todo_mgmt_path = (
@@ -44,56 +46,44 @@ def function2():
     assert todos[1]["description"] == "Implement error handling"
 
 
-def test_scan_typescript_file():
-    """Test scanning a TypeScript file."""
-    content = """function processData(): string {
+@pytest.mark.parametrize(
+    ("suffix", "content", "expected_description"),
+    [
+        pytest.param(
+            ".ts",
+            """function processData(): string {
     // TODO(openhands): Add validation
     return data;
 }
-"""
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".ts", delete=False) as f:
-        f.write(content)
-        f.flush()
-
-        todos = scan_file_for_todos(Path(f.name))
-
-    Path(f.name).unlink()
-
-    assert len(todos) == 1
-    assert todos[0]["description"] == "Add validation"
-
-
-def test_scan_java_file():
-    """Test scanning a Java file."""
-    content = """public class Test {
+""",
+            "Add validation",
+            id="typescript",
+        ),
+        pytest.param(
+            ".java",
+            """public class Test {
     public void method() {
         // TODO(openhands): Implement this method
         System.out.println("Hello");
     }
 }
-"""
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".java", delete=False) as f:
-        f.write(content)
-        f.flush()
-
-        todos = scan_file_for_todos(Path(f.name))
-
-    Path(f.name).unlink()
-
-    assert len(todos) == 1
-    assert todos[0]["description"] == "Implement this method"
-
-
-def test_scan_rust_file():
-    """Test scanning Rust files."""
-    content = """fn main() {
+""",
+            "Implement this method",
+            id="java",
+        ),
+        pytest.param(
+            ".rs",
+            """fn main() {
     // TODO(openhands): Add error handling
     println!("Hello, world!");
-}"""
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".rs", delete=False) as f:
+}""",
+            "Add error handling",
+            id="rust",
+        ),
+    ],
+)
+def test_scan_language_file(suffix, content, expected_description):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
         f.write(content)
         f.flush()
 
@@ -102,7 +92,7 @@ def test_scan_rust_file():
     Path(f.name).unlink()
 
     assert len(todos) == 1
-    assert todos[0]["description"] == "Add error handling"
+    assert todos[0]["description"] == expected_description
 
 
 def test_scan_unsupported_file_extension():

@@ -12,6 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
@@ -77,6 +78,11 @@ def _get_config(request: Request) -> Config:
             detail="Agent server config is not available",
         )
     return config
+
+
+def _get_docker_registry(request: Request) -> DockerConversationRegistry | None:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    return registry if isinstance(registry, DockerConversationRegistry) else None
 
 
 def _parse_observability_overrides(
@@ -154,6 +160,7 @@ async def create_chat_completion(
         config=_get_config(request),
         conversation_service=conversation_service,
         reusable_conversation_id=x_openhands_server_conversation_id,
+        registry=_get_docker_registry(request),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
@@ -206,6 +213,7 @@ async def create_response(
         request=body,
         config=_get_config(request),
         conversation_service=conversation_service,
+        registry=_get_docker_registry(request),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,

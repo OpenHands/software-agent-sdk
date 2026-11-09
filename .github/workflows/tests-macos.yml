@@ -1,0 +1,65 @@
+---
+name: Run tests (macOS)
+run-name: Run tests (macOS) ${{ github.event.label.name || github.ref_name }}
+
+# Opt-in mirror of the full suite in tests.yml on a macOS runner. Unlike
+# tests.yml there is no changed-files gating: every suite always runs.
+# Trigger by adding the `macos-test-run` label to a PR (re-runs on each push
+# while the label is present), or manually from the Actions tab (`Run
+# workflow`), which defaults to `main`; pick another branch to run it there.
+on:
+    pull_request:
+        types: [labeled, synchronize, reopened]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: tests-macos-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    macos-tests:
+        name: macOS ${{ matrix.suite }} tests
+        if: >
+            github.event_name == 'workflow_dispatch' ||
+            (contains(github.event.pull_request.labels.*.name, 'macos-test-run') &&
+            (github.event.action != 'labeled' ||
+            github.event.label.name == 'macos-test-run'))
+        runs-on: macos-latest
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - suite: sdk
+                      args: -n auto tests/sdk
+                    # --forked: terminal tests conflict when run in parallel
+                    - suite: tools
+                      args: --forked tests/tools
+                    - suite: agent_server
+                      args: -n auto tests/agent_server
+                    - suite: workspace
+                      args: -n auto tests/workspace
+                    - suite: cross
+                      args: >-
+                          --basetemp="$RUNNER_TEMP/pytest"
+                          -o tmp_path_retention=none
+                          -o tmp_path_retention_count=0
+                          tests/cross
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              run: uv sync --frozen --group dev
+
+            - name: Run ${{ matrix.suite }} tests
+              run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}

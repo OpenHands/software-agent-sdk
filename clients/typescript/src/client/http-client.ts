@@ -21,6 +21,7 @@ export interface RequestOptions {
   timeout?: number;
   acceptableStatusCodes?: Set<number>;
   responseType?: ResponseType;
+  cache?: RequestCache;
   /**
    * Credentials mode for `fetch`. Use `'include'` for endpoints that issue or
    * consume cookies (e.g. the workspace-session cookie minted by
@@ -239,6 +240,10 @@ export class HttpClient {
 
     if (options.credentials) {
       requestInit.credentials = options.credentials;
+    }
+
+    if (options.cache) {
+      requestInit.cache = options.cache;
     }
 
     if (options.data && options.method !== 'GET') {

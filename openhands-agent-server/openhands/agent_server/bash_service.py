@@ -4,9 +4,11 @@ import json
 import os
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
+
+from pydantic import SecretStr
 
 from openhands.agent_server.models import (
     BashCommand,
@@ -19,6 +21,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env, utc_now
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 logger = get_logger(__name__)
@@ -32,6 +35,12 @@ class BashEventService:
 
     bash_events_dir: Path = field()
     default_cwd: str | None = None
+    # Encrypts each event file at rest. The files hold the app server's setup
+    # commands and the terminal's output verbatim, on the sandbox volume,
+    # where an agent can publish them on the app ports (OHE-3812); the key
+    # lives in the server's environment, never on the volume. None writes
+    # plaintext, as before. Files written before encryption still read.
+    cipher: Cipher | None = None
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _closed: bool = field(default=False, init=False)
     # Processes of currently running commands, keyed by command id. A None
@@ -72,6 +81,10 @@ class BashEventService:
         # Include microseconds so filename-based ordering reflects emission
         # order for sub-second bursts (e.g. fast `yes`-style floods that
         # emit several BashOutput chunks in the same wall-clock second).
+        # File names hold UTC times, so convert aware datetimes (e.g. a
+        # ``+02:00`` search bound) to UTC first; naive ones are taken as UTC.
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(UTC)
         return timestamp.strftime("%Y%m%d%H%M%S%f")
 
     def _get_event_filename(self, event: BashEventBase) -> str:
@@ -84,20 +97,41 @@ class BashEventService:
         return "_".join(result)
 
     def _save_event_to_file(self, event: BashEventBase) -> None:
-        """Save an event to a file."""
+        """Save an event to a file, encrypted when a cipher is configured."""
         self._ensure_bash_events_dir()
         filename = self._get_event_filename(event)
         filepath = self.bash_events_dir / filename
 
+        # Use model_dump with mode='json' to handle UUID serialization
+        data = json.dumps(event.model_dump(mode="json"), indent=2)
+        if self.cipher is not None:
+            # encrypt() is None only for a None secret.
+            encrypted = self.cipher.encrypt(SecretStr(data))
+            data = data if encrypted is None else encrypted
         with open(filepath, "w") as f:
-            # Use model_dump with mode='json' to handle UUID serialization
-            data = event.model_dump(mode="json")
-            f.write(json.dumps(data, indent=2))
+            f.write(data)
 
     def _load_event_from_file(self, filepath: Path) -> BashEventBase | None:
-        """Load an event from a file."""
+        """Load an event from a file.
+
+        An encrypted file (a Fernet token) is decrypted with the cipher, which
+        tries its previous keys too, so files from before a key rotation still
+        read; a plaintext file from before encryption is parsed as it is.
+        """
         try:
             json_data = filepath.read_text()
+            if json_data.startswith(FERNET_TOKEN_PREFIX):
+                if self.cipher is None:
+                    logger.error(
+                        f"Event file {filepath} is encrypted but no cipher "
+                        "is configured"
+                    )
+                    return None
+                decrypted = self.cipher.try_decrypt_str(json_data)
+                if decrypted is None:
+                    logger.error(f"Event file {filepath} does not decrypt with any key")
+                    return None
+                json_data = decrypted
             return BashEventBase.model_validate_json(json_data)
         except Exception as e:
             logger.error(f"Error loading event from {filepath}: {e}")
@@ -229,13 +263,13 @@ class BashEventService:
                     start_index = i
                     break
 
-        page_slice = matched[start_index : start_index + limit]
-        next_page_id = None
-        if start_index + limit < len(matched):
-            next_page_id = matched[start_index + limit]
-
+        # Filter before counting toward ``limit``: slicing file names first let
+        # ``order__gt`` empty a page while ``next_page_id`` was still set.
+        # The cursor is the next event that passes the filter, so a page is
+        # never followed by an empty one.
         page_events: list[BashEventBase] = []
-        for name in page_slice:
+        next_page_id = None
+        for name in matched[start_index:]:
             event = self._load_event_from_file(self.bash_events_dir / name)
             if event is None:
                 continue
@@ -244,6 +278,9 @@ class BashEventService:
                 event_order = getattr(event, "order", None)
                 if event_order is not None and event_order <= order__gt:
                     continue
+            if len(page_events) >= limit:
+                next_page_id = name
+                break
             page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
@@ -604,5 +641,7 @@ def get_default_bash_event_service() -> BashEventService:
     from openhands.agent_server.config import get_default_config
 
     config = get_default_config()
-    _bash_event_service = BashEventService(bash_events_dir=config.bash_events_dir)
+    _bash_event_service = BashEventService(
+        bash_events_dir=config.bash_events_dir, cipher=config.cipher
+    )
     return _bash_event_service

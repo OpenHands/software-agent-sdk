@@ -14,8 +14,8 @@ from pathlib import Path
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool
 from openhands.sdk.context import Skill
 from openhands.sdk.subagent import register_agent_if_absent
-from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.task import DelegationVisualizer
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.workflow import WorkflowToolSet
 

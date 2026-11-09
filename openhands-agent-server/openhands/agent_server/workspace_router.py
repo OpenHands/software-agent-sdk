@@ -81,7 +81,10 @@ def _serve_path(workspace_dir: Path, file_path: str) -> FileResponse:
     target = _resolve_target(workspace_dir, file_path)
 
     if target.is_dir():
-        index_file = target / "index.html"
+        # Re-check containment: ``index.html`` may itself be a symlink.
+        index_file = _resolve_target(
+            workspace_dir, str(target.relative_to(workspace_dir) / "index.html")
+        )
         if not index_file.is_file():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

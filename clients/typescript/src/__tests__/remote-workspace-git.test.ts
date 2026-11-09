@@ -1,5 +1,6 @@
 import type { Mock } from 'vitest';
 import { RemoteWorkspace } from '../index';
+import type { GitChange } from '../index';
 
 const originalFetch = global.fetch;
 
@@ -71,5 +72,23 @@ describe('RemoteWorkspace git query parameters', () => {
     expect(url.pathname).toBe('/api/git/diff');
     expect(url.searchParams.get('path')).toBe('/repo/file.ts');
     expect(url.searchParams.get('ref')).toBe('abc1234');
+  });
+
+  it('returns the server git statuses typed as the exported GitChange status', async () => {
+    const wire: GitChange[] = [
+      { path: 'a.txt', status: 'ADDED' },
+      { path: 'b.txt', status: 'UPDATED' },
+      { path: 'c.txt', status: 'DELETED' },
+      { path: 'd.txt', status: 'MOVED' },
+    ];
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse(wire)) as typeof fetch;
+
+    const ws = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const changes = await ws.gitChanges('/repo');
+
+    expect(changes).toEqual(wire);
+    expect(changes.filter((change) => change.status === 'UPDATED').map((c) => c.path)).toEqual([
+      'b.txt',
+    ]);
   });
 });

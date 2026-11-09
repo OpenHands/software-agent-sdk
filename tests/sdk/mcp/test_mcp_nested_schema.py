@@ -35,7 +35,7 @@ def _make_tool(
     mcp_tool = mcp.types.Tool(
         name=name,
         description=description,
-        inputSchema=input_schema,
+        input_schema=input_schema,
     )
     return MCPToolDefinition(
         description=description,
@@ -50,6 +50,19 @@ def _get_params(tool: MCPToolDefinition, **kwargs: Any) -> dict[str, Any]:
     """Extract the ``parameters`` dict from the generated OpenAI tool."""
     openai_tool = tool.to_openai_tool(**kwargs)
     return dict(openai_tool)["function"]["parameters"]  # type: ignore[index]
+
+
+def test_mcp_action_from_arguments_accepts_underscore_prefixed_argument():
+    tool = _make_tool(
+        "paginate",
+        {
+            "type": "object",
+            "properties": {"_cursor": {"type": "string"}},
+            "required": ["_cursor"],
+        },
+    )
+
+    assert tool.action_from_arguments({"_cursor": "abc"}).data == {"_cursor": "abc"}
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +254,7 @@ class TestInjectedFields:
         mcp_tool = mcp.types.Tool(
             name="readonly_tool",
             description="read only",
-            inputSchema=self.SIMPLE_NESTED,
+            input_schema=self.SIMPLE_NESTED,
         )
         tool = MCPToolDefinition(
             description="read only",

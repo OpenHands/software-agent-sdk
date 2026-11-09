@@ -133,3 +133,61 @@ class TestHooksRouter:
             assert data["hook_config"] is not None
             assert len(data["hook_config"]["stop"]) == 1
             assert len(data["hook_config"]["pre_tool_use"]) == 1
+
+
+class TestHooksRouterUserHooks:
+    """The route merges user hooks unless load_user_hooks is false."""
+
+    @staticmethod
+    def _write(path: Path, command: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "pre_tool_use": [
+                        {
+                            "matcher": "terminal",
+                            "hooks": [{"type": "command", "command": command}],
+                        }
+                    ]
+                }
+            )
+        )
+
+    def test_merges_user_hooks_by_default(self, client, tmp_path, monkeypatch):
+        user_dir = tmp_path / "user"
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(user_dir))
+        project = tmp_path / "project"
+        self._write(project / ".openhands" / "hooks.json", "echo project")
+        self._write(user_dir / "hooks.json", "echo user")
+
+        response = client.post("/api/hooks", json={"project_dir": str(project)})
+
+        assert response.status_code == 200
+        commands = [
+            m["hooks"][0]["command"]
+            for m in response.json()["hook_config"]["pre_tool_use"]
+        ]
+        assert commands == ["echo project", "echo user"]
+
+    def test_load_flags(self, client, tmp_path, monkeypatch):
+        user_dir = tmp_path / "user"
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(user_dir))
+        project = tmp_path / "project"
+        self._write(project / ".openhands" / "hooks.json", "echo project")
+        self._write(user_dir / "hooks.json", "echo user")
+
+        no_user = client.post(
+            "/api/hooks", json={"project_dir": str(project), "load_user_hooks": False}
+        ).json()["hook_config"]
+        no_project = client.post(
+            "/api/hooks",
+            json={"project_dir": str(project), "load_project_hooks": False},
+        ).json()["hook_config"]
+
+        assert [m["hooks"][0]["command"] for m in no_user["pre_tool_use"]] == [
+            "echo project"
+        ]
+        assert [m["hooks"][0]["command"] for m in no_project["pre_tool_use"]] == [
+            "echo user"
+        ]

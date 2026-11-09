@@ -8,6 +8,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.telemetry import Telemetry, normalize_usage
 
@@ -79,12 +80,17 @@ def test_span_carries_cache_buckets(exporter):
     assert attrs["gen_ai.usage.cache_read_input_tokens"] == 7
 
 
-def test_span_cost_agrees_with_metrics(exporter):
+@pytest.mark.parametrize("cost", [0.0, PROXY_COST])
+def test_span_cost_agrees_with_metrics(exporter, cost):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})
-    t.on_response(_response(_usage()))
+    usage = _usage()
+    usage.cost = 0.04
+    t.on_response(_response(usage, cost=cost))
 
     attrs = _attrs(exporter)
+    assert len(t.metrics.costs) == 1
+    assert attrs["gen_ai.usage.cost"] == cost
     assert attrs["gen_ai.usage.cost"] == pytest.approx(t.metrics.accumulated_cost)
 
 
@@ -132,3 +138,15 @@ def test_retry_does_not_leak_spans(exporter):
     t.on_request(telemetry_ctx={})  # retry re-enters without a response
     t.on_response(_response(_usage()))
     assert len(exporter.get_finished_spans()) == 2
+
+
+def test_unavailable_cost_is_absent_from_span_and_metrics(exporter):
+    t = Telemetry(model_name="unpriced-review-alias", metrics=Metrics())
+    t.on_request(telemetry_ctx={})
+    response = ModelResponse(model="unpriced-review-alias", usage=_usage())
+    provider = LLMProvider(model="unpriced-review-alias", name="openai", api_base=None)
+    with pytest.warns(UserWarning, match="Cost calculation failed"):
+        t.on_response(response, provider_info=provider)
+
+    assert "gen_ai.usage.cost" not in _attrs(exporter)
+    assert not t.metrics.costs

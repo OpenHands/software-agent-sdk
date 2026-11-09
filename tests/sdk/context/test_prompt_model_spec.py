@@ -27,6 +27,7 @@ def test_system_prompt_includes_openai_gpt_5_codex_model_specific_section() -> N
 
 def test_system_prompt_uses_canonical_name_for_detection() -> None:
     agent = _make_agent("proxy/custom", model_canonical_name="gpt-5-mini")
+    assert agent.llm.model_canonical_name == "gpt-5-mini"
     message = agent.static_system_message
     assert (
         "Stream your thinking and responses while staying concise; surface key"
@@ -45,6 +46,7 @@ def test_system_prompt_respects_model_variant_override() -> None:
 
 def test_system_prompt_without_known_family_has_no_model_specific_section() -> None:
     agent = _make_agent("custom-made-model")
+    assert agent.llm.model_canonical_name is None
     message = agent.static_system_message
     assert (
         "When sharing structured information (plans, diffs, command outputs),"

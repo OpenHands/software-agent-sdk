@@ -99,9 +99,17 @@ def test_pin_behind_source_never_uses_source_contract(tmp_path, urlopen):
     assert calls == []
 
 
-def test_transient_http_error_is_not_treated_as_unreleased(tmp_path, urlopen):
+def test_gateway_http_error_means_release_exists(tmp_path, urlopen):
     _, outcome = urlopen
-    outcome["result"] = _http_error(502)
+    outcome["result"] = _http_error(504)
+    client, pyproject = _fixture(tmp_path, "1.53.0", "1.53.0")
+
+    assert _prod.resolve(client, pyproject)["use_source_contract"] == "false"
+
+
+def test_non_gateway_http_error_still_fails(tmp_path, urlopen):
+    _, outcome = urlopen
+    outcome["result"] = _http_error(500)
     client, pyproject = _fixture(tmp_path, "1.53.0", "1.53.0")
 
     with pytest.raises(urllib.error.HTTPError):

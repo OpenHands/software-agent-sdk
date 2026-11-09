@@ -24,6 +24,7 @@ from openai.types.responses.response_function_tool_call import (
 )
 from pydantic import ConfigDict, model_validator
 
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import (
@@ -115,6 +116,42 @@ def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=None, store=None)
     assert opts.get(param) == expected_value
+
+
+def test_subscription_sends_codex_session_headers():
+    """The Codex backend needs these to keep a conversation on one prompt cache."""
+    llm = _make_subscription_llm()
+    context = LLMCallContext().for_conversation("conv-abc")
+
+    opts = select_responses_options(
+        llm, {}, include=None, store=None, call_context=context
+    )
+
+    assert opts["prompt_cache_key"] == "conv-abc"
+    assert opts["extra_headers"]["session-id"] == "conv-abc"
+    assert opts["extra_headers"]["thread-id"] == "conv-abc"
+
+
+def test_subscription_without_conversation_sends_no_session_headers():
+    opts = select_responses_options(
+        _make_subscription_llm(), {}, include=None, store=None
+    )
+
+    assert "session-id" not in opts.get("extra_headers", {})
+    assert "thread-id" not in opts.get("extra_headers", {})
+
+
+def test_non_subscription_does_not_send_codex_session_headers():
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
+    context = LLMCallContext().for_conversation("conv-abc")
+
+    opts = select_responses_options(
+        llm, {}, include=None, store=None, call_context=context
+    )
+
+    assert opts["extra_headers"]["x-litellm-session-id"] == "conv-abc"
+    assert "session-id" not in opts["extra_headers"]
+    assert "thread-id" not in opts["extra_headers"]
 
 
 def test_non_subscription_does_not_invent_temperature():

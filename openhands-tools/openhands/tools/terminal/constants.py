@@ -38,6 +38,18 @@ HISTORY_LIMIT: Final[int] = 10_000
 
 TMUX_SOCKET_NAME: Final[str] = "openhands"
 
+# tmux user option recording the PID of the process that created a socket.
+# Startup cleanup reads it so it does not kill the live sessions of a sibling
+# agent-server that shares one externally supplied TMUX_TMPDIR.
+TMUX_SOCKET_OWNER_OPTION: Final[str] = "@openhands_socket_owner_pid"
+
+# Cross-process lock file, inside the tmux socket directory, that serializes
+# socket creation with the agent-server's startup cleanup. A socket only exists
+# between creation and the recording of its owner, so both operations take this
+# lock to keep cleanup from reclaiming a socket that a live process is still
+# setting up.
+TMUX_SOCKET_CREATION_LOCK: Final[str] = ".openhands-socket-creation.lock"
+
 # Tmux session dimensions (columns x rows). Keep the viewport wide enough for
 # common command output while leaving scrollback retention to HISTORY_LIMIT.
 # Output wider than TMUX_SESSION_WIDTH columns will wrap; this is an accepted

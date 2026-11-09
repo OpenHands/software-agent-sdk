@@ -142,6 +142,20 @@ def test_delete_llm_profile_blocked_when_referenced(
     assert "default.json" in llm_store.list()
 
 
+def test_delete_llm_profile_blocked_through_json_alias(
+    agent_store: AgentProfileStore, llm_store: LLMProfileStore
+) -> None:
+    """``default.json`` addresses profile ``default``, so the guard must apply."""
+    llm_store.save("default", LLM(usage_id="x", model="gpt-4-turbo"))
+    agent_store.save(_oh("a", "default"))
+
+    with pytest.raises(ProfileReferenced) as exc_info:
+        delete_llm_profile(agent_store, llm_store, "default.json")
+
+    assert exc_info.value.referrers == ["a"]
+    assert "default.json" in llm_store.list()
+
+
 def test_delete_llm_profile_succeeds_when_unreferenced(
     agent_store: AgentProfileStore, llm_store: LLMProfileStore
 ) -> None:

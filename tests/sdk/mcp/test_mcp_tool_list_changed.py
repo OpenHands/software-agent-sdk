@@ -17,8 +17,11 @@ depend on transport timing.
 
 import asyncio
 import socket
+import sys
 import threading
 import time
+from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
 import mcp.types as mcp_types
@@ -29,6 +32,7 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.mcp import MCPClient, create_mcp_tools
 from openhands.sdk.mcp.config import coerce_mcp_config
@@ -71,7 +75,7 @@ def _make_mcp_tool(name: str) -> mcp_types.Tool:
     return mcp_types.Tool(
         name=name,
         description=f"tool {name}",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     )
 
 
@@ -156,7 +160,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     old_tool = mcp_types.Tool(
         name="changing",
         description="old schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"old": {"type": "string"}},
             "required": ["old"],
@@ -165,7 +169,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     new_tool = mcp_types.Tool(
         name="changing",
         description="new schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"new": {"type": "integer"}},
             "required": ["new"],
@@ -270,8 +274,12 @@ def progressive_server():
 
     async def notify_list_changed() -> None:
         notification = mcp_types.ToolListChangedNotification()
+        # Context.send_notification is bound to the in-flight request, and
+        # mcp 2 drops it once that request has answered. Sending on the
+        # session without a related request uses the standalone stream.
+        session = get_context().session
         loop = asyncio.get_running_loop()
-        loop.create_task(get_context().send_notification(notification))
+        loop.create_task(session.send_notification(notification))
 
     @mcp.tool()
     async def gateway() -> str:
@@ -465,6 +473,71 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
             readded_agent_extra.action_from_arguments({"value": 21})
         )
         assert not readded_observation.is_error
+
+
+def _wait_until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline and not condition():
+        time.sleep(0.1)
+    assert condition()
+
+
+def test_list_changed_in_multi_server_conversation_keeps_server_prefix(
+    progressive_server: int, tmp_path: Path
+):
+    """A tool one server adds later reaches the agent as ``{server}_{tool}``,
+    and its removal leaves the other server's tools in place."""
+    repo_root = Path(__file__).resolve().parents[3]
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=_native_config(
+                {
+                    "progressive": {
+                        "transport": "http",
+                        "url": f"http://127.0.0.1:{progressive_server}/mcp",
+                    },
+                    "docs": {
+                        "command": sys.executable,
+                        "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                        "cwd": str(repo_root),
+                    },
+                }
+            ),
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    conversation._ensure_agent_ready()
+
+    def tool_names() -> set[str]:
+        return set(conversation.agent.tools_map)
+
+    assert {
+        "progressive_gateway",
+        "progressive_register_extra_tool",
+        "progressive_remove_extra_tool",
+        "docs_fetch",
+    } <= tool_names()
+
+    register = conversation.agent.tools_map["progressive_register_extra_tool"]
+    assert not register(register.action_from_arguments({})).is_error
+    _wait_until(lambda: "progressive_extra" in tool_names())
+
+    extra = conversation.agent.tools_map["progressive_extra"]
+    observation = extra(extra.action_from_arguments({"value": 21}))
+    assert not observation.is_error
+    assert "42" in "\n".join(
+        block.text for block in observation.content if isinstance(block, TextContent)
+    )
+
+    remove = conversation.agent.tools_map["progressive_remove_extra_tool"]
+    assert not remove(remove.action_from_arguments({})).is_error
+    _wait_until(lambda: "progressive_extra" not in tool_names())
+    assert "docs_fetch" in tool_names()
+    conversation.close()
 
 
 def test_on_mcp_tools_changed_registers_runtime_tools():

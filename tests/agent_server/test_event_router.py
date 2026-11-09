@@ -1,7 +1,9 @@
 """Tests for event_router.py endpoints."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -10,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import event_router as event_router_module
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import (
     event_router,
@@ -18,7 +21,9 @@ from openhands.agent_server.event_router import (
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event.llm_convertible.message import MessageEvent
+from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
 
 
@@ -81,6 +86,27 @@ def mock_event_service():
     service = AsyncMock(spec=EventService)
     service.send_message = AsyncMock()
     return service
+
+
+def test_gateway_deadline_includes_cold_conversation_load(client, monkeypatch):
+    monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.02)
+    event_service = AsyncMock(spec=EventService)
+    event_service._gateway_run_lock = asyncio.Lock()
+
+    async def slow_load(conversation_id):
+        await asyncio.sleep(0.04)
+        return event_service
+
+    client.app.state.conversation_service = SimpleNamespace(get_event_service=slow_load)
+    client.app.state.conversation_registry = None
+
+    response = client.post(
+        f"/api/conversations/{uuid4()}/events/_gateway/run",
+        json={"content": [{"type": "text", "text": "Do not save"}]},
+    )
+
+    assert response.status_code == 504
+    event_service.send_message.assert_not_awaited()
 
 
 class TestSendMessageEndpoint:
@@ -808,3 +834,35 @@ class TestSearchEventsEndpoint:
 
         finally:
             client.app.dependency_overrides.clear()
+
+
+def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):
+    """An unknown id is a 404 from get-one and null in its batch-get slot."""
+    event_log = EventLog(InMemoryFileStore())
+    known = MessageEvent(
+        id="00000000-0000-0000-0000-000000000001",
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    event_log.append(known)
+    event_service = EventService(stored=MagicMock(), conversations_dir=Path("x"))
+    conversation = MagicMock()
+    conversation._state.events = event_log
+    event_service._conversation = conversation
+    client.app.dependency_overrides[get_event_service] = lambda: event_service
+    url = f"/api/conversations/{sample_conversation_id}/events"
+
+    try:
+        assert client.get(f"{url}/{known.id}").json()["id"] == known.id
+        assert client.get(f"{url}/qa-missing-event").status_code == 404
+
+        response = client.request(
+            "GET", url, json=["qa-missing-event", known.id, "qa-missing-2"]
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 3
+        assert body[0] is None and body[2] is None
+        assert body[1]["id"] == known.id
+    finally:
+        client.app.dependency_overrides.clear()

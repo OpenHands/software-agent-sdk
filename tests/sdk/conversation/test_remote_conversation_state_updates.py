@@ -7,8 +7,14 @@ from pydantic import SecretStr
 from openhands.sdk import RemoteWorkspace
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.workspace import LocalWorkspace
 
 from .conftest import create_mock_http_client
 
@@ -170,46 +176,47 @@ def test_update_state_from_multiple_events():
         assert conv.state._cached_state["stuck_detection"] is True
 
 
-def test_update_state_full_state_overwrites_fields():
-    """Test that full_state update properly overwrites existing fields."""
+def test_full_state_snapshot_clears_omitted_fields():
     agent = create_test_agent()
-
-    # Mock httpx client and its responses
     mock_client_instance = create_mock_http_client()
-
     with (
         patch("httpx.Client", return_value=mock_client_instance),
         patch(
             "openhands.sdk.conversation.impl.remote_conversation"
             ".WebSocketCallbackClient"
-        ),
+        ) as mock_ws_client,
     ):
-        # Create real RemoteConversation
         conv = RemoteConversation(
             agent=agent,
             workspace=RemoteWorkspace(working_dir="/tmp", host="http://localhost:3000"),
+            visualizer=None,
         )
+        source = ConversationState(
+            id=conv.id,
+            agent=agent,
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            max_budget_per_run=3.0,
+            security_analyzer=LLMSecurityAnalyzer(),
+        )
+        on_event = mock_ws_client.call_args.kwargs["callback"]
+        on_event(ConversationStateUpdateEvent.from_conversation_state(source))
+        assert conv.max_budget_per_run == 3.0
+        assert isinstance(conv.state.security_analyzer, LLMSecurityAnalyzer)
 
-        # Set initial cached state
-        conv.state._cached_state = {
-            "execution_status": "running",
-            "max_iterations": 100,
-            "old_field": "old_value",
-        }
+        with source:
+            source.max_budget_per_run = None
+            source.security_analyzer = None
+            source.execution_status = ConversationExecutionStatus.PAUSED
+        requests_before_snapshot = mock_client_instance.request.call_count
+        on_event(ConversationStateUpdateEvent.from_conversation_state(source))
 
-        # Update with full state (without old_field)
-        full_state = {
-            "execution_status": "idle",
-            "max_iterations": 50,
-        }
-        event = ConversationStateUpdateEvent(key="full_state", value=full_state)
-        conv.state.update_state_from_event(event)
-
-        # Verify new fields are set and old field still exists (update, not replace)
-        assert conv.state._cached_state is not None
-        assert conv.state._cached_state["execution_status"] == "idle"
-        assert conv.state._cached_state["max_iterations"] == 50
-        assert "old_field" in conv.state._cached_state  # Still there from .update()
+        assert conv.max_budget_per_run is None
+        assert conv.state.security_analyzer is None
+        assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
+        assert conv.state.agent.llm.model == agent.llm.model
+        assert conv.state.workspace["working_dir"] == "/tmp"
+        assert mock_client_instance.request.call_count == requests_before_snapshot
+        conv.close()
 
 
 def test_update_state_thread_safe():

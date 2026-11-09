@@ -50,6 +50,21 @@ def get_closest_git_repo(path: Path) -> Path | None:
         current_path = parent
 
 
+def _base_file_size(repo: Path, ref: str, relative_path: Path) -> int | None:
+    """Size of the file (blob) ``relative_path`` at ``ref``, or ``None``
+    when ``ref`` has no file at that path."""
+    spec = f"{ref}:{relative_path.as_posix()}"
+    try:
+        object_type = run_git_command(
+            ["git", "cat-file", "-t", spec], repo, expected_failure=True
+        )
+        if object_type != "blob":
+            return None
+        return int(run_git_command(["git", "cat-file", "-s", spec], repo))
+    except (GitCommandError, ValueError):
+        return None
+
+
 def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitDiff:
     """Get git diff for a single file.
 
@@ -63,20 +78,23 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
         GitDiff object containing diff information
 
     Raises:
-        GitPathError: If file is too large or doesn't exist
+        GitPathError: If file is too large, or exists neither on disk nor
+            at the base ref (a working-tree deletion diffs as the base text
+            against ``""``)
         GitRepositoryError: If not in a git repository
         GitCommandError: If git commands fail (including when ``ref`` is
             provided but does not resolve in the repository).
     """
     path = Path(os.getcwd(), relative_file_path).resolve()
+    missing_error = GitPathError(f"File does not exist: {path}")
 
-    # Check if file exists
-    if not path.exists():
-        raise GitPathError(f"File does not exist: {path}")
+    # A path missing from disk may still be a working-tree deletion (or the
+    # old side of a rename) that only exists at the base ref.
+    deleted = not path.exists()
 
     # Check file size
     try:
-        file_size = os.path.getsize(path)
+        file_size = 0 if deleted else os.path.getsize(path)
         if file_size > MAX_FILE_SIZE_FOR_GIT_DIFF:
             raise GitPathError(
                 f"File too large for git diff: {file_size} bytes "
@@ -88,6 +106,8 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
     # Find git repository
     closest_git_repo = get_closest_git_repo(path)
     if not closest_git_repo:
+        if deleted:
+            raise missing_error
         raise GitRepositoryError(f"File is not in a git repository: {path}")
 
     # Validate the git repository
@@ -97,6 +117,8 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
     # so the per-file diff lines up with the change list it was opened from.
     current_rev = get_valid_ref(validated_repo, override=ref, purpose="display")
     if not current_rev:
+        if deleted:
+            raise missing_error
         logger.warning(f"No valid git reference found for {validated_repo}")
         return GitDiff(modified="", original="")
 
@@ -106,14 +128,36 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
     except ValueError as e:
         raise GitPathError(f"File is not within git repository: {path}") from e
 
+    if deleted:
+        base_size = _base_file_size(
+            validated_repo, current_rev, relative_path_from_repo
+        )
+        if base_size is None:
+            raise missing_error
+        if base_size > MAX_FILE_SIZE_FOR_GIT_DIFF:
+            raise GitPathError(
+                f"File too large for git diff: {base_size} bytes "
+                f"(max: {MAX_FILE_SIZE_FOR_GIT_DIFF} bytes)"
+            )
+
     # Get old content (from the ref)
     try:
-        original = run_git_command(
-            ["git", "show", f"{current_rev}:{relative_path_from_repo}"], validated_repo
+        # Read the blob verbatim and normalize it like the modified side below,
+        # so an unchanged file keeps its edge whitespace on both sides.
+        original = "\n".join(
+            run_git_command(
+                ["git", "show", f"{current_rev}:{relative_path_from_repo}"],
+                validated_repo,
+                strip=False,
+            ).splitlines()
         )
     except GitCommandError:
         logger.debug(f"No old content found for {path} at ref {current_rev}")
         original = ""
+
+    if deleted:
+        logger.info(f"Generated git diff for deleted file {path}")
+        return GitDiff(modified="", original=original)
 
     # Get new content (current file)
     try:

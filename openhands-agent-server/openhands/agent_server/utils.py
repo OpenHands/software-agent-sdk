@@ -26,14 +26,15 @@ def safe_rmtree(path: str | Path | None, description: str = "directory") -> bool
     if not path or not os.path.exists(path):
         return True
 
-    def handle_remove_readonly(func, path, _exc):
-        """Error handler for removing read-only files."""
-        if os.path.exists(path):
-            try:
-                os.chmod(path, stat.S_IWRITE)
-                func(path)
-            except (OSError, PermissionError) as e:
-                logger.warning(f"Failed to remove read-only file {path}: {e}")
+    def handle_remove_readonly(func, path, exc_info):
+        """Clear the read-only bit and retry; re-raise any other error."""
+        exc = exc_info[1]
+        if isinstance(exc, FileNotFoundError):
+            return
+        if not isinstance(exc, PermissionError):
+            raise exc
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
 
     try:
         shutil.rmtree(path, onerror=handle_remove_readonly)

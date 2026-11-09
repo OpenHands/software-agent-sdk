@@ -313,3 +313,30 @@ def test_conversation_memory_vs_local_filestore():
         persistence_files = os.listdir(conv.state.persistence_dir)
         assert len(persistence_files) > 0
         assert any("base_state.json" in f for f in persistence_files)
+
+
+def test_conversation_lifecycle_flags_and_secret_propagation(tmp_path):
+    """Test conversation cleanup lifecycle flags and secret propagation."""
+    from openhands.sdk.context import AgentContext
+    from openhands.sdk.conversation.base import BaseConversation
+
+    ctx = AgentContext(secrets={"MY_KEY": "my_val"})
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+    agent = Agent(llm=llm, agent_context=ctx, tools=[])
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+    try:
+        assert isinstance(conv, BaseConversation)
+        assert conv.cleanup_initiated is False
+        assert conv.cleanup_complete is False
+        assert "MY_KEY" in conv.state.secret_registry.secret_sources
+        assert conv.state.secret_registry.get_secret_value("MY_KEY") == "my_val"
+
+        conv.close()
+        assert conv.cleanup_initiated is True
+        assert conv.cleanup_complete is True
+
+        # Idempotent close
+        conv.close()
+        assert conv.cleanup_complete is True
+    finally:
+        conv.close()

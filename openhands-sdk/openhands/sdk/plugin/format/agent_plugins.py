@@ -90,11 +90,20 @@ class AgentPluginsFormat(PluginFormat):
 
     @classmethod
     def detect(cls, plugin_dir: Path) -> bool:
-        # Presence is the whole rule: a broken manifest (bad JSON, missing or
-        # unsupported $schema) must be claimed and rejected by load_manifest(),
-        # not fall through to the Claude Code format, which would load it under
-        # a name inferred from the directory.
-        return (plugin_dir / MANIFEST_FILE).is_file()
+        # A broken Agent Plugins manifest (bad JSON, unsupported $schema) must be
+        # claimed and rejected by load_manifest(), not fall through to the Claude
+        # Code format, which would load it under a name inferred from the
+        # directory. A JSON object without a $schema key does not declare this
+        # format: other tools (e.g. GitHub Copilot) also ship a root plugin.json,
+        # so such plugins load with the Claude Code layout instead.
+        manifest_path = plugin_dir / MANIFEST_FILE
+        if not manifest_path.is_file():
+            return False
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return True
+        return not isinstance(data, dict) or "$schema" in data
 
     def load_manifest(self, plugin_dir: Path) -> PluginManifest:
         """Load and validate the root ``plugin.json``.

@@ -147,15 +147,25 @@ def _standard_chromium_paths(platform: str | None = None) -> list[Path]:
 
 
 def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
+    # Playwright installs browsers into $PLAYWRIGHT_BROWSERS_PATH when set.
+    # "0" is its special value for browsers inside the installed package,
+    # which is not a directory path, so it is ignored here.
+    dirs: list[Path] = []
+    if (browsers_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH")) and (
+        browsers_path != "0"
+    ):
+        dirs.append(Path(browsers_path).expanduser())
     match _current_platform(platform):
         case "darwin":
-            return [Path.home() / "Library" / "Caches" / "ms-playwright"]
+            dirs.append(Path.home() / "Library" / "Caches" / "ms-playwright")
         case "win32":
             if local_app_data := os.environ.get("LOCALAPPDATA"):
-                return [Path(local_app_data) / "ms-playwright"]
-            return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+                dirs.append(Path(local_app_data) / "ms-playwright")
+            else:
+                dirs.append(Path.home() / "AppData" / "Local" / "ms-playwright")
         case _:
-            return [Path.home() / ".cache" / "ms-playwright"]
+            dirs.append(Path.home() / ".cache" / "ms-playwright")
+    return dirs
 
 
 def _playwright_chromium_paths(

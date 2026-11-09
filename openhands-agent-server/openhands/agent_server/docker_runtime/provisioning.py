@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr, field_serializer, field_v
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
@@ -26,7 +27,10 @@ class RuntimeIdentity(BaseModel):
     api_key: SecretStr
     encryption_key: SecretStr
     workspace_path: Path
+    worktree_repository_path: Path | None = None
+    worktree_git_common_dir_path: Path | None = None
     launched_agent_profile: LaunchedAgentProfile | None = None
+    container: ConversationContainerOptions | None = None
 
     @field_serializer("api_key", "encryption_key")
     def serialize_key(self, value, info):

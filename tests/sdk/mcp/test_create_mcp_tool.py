@@ -30,6 +30,7 @@ from openhands.sdk.mcp.config import (
     MCPHeaderAuthCredential,
     MCPNoneAuthCredential,
     MCPOAuthAuthCredential,
+    MCPServer,
     coerce_mcp_config,
     to_fastmcp_mcp_config,
 )
@@ -683,6 +684,42 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
         pass  # Expected connection errors are acceptable
 
 
+@pytest.mark.parametrize(
+    "data", [{}, {"enabled": True}, {"description": "x", "args": ["a"]}]
+)
+def test_mcp_server_requires_command_or_url(data: dict) -> None:
+    with pytest.raises(ValueError, match="require 'command' or 'url'"):
+        MCPServer.model_validate(data)
+
+
+def test_mcp_server_accepts_command_or_url_without_transport() -> None:
+    assert MCPServer.model_validate({"command": "uvx"}).command == "uvx"
+    assert MCPServer.model_validate({"url": "https://x.example/mcp"}).url
+
+
+def _server_without_command_or_url() -> MCPServer:
+    # A server stored before MCPServer rejected it, bypassing validation.
+    return MCPServer.model_construct(enabled=True)
+
+
+def test_create_mcp_tools_skips_invalid_server_and_keeps_valid_ones(caplog):
+    mcp_config = native_mcp_config(stdio_fetch_mcp_config())
+    mcp_config["qa-empty"] = _server_without_command_or_url()
+
+    with caplog.at_level(logging.WARNING, logger="openhands.sdk.mcp.utils"):
+        with create_mcp_tools(mcp_config, timeout=10.0) as client:
+            assert [tool.name for tool in client.tools] == ["fetch"]
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("Skipping invalid MCP server qa-empty" in m for m in warnings)
+    assert not any("fetch" in m.split(";")[0] for m in warnings)
+
+
+def test_prepare_mcp_config_raises_when_every_server_is_invalid():
+    with pytest.raises(ValueError, match="No valid MCP servers among: qa-empty"):
+        _prepare_mcp_config({"qa-empty": _server_without_command_or_url()})
+
+
 def test_create_mcp_tools_stdio_server():
     """Test creating MCP tools from a native server map."""
     mcp_config = stdio_fetch_mcp_config()
@@ -818,7 +855,9 @@ def test_mcp_tool_reconnects_after_http_error():
             second = tool.executor(action)
 
             assert first.is_error
-            assert "504 Gateway Timeout" in first.text
+            # mcp 2 reports a non-2xx HTTP answer as a JSON-RPC error without
+            # the status line, so only the failed call itself is checked.
+            assert "Error calling MCP tool ping" in first.text
             assert not second.is_error
             assert "pong" in second.text
     finally:

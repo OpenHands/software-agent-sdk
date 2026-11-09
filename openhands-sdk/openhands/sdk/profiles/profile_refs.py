@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from openhands.sdk.llm.llm_profile_store import canonical_profile_name
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_REGEX
 
@@ -58,12 +59,15 @@ def _scan_referrers(
 
     Reads metadata via ``list_summaries`` (no validation / secret
     instantiation). Only the OpenHands variant carries ``llm_profile_ref``.
+    Names compare by store key, so ``foo.json`` matches ``foo``.
     """
+    key = canonical_profile_name(llm_profile_name)
     return [
         str(summary["name"])
         for summary in store.list_summaries()
         if summary.get("agent_kind", "openhands") == "openhands"
-        and summary.get("llm_profile_ref") == llm_profile_name
+        and isinstance(ref := summary.get("llm_profile_ref"), str)
+        and canonical_profile_name(ref) == key
     ]
 
 
@@ -78,8 +82,9 @@ def _rewrite_refs(
     no cipher is needed. Returns the names of the rewritten profiles.
     """
     rewritten = _scan_referrers(store, old_name)
+    new_key = canonical_profile_name(new_name)
     for name in rewritten:
-        store.set_llm_profile_ref(name, new_name)
+        store.set_llm_profile_ref(name, new_key)
     return rewritten
 
 

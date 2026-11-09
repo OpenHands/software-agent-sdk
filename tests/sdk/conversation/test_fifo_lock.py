@@ -101,35 +101,45 @@ def test_fifo_lock_timeout():
     lock.release()
 
 
+def _wait_for_waiter_count(lock: FIFOLock, expected: int) -> None:
+    """Block until ``expected`` threads are queued on ``lock``.
+
+    Signalling threads with fixed sleeps races the OS scheduler: a signalled
+    thread may not call ``acquire()`` before the next one is signalled, so the
+    enqueue order stops matching the signal order on loaded machines. Polling
+    the queue makes the enqueue order deterministic instead.
+    """
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with lock._mutex:
+            if len(lock._waiters) >= expected:
+                return
+        time.sleep(0.0005)
+    raise AssertionError(f"Timed out waiting for {expected} queued threads")
+
+
 def test_fifo_lock_fairness():
     """Test that lock provides FIFO ordering."""
     lock = FIFOLock()
     acquisition_order = deque()
     threads = []
 
-    # Create individual events for each thread to ensure deterministic ordering
-    thread_events = [threading.Event() for _ in range(10)]
-
-    def worker(thread_id: int, my_event: threading.Event):
-        # Wait for signal to proceed
-        my_event.wait()
+    def worker(thread_id: int):
         with lock:
             acquisition_order.append(thread_id)
-            time.sleep(0.001)  # Brief hold to ensure ordering is visible
 
-    # Create threads in order
-    for i in range(10):
-        thread = threading.Thread(target=worker, args=(i, thread_events[i]))
-        threads.append(thread)
-
-    # Start all threads
-    for thread in threads:
-        thread.start()
-
-    # Signal threads to proceed in exact order with small delays
-    for i in range(10):
-        thread_events[i].set()
-        time.sleep(0.002)  # Small delay to ensure deterministic ordering
+    # Hold the lock so every worker must queue instead of acquiring at once.
+    lock.acquire()
+    try:
+        for i in range(10):
+            thread = threading.Thread(target=worker, args=(i,))
+            threads.append(thread)
+            thread.start()
+            # Start the next worker only once this one is actually queued,
+            # so the queue order is exactly the creation order.
+            _wait_for_waiter_count(lock, i + 1)
+    finally:
+        lock.release()
 
     # Wait for all to complete
     for thread in threads:

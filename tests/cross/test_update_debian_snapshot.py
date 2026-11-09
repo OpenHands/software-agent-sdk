@@ -60,7 +60,7 @@ def test_update_dockerfile_rejects_missing_pin(tmp_path: Path) -> None:
 
 def test_workflow_builds_and_scans_before_opening_pr() -> None:
     workflow = (
-        REPO_ROOT / ".github" / "workflows" / "update-debian-snapshot.yml"
+        REPO_ROOT / ".github" / "workflows" / "update-version-pins.yml"
     ).read_text()
 
     build = workflow.index("- name: Build binary-minimal")

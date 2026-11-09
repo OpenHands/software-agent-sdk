@@ -5,12 +5,19 @@ from tenacity import (
     RetryCallState,
     retry,
     retry_base,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
+from tenacity.stop import stop_base
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions.classifier import (
+    is_quota_exhaustion_error,
+    is_transient_http_error,
+)
+from openhands.sdk.llm.utils.retry_after import retry_after_seconds
 from openhands.sdk.logger import get_logger
 
 
@@ -18,6 +25,25 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
+
+
+def transient_error_condition(
+    exception_types: tuple[type[BaseException], ...],
+) -> retry_base:
+    """Retry ``exception_types`` and transient HTTP errors, never quota exhaustion."""
+    return (
+        retry_if_exception_type(exception_types)
+        | retry_if_exception(is_transient_http_error)
+    ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
+
+
+class _StopBeforeLongWait(stop_base):
+    def __init__(self, max_wait: float):
+        self.max_wait = max_wait
+
+    def __call__(self, retry_state: RetryCallState) -> bool:
+        error = retry_state.outcome.exception() if retry_state.outcome else None
+        return retry_after_seconds(error) > self.max_wait
 
 
 class RetryMixin:
@@ -102,16 +128,22 @@ class RetryMixin:
             else retry_exceptions
         )
 
+        exponential_wait = wait_exponential(
+            multiplier=retry_multiplier, min=retry_min_wait, max=retry_max_wait
+        )
+
+        def wait(retry_state: RetryCallState) -> float:
+            error = retry_state.outcome.exception() if retry_state.outcome else None
+            return max(exponential_wait(retry_state), retry_after_seconds(error))
+
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=stop_after_attempt(num_retries),
+            stop=(
+                stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
+            ),
             reraise=True,
             retry=retry_condition,
-            wait=wait_exponential(
-                multiplier=retry_multiplier,
-                min=retry_min_wait,
-                max=retry_max_wait,
-            ),
+            wait=wait,
         )
         return retry_decorator
 

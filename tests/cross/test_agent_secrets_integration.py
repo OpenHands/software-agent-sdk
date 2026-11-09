@@ -25,6 +25,41 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+class MySecretSource(SecretSource):
+    def get_value(self):
+        return "dynamic-token-123"
+
+
+class MyFailingSecretSource(SecretSource):
+    def get_value(self):
+        raise ValueError("Secret retrieval failed")
+
+
+class MyDynamicSecretSource(SecretSource):
+    def get_value(self):
+        return "dynamic-secret"
+
+
+class MyChangingDynamicSecretSource(SecretSource):
+    counter: int = 0
+
+    def get_value(self):
+        self.counter += 1
+        return f"changing-secret-{self.counter}"
+
+
+class MyChangingFailingDynamicSecretSource(SecretSource):
+    counter: int = 0
+    raised_on_second: bool = False
+
+    def get_value(self):
+        self.counter += 1
+        if self.counter == 1:
+            return f"changing-secret-{self.counter}"
+        self.raised_on_second = True
+        raise Exception("Blip occured, failed to refresh token")
+
+
 # -----------------------
 # Fixtures
 # -----------------------
@@ -102,11 +137,6 @@ def test_agent_env_provider_with_callable_secrets(
 ):
     """Test that conversation secrets work with callable secrets."""
 
-    # Add callable secrets
-    class MySecretSource(SecretSource):
-        def get_value(self):
-            return "dynamic-token-123"
-
     conversation.update_secrets(
         {
             "STATIC_KEY": "static-value",
@@ -125,11 +155,6 @@ def test_agent_env_provider_handles_exceptions(
     conversation: LocalConversation, terminal_executor: TerminalExecutor
 ):
     """Test that conversation secrets handle exceptions gracefully."""
-
-    # Add a failing callable secret
-    class MyFailingSecretSource(SecretSource):
-        def get_value(self):
-            raise ValueError("Secret retrieval failed")
 
     conversation.update_secrets(
         {
@@ -308,10 +333,6 @@ def test_mask_secrets(
 ):
     """Test that bash executor masks secrets when conversation is passed."""
 
-    class MyDynamicSecretSource(SecretSource):
-        def get_value(self):
-            return "dynamic-secret"
-
     # Add secrets to conversation
     conversation.update_secrets(
         {
@@ -338,13 +359,6 @@ def test_mask_secrets(
 def test_mask_changing_secrets(
     conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
-    class MyChangingDynamicSecretSource(SecretSource):
-        counter: int = 0
-
-        def get_value(self):
-            self.counter += 1
-            return f"changing-secret-{self.counter}"
-
     conversation.update_secrets(
         {
             "DB_PASSWORD": MyChangingDynamicSecretSource(),
@@ -369,18 +383,6 @@ def test_mask_changing_secrets(
 def test_masking_persists(
     conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
-    class MyChangingFailingDynamicSecretSource(SecretSource):
-        counter: int = 0
-        raised_on_second: bool = False
-
-        def get_value(self):
-            self.counter += 1
-            if self.counter == 1:
-                return f"changing-secret-{self.counter}"
-            else:
-                self.raised_on_second = True
-                raise Exception("Blip occured, failed to refresh token")
-
     dynamic_secret = MyChangingFailingDynamicSecretSource()
     conversation.update_secrets(
         {

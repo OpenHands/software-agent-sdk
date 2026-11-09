@@ -213,6 +213,60 @@ class TestChromiumDetection:
             result = executor.check_chromium_available()
             assert result == str(mock_chrome_path)
 
+    def test_check_chromium_available_playwright_browsers_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Chromium installed only under $PLAYWRIGHT_BROWSERS_PATH is found."""
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+        browsers = tmp_path / "pw-browsers"
+        chrome = browsers / "chromium-1234" / "chrome-linux" / "chrome"
+        chrome.parent.mkdir(parents=True)
+        chrome.touch()
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+
+        with (
+            patch("openhands.tools.browser_use.impl.sys.platform", "linux"),
+            patch(
+                "openhands.tools.browser_use.impl._standard_chromium_paths",
+                return_value=[],
+            ),
+            patch("shutil.which", return_value=None),
+            patch("pathlib.Path.home", return_value=tmp_path / "home"),
+        ):
+            assert executor.check_chromium_available() == str(chrome)
+
+    def test_check_chromium_available_playwright_browsers_path_hermetic(
+        self, tmp_path, monkeypatch
+    ):
+        """PLAYWRIGHT_BROWSERS_PATH=0 is not a directory; default cache is used."""
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "0" / "chromium-1" / "chrome-linux").mkdir(parents=True)
+        (tmp_path / "0" / "chromium-1" / "chrome-linux" / "chrome").touch()
+        chrome = (
+            tmp_path
+            / "home"
+            / ".cache"
+            / "ms-playwright"
+            / "chromium-1234"
+            / "chrome-linux"
+            / "chrome"
+        )
+        chrome.parent.mkdir(parents=True)
+        chrome.touch()
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+
+        with (
+            patch("openhands.tools.browser_use.impl.sys.platform", "linux"),
+            patch(
+                "openhands.tools.browser_use.impl._standard_chromium_paths",
+                return_value=[],
+            ),
+            patch("shutil.which", return_value=None),
+            patch("pathlib.Path.home", return_value=tmp_path / "home"),
+        ):
+            assert executor.check_chromium_available() == str(chrome)
+
     def test_check_chromium_available_not_found(self):
         """Test when no Chromium binary is found."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)

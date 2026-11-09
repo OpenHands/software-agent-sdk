@@ -35,6 +35,17 @@ def test_default_store_honors_oh_persistence_dir(
     assert store.base_dir == tmp_path / "meta-profiles"
 
 
+def test_default_store_expands_user_in_oh_persistence_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", "~/state")
+
+    store = MetaProfileStore()
+
+    assert store.base_dir == tmp_path / "state" / "meta-profiles"
+
+
 def test_load_valid_meta_profile(tmp_path: Path) -> None:
     _write(tmp_path, "balanced", VALID)
     store = MetaProfileStore(base_dir=tmp_path)

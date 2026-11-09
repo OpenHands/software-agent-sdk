@@ -21,7 +21,7 @@ const ohBase: OpenHandsAgentProfile = {
   llm_profile_ref: 'gpt-4o',
   mcp_server_refs: null,
   agent: 'CodeActAgent',
-  skills: [],
+  disabled_skills: [],
   system_message_suffix: null,
   condenser: {},
   verification: baseVerification,

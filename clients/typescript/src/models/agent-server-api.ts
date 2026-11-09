@@ -44,6 +44,10 @@ export interface AgentServerCanvasBackendRevisionRequest {
   revision: string;
 }
 
+export interface AgentServerCanvasBackendSecretGrantRequest extends AgentServerCanvasBackendRevisionRequest {
+  secret_refs: string[];
+}
+
 export type AgentServerCanvasBackendState =
   'missing' | 'stopped' | 'starting' | 'ready' | 'unhealthy' | 'unsupported';
 
@@ -52,6 +56,8 @@ export interface AgentServerCanvasBackendStatus {
   state: AgentServerCanvasBackendState;
   revision?: string | null;
   prepared_revision?: string | null;
+  secret_refs?: string[];
+  secret_grant_revision?: string | null;
   pid?: number | null;
   port?: number | null;
   detail?: string | null;

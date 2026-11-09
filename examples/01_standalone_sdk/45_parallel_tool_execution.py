@@ -22,9 +22,8 @@ from openhands.sdk import (
     register_agent,
 )
 from openhands.sdk.context import Skill
-from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.task import TaskToolSet
+from openhands.tools.task import DelegationVisualizer, TaskToolSet
 from openhands.tools.terminal import TerminalTool
 
 

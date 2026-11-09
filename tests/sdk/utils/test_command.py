@@ -22,6 +22,10 @@ def test_sanitized_env_strips_sensitive_credentials():
         "OH_SECRET_KEY": "cipher-secret",
         "OH_SESSION_API_KEYS_0": "v1-session-0",
         "OH_SESSION_API_KEYS_1": "v1-session-1",
+        "LMNR_PROJECT_API_KEY": "laminar-key",
+        "OTEL_HEADERS": "legacy-headers",
+        "OTEL_EXPORTER_OTLP_HEADERS": "otlp-headers",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "trace-headers",
         "OH_WEB_URL": "https://example.test",
         "FOO": "bar",
     }
@@ -30,6 +34,13 @@ def test_sanitized_env_strips_sensitive_credentials():
     assert "OH_SECRET_KEY" not in result
     assert "OH_SESSION_API_KEYS_0" not in result
     assert "OH_SESSION_API_KEYS_1" not in result
+    for key in (
+        "LMNR_PROJECT_API_KEY",
+        "OTEL_HEADERS",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    ):
+        assert key not in result
     # Non-sensitive vars (including other OH_* config) are preserved.
     assert result["OH_WEB_URL"] == "https://example.test"
     assert result["FOO"] == "bar"

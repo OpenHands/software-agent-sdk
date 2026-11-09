@@ -17,6 +17,7 @@ from pydantic.json_schema import SkipJsonSchema
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
+from openhands.sdk.event.types import UnmaskedID
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -75,7 +76,7 @@ class TaskAction(Action):
 class TaskObservation(Observation):
     """Observation from a task execution."""
 
-    task_id: str = Field(description="The unique identifier of the task.")
+    task_id: UnmaskedID = Field(description="The unique identifier of the task.")
     subagent: str = Field(description="The subagent of the task.")
     status: str = Field(description="The status of the task.")
 
@@ -244,8 +245,9 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 confirmation policy requires user approval.  Receives
                 `(task_id, pending_actions)` and must return `True` to
                 approve or `False` to reject.
-            sub_agent_scope: Which of this agent's capabilities the sub-agents
-                it offers and starts must stay within.
+            sub_agent_scope: Whether the sub-agents it offers and starts must
+                stay within this agent's tools. Sub-agents always inherit this
+                agent's MCP servers.
 
         Returns:
             List containing a single TaskTool.
@@ -264,8 +266,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             agent_types_info = get_factory_info(lambda d: d.name in registered)
         else:
             agent_types_info = (
-                "- None: every registered agent uses tools or MCP servers "
-                "this agent does not have."
+                "- None: every registered agent uses tools this agent does not have."
             )
 
         task_tool_examples = "\n".join(

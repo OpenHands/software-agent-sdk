@@ -62,6 +62,15 @@ def _has_missing_node(program: ShellProgram) -> bool:
         ("FOO=bar echo $FOO", "echo", ("$FOO",), ("FOO=bar",)),
         ("echo hi > /tmp/out", "echo", ("hi",), ()),
         ("dd if=/tmp/in of=/dev/sda", "dd", ("if=/tmp/in", "of=/dev/sda"), ()),
+        ("dd 2>/dev/null of=/dev/sda", "dd", ("of=/dev/sda",), ()),
+        ("rm 2>/dev/null -rf /", "rm", ("-rf", "/"), ()),
+        (
+            'bash 3<<"EOF" -c "echo ok"\ninput\nEOF',
+            "bash",
+            ("-c", '"echo ok"'),
+            (),
+        ),
+        ('bash 3<<< "input" 0<&3', "bash", (), ()),
     ],
 )
 def test_command_views(

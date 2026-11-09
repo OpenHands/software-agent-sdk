@@ -54,13 +54,20 @@ _COMMIT_QUERY_DESCRIPTION = (
 _SHA_PATTERN = r"^[0-9a-fA-F]{4,64}$"
 
 
+def _repo_path(path: str) -> Path:
+    """Reject an empty path, which Path() would turn into the server's own cwd."""
+    if not path:
+        raise HTTPException(status_code=400, detail="'path' must not be empty")
+    return Path(path)
+
+
 async def _get_git_changes(path: str, ref: str | None) -> list[GitChange]:
     """Internal helper to get git changes for a given path."""
     update_last_execution_time()
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_git_changes, Path(path), ref=ref)
+            None, functools.partial(get_git_changes, _repo_path(path), ref=ref)
         )
     except GitRepositoryError:
         # A non-repo workspace has no git changes to report; respond with an
@@ -75,7 +82,7 @@ async def _get_git_diff(path: str, ref: str | None) -> GitDiff:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_git_diff, Path(path), ref=ref)
+            None, functools.partial(get_git_diff, _repo_path(path), ref=ref)
         )
     except GitRepositoryError:
         # Only collapse the not-a-repo case to an empty diff; file-level
@@ -91,7 +98,7 @@ async def _get_git_commits(path: str, limit: int) -> GitCommitsPage:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_git_commits, Path(path), limit=limit)
+            None, functools.partial(get_git_commits, _repo_path(path), limit=limit)
         )
     except GitRepositoryError:
         # A non-repo workspace has no commits to report; respond with an
@@ -106,7 +113,7 @@ async def _get_commit_changes(path: str, sha: str) -> list[GitChange]:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_commit_changes, Path(path), sha)
+            None, functools.partial(get_commit_changes, _repo_path(path), sha)
         )
     except GitRepositoryError:
         logger.debug("Path %s is not a git repository; returning no changes", path)
@@ -119,7 +126,7 @@ async def _get_commit_file_diff(path: str, commit: str) -> GitDiff:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_commit_file_diff, Path(path), commit)
+            None, functools.partial(get_commit_file_diff, _repo_path(path), commit)
         )
     except GitRepositoryError:
         logger.debug("Path %s is not in a git repository; returning empty diff", path)

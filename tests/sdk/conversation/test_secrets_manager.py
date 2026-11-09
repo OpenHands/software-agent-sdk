@@ -384,6 +384,16 @@ def test_mask_secrets_in_output_ignores_empty_value():
     assert secret_registry.mask_secrets_in_output("hello") == "hello"
 
 
+def test_mask_secrets_in_output_masks_the_longest_overlapping_value():
+    """Same contract as compile_stream_mask: no fragment of a secret survives."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"SHORT": "abc", "LONG": "abc123"})
+
+    assert secret_registry.mask_secrets_in_output("leak: abc123") == (
+        "leak: <secret-hidden>"
+    )
+
+
 def test_mask_secrets_without_name_reference_in_command():
     """A secret value is masked even if no command ever referenced its name."""
     token = "github_pat_REALSECRETVALUE123"

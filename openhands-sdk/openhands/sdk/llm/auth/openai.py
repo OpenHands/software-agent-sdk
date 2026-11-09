@@ -33,6 +33,9 @@ from openhands.sdk.llm.auth.credentials import (
     OAuthCredentials,
     get_credentials_dir,
 )
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -975,10 +978,7 @@ def subscription_login(
 # Message transformation utilities for subscription mode
 # =========================================================================
 
-DEFAULT_SYSTEM_MESSAGE = (
-    "You are OpenHands agent, a helpful AI assistant that can interact "
-    "with a computer to solve tasks."
-)
+DEFAULT_SYSTEM_MESSAGE = OPENHANDS_SYSTEM_IDENTITY
 
 
 def inject_system_prefix(

@@ -20,8 +20,7 @@ from openhands.sdk import (
 from openhands.sdk.context import Skill
 from openhands.sdk.subagent import register_agent
 from openhands.tools import register_builtins_agents
-from openhands.tools.delegate import DelegationVisualizer
-from openhands.tools.task import TaskToolSet
+from openhands.tools.task import DelegationVisualizer, TaskToolSet
 
 
 logger = get_logger(__name__)

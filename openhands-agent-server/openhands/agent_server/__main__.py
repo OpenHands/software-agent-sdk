@@ -27,25 +27,47 @@ _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})
 _LOOPBACK_HOST = "127.0.0.1"
 
 
-def _auth_enabled() -> bool:
-    """Return True when at least one session API key is configured.
+def _load_server_config():
+    """Resolve the effective agent-server config, or ``None`` if it fails.
 
-    Keys may come from the ``SESSION_API_KEY`` / ``OH_SESSION_API_KEYS_0``
-    environment variables or from the agent-server config file, so we resolve
-    the effective config rather than checking a single source.
+    Settings may come from environment variables or from the agent-server
+    config file, so we resolve the effective config rather than checking a
+    single source.
     """
     from openhands.agent_server.config import load_config
 
     try:
-        config = load_config()
+        return load_config()
     except Exception:
         logger.warning(
-            "Failed to load agent-server config while resolving default bind "
-            "host; assuming no session API key is configured.",
+            "Failed to load agent-server config while resolving server "
+            "startup options; using safe defaults.",
             exc_info=True,
         )
-        return False
-    return bool(config.session_api_keys)
+        return None
+
+
+def _auth_enabled() -> bool:
+    """Return True when at least one session API key is configured.
+
+    Keys may come from the ``SESSION_API_KEY`` / ``OH_SESSION_API_KEYS_0``
+    environment variables or from the agent-server config file.
+    """
+    config = _load_server_config()
+    return bool(config and config.session_api_keys)
+
+
+def _trust_forwarded_headers() -> bool:
+    """Return True when the operator opted into trusting forwarded headers.
+
+    uvicorn's ``proxy_headers`` rewrites the request scheme and client address
+    from ``X-Forwarded-Proto``/``X-Forwarded-For`` sent by any peer in
+    ``FORWARDED_ALLOW_IPS`` (loopback by default). Tying it to
+    ``trust_forwarded_headers`` keeps a client from changing the origin the
+    server derives while that setting is off.
+    """
+    config = _load_server_config()
+    return bool(config and config.trust_forwarded_headers)
 
 
 def _get_internal_server_url(host: str, port: int) -> str:
@@ -323,6 +345,7 @@ def main() -> None:
         log_level=log_level,
         log_config=LOGGING_CONFIG,
         ws="wsproto",  # Use wsproto instead of deprecated websockets implementation
+        proxy_headers=_trust_forwarded_headers(),
     )
 
     # Use custom LoggingServer to capture signal handling events

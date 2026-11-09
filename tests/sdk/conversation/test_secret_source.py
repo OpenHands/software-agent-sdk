@@ -29,6 +29,8 @@ def test_lookup_secret_serialization_default(lookup_secret):
     expected = {
         "kind": "LookupSecret",
         "description": None,
+        "scope": None,
+        "scope_description": None,
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "**********",
@@ -47,6 +49,8 @@ def test_lookup_secret_serialization_expose_secrets(lookup_secret):
     expected = {
         "kind": "LookupSecret",
         "description": None,
+        "scope": None,
+        "scope_description": None,
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "Bearer Token",
@@ -377,3 +381,45 @@ def test_unregister_local_secret_resolver(local_resolvers_cleared):
 
     unregister_local_secret_resolver(resolver)
     assert local_resolvers_cleared == []
+
+
+def test_static_secret_scope_round_trip():
+    """scope and scope_description survive serialize/deserialize round-trips."""
+    secret = StaticSecret(
+        value=SecretStr("v"),
+        description="GitHub token",
+        scope="personal",
+        scope_description="The user's own credentials.",
+    )
+    dumped = secret.model_dump(mode="json", context={"expose_secrets": True})
+    assert dumped["scope"] == "personal"
+    assert dumped["scope_description"] == "The user's own credentials."
+    restored = StaticSecret.model_validate(dumped)
+    assert restored.scope == "personal"
+    assert restored.scope_description == "The user's own credentials."
+
+
+def test_lookup_secret_scope_round_trip():
+    """scope and scope_description survive on LookupSecret too."""
+    secret = LookupSecret(
+        url="https://example.com/secret",
+        description="A lookup secret",
+        scope="organization",
+        scope_description="Shared service-account credentials.",
+    )
+    dumped = secret.model_dump(mode="json")
+    restored = LookupSecret.model_validate(dumped)
+    assert restored.scope == "organization"
+    assert restored.scope_description == "Shared service-account credentials."
+
+
+def test_secret_source_omits_scope_by_default():
+    """Existing payloads that omit both fields still validate."""
+    payload = {
+        "kind": "StaticSecret",
+        "value": "v",
+        "description": "desc",
+    }
+    restored = StaticSecret.model_validate(payload)
+    assert restored.scope is None
+    assert restored.scope_description is None

@@ -625,3 +625,20 @@ def test_finished_preserved_even_when_over_budget(tmp_path):
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
     error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
     assert not any(e.code == "MaxBudgetReached" for e in error_events)
+
+
+def test_agent_mark_conversation_finished(tmp_path):
+    """Agent._mark_conversation_finished directly sets FINISHED status."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+
+    llm = TestLLM.from_messages([])
+    agent = Agent(llm=llm, tools=[])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+
+    Agent._mark_conversation_finished(conversation.state)
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
