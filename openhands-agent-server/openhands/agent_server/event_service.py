@@ -37,7 +37,10 @@ from openhands.sdk.agent.acp_file_credentials import (
 )
 from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import (
+    UNREADABLE_EVENT_FILE_CODE,
+    EventLog,
+)
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
@@ -603,7 +606,7 @@ class EventService:
 
     def _get_searchable_event(self, events: EventsListBase, index: int) -> Event | None:
         try:
-            return events[index]
+            event = events[index]
         except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
             logger.warning(
                 "Skipping unreadable event at index %d for conversation %s (%s)",
@@ -612,6 +615,12 @@ class EventService:
                 type(exc).__name__,
             )
             return None
+        if (
+            isinstance(event, ConversationErrorEvent)
+            and event.code == UNREADABLE_EVENT_FILE_CODE
+        ):
+            return None  # the log's stand-in for a damaged file
+        return event
 
     def _search_events_sync(
         self,
