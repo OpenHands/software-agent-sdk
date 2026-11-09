@@ -937,11 +937,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
 @asynccontextmanager
 async def _conversation_mcp_lifespan(app: FastAPI) -> AsyncIterator[None]:
     mcp_app = app.state.conversation_mcp_app
-    async with (
-        app.state.conversation_mcp_client,
-        mcp_app.lifespan(mcp_app),
-        api_lifespan(app),
-    ):
+    async with mcp_app.lifespan(mcp_app), api_lifespan(app):
         yield
 
 
@@ -963,10 +959,9 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)
-    mcp, mcp_app, mcp_client = create_conversation_mcp(app)
+    mcp, mcp_app = create_conversation_mcp(app)
     app.state.conversation_mcp = mcp
     app.state.conversation_mcp_app = mcp_app
-    app.state.conversation_mcp_client = mcp_client
     app.mount("/mcp", mcp_app)
     app.router.lifespan_context = _conversation_mcp_lifespan
     _setup_static_files(app, config)

@@ -1,10 +1,13 @@
 """Expose selected conversation REST operations through MCP."""
 
+import re
 from contextvars import ContextVar
 
 import httpx2
 from fastapi import FastAPI
 from fastmcp import FastMCP
+from fastmcp.server.providers.openapi import MCPType, RouteMap
+from fastmcp.utilities.openapi import HttpMethod
 from starlette.datastructures import Headers
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
@@ -16,10 +19,10 @@ from openhands.agent_server.config import Config
 _session_api_key: ContextVar[str | None] = ContextVar(
     "mcp_session_api_key", default=None
 )
-_REST_TOOLS = (
-    ("/api/conversations", "post", "start_conversation"),
-    ("/api/conversations/{conversation_id}", "get", "get_conversation"),
-    ("/api/conversations/{conversation_id}/events", "post", "send_message"),
+_REST_TOOLS: tuple[tuple[str, HttpMethod, str], ...] = (
+    ("/api/conversations", "POST", "start_conversation"),
+    ("/api/conversations/{conversation_id}", "GET", "get_conversation"),
+    ("/api/conversations/{conversation_id}/events", "POST", "send_message"),
 )
 
 
@@ -52,33 +55,33 @@ class LocalSessionAuth:
             _session_api_key.reset(token)
 
 
-def create_conversation_mcp(
-    parent: FastAPI,
-) -> tuple[FastMCP, ASGIApp, httpx2.AsyncClient]:
+def create_conversation_mcp(parent: FastAPI) -> tuple[FastMCP, ASGIApp]:
     """Convert only the chosen REST operations, retaining their schemas and behavior."""
-    openapi = parent.openapi().copy()
-    routes = openapi["paths"]
-    openapi["paths"] = {
-        path: {method: routes[path][method]} for path, method, _ in _REST_TOOLS
-    }
+    paths = parent.openapi()["paths"]
     names = {
-        routes[path][method]["operationId"]: name for path, method, name in _REST_TOOLS
+        paths[path][method.lower()]["operationId"]: name
+        for path, method, name in _REST_TOOLS
     }
+    route_maps = [
+        RouteMap(
+            methods=[method],
+            pattern=rf"^{re.escape(path)}$",
+            mcp_type=MCPType.TOOL,
+        )
+        for path, method, _ in _REST_TOOLS
+    ]
+    route_maps.append(RouteMap(mcp_type=MCPType.EXCLUDE))
 
     async def forward_session_key(request: httpx2.Request) -> None:
         if key := _session_api_key.get():
             request.headers["X-Session-API-Key"] = key
 
-    client = httpx2.AsyncClient(
-        base_url="http://localhost",
-        transport=httpx2.ASGITransport(app=parent),
-        event_hooks={"request": [forward_session_key]},
-    )
-    mcp = FastMCP.from_openapi(
-        openapi_spec=openapi,
-        client=client,
+    mcp = FastMCP.from_fastapi(
+        app=parent,
         name="OpenHands",
+        route_maps=route_maps,
         mcp_names=names,
+        httpx_client_kwargs={"event_hooks": {"request": [forward_session_key]}},
         mask_error_details=True,
     )
     app = mcp.http_app(
@@ -87,4 +90,4 @@ def create_conversation_mcp(
         json_response=True,
         middleware=[Middleware(LocalSessionAuth, parent=parent)],
     )
-    return mcp, app, client
+    return mcp, app
