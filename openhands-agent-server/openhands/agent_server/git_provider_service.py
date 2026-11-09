@@ -1,12 +1,13 @@
 """Remote git provider repository discovery for Agent Server."""
 
 import re
-from typing import Final
+from typing import Final, Literal
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.models import GitPullRequestStatus
 from openhands.agent_server.persistence import get_secrets_store
 from openhands.sdk.git.models import GitProviderRepository, GitProviderRepositoryPage
 from openhands.sdk.logger import get_logger
@@ -43,6 +44,10 @@ class UnsupportedGitProviderError(GitProviderRepositorySearchError):
     """Raised when repository discovery does not support a provider yet."""
 
 
+class MissingGitProviderTokenError(GitProviderRepositorySearchError):
+    """Raised when no token is configured for the provider."""
+
+
 class GitProviderAPIError(GitProviderRepositorySearchError):
     """Raised when a provider API request fails."""
 
@@ -77,6 +82,115 @@ async def search_provider_repositories(
         limit=limit,
         page_id=page_id,
     )
+
+
+_FAILED_CHECK_CONCLUSIONS: Final[frozenset[str]] = frozenset(
+    {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
+)
+_CHECK_RUNS_PAGE_SIZE: Final[int] = 100
+
+
+async def get_provider_pull_request(
+    config: Config,
+    provider: GitProvider,
+    owner: str,
+    repo: str,
+    number: int,
+) -> GitPullRequestStatus:
+    """Read one pull request's state and the combined CI result of its head."""
+    if provider != GitProvider.GITHUB:
+        raise UnsupportedGitProviderError(
+            f"Pull requests are not supported for provider '{provider.value}'"
+        )
+    token = _resolve_provider_token(config, provider)
+    if token is None:
+        raise MissingGitProviderTokenError(f"No {provider.value} token is configured")
+
+    headers = {
+        "Accept": _GITHUB_ACCEPT_HEADER,
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": _GITHUB_API_VERSION,
+    }
+    base = f"/repos/{owner}/{repo}"
+    async with httpx.AsyncClient(
+        base_url=_GITHUB_API_URL,
+        headers=headers,
+        timeout=_GITHUB_REQUEST_TIMEOUT_SECS,
+    ) as client:
+        pr = (await _github_get(client, f"{base}/pulls/{number}")).json()
+        head_sha = str((pr.get("head") or {}).get("sha", ""))
+        checks = "none"
+        if head_sha:
+            runs = (
+                await _github_get(
+                    client,
+                    f"{base}/commits/{head_sha}/check-runs",
+                    params={"per_page": _CHECK_RUNS_PAGE_SIZE},
+                )
+            ).json()
+            status = (
+                await _github_get(client, f"{base}/commits/{head_sha}/status")
+            ).json()
+            checks = _combine_checks(
+                runs.get("check_runs") or [], status.get("statuses") or []
+            )
+
+    if pr.get("merged") or pr.get("merged_at"):
+        state = "merged"
+    elif pr.get("state") == "closed":
+        state = "closed"
+    else:
+        state = "open"
+    return GitPullRequestStatus(
+        state=state,
+        draft=bool(pr.get("draft", False)),
+        title=str(pr.get("title", "")),
+        url=str(pr.get("html_url", "")),
+        checks=checks,
+    )
+
+
+def _combine_checks(
+    check_runs: list[dict[str, object]], statuses: list[dict[str, object]]
+) -> Literal["success", "failure", "pending", "none"]:
+    """Fold check runs and commit statuses into one badge: failure wins."""
+    if not check_runs and not statuses:
+        return "none"
+    pending = False
+    for run in check_runs:
+        if run.get("status") != "completed":
+            pending = True
+        elif run.get("conclusion") in _FAILED_CHECK_CONCLUSIONS:
+            return "failure"
+    for item in statuses:
+        state = item.get("state")
+        if state in {"failure", "error"}:
+            return "failure"
+        if state == "pending":
+            pending = True
+    return "pending" if pending else "success"
+
+
+async def _github_get(
+    client: httpx.AsyncClient,
+    path: str,
+    params: dict[str, str | int] | None = None,
+) -> httpx.Response:
+    try:
+        response = await client.get(path, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code
+        logger.warning("GitHub request failed: status=%s", status_code)
+        mapped = 404 if status_code == 404 else _map_github_status_code(status_code)
+        raise GitProviderAPIError("GitHub request failed", status_code=mapped) from e
+    except httpx.TimeoutException as e:
+        logger.warning("GitHub request timed out")
+        raise GitProviderAPIError("GitHub request timed out", status_code=504) from e
+    except httpx.HTTPError as e:
+        logger.warning("GitHub request failed: %s", type(e).__name__)
+        raise GitProviderAPIError("GitHub request failed") from e
+    return response
 
 
 def _resolve_provider_token(config: Config, provider: GitProvider) -> str | None:
