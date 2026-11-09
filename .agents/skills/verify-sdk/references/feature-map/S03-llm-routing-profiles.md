@@ -75,7 +75,7 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
     --check first_run.secondary_in_registry eq true --check first_run.usage_ids contains secondary \
     --check first_run.secondary_cost eq 0.14 --check first_run.combined_cost eq 0.42
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): an LLM added to `conversation.llm_registry` before the first `send_message` never reaches `conversation_stats`. The conversation subscribes the stats to its registry only when it initializes the agent (on the first message), and `subscribe` does not replay LLMs already registered, so `secondary` sits in the registry while `usage_to_metrics` has only `agent`, and its 0.14 is missing from the combined cost (0.28).
+  Known failure (reproduced 2026-10-13, still failing 2026-11-09, [#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)): an LLM added to `conversation.llm_registry` before the first `send_message` never reaches `conversation_stats`. The conversation subscribes the stats to its registry only when it initializes the agent (on the first message), and `subscribe` does not replay LLMs already registered, so `secondary` sits in the registry while `usage_to_metrics` has only `agent`, and its 0.14 is missing from the combined cost (0.28).
 - **Every LLM the agent reaches is registered (`S03.agent-llm-discovery`).** An agent whose LLM is a `MultimodalRouter` and whose condenser has its own LLM; then an agent and condenser that share a `usage_id`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

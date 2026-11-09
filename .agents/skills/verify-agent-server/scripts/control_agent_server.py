@@ -2561,7 +2561,7 @@ def fixture_mcp_server(run: Run, name: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / f"{name}.py"
     script.write_text(
-        "from mcp.server.fastmcp import FastMCP\n\n"
+        "from fastmcp import FastMCP\n\n"
         f"mcp = FastMCP({name!r})\n\n\n"
         "@mcp.tool()\n"
         "def qa_echo(text: str) -> str:\n"

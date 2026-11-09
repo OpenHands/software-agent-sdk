@@ -483,24 +483,26 @@ Preconditions:
   endpoint received. The checks match each event's own property order, so
   they hold whether the two events arrive in one batch or two.
 - **Unhandled errors (`F32.telemetry-request-failed`).** A conversation
-  without a condenser makes `POST .../condense` raise an unhandled
-  `ValueError` (500; a known bug of the condense family, used here only as
-  a reliable unhandled exception). The header plays the browser's analytics
+  with the default summarizing condenser on an unreachable model makes
+  `POST .../condense` raise an unhandled `NoCondensationAvailableException`
+  (500, `Unable to compute forgotten events`; the same case as
+  `F10.condense-llm-failure`, used here only as a reliable unhandled
+  exception). The header plays the browser's analytics
   identity.
   ```sh
-  RFC=$(control-agent-server conversation start --body-json '{"agent_settings": {"agent_kind": "openhands", "llm": {"model": "openai/qa-placeholder", "api_key": "qa-placeholder", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "tools": [], "condenser": {"enabled": false}}}' --no-autotitle --no-run --prompt QA_F32_RF --print-id)
-  ERR=$(control-agent-server api POST "/api/conversations/$RFC/condense" --header 'X-OpenHands-Telemetry-Distinct-Id: qa-f32-browser' --expect 500 --field error_id)
+  RFC=$(control-agent-server conversation start --body-json '{"agent_settings": {"agent_kind": "openhands", "llm": {"model": "openai/qa-placeholder", "api_key": "qa-placeholder", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "tools": []}}' --no-autotitle --no-run --prompt QA_F32_RF --print-id)
+  ERR=$(control-agent-server api POST "/api/conversations/$RFC/condense" --header 'X-OpenHands-Telemetry-Distinct-Id: qa-f32-browser' --expect 500 --timeout 120 --field error_id)
   test -n "$ERR"
   control-agent-server sink read --name qa-f32-telemetry --contains "\"error_id\": \"$ERR\"" --expect-min 1 --expect-max 1 --wait 15 --save F32.telemetry-request-failed/event
   control-agent-server sink read --name qa-f32-telemetry --contains '"event": "agent_server.request_failed", "distinct_id": "qa-f32-browser"' --expect-min 1 --expect-max 1
-  control-agent-server sink read --name qa-f32-telemetry --contains '"route_template": "/api/conversations/{conversation_id}/condense", "method": "POST", "status_code": 500, "error_class": "ValueError"' --expect-min 1
+  control-agent-server sink read --name qa-f32-telemetry --contains '"route_template": "/api/conversations/{conversation_id}/condense", "method": "POST", "status_code": 500, "error_class": "openhands.sdk.context.condenser.base.NoCondensationAvailableException"' --expect-min 1
   control-agent-server sink read --name qa-f32-telemetry --contains "$RFC" --expect-max 0
-  control-agent-server logs --grep 'ValueError: Cannot condense' --expect-min 1
-  control-agent-server sink read --name qa-f32-telemetry --contains 'Cannot condense' --expect-max 0
+  control-agent-server logs --grep 'NoCondensationAvailableException: Unable to compute forgotten events' --expect-min 1
+  control-agent-server sink read --name qa-f32-telemetry --contains 'forgotten events' --expect-max 0
   ```
   One `request_failed` event carries the same `error_id` as the 500 body,
   the header's identity, the route template, method, status and
-  `ValueError`; neither the conversation id nor the exception text (which
+  `NoCondensationAvailableException`; neither the conversation id nor the exception text (which
   the server log shows) reached the endpoint. If the condense route stops answering 500, find another
   unhandled exception: an `HTTPException` 5xx is not reported.
 - **Token and cost buckets from real usage (`F32.telemetry-usage-buckets`).**
@@ -812,8 +814,8 @@ Preconditions:
 - `request_failed` is emitted only for unhandled exceptions; a route that
   raises `HTTPException(500)` (for example the workspaces registry on an
   unreadable file) is not reported. `F32.telemetry-request-failed` borrows
-  the condense route's unhandled `ValueError`, which is itself a known bug
-  of the condense family.
+  the condense route's unhandled `NoCondensationAvailableException` (the
+  summarizer failing against an unreachable model).
 - Not driven here: the `posthog` exporter (needs the `[posthog]` extra and a
   project key; without them it degrades to no-op with a log line).
 - `launch` adds loopback hosts to `NO_PROXY`; httpx honors `HTTP(S)_PROXY`,

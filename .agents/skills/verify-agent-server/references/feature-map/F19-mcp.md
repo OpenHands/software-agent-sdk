@@ -126,7 +126,7 @@ Preconditions:
   import sys
   import time
 
-  from mcp.server.fastmcp import FastMCP
+  from fastmcp import FastMCP
 
   if len(sys.argv) > 1:
       time.sleep(float(sys.argv[1]))

@@ -47,7 +47,7 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
 - `F28.unknown-name`: an unknown name is 404 on GET, PATCH, DELETE, bundle and icon, a non-kebab-case name is 422 on every route, and the routes need the session key.
 - `F28.list-discovery`: a valid app directory copied into `installed/` by hand is invisible to GET by name until a list call registers it (disabled, `source` `local`), and a list call prunes an entry whose directory was deleted.
 - `F28.broken-install`: an installed app whose manifest stops validating, or whose entrypoint becomes a symlink out of the package, stays listed with `manifest` null; its bundle and icon are 404 and its backend reports `missing`, while PATCH and DELETE still work. An icon that becomes a symlink out of the package is 404 while the manifest and bundle stay valid.
-- `F28.backend-status`: `GET .../backend` reports `missing` for an unknown name, `unsupported` for a browser-only app and `stopped` with a revision for a backend app (`sha256:<hex>` of the manifest for a local install, the commit SHA for a git install), never 404.
+- `F28.backend-status`: `GET .../backend` reports `missing` for an unknown name, `unsupported` for a browser-only app and `stopped` with a revision for a backend app (`sha256:<hex>` of the resolved ref, if any, plus the manifest, for local and git installs alike), never 404.
 - `F28.backend-approval-gate`: starting an unprepared revision, preparing a wrong revision, preparing a tampered archive, preparing an archive with an escaping member and preparing a remote (`url`) artifact that cannot be downloaded are all 409, and none of them writes an approval or extracts or keeps a file.
 - `F28.backend-prepare`: preparing the current revision verifies the checksum, extracts the artifact into a read-only `artifacts/<name>/<sha256>/` directory, records the approval (shown as `prepared_revision`), and is idempotent.
 - `F28.backend-start`: starting the prepared revision returns `ready` with a pid and port; the backend answers on `127.0.0.1:<port>`, runs in its own process group from the installed package directory with only `HOME=<data>/home` in its environment; a repeated start keeps the same pid, a different revision is 409, and a forced install or a data deletion is 409 while it runs.
@@ -247,6 +247,8 @@ Preconditions:
     --expect 200 --check name eq qa-backend --check resolved_ref eq "$BHEAD" --check enabled eq false \
     --check source eq "file://$BX" --save F28.install-git/install
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend --check resolved_ref eq "$BHEAD"
+  BREV=$(control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend \
+    --check revision matches '^sha256:[0-9a-f]{64}$' --field revision)
   control-agent-server state ls 'home/.openhands/cache/extensions/qa-backend-*/canvas-extension.json' --expect-count 1
   control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json \
     --check extensions.qa-backend.resolved_ref eq "$BHEAD"
@@ -465,6 +467,7 @@ Preconditions:
   DELETE still uninstalls it.
 - **Backend status (`F28.backend-status`).** Read the lifecycle state of a
   missing, a browser-only and a backend app.
+  Requires: `F28.install-git`
   ```sh
   control-agent-server api GET /api/canvas-extensions/installed/qa-ghost/backend --expect 200 --check state eq missing \
     --check revision eq null --check detail contains 'not installed' --save F28.backend-status/missing
@@ -472,23 +475,25 @@ Preconditions:
     --check revision matches '^sha256:[0-9a-f]{64}$' --check detail contains 'does not declare a backend' \
     --save F28.backend-status/unsupported
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --expect 200 --check state eq stopped \
-    --check revision eq "$BHEAD" --check prepared_revision eq null --check pid eq null --check port eq null \
+    --check revision eq "$BREV" --check prepared_revision eq null --check pid eq null --check port eq null \
     --save F28.backend-status/stopped
   ```
   `missing` (with `revision` null) for the unknown name, `unsupported` with a
   `sha256:` revision for the local browser-only install, and `stopped` with the
-  git commit as the revision for the `file://` install, nothing prepared.
+  `sha256:` revision (a digest of the git commit plus the manifest) for the
+  `file://` install, nothing prepared.
 - **Approval gate (`F28.backend-approval-gate`).** Try every shortcut around
   `prepare`.
+  Requires: `F28.install-git`
   ```sh
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 409 --check detail eq 'backend revision must be prepared before start' --save F28.backend-approval-gate/unprepared
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json '{"revision": "qa-wrong"}' \
     --expect 409 --check detail contains 'does not match installed revision'
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json '{}' --expect 422
   cp "$INST/qa-backend/backend/linux.tar.gz" "$F28FX/qa-backend.tar.gz.bak"
   printf x >> "$INST/qa-backend/backend/linux.tar.gz"
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BHEAD\"}" \
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BREV\"}" \
     --expect 409 --check detail eq 'backend artifact checksum does not match manifest' --save F28.backend-approval-gate/tampered
   cp "$F28FX/qa-backend.tar.gz.bak" "$INST/qa-backend/backend/linux.tar.gz"
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$F28FX/qa-f28-unsafe\"}" --expect 200 --quiet
@@ -516,18 +521,19 @@ Preconditions:
   remote app uninstalled afterwards, so the catalog counts below are
   unchanged.
 - **Prepare (`F28.backend-prepare`).** Approve the installed revision.
+  Requires: `F28.install-git`
   ```sh
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BHEAD\"}" \
-    --expect 200 --check state eq stopped --check prepared_revision eq "$BHEAD" --save F28.backend-prepare/prepare
-  control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check prepared_revision eq "$BHEAD"
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BREV\"}" \
+    --expect 200 --check state eq stopped --check prepared_revision eq "$BREV" --save F28.backend-prepare/prepare
+  control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check prepared_revision eq "$BREV"
   control-agent-server state cat home/.openhands/canvas-extensions/backends/approvals/qa-backend.json \
-    --check revision eq "$BHEAD" --check artifact_sha256 eq "$BSHA" --check platform matches '^linux-(amd64|arm64)$' \
+    --check revision eq "$BREV" --check artifact_sha256 eq "$BSHA" --check platform matches '^linux-(amd64|arm64)$' \
     --check artifact_dir eq "$BK/artifacts/qa-backend/$BSHA"
   control-agent-server state cat "home/.openhands/canvas-extensions/backends/artifacts/qa-backend/$BSHA/server.py" \
     --mode 555 --contains 'web.run_app' --max-chars 80
   test "$(stat -c %a "$BK/artifacts/qa-backend/$BSHA")" = 555
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BHEAD\"}" \
-    --expect 200 --check prepared_revision eq "$BHEAD" --expect-max-ms 3000
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BREV\"}" \
+    --expect 200 --check prepared_revision eq "$BREV" --expect-max-ms 3000
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/artifacts/**' --expect-count 1
   ```
   `prepared_revision` equals the revision in the response, the GET and
@@ -537,9 +543,9 @@ Preconditions:
 - **Start (`F28.backend-start`).** Start the prepared revision of the
   (still disabled) app and look at the process it runs.
 
-  Requires: `F28.install-local`
+  Requires: `F28.install-local`, `F28.install-git`
   ```sh
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --check pid exists --check port exists --check detail eq null \
     --save F28.backend-start/start
   BPID=$(control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check state eq ready --field pid)
@@ -551,10 +557,10 @@ Preconditions:
   test "$(ps -o pgid= -p "$BPID" | tr -d ' ')" = "$BPID"
   test "$(pgrep -f "$BK/artifacts/qa-backend/")" = "$BPID"
   test -d "$BK/data/qa-backend/home"
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --check pid eq "$BPID"
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json '{"revision": "qa-other"}' \
-    --expect 409 --check detail eq 'a different backend revision is already running'
+    --expect 409 --check detail eq 'approval revision does not match installed revision'
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$FX\", \"force\": true}" \
     --expect 409 --check detail contains 'Stop running Canvas App backends' --save F28.backend-start/force-blocked
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-backend/backend/data \
@@ -572,14 +578,14 @@ Preconditions:
   it runs. Starting does not require the app to be enabled.
 - **Stop (`F28.backend-stop`).** Stop the running backend twice.
 
-  Requires: `F28.backend-start`
+  Requires: `F28.backend-start`, `F28.install-git`
   ```sh
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/stop --expect 200 \
     --check state eq stopped --check pid eq null --check port eq null --expect-max-ms 7000 --save F28.backend-stop/stop
   if kill -0 "$BPID" 2>/dev/null; then false; fi
   if curl -s -m 2 "http://127.0.0.1:$BPORT/health"; then false; fi
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check state eq stopped \
-    --check prepared_revision eq "$BHEAD"
+    --check prepared_revision eq "$BREV"
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/stop --expect 200 --check state eq stopped
   control-agent-server api POST /api/canvas-extensions/installed/qa-ghost/backend/stop --expect 200 --check state eq missing
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$F28FX/qa-f28-flaky\"}" --expect 200 --quiet
@@ -603,7 +609,7 @@ Preconditions:
   install it again without `force`, then change its bundle at the source and
   reinstall both apps with `force`.
 
-  Requires: `F28.install-local`, `F28.bundle`
+  Requires: `F28.install-local`, `F28.bundle`, `F28.install-git`
   ```sh
   control-agent-server api PATCH /api/canvas-extensions/installed/qa-canvas --json '{"enabled": true}' --expect 200
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$FX\"}" \
@@ -623,7 +629,7 @@ Preconditions:
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check state eq stopped \
     --check prepared_revision eq null --save F28.force-reinstall/approval-gone
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/approvals/qa-backend.json' --expect-count 0
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 409 --check detail contains 'must be prepared'
   ```
   Without `force` the install is 409 and the record keeps its `installed_at`.
@@ -838,10 +844,11 @@ Preconditions:
   the API.
 - **Disable stops the backend (`F28.disable-stops-backend`).** Prepare again
   (the forced install revoked the approval), enable, start, then disable.
+  Requires: `F28.install-git`
   ```sh
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BHEAD\"}" --expect 200 --quiet
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/prepare --json "{\"revision\": \"$BREV\"}" --expect 200 --quiet
   control-agent-server api PATCH /api/canvas-extensions/installed/qa-backend --json '{"enabled": true}' --expect 200
-  DPID=$(control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  DPID=$(control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --field pid)
   kill -0 "$DPID"
   control-agent-server api PATCH /api/canvas-extensions/installed/qa-backend --json '{"enabled": false}' \
@@ -855,9 +862,10 @@ Preconditions:
   is `stopped`.
 - **Persistence across a restart (`F28.restart-persistence`).** Enable and
   start the backend app, then restart the server gracefully.
+  Requires: `F28.install-git`
   ```sh
   control-agent-server api PATCH /api/canvas-extensions/installed/qa-backend --json '{"enabled": true}' --expect 200
-  RPID=$(control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  RPID=$(control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --field pid)
   control-agent-server restart
   if kill -0 "$RPID" 2>/dev/null; then false; fi
@@ -865,8 +873,8 @@ Preconditions:
   control-agent-server api GET /api/canvas-extensions/installed/qa-canvas --check enabled eq true --save F28.restart-persistence/canvas
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend --check enabled eq true --check resolved_ref eq "$BHEAD"
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check state eq stopped \
-    --check prepared_revision eq "$BHEAD" --check pid eq null --save F28.restart-persistence/backend
-  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+    --check prepared_revision eq "$BREV" --check pid eq null --save F28.restart-persistence/backend
+  control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --check pid ne "$RPID" --save F28.restart-persistence/start-again
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/stop --expect 200 --check state eq stopped
   ```
@@ -875,8 +883,9 @@ Preconditions:
   `stopped`, and `start` succeeds with a new pid without another `prepare`.
 - **Uninstall (`F28.uninstall`).** Start the backend, uninstall the app, then
   delete its data.
+  Requires: `F28.install-git`
   ```sh
-  QPID=$(control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
+  QPID=$(control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --field pid)
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-backend --expect 200 \
     --check message eq "Canvas extension 'qa-backend' uninstalled" --save F28.uninstall/delete
@@ -887,10 +896,10 @@ Preconditions:
   control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json --check extensions.qa-backend missing --max-chars 100
   test ! -e "$INST/qa-backend"
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --check state eq missing \
-    --check prepared_revision eq "$BHEAD" --save F28.uninstall/backend-missing
+    --check prepared_revision eq "$BREV" --save F28.uninstall/backend-missing
   test -d "$BK/data/qa-backend/home"
   test -d "$BK/artifacts/qa-backend/$BSHA"
-  control-agent-server state cat home/.openhands/canvas-extensions/backends/approvals/qa-backend.json --check revision eq "$BHEAD"
+  control-agent-server state cat home/.openhands/canvas-extensions/backends/approvals/qa-backend.json --check revision eq "$BREV"
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-backend --expect 404
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-backend/backend/data --expect 200 \
     --check state eq missing --save F28.uninstall/delete-data

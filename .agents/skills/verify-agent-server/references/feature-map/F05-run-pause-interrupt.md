@@ -46,7 +46,7 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
 - `F05.interrupt-tool-call`: interrupt while a tool call runs returns at once: `paused`, an `InterruptEvent`, an `AgentErrorEvent` for the unfinished call (same `tool_call_id`) and no observation; the resumed run sends that error to the model as the tool result and finishes.
 - `F05.run-capacity`: with `max_concurrent_runs` 1, `POST /run` on a second conversation returns 429 while the first holds the slot, leaves it `idle`, and succeeds once the first is interrupted.
 - `F05.stuck-detected`: with `stuck_detection` on (the default), a run whose model repeats the same tool call ends `stuck` after four identical action/observation pairs (four model calls), with no `ConversationErrorEvent`; GET, `status=stuck` search and count and the events socket say `stuck`.
-- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call.
+- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call. The SDK reports the same behavior as a known failure ([#6648](https://github.com/OpenHands/software-agent-sdk/issues/6648), `S01.stuck-recover`): if that is fixed, this bullet changes with it.
 - `F05.stuck-new-input`: a new user message moves a `stuck` conversation to `idle`, and `POST /run` runs it again to `finished`.
 - `F05.max-iterations-stop`: a conversation created with `max_iterations: 6` and `stuck_detection: false` whose model never finishes makes exactly six model calls (past the stuck threshold) and ends `error` with exactly one `ConversationErrorEvent` `code: MaxIterationsReached` naming the limit, on REST and the events socket, never `stuck`.
 - `F05.max-iterations-resume`: `POST /run` after `MaxIterationsReached` is accepted and gets a fresh budget of six model calls (a second `MaxIterationsReached`), and once the model calls `finish` the next run ends `finished`.
@@ -165,9 +165,9 @@ STEP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
 TOOL=$(control-agent-server fixture llm-stub --name qa-f05-tool --step 'tool:terminal:{"command":"sleep 30"}' --print-path)
 TOOL_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$TOOL/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
 LOOP=$(control-agent-server fixture llm-stub --name qa-f05-loop --step 'tool:think:{"thought":"QA_F05_LOOP"}' --print-path)
-LOOP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$LOOP/v1\", \"num_retries\": 0}, \"tools\": []}"
+LOOP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$LOOP/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"think\"}]}"
 CAP=$(control-agent-server fixture llm-stub --name qa-f05-cap --step 'tool:think:{"thought":"QA_F05_CAP"}' --print-path)
-CAP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CAP/v1\", \"num_retries\": 0}, \"tools\": []}"
+CAP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CAP/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"think\"}]}"
 A=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
 B=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
 C=$(control-agent-server conversation start --tools none --no-autotitle --print-id)

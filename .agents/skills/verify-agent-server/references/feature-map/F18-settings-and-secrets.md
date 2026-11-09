@@ -28,7 +28,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 
 - `F18.get-defaults`: on a fresh persistence directory `GET /api/settings` returns OpenHands defaults (no API key, `llm_api_key_is_set: false`, every pointer null, empty `misc_settings`) without creating `settings.json`.
 - `F18.agent-schema`: `GET /api/settings/agent-schema` returns the `AgentSettings` form schema with shared, `openhands` and `acp` sections, secret fields flagged, and every OpenHands field key present in `agent_settings`.
-- `F18.conversation-schema`: `GET /api/settings/conversation-schema` returns the `ConversationSettings` schema whose three field keys and defaults match `conversation_settings` on a fresh server.
+- `F18.conversation-schema`: `GET /api/settings/conversation-schema` returns the `ConversationSettings` schema whose ten field keys and defaults match `conversation_settings` on a fresh server.
 - `F18.auth-required`: with a session key configured, every settings and secrets route answers 401 to a missing or wrong `X-Session-API-Key`, whatever `X-Expose-Secrets` says.
 - `F18.patch-llm`: a PATCH of `agent_settings_diff.llm` stores the model and key, flips `llm_api_key_is_set`, creates `settings.json`, and answers redacted even when `X-Expose-Secrets: plaintext` is sent.
 - `F18.expose-modes`: GET redacts secrets as `**********` by default, returns the raw value with `plaintext`, a Fernet token with `encrypted` (and the legacy `true`), and 400 for any other value.
@@ -219,7 +219,8 @@ Preconditions:
   const convSchema = await client.getConversationSchema();
   assert.equal(convSchema.model_name, 'ConversationSettings');
   assert.deepEqual(convSchema.sections.flatMap((s) => s.fields.map((f) => f.key)).sort(),
-    ['confirmation_mode', 'max_iterations', 'security_analyzer']);
+    ['confirmation_mode', 'container_browser', 'container_cpus', 'container_memory', 'default_runtime',
+      'max_iterations', 'security_analyzer', 'worktree_base', 'worktree_base_ref', 'worktree_branch_prefix']);
 
   assert.equal((await client.getSettings()).agent_settings.llm.api_key, '**********');
   const plain = await client.getSettings({ exposeSecrets: 'plaintext' });
@@ -237,9 +238,10 @@ Preconditions:
   assert.equal(unset.agent_settings.llm.temperature ?? null, null);
 
   assert.deepEqual(await client.upsertSecret({ name: 'QA_F18_TS', value: 'qa-f18-ts-value', description: 'qa f18 ts' }),
-    { name: 'QA_F18_TS', description: 'qa f18 ts' });
+    { name: 'QA_F18_TS', description: 'qa f18 ts', scope: null, scope_description: null });
   const listed = await client.listSecrets();
-  assert.deepEqual(listed.secrets.find((s) => s.name === 'QA_F18_TS'), { name: 'QA_F18_TS', description: 'qa f18 ts' });
+  assert.deepEqual(listed.secrets.find((s) => s.name === 'QA_F18_TS'),
+    { name: 'QA_F18_TS', description: 'qa f18 ts', scope: null, scope_description: null });
   assert.ok(!JSON.stringify(listed).includes('qa-f18-ts-value'));
   assert.equal(await client.getSecret('QA_F18_TS'), 'qa-f18-ts-value');
   const scoped = await client.listSecrets({ agentProfileId: process.env.QA_F18_TS_PROFILE });
@@ -290,12 +292,15 @@ Preconditions:
   ```sh
   control-agent-server api GET /api/settings/conversation-schema --expect 200 --raw-out "$F18/conversation-schema.json" \
     --check model_name eq ConversationSettings --save F18.conversation-schema/schema
-  jq -e --slurpfile s "$F18/settings-defaults.json" '[.sections[].fields[] | .key as $k | .default == $s[0].conversation_settings[$k]] | (all and length == 3)' "$F18/conversation-schema.json"
-  jq -e '[.sections[].fields[].key] | sort == ["confirmation_mode", "max_iterations", "security_analyzer"]' "$F18/conversation-schema.json"
+  jq -e --slurpfile s "$F18/settings-defaults.json" '[.sections[].fields[] | .key as $k | .default == $s[0].conversation_settings[$k]] | (all and length == 10)' "$F18/conversation-schema.json"
+  jq -e '[.sections[].fields[].key] | sort == ["confirmation_mode", "container_browser", "container_cpus", "container_memory", "default_runtime", "max_iterations", "security_analyzer", "worktree_base", "worktree_base_ref", "worktree_branch_prefix"]' "$F18/conversation-schema.json"
   ```
-  The schema has exactly `max_iterations`, `confirmation_mode` and
-  `security_analyzer`, and each default (`500`, `false`, `llm`) equals the
-  value in `conversation_settings`.
+  The schema has exactly ten fields: `max_iterations` (`general`),
+  `confirmation_mode` and `security_analyzer` (`verification`), and the seven
+  `runtime` fields `default_runtime`, `worktree_base`, `worktree_base_ref`,
+  `worktree_branch_prefix`, `container_memory`, `container_cpus` and
+  `container_browser`; each default equals the value in
+  `conversation_settings`.
 - **Key required (`F18.auth-required`).** Every route without a key, with a
   wrong key, and with `X-Expose-Secrets: plaintext` but no key.
   ```sh

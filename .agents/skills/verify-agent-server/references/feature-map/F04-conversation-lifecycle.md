@@ -788,7 +788,7 @@ EOF
   its user history; the parent stays idle. The worktree has its own branch.
   The non-git case removes the empty `.git` created during parent startup,
   so it exercises the intended non-git fallback independently of the next bug.
-- **Default child in a fresh workspace (`F04.child-unborn`), known bug.** Creating the
+- **Default child in a fresh workspace (`F04.child-unborn`).** Creating the
   parent initializes git without a commit. The default child isolation must
   handle that normal workspace state, just as an explicit shared child does.
   ```sh
@@ -804,7 +804,7 @@ EOF
   control-agent-server conversation wait "$SHARED_CHILD" --until finished --timeout 180
   control-agent-server api DELETE "/api/conversations/$SHARED_CHILD" --expect 200
   control-agent-server api POST "/api/conversations/$UPARENT/children" \
-    --json '{"task":"Reply with ok."}' --expect 201 --save F04.child-unborn/default  # bug: status eq 500 && response.body.exception contains 'git worktree add'
+    --json '{"task":"Reply with ok."}' --expect 201 --save F04.child-unborn/default
   UCHILD=$(jq -r .response.body.conversation_id "$AGENT_SERVER_VERIFY_RUN/evidence/F04.child-unborn/default.json")
   control-agent-server conversation wait "$UCHILD" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$UPARENT" --check sub_conversation_ids contains "$UCHILD"
@@ -813,11 +813,7 @@ EOF
   ```
   Both launches should return 201 and finish. A workspace created through the
   ordinary conversation flow must not require a manual git commit before a
-  parent can start a child with the default isolation. Today the shared
-  control succeeds, but the default launch returns 500: worktree planning
-  accepts the unborn repository and `git worktree add ... HEAD` fails because
-  `HEAD` does not resolve to a commit
-  ([OpenHands/software-agent-sdk#6186](https://github.com/OpenHands/software-agent-sdk/issues/6186)).
+  parent can start a child with the default isolation.
 - **Child launch errors (`F04.child-errors`).** Invalid input and an unknown
   parent create no child; authentication is required.
   ```sh

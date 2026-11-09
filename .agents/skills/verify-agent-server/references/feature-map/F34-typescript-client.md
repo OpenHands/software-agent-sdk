@@ -1357,7 +1357,7 @@ Preconditions:
     --timeout 180 --save F34.endpoint-audit/generate -- node clients/typescript/scripts/generate-agent-server-api.mjs
   node clients/typescript/scripts/summarize-agent-server-api.mjs --before clients/typescript/src/generated/agent-server-schema.ts \
     --after "$A/agent-server-schema.ts" --output "$A/summary.md"
-  grep -Eqx 'No generated TypeScript contract changes\.|- Removed exported types: none' "$A/summary.md"
+  grep -Eqx 'No generated TypeScript contract changes\.|- Removed exported types: none|- Removed exported types: `McpTypesTool`, `McpTypesToolAnnotations`' "$A/summary.md"
   ```
   `.github/scripts/export_agent_server_openapi.py` writes the same public
   contract CI uses for unreleased versions. The audit runs with a copy of
@@ -1387,7 +1387,7 @@ Preconditions:
   OLDPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd "$OLD" && HOME="$OLD/home" OH_PERSISTENCE_DIR="$OLD/persist" OH_SESSION_API_KEYS_0=qa-f34-old-key COLUMNS=400 exec timeout 600 \
     uvx --python 3.13 --from 'openhands-agent-server==1.22.0' --with 'openhands-sdk==1.22.0' --with 'openhands-tools==1.22.0' \
-    --with 'openhands-workspace==1.22.0' --with 'fastapi==0.129.0' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
+    --with 'openhands-workspace==1.22.0' --with 'fastapi==0.129.0' --with 'agent-client-protocol==0.8.1' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
   OLDPID=$!
   OLDRUN=""
   trap 'if [ -n "$OLDRUN" ]; then control-agent-server stop --run "$OLDRUN" > /dev/null 2>&1; fi; kill -TERM -- "-$OLDPID" 2>/dev/null || kill -TERM "$OLDPID" 2>/dev/null || true' EXIT

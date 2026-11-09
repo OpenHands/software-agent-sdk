@@ -28,7 +28,7 @@ Routes: none
 - `F31.state-survives-restarts`: a conversation's title, tags and events, the settings, a stored secret and the LLM profiles read back unchanged after a graceful restart and after a SIGKILL.
 - `F31.no-plaintext-at-rest`: after a real model run, the provider key, a stored secret and a conversation secret appear nowhere in the run's persisted files or the server log, while the server still hands out the provider key and the stored secret and keeps the conversation secret encrypted in its registry.
 - `F31.second-instance-catalog`: a second server sharing the conversations directory lists, counts and reads conversations that existed when it started, without claiming their leases.
-- `F31.second-instance-lease-held`: while the owner lives, the second server cannot load the conversation: event reads, sending a message, `/run` and `agent_final_response` are 404, PATCH is `success: false`, pause, interrupt and DELETE are 400, its events socket closes 4004, and nothing changes.
+- `F31.second-instance-lease-held`: while the owner lives, the second server cannot load the conversation: event reads, sending a message, `/run`, `agent_final_response`, PATCH, pause, interrupt and DELETE are all 404, its events socket closes 4004, and nothing changes.
 - `F31.second-instance-takeover`: once the owner is SIGKILLed, the second server takes the conversation over at once (generation 2, its pid) with the same events, and the restarted owner is now the one refused.
 - `F31.takeover-keeps-metadata`: a title the owner stored after the second server started survives the second server's takeover, in its GET and in `meta.json`.
 - `F31.lease-expiry-fencing`: an owner that stops renewing (frozen, pid alive) loses the lease once it expires, and after it resumes its writes are refused and never reach disk.
@@ -308,11 +308,11 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$X/events" --run "$B" --json '{"role": "user", "content": [{"type": "text", "text": "qa-f31-from-b"}], "run": false}' --expect 404
   control-agent-server api POST "/api/conversations/$X/run" --run "$B" --expect 404 --save F31.second-instance-lease-held/run
   control-agent-server api GET "/api/conversations/$X/agent_final_response" --run "$B" --expect 404
-  control-agent-server api PATCH "/api/conversations/$X" --run "$B" --json '{"title": "QA F31 from B"}' --expect 200 --check success eq false \
+  control-agent-server api PATCH "/api/conversations/$X" --run "$B" --json '{"title": "QA F31 from B"}' --expect 404 \
     --save F31.second-instance-lease-held/patch
-  control-agent-server api POST "/api/conversations/$X/pause" --run "$B" --expect 400
-  control-agent-server api POST "/api/conversations/$X/interrupt" --run "$B" --expect 400
-  control-agent-server api DELETE "/api/conversations/$X" --run "$B" --expect 400 --save F31.second-instance-lease-held/delete
+  control-agent-server api POST "/api/conversations/$X/pause" --run "$B" --expect 404
+  control-agent-server api POST "/api/conversations/$X/interrupt" --run "$B" --expect 404
+  control-agent-server api DELETE "/api/conversations/$X" --run "$B" --expect 404 --save F31.second-instance-lease-held/delete
   control-agent-server ws listen "/sockets/events/$X" --run "$B" --expect-close 4004 --duration 10 --save F31.second-instance-lease-held/socket
   control-agent-server api GET "/api/conversations/$X" --run "$B" --expect 200 --check title eq 'QA F31 shared' --quiet
   control-agent-server state cat owner_lease.json --conversation "$X" --check owner_instance_id eq "$OWNER" --check generation eq 1
@@ -323,8 +323,7 @@ Preconditions:
   control-agent-server stop --run "$B"
   trap - EXIT
   ```
-  Every loading call on `B` reports the conversation as missing (404, 400 or
-  `success: false`, socket close 4004 `Conversation not found`), the same
+  Every loading call on `B` reports the conversation as missing (404; socket close 4004 `Conversation not found`), the same
   answers an unknown id gets, although `B`'s GET still reads it from the
   catalog. The lease, the title, the event count and the event log on the
   owner are unchanged, and `X` was not deleted.
@@ -818,7 +817,7 @@ Preconditions:
   conversation (takeover or not) it writes that stale copy to `meta.json`
   (`F31.takeover-keeps-metadata`).
 - A conversation whose lease is held elsewhere looks exactly like an unknown
-  id on the second server (404, 400, `success: false`, close 4004), while its
+  id on the second server (404, close 4004), while its
   GET is 200 from the catalog. Only the lease file tells the two apart.
 - Takeover before expiry needs the recorded owner on the same host with a
   dead pid. A frozen or hung owner (pid alive), an owner on another host, or
