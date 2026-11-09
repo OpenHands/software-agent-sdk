@@ -2791,7 +2791,10 @@ def serve_llm_stub(port: int, script: Path, out: Path) -> None:
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             del format, args
 
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    # A Docker-network fixture can bind its container interface. The default
+    # remains loopback for fixtures launched on the host.
+    bind_host = os.environ.get("QA_LLM_STUB_BIND", "127.0.0.1")
+    ThreadingHTTPServer((bind_host, port), Handler).serve_forever()
 
 
 def parse_stub_step(text: str) -> dict[str, Any]:

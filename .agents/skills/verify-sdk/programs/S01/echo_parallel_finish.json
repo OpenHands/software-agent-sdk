@@ -1,0 +1,8 @@
+[
+  {"text": "Writing the file.", "tool": "terminal", "args": {"command": "echo hello > greeting.txt && cat greeting.txt"}},
+  {"tools": [
+    {"tool": "file_editor", "args": {"command": "view", "path": "greeting.txt"}},
+    {"tool": "terminal", "args": {"command": "wc -c greeting.txt"}}
+  ]},
+  {"finish": "greeting.txt says hello"}
+]

@@ -75,7 +75,7 @@ def _make_mcp_tool(name: str) -> mcp_types.Tool:
     return mcp_types.Tool(
         name=name,
         description=f"tool {name}",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     )
 
 
@@ -160,7 +160,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     old_tool = mcp_types.Tool(
         name="changing",
         description="old schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"old": {"type": "string"}},
             "required": ["old"],
@@ -169,7 +169,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     new_tool = mcp_types.Tool(
         name="changing",
         description="new schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"new": {"type": "integer"}},
             "required": ["new"],
@@ -274,8 +274,12 @@ def progressive_server():
 
     async def notify_list_changed() -> None:
         notification = mcp_types.ToolListChangedNotification()
+        # Context.send_notification is bound to the in-flight request, and
+        # mcp 2 drops it once that request has answered. Sending on the
+        # session without a related request uses the standalone stream.
+        session = get_context().session
         loop = asyncio.get_running_loop()
-        loop.create_task(get_context().send_notification(notification))
+        loop.create_task(session.send_notification(notification))
 
     @mcp.tool()
     async def gateway() -> str:

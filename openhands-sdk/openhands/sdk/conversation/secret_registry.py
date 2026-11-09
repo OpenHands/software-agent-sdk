@@ -282,6 +282,25 @@ class SecretRegistry(OpenHandsModel):
                 env_vars[name] = value
         return env_vars
 
+    def resolve_uncached_values(self) -> None:
+        """Resolve every source whose value is not cached yet, for masking.
+
+        ``get_value()`` may do blocking network I/O, so a failed lookup backs off
+        for ``FAILED_LOOKUP_RETRY_SECONDS`` instead of retrying on every output
+        and every ACP chunk. Callers that hold the conversation's state lock can
+        run this first with the lock released, so that masking under the lock
+        finds every value cached and does no lookup there.
+        """
+        now = time.monotonic()
+        for key in list(self.secret_sources):
+            if key in self._exported_values:
+                continue
+            failed_at = self._failed_lookups.get(key)
+            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+                continue
+            if not self.get_secret_value(key):
+                self._failed_lookups[key] = now
+
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
@@ -299,17 +318,7 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        # Resolve uncached sources, backing off on failure: get_value() may do
-        # blocking network I/O and masking runs per output and per ACP chunk.
-        now = time.monotonic()
-        for key in list(self.secret_sources):
-            if key in self._exported_values:
-                continue
-            failed_at = self._failed_lookups.get(key)
-            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
-                continue
-            if not self.get_secret_value(key):
-                self._failed_lookups[key] = now
+        self.resolve_uncached_values()
 
         masked_text = text
         with self._exported_values_lock:
@@ -352,19 +361,26 @@ class SecretRegistry(OpenHandsModel):
         return _mask_model(model, self.mask_secrets_in_output)
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
-        """Get secret information (name and description) for prompt inclusion.
+        """Get secret information (name, description, scope) for prompt inclusion.
 
         Returns:
-            List of dictionaries with 'name' and 'description' keys.
-            Returns an empty list if no secrets are registered.
-            Description will be None if not available.
+            List of dictionaries with 'name', 'description', 'scope', and
+            'scope_description' keys. Returns an empty list if no secrets are
+            registered. Values default to None when not available on a source.
         """
         if not self.secret_sources:
             return []
         secret_infos = []
         for name, source in self.secret_sources.items():
             description = source.description
-            secret_infos.append({"name": name, "description": description})
+            secret_infos.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "scope": source.scope,
+                    "scope_description": source.scope_description,
+                }
+            )
         return secret_infos
 
     def get_secret_value(self, name: str) -> str | None:

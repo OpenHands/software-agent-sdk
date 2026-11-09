@@ -82,6 +82,7 @@ CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 _WEBSOCKET_AUTH_TYPE: Final = "auth"
 _WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
+_WEBSOCKET_MAX_MESSAGE_SIZE: Final = 16 * 1024 * 1024
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -200,10 +201,12 @@ class WebSocketCallbackClient:
         self._thread = None
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self.failure_reason: str | None = None
 
     def start(self) -> None:
         if self._thread:
             return
+        self.failure_reason = None
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -267,7 +270,9 @@ class WebSocketCallbackClient:
         has_connected = False
         while not self._stop.is_set():
             try:
-                async with websockets.connect(ws_url) as ws:
+                async with websockets.connect(
+                    ws_url, max_size=_WEBSOCKET_MAX_MESSAGE_SIZE
+                ) as ws:
                     if self.api_key:
                         await ws.send(
                             json.dumps(
@@ -304,6 +309,18 @@ class WebSocketCallbackClient:
                                 "ws_event_processing_error", stack_info=True
                             )
             except ConnectionClosed as exc:
+                if any(
+                    frame is not None and frame.code == 1009
+                    for frame in (exc.rcvd, exc.sent)
+                ):
+                    self.failure_reason = (
+                        "WebSocket message too big (close code 1009) for conversation "
+                        f"{self.conversation_id}; the SDK receive limit is "
+                        f"{_WEBSOCKET_MAX_MESSAGE_SIZE} bytes."
+                    )
+                    logger.error(self.failure_reason)
+                    self._stop.set()
+                    break
                 if _is_fatal_websocket_close(exc):
                     logger.debug("ws_connection_closed_fatal", exc_info=True)
                     self._stop.set()
@@ -1291,6 +1308,7 @@ class RemoteConversation(BaseConversation):
                     self._id,
                 )
             else:
+                failure_reason = self._ws_client.failure_reason
                 try:
                     self._ws_client.stop()
                 except Exception:
@@ -1300,6 +1318,7 @@ class RemoteConversation(BaseConversation):
                 raise WebSocketConnectionError(
                     conversation_id=self._id,
                     timeout=ws_timeout,
+                    message=failure_reason,
                 )
 
         # Reconcile events after WebSocket is ready to catch any events that

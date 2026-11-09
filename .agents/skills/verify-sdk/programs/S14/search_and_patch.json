@@ -1,0 +1,49 @@
+[
+ {
+  "text": "Setting up the project.",
+  "tool": "terminal",
+  "args": {
+   "command": "mkdir -p src/pkg notes && printf 'def add(a, b):\\n    return a - b\\n' > src/calc.py && printf 'import calc\\n' > src/pkg/use.py && printf 'TODO: fix add\\n' > notes/todo.txt && echo ready"
+  }
+ },
+ {
+  "tool": "glob",
+  "args": {
+   "pattern": "**/*.py"
+  }
+ },
+ {
+  "tool": "grep",
+  "args": {
+   "pattern": "return a - b",
+   "include": "*.py"
+  }
+ },
+ {
+  "tool": "apply_patch",
+  "args": {
+   "patch": "*** Begin Patch\n*** Update File: src/calc.py\n@@ def add(a, b):\n-    return a - b\n+    return a + b\n*** Add File: src/version.py\n+VERSION = \"1.0\"\n*** Delete File: notes/todo.txt\n*** End Patch"
+  }
+ },
+ {
+  "tool": "apply_patch",
+  "args": {
+   "patch": "*** Begin Patch\n*** Update File: src/calc.py\n@@\n-    this line does not exist\n+    nope\n*** End Patch"
+  }
+ },
+ {
+  "tool": "apply_patch",
+  "args": {
+   "patch": "*** Begin Patch\n*** Add File: ../outside.txt\n+escaped\n*** End Patch"
+  }
+ },
+ {
+  "tool": "terminal",
+  "args": {
+   "command": "cd src && python3 -c 'import calc, version; print(calc.add(2, 3), version.VERSION)'"
+  }
+ },
+ {
+  "finish": "calc.add fixed"
+ }
+]

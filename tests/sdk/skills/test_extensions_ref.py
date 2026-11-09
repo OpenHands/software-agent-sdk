@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from openhands.sdk.skills.utils import is_skills_repo_pinned
 
 
@@ -64,15 +66,24 @@ assert PUBLIC_SKILLS_REF == "main", (
     _run_in_subprocess(code)
 
 
-def test_extensions_ref_custom_branch():
-    """PUBLIC_SKILLS_REF should use EXTENSIONS_REF when set to a branch name."""
-    code = """
+@pytest.mark.parametrize(
+    "ref",
+    [
+        pytest.param("feature-branch", id="custom_branch"),
+        pytest.param("v1.2.3", id="tag"),
+        pytest.param("a" * 40, id="commit_sha"),
+        # os.environ.get returns the empty string rather than the default.
+        pytest.param("", id="empty_string"),
+    ],
+)
+def test_extensions_ref_sets_public_skills_ref(ref):
+    code = f"""
 from openhands.sdk.skills.skill import PUBLIC_SKILLS_REF
-assert PUBLIC_SKILLS_REF == "feature-branch", (
-    f"Expected 'feature-branch' but got '{PUBLIC_SKILLS_REF}'"
+assert PUBLIC_SKILLS_REF == "{ref}", (
+    f"Expected '{ref}' but got '{{PUBLIC_SKILLS_REF}}'"
 )
 """
-    _run_in_subprocess(code, {"EXTENSIONS_REF": "feature-branch"})
+    _run_in_subprocess(code, {"EXTENSIONS_REF": ref})
 
 
 def test_extensions_ref_with_load_public_skills():
@@ -99,40 +110,6 @@ with mock.patch(
     )
 """
     _run_in_subprocess(code, {"EXTENSIONS_REF": "test-branch"})
-
-
-def test_extensions_ref_with_tag():
-    """PUBLIC_SKILLS_REF should accept a tag value via EXTENSIONS_REF."""
-    code = """
-from openhands.sdk.skills.skill import PUBLIC_SKILLS_REF
-assert PUBLIC_SKILLS_REF == "v1.2.3", (
-    f"Expected 'v1.2.3' but got '{PUBLIC_SKILLS_REF}'"
-)
-"""
-    _run_in_subprocess(code, {"EXTENSIONS_REF": "v1.2.3"})
-
-
-def test_extensions_ref_with_commit_sha():
-    """PUBLIC_SKILLS_REF should accept a full commit SHA via EXTENSIONS_REF."""
-    sha = "a" * 40
-    code = f"""
-from openhands.sdk.skills.skill import PUBLIC_SKILLS_REF
-assert PUBLIC_SKILLS_REF == "{sha}", (
-    f"Expected '{sha}' but got '{{PUBLIC_SKILLS_REF}}'"
-)
-"""
-    _run_in_subprocess(code, {"EXTENSIONS_REF": sha})
-
-
-def test_extensions_ref_empty_string():
-    """Empty EXTENSIONS_REF falls back to an empty string (os.environ.get behaviour)."""
-    code = """
-from openhands.sdk.skills.skill import PUBLIC_SKILLS_REF
-assert PUBLIC_SKILLS_REF == "", (
-    f"Expected '' but got '{PUBLIC_SKILLS_REF}'"
-)
-"""
-    _run_in_subprocess(code, {"EXTENSIONS_REF": ""})
 
 
 # ---------------------------------------------------------------------------

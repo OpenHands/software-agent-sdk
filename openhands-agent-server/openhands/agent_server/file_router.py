@@ -1142,7 +1142,7 @@ async def archive_directory(
     if base_commit:
         # Make a git-delta self-describing so consumers can replay the patch.
         headers["X-Archive-Base-Commit"] = base_commit
-        headers["X-Archive-Base-Ref"] = base_ref or "auto"
+        headers["X-Archive-Base-Ref"] = _header_safe(base_ref or "auto")
 
     return FileResponse(
         path=output_path,
