@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -27,6 +27,7 @@ from openhands.agent_server.event_service import (
     RunSlot,
 )
 from openhands.agent_server.launch import (
+    LaunchFailure,
     is_codex_source,
     launch_source,
     live_launch_runtime,
@@ -76,8 +77,13 @@ from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.persistence_const import BASE_STATE
-from openhands.sdk.conversation.request import ConversationWorktreeOptions
+from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
+    ConversationConfig,
+    ConversationWorktreeOptions,
+)
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -104,6 +110,7 @@ from openhands.sdk.launch import LaunchedAgent, finalize
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.tool import Tool
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -567,6 +574,15 @@ class _ConversationRecord:
     # metadata-only updates (``meta.json``, e.g. auto-title) must also
     # invalidate it.
     stored_signature: int | None = None
+
+
+PROJECT_WORKER_TOOLS = (
+    "save_project_artifact",
+    "read_project_memory",
+    "update_project_memory",
+)
+"""Tools the server adds to a conversation a project member starts: workers
+save their deliverables and keep the project's memory."""
 
 
 async def _project_memory_content(tags: dict[str, str]) -> list[TextContent]:
@@ -1561,7 +1577,16 @@ class ConversationService:
         request: StartConversationRequest,
         conversation_id: UUID,
         run_slot: RunSlot,
+        *,
+        title: str | None = None,
+        initial_sender: str | None = None,
+        server_tools: Sequence[Tool] = (),
     ) -> tuple[ConversationInfo, bool]:
+        """Create a conversation from ``request``.
+
+        A project worker passes the rest: ``title``, the ``initial_sender`` of
+        its first message, and ``server_tools`` the server adds to its agent.
+        """
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:
@@ -1678,7 +1703,7 @@ class ConversationService:
                 ),
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
-                client_tools=client_tools,
+                client_tools=[*client_tools, *server_tools],
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
@@ -1769,6 +1794,8 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
+        if title is not None:
+            stored = stored.model_copy(update={"title": title})
         initial_message = request.initial_message
         return await self._launch_prepared_conversation(
             stored,
@@ -1779,6 +1806,7 @@ class ConversationService:
                 if initial_message
                 else None
             ),
+            initial_sender=initial_sender,
             reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
@@ -2241,6 +2269,135 @@ class ConversationService:
             fork_event_service.stored, state, self._children_of(fork_conv_id)
         )
 
+    async def _project_worker_profile(
+        self, parent_stored: StoredConversation
+    ) -> UUID | None:
+        """The agent profile a project member's new conversation starts from.
+
+        A conversation a project member starts is a normal conversation of
+        the person's, not a copy of its parent: it runs the project's
+        ``worker_agent_profile_id``, or else the person's active agent
+        profile. ``None`` (no project, no profile, or a workspace a normal
+        start cannot take) keeps the copy of the parent's agent.
+        """
+        project_hex = parent_stored.tags.get(PROJECT_TAG_KEY)
+        if not project_hex or not isinstance(parent_stored.workspace, LocalWorkspace):
+            return None
+        from openhands.agent_server.persistence import (
+            PersistedSettings,
+            get_settings_store,
+        )
+
+        def lookup() -> UUID | None:
+            try:
+                project_id = UUID(hex=project_hex)
+            except ValueError:
+                return None
+            persisted = get_projects_store().load()
+            project = next(
+                (
+                    p
+                    for p in (persisted.projects if persisted else [])
+                    if p.id == project_id
+                ),
+                None,
+            )
+            if project is not None and project.worker_agent_profile_id is not None:
+                return project.worker_agent_profile_id
+            settings = get_settings_store().load() or PersistedSettings()
+            active = settings.active_agent_profile_id
+            return UUID(str(active)) if active else None
+
+        try:
+            return await asyncio.to_thread(lookup)
+        except Exception:
+            logger.warning(
+                "Cannot choose a worker agent profile for project %s; the new "
+                "conversation copies its parent's agent",
+                project_hex,
+                exc_info=True,
+            )
+            return None
+
+    async def _start_project_worker(
+        self,
+        parent_service: EventService,
+        request: StartChildConversationRequest,
+        profile_id: UUID,
+        run_slot: RunSlot,
+    ) -> StartChildConversationResponse:
+        """Start a project member's new conversation from an agent profile.
+
+        It keeps what makes it part of the project: the parent's tags and
+        workspace (in a worktree when asked), the parent link, the person's
+        confirmation policy, plugins, hooks and secrets, the parent as sender
+        of the task, the worker guidance, and the project tools a worker uses.
+        It does not take the parent's agent, launch additions or client tools.
+        """
+        parent_stored = parent_service.stored
+        parent_id = parent_stored.id
+        child_id = uuid4()
+        config = {
+            name: getattr(parent_stored, name)
+            for name in ConversationConfig.model_fields
+        }
+        config.update(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            worktree=request.isolation == "worktree",
+            worktree_options=None,
+            secrets_encrypted=False,
+            client_tools=[],
+            agent_launch_additions=AgentLaunchAdditions(
+                system_message_suffix_append=worker_guidance(
+                    parent_stored.title, parent_id
+                )
+            ),
+            initial_message=SendMessageRequest(
+                role="user",
+                content=[
+                    TextContent(text=request.task),
+                    *await _project_memory_content(parent_stored.tags),
+                ],
+            ),
+            tags={
+                key: value
+                for key, value in parent_stored.tags.items()
+                if key not in BOARD_TAG_KEYS
+            },
+            autotitle=request.title is None,
+            prompt=None,
+        )
+        start = StartConversationRequest(
+            **config,
+            agent_profile_id=profile_id,
+            max_budget_per_run=(parent_service.get_conversation().max_budget_per_run),
+        )
+        try:
+            info, _ = await self._create_conversation(
+                start,
+                child_id,
+                run_slot,
+                title=request.title,
+                initial_sender=conversation_sender(parent_id),
+                server_tools=[Tool(name=name) for name in PROJECT_WORKER_TOOLS],
+            )
+        except Exception as exc:
+            if not isinstance(exc, LaunchFailure):
+                raise
+            raise ValueError(
+                f"Cannot start the conversation from agent profile {profile_id}: {exc}"
+            ) from exc
+        stored = self._conversation_records[child_id].stored
+        return StartChildConversationResponse(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            status=info.execution_status.value,
+            title=info.title,
+            workspace=str(stored.workspace.working_dir),
+            isolation="worktree" if stored.worktree else "shared",
+        )
+
     async def start_child_conversation(
         self,
         parent_id: UUID,
@@ -2257,6 +2414,10 @@ class ConversationService:
         a usable base commit; otherwise (or with ``isolation="shared"``) it
         shares the parent's directory. The link is recorded via
         ``parent_conversation_id``.
+
+        A project member's child is a normal conversation of the person's
+        instead (see :meth:`_start_project_worker`): it runs an agent profile,
+        not a copy of its parent's agent.
 
         Returns ``None`` when *parent_id* does not exist.
 
@@ -2275,6 +2436,11 @@ class ConversationService:
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
+            worker_profile = await self._project_worker_profile(parent_stored)
+            if worker_profile is not None:
+                return await self._start_project_worker(
+                    parent_service, request, worker_profile, run_slot
+                )
             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
             # A child spends under the same cap as its parent.
             max_budget_per_run = parent_service.get_conversation().max_budget_per_run

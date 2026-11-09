@@ -10,6 +10,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
@@ -1331,3 +1332,42 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
     assert await relay_person_message(service, worker, project["id"], "Use Postgres")
 
     assert stopped == []
+
+
+# Worker agent profile
+
+
+@pytest.mark.asyncio
+async def test_a_project_names_its_workers_agent_profile(client, monkeypatch):
+    from openhands.agent_server import projects_router as module
+
+    known = uuid4()
+    monkeypatch.setattr(
+        module,
+        "get_agent_profile_store",
+        lambda: SimpleNamespace(
+            name_for_id=lambda pid: "worker" if pid == known else None
+        ),
+    )
+
+    unknown = await client.post(
+        "/api/projects", json={"name": "P", "worker_agent_profile_id": str(uuid4())}
+    )
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "worker_agent_profile_id": str(known)}
+        )
+    ).json()
+    renamed = (
+        await client.patch(f"/api/projects/{project['id']}", json={"name": "Q"})
+    ).json()
+    cleared = (
+        await client.patch(
+            f"/api/projects/{project['id']}", json={"worker_agent_profile_id": None}
+        )
+    ).json()
+
+    assert unknown.status_code == 404
+    assert project["worker_agent_profile_id"] == known.hex
+    assert renamed["worker_agent_profile_id"] == known.hex
+    assert cleared["worker_agent_profile_id"] is None

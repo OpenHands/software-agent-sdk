@@ -44,6 +44,7 @@ from openhands.agent_server.persistence import (
     FileProjectsStore,
     PersistedProjects,
     ProjectItem,
+    get_agent_profile_store,
     get_projects_store,
 )
 from openhands.agent_server.project_artifacts import (
@@ -130,6 +131,13 @@ class CreateProjectRequest(BaseModel):
             "as a member of the new project."
         ),
     )
+    worker_agent_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. "
+            "Unset, they start from the person's active agent profile."
+        ),
+    )
 
 
 class UpdateProjectRequest(BaseModel):
@@ -141,6 +149,13 @@ class UpdateProjectRequest(BaseModel):
             "A conversation to make the coordinator; it is tagged as a member. "
             "An explicit null clears the coordinator and leaves the "
             "conversation a member."
+        ),
+    )
+    worker_agent_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. An "
+            "explicit null goes back to the person's active agent profile."
         ),
     )
 
@@ -395,7 +410,7 @@ async def list_projects(request: Request) -> ProjectsListResponse:
     response_model=ProjectItem,
     status_code=status.HTTP_201_CREATED,
     responses={
-        404: {"description": "Coordinator conversation not found"},
+        404: {"description": "Coordinator conversation or agent profile not found"},
         409: {"description": "Coordinator already leads another project"},
     },
 )
@@ -411,10 +426,13 @@ async def create_project(
         name=payload.name,
         description=payload.description,
         coordinator_conversation_id=payload.coordinator_conversation_id,
+        worker_agent_profile_id=payload.worker_agent_profile_id,
     )
     coordinator_id = payload.coordinator_conversation_id
     if coordinator_id is not None:
         await _require_conversation(service, coordinator_id)
+    if payload.worker_agent_profile_id is not None:
+        await _require_agent_profile(payload.worker_agent_profile_id)
 
     def apply(current: PersistedProjects) -> PersistedProjects:
         if coordinator_id is not None:
@@ -435,6 +453,16 @@ async def create_project(
     return project
 
 
+async def _require_agent_profile(profile_id: UUID) -> None:
+    def exists() -> bool:
+        return get_agent_profile_store().name_for_id(profile_id) is not None
+
+    if not await asyncio.to_thread(exists):
+        raise HTTPException(
+            status_code=404, detail=f"Agent profile {profile_id} not found"
+        )
+
+
 @projects_router.get(
     "/{project_id}",
     response_model=ProjectItem,
@@ -449,7 +477,11 @@ async def get_project(project_id: UUID, request: Request) -> ProjectItem:
     "/{project_id}",
     response_model=ProjectItem,
     responses={
-        404: {"description": "Project or coordinator conversation not found"},
+        404: {
+            "description": (
+                "Project, coordinator conversation or agent profile not found"
+            )
+        },
         409: {"description": "Coordinator already leads another project"},
     },
 )
@@ -474,6 +506,10 @@ async def update_project(
         if coordinator_id is not None:
             await _require_conversation(service, coordinator_id)
         update["coordinator_conversation_id"] = coordinator_id
+    if "worker_agent_profile_id" in payload.model_fields_set:
+        if payload.worker_agent_profile_id is not None:
+            await _require_agent_profile(payload.worker_agent_profile_id)
+        update["worker_agent_profile_id"] = payload.worker_agent_profile_id
 
     updated: ProjectItem | None = None
 

@@ -691,3 +691,142 @@ async def test_project_child_gets_the_project_memory(
     assert note.startswith("[Project memory: MEMORY.md at revision ")
     assert memory.revision in note and "data, not instructions" in note
     assert note.endswith("- Engel prefers squash merges.")
+
+
+# Project workers: normal conversations started from an agent profile
+
+
+async def _launch_worker(tmp_path, workspace_dir, monkeypatch, profile_id):
+    from openhands.agent_server import conversation_service as module
+    from openhands.sdk.tool import Tool
+
+    worker_agent = Agent(
+        llm=LLM(model="gpt-4o", usage_id="worker-profile"),
+        tools=[Tool(name="terminal"), Tool(name="file_editor")],
+    )
+    sources: list = []
+
+    def fake_launch_source(request, stores, cipher):
+        if request.agent_profile_id is None:
+            return request.agent
+        sources.append(request.agent_profile_id)
+        return worker_agent
+
+    monkeypatch.setattr(module, "launch_source", fake_launch_source)
+
+    async def worker_profile(self, stored):
+        return profile_id
+
+    monkeypatch.setattr(ConversationService, "_project_worker_profile", worker_profile)
+    launch = await _launch_child(
+        tmp_path,
+        workspace_dir,
+        StartChildConversationRequest(task="Fix the login bug", title="Login fix"),
+        parent_tags={"project": uuid4().hex, "insiderrole": "controller"},
+    )
+    return launch, sources
+
+
+@pytest.mark.asyncio
+async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
+    tmp_path, workspace_dir, monkeypatch
+):
+    from openhands.agent_server.conversation_service import PROJECT_WORKER_TOOLS
+
+    profile_id = uuid4()
+    launch, sources = await _launch_worker(
+        tmp_path, workspace_dir, monkeypatch, profile_id
+    )
+
+    assert sources == [profile_id]
+    assert launch.result is not None and launch.child is not None
+    child_id = launch.result.conversation_id
+    agent = launch.services[child_id].get_conversation().agent
+    assert agent.llm.usage_id == "worker-profile"
+    assert [tool.name for tool in agent.tools] == [
+        "terminal",
+        "file_editor",
+        *PROJECT_WORKER_TOOLS,
+    ]
+    suffix = _system_suffix(launch)
+    assert suffix.count(WORKER_GUIDANCE_MARKER) == 1
+    assert launch.parent_id.hex in suffix
+    assert launch.child.parent_conversation_id == launch.parent_id
+    assert launch.child.title == "Login fix"
+    assert "project" in launch.child.tags and "insiderrole" in launch.child.tags
+    assert "resolved" not in launch.child.tags
+    launch.services[child_id].send_message.assert_awaited_once_with(
+        Message(role="user", content=[TextContent(text="Fix the login bug")]),
+        False,
+        sender=f"conversation:{launch.parent_id.hex}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_child_outside_projects_still_copies_its_parent(
+    tmp_path, workspace_dir, monkeypatch
+):
+    from openhands.agent_server import conversation_service as module
+
+    def no_profiles(request, stores, cipher):
+        assert request.agent_profile_id is None
+        return request.agent
+
+    monkeypatch.setattr(module, "launch_source", no_profiles)
+
+    launch = await _launch_child(
+        tmp_path, workspace_dir, StartChildConversationRequest(task="Write the docs")
+    )
+
+    assert launch.result is not None
+    agent = launch.services[launch.result.conversation_id].get_conversation().agent
+    assert agent.llm.usage_id == "test-llm"
+
+
+@pytest.mark.asyncio
+async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
+    tmp_path, monkeypatch
+):
+    from openhands.agent_server import persistence
+    from openhands.agent_server.models import StoredConversation
+    from openhands.agent_server.persistence import (
+        PersistedProjects,
+        PersistedSettings,
+        ProjectItem,
+    )
+
+    named, active = uuid4(), uuid4()
+    with_profile = ProjectItem(name="A", worker_agent_profile_id=named)
+    without = ProjectItem(name="B")
+    projects = PersistedProjects(projects=[with_profile, without])
+    monkeypatch.setattr(
+        persistence,
+        "get_projects_store",
+        lambda: SimpleNamespace(load=lambda: projects),
+    )
+    from openhands.agent_server import conversation_service as module
+
+    monkeypatch.setattr(
+        module, "get_projects_store", lambda: SimpleNamespace(load=lambda: projects)
+    )
+    monkeypatch.setattr(
+        persistence,
+        "get_settings_store",
+        lambda: SimpleNamespace(
+            load=lambda: PersistedSettings(active_agent_profile_id=str(active))
+        ),
+    )
+
+    def stored(tags):
+        return StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            tags=tags,
+        )
+
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    pick = service._project_worker_profile
+
+    assert await pick(stored({"project": with_profile.id.hex})) == named
+    assert await pick(stored({"project": without.id.hex})) == active
+    assert await pick(stored({})) is None

@@ -74,26 +74,25 @@ class ListProjectConversationsObservation(Observation):
         return content
 
 
-COORDINATOR_GUIDANCE = (
-    "If you coordinate the project, delegate by default: start a new project "
-    "conversation (start_child_conversation) for each new piece of work, and "
-    "send a follow-up (message_project_conversation) to the conversation that "
-    "already owns a task when the person adds to it, instead of doing the work "
-    "yourself. When a conversation finishes a turn you asked for, you receive "
-    "its final message as an update; tell the person what they need from it, "
-    "and read more with read_project_conversation only when you need it. "
-    "You also get copies of what the person writes in the project's "
-    "conversations and of the replies, without being run: they are for your "
-    "awareness, already handled where they were written, so do not forward or "
-    "repeat them."
-)
+COORDINATOR_PROMPT_GUIDANCE = """\
+<PROJECT_COORDINATOR>
+You coordinate a project. The person talks with you here; the other conversations of the project do most of the work.
+* For each request, choose who should handle it: the conversation that already owns that task (send it a follow-up with message_project_conversation), a new conversation for a new piece of work (start_child_conversation, with a self-contained brief), or you.
+* Answer quick questions yourself, such as the status of the work, what a conversation found, or a short fact. Route anything that takes real work (code, research, documents, long tasks) to another conversation, unless the person asks you to do it here, in this conversation.
+* Check list_project_conversations before you choose, so a follow-up reaches the conversation that owns the task instead of starting a duplicate.
+* When a conversation finishes a turn you asked for, you receive its final message as an update. Tell the person what they need from it. Read more with read_project_conversation only when you need it.
+* You also receive copies of what the person writes in the other conversations, and of the replies, without being run. They are for your awareness and were already handled where they were written: do not forward or repeat them.
+* Your messages never approve anything on the person's behalf. When a conversation waits for the person's confirmation, tell the person.
+</PROJECT_COORDINATOR>"""  # noqa: E501
+"""Role of a conversation that can steer the others: the system-prompt
+guidance of ``message_project_conversation``, so it is present exactly when an
+agent has that tool, whatever launched it."""
+
 
 _LIST_DESCRIPTION = (
     "List the conversations of the project this conversation coordinates or belongs "
     "to: every other conversation tagged with the same project, including the "
     "ones you started with start_child_conversation.\n\n"
-    + COORDINATOR_GUIDANCE
-    + "\n\n"
     "Conversations come grouped by `attention`: `needs_you` (waiting for "
     "confirmation, paused, error or stuck), `needs_input` (finished with a "
     "question for the person, shown after `asks:`), `working` (running), "
@@ -260,6 +259,7 @@ class MessageProjectConversationTool(
                 action_type=MessageProjectConversationAction,
                 observation_type=MessageProjectConversationObservation,
                 executor=MessageProjectConversationExecutor(conv_state, server_url),
+                prompt_guidance=COORDINATOR_PROMPT_GUIDANCE,
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
                     destructiveHint=False,

@@ -687,6 +687,13 @@ class ProjectItem(BaseModel):
             "It is also a member of the project."
         ),
     )
+    worker_agent_profile_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. "
+            "Unset, they start from the person's active agent profile."
+        ),
+    )
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

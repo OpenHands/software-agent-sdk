@@ -491,8 +491,26 @@ def test_read_outside_a_project_is_an_error(tmp_path):
     assert "not part of a project" in observation.text
 
 
-def test_list_description_asks_coordinators_to_delegate(tmp_path):
-    (tool,) = ListProjectConversationsTool.create(_conv_state(tmp_path))
+def test_the_tool_that_steers_conversations_brings_the_coordinator_role(tmp_path):
+    (message_tool,) = MessageProjectConversationTool.create(_conv_state(tmp_path))
+    (list_tool,) = ListProjectConversationsTool.create(_conv_state(tmp_path))
 
-    assert "delegate by default" in tool.description
+    guidance = message_tool.prompt_guidance or ""
+    assert guidance.startswith("<PROJECT_COORDINATOR>")
+    assert "unless the person asks you to do it here" in guidance
+    assert list_tool.prompt_guidance is None
     assert ReadProjectConversationTool.name == "read_project_conversation"
+
+
+def test_a_coordinators_system_prompt_states_its_role(tmp_path):
+    from openhands.sdk.tool import Tool
+
+    agent = Agent(
+        llm=LLM(model="gpt-4o", usage_id="cat"),
+        tools=[Tool(name="message_project_conversation")],
+    )
+    state = _conv_state(tmp_path)
+    agent._initialize(state)
+
+    assert "<PROJECT_COORDINATOR>" in agent.static_system_message
+    assert "<ROLE>" in agent.static_system_message
