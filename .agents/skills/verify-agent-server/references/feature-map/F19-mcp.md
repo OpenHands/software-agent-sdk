@@ -451,7 +451,7 @@ Preconditions:
     --check ok eq true --check tools contains read_subject
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-remote-bearer/wrong-token \
     --json "{\"server\":{\"transport\":\"http\",\"url\":\"http://127.0.0.1:$BEARER_PORT/mcp\",\"auth\":{\"strategy\":\"bearer\",\"value\":\"qa-f19-wrong\"}},\"timeout\":20}" \
-    --check ok eq false --check error contains 401
+    --check ok eq false --check error contains 'error response'
   ```
   The right token works through `auth.strategy: bearer`, through a plain
   header (with the legacy `shttp` alias) and through `auth.strategy: header`
@@ -802,7 +802,7 @@ Preconditions:
 
 - `POST /api/mcp/test` and OAuth start answer HTTP 200 for every connection
   problem: assert `ok` and `error_kind`, never the status code alone. A
-  wrong bearer token (`HTTPStatusError ... 401`) and a command that exits at
+  wrong bearer token (`MCPError: Server returned an error response`; the HTTP status is not reported) and a command that exits at
   once (`McpError: Connection closed`) are classified `unknown`, not
   `connection`.
 - `tool_call` runs the tool for real and shares the request `timeout`; pick a

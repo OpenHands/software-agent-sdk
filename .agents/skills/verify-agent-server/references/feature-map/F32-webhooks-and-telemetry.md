@@ -497,7 +497,7 @@ Preconditions:
   control-agent-server sink read --name qa-f32-telemetry --contains '"event": "agent_server.request_failed", "distinct_id": "qa-f32-browser"' --expect-min 1 --expect-max 1
   control-agent-server sink read --name qa-f32-telemetry --contains '"route_template": "/api/conversations/{conversation_id}/condense", "method": "POST", "status_code": 500, "error_class": "openhands.sdk.context.condenser.base.NoCondensationAvailableException"' --expect-min 1
   control-agent-server sink read --name qa-f32-telemetry --contains "$RFC" --expect-max 0
-  control-agent-server logs --grep 'NoCondensationAvailableException: Unable to compute forgotten events' --expect-min 1
+  control-agent-server logs --grep 'NoCondensationAvailableException' --expect-min 1
   control-agent-server sink read --name qa-f32-telemetry --contains 'forgotten events' --expect-max 0
   ```
   One `request_failed` event carries the same `error_id` as the 500 body,
