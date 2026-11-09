@@ -16,7 +16,6 @@ from openhands.agent_server.git_provider_service import (
     get_provider_pull_request,
     search_provider_repositories,
 )
-from openhands.agent_server.models import GitPullRequestStatus
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
@@ -31,6 +30,7 @@ from openhands.sdk.git.models import (
     GitCommitsPage,
     GitDiff,
     GitProviderRepositoryPage,
+    GitPullRequestStatus,
 )
 from openhands.sdk.workspace.repo import GitProvider
 
@@ -165,11 +165,27 @@ async def git_repositories_search(
         raise HTTPException(status_code=e.status_code, detail=str(e)) from e
 
 
+# One path segment of a GitHub owner or repository name. "." and ".." also
+# match, and the handler refuses them so the provider URL cannot climb out of
+# /repos/{owner}/{repo} (the pattern engine has no lookahead).
 _OWNER_REPO_PATTERN = r"^[A-Za-z0-9_.-]+$"
+_DOT_SEGMENTS = frozenset({".", ".."})
+MISSING_PROVIDER_TOKEN_CODE = "missing_provider_token"
 
 
 @git_router.get(
-    "/pull-requests/{owner}/{repo}/{number}", response_model=GitPullRequestStatus
+    "/repositories/{owner}/{repo}/pull-requests/{number}",
+    response_model=GitPullRequestStatus,
+    responses={
+        409: {
+            "description": (
+                "No token is configured for the provider. The detail is "
+                f'{{"code": "{MISSING_PROVIDER_TOKEN_CODE}", "message": ...}}, '
+                "so a client can hide the status instead of showing an error."
+            )
+        },
+        429: {"description": "The provider's rate limit was reached."},
+    },
 )
 async def git_pull_request_status(
     request: Request,
@@ -177,14 +193,14 @@ async def git_pull_request_status(
     repo: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
     number: Annotated[int, PathParam(ge=1)],
     provider: Annotated[
-        GitProvider, Query(description="Git provider hosting the pull request")
-    ] = GitProvider.GITHUB,
+        GitProvider, Query(description="Git provider hosting the repository")
+    ],
 ) -> GitPullRequestStatus:
-    """Read a pull request's state and the combined CI result of its head commit.
-
-    Answers 424 when no token is configured for the provider, so a client can
-    hide the status instead of showing an error.
-    """
+    """Read a pull request's state and the combined CI result of its head commit."""
+    if owner in _DOT_SEGMENTS or repo in _DOT_SEGMENTS:
+        raise HTTPException(
+            status_code=422, detail="'owner' and 'repo' must not be '.' or '..'"
+        )
     try:
         return await get_provider_pull_request(
             get_config(request), provider, owner, repo, number
@@ -192,9 +208,15 @@ async def git_pull_request_status(
     except UnsupportedGitProviderError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except MissingGitProviderTokenError as e:
-        raise HTTPException(status_code=424, detail=str(e)) from e
+        raise HTTPException(
+            status_code=409,
+            detail={"code": MISSING_PROVIDER_TOKEN_CODE, "message": str(e)},
+        ) from e
     except GitProviderAPIError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+        headers = {"Retry-After": e.retry_after} if e.retry_after else None
+        raise HTTPException(
+            status_code=e.status_code, detail=str(e), headers=headers
+        ) from e
 
 
 @git_router.get("/changes")
