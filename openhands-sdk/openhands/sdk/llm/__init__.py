@@ -59,6 +59,7 @@ from openhands.sdk.llm.streaming import (
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
 from openhands.sdk.llm.utils.runtime_metadata import ModelRuntimeMetadata
+from openhands.sdk.llm.utils.telemetry import LLMAttemptEvent
 from openhands.sdk.llm.utils.unverified_models import (
     UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
     get_unverified_models,
@@ -91,6 +92,7 @@ __all__ = [
     "aclean_outward_text",
     "clean_outward_text",
     "FallbackStrategy",
+    "LLMAttemptEvent",
     "LLMResponse",
     "LLM",
     "LLMCallContext",

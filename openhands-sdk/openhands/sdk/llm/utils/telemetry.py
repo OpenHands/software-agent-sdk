@@ -1,3 +1,6 @@
+import functools
+import inspect
+import itertools
 import json
 import math
 import os
@@ -6,8 +9,9 @@ import traceback
 import uuid
 import warnings
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Literal, Self
 
 from litellm.cost_calculator import completion_cost as litellm_completion_cost
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
@@ -23,7 +27,7 @@ from pydantic import (
 )
 
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
-from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.deprecation import warn_deprecated
@@ -127,6 +131,105 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
         )
 
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class LLMAttemptEvent:
+    """One provider call attempt, as reported to ``LLM.attempt_listener``.
+
+    Every attempt, retries and fallback models included, reports ``started``
+    and then exactly one of ``succeeded`` or ``failed``. ``attempt`` counts from
+    1 within one call of one model.
+
+    ``usage`` is the record added to ``Metrics`` for this attempt. A ``failed``
+    attempt carries it too when the response arrived but was rejected (for
+    example a response without choices). An attempt that ends before a complete
+    response (connection error, timeout, a stream cut off midway, cancellation)
+    has no usage: providers report usage only with a complete response.
+    """
+
+    phase: Literal["started", "succeeded", "failed"]
+    attempt: int
+    model: str
+    latency: float | None = None
+    """Seconds since the attempt started; ``None`` for ``started``."""
+    usage: TokenUsage | None = None
+    error: BaseException | None = None
+
+
+AttemptListener = Callable[[LLMAttemptEvent], None]
+
+_attempt_usages: ContextVar[list[TokenUsage] | None] = ContextVar(
+    "llm_attempt_usages", default=None
+)
+
+
+def observe_attempts(
+    attempt_fn: Callable[..., Any], listener: AttemptListener, model: str
+) -> Callable[..., Any]:
+    """Wrap one retryable attempt function so ``listener`` sees each attempt."""
+    attempts = itertools.count(1)
+
+    def notify(event: LLMAttemptEvent) -> None:
+        try:
+            listener(event)
+        except Exception:
+            logger.exception("LLM attempt listener failed")
+
+    def ended(
+        attempt: int,
+        started_at: float,
+        usages: list[TokenUsage],
+        error: BaseException | None = None,
+    ) -> LLMAttemptEvent:
+        return LLMAttemptEvent(
+            "succeeded" if error is None else "failed",
+            attempt,
+            model,
+            latency=time.monotonic() - started_at,
+            usage=usages[-1] if usages else None,
+            error=error,
+        )
+
+    if inspect.iscoroutinefunction(attempt_fn):
+
+        @functools.wraps(attempt_fn)
+        async def observed_async(*args: Any, **kwargs: Any) -> Any:
+            attempt = next(attempts)
+            usages: list[TokenUsage] = []
+            token = _attempt_usages.set(usages)
+            started_at = time.monotonic()
+            notify(LLMAttemptEvent("started", attempt, model))
+            try:
+                resp = await attempt_fn(*args, **kwargs)
+            except BaseException as error:
+                notify(ended(attempt, started_at, usages, error))
+                raise
+            finally:
+                _attempt_usages.reset(token)
+            notify(ended(attempt, started_at, usages))
+            return resp
+
+        return observed_async
+
+    @functools.wraps(attempt_fn)
+    def observed(*args: Any, **kwargs: Any) -> Any:
+        attempt = next(attempts)
+        usages: list[TokenUsage] = []
+        token = _attempt_usages.set(usages)
+        started_at = time.monotonic()
+        notify(LLMAttemptEvent("started", attempt, model))
+        try:
+            resp = attempt_fn(*args, **kwargs)
+        except BaseException as error:
+            notify(ended(attempt, started_at, usages, error))
+            raise
+        finally:
+            _attempt_usages.reset(token)
+        notify(ended(attempt, started_at, usages))
+        return resp
+
+    return observed
 
 
 def _response_usage(
@@ -404,7 +507,7 @@ class Telemetry(BaseModel):
         self, usage: UsageSnapshot, response_id: str, context_window: int
     ) -> None:
         """Record an already-normalized usage snapshot into ``metrics``."""
-        self.metrics.add_token_usage(
+        record = self.metrics.add_token_usage(
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             cache_read_tokens=usage.cache_read_tokens,
@@ -414,6 +517,9 @@ class Telemetry(BaseModel):
             response_id=response_id,
             model_name=self.model_name,
         )
+        attempt_usages = _attempt_usages.get()
+        if attempt_usages is not None:
+            attempt_usages.append(record)
 
     # ---------- Observability span ----------
     # These bracket one LLM call: ``on_request`` -> transport -> ``on_response``

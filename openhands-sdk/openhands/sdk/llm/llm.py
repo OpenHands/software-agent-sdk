@@ -163,7 +163,11 @@ from openhands.sdk.llm.utils.openhands_provider import (
     litellm_call_kwargs,
 )
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_condition
-from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.telemetry import (
+    AttemptListener,
+    Telemetry,
+    observe_attempts,
+)
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
@@ -697,6 +701,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         exclude=True,
     )
+    attempt_listener: SkipJsonSchema[AttemptListener | None] = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Called synchronously for every provider call attempt, retries and "
+            "fallback models included: 'started', then 'succeeded' or "
+            "'failed', with the attempt's recorded usage when a response "
+            "arrived. Runs on the calling thread or event loop, so it must be "
+            "fast and non-blocking. Exceptions it raises are logged and "
+            "ignored."
+        ),
+    )
     # Usage metrics and telemetry live in a session, not on the configuration.
     # This is the one behind ``llm.metrics`` / ``llm.telemetry``; see
     # ``session_for`` for how it relates to a conversation's.
@@ -1185,6 +1201,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._session = LLMSession(self)
         self._registry_session = None
 
+    def _lend_attempt_listener(
+        self, call_fn: Callable[[LLM], LLMResponse]
+    ) -> Callable[[LLM], LLMResponse]:
+        """Report a fallback model's attempts to this LLM's attempt listener."""
+        listener = self.attempt_listener
+        if listener is None:
+            return call_fn
+
+        def call_with_listener(fallback: LLM) -> LLMResponse:
+            saved = fallback.attempt_listener
+            fallback.attempt_listener = listener
+            try:
+                return call_fn(fallback)
+            finally:
+                fallback.attempt_listener = saved
+
+        return call_with_listener
+
     def _handle_error(
         self,
         error: Exception,
@@ -1204,7 +1238,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 primary_model=self.model,
                 primary_error=error,
                 primary_metrics=session.metrics,
-                call_fn=fallback_call_fn,
+                call_fn=self._lend_attempt_listener(fallback_call_fn),
                 primary=self,
             )
             if result is not None:
@@ -1236,7 +1270,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 self.model,
                 error,
                 session.metrics,
-                fallback_call_fn,
+                self._lend_attempt_listener(fallback_call_fn),
                 primary=self,
             )
             if result is not None:
@@ -1324,13 +1358,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Exhausted allowances skip backoff. Provider quota errors may fall back;
         explicit budget denials stop without trying another model.
         """
-        return self.retry_decorator(
+        retry = self.retry_decorator(
             num_retries=self.num_retries,
             retry_exceptions=transient_error_condition(LLM_RETRY_EXCEPTIONS),
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
             retry_listener=self._retry_listener_fn,
+        )
+        listener = self.attempt_listener
+        if listener is None:
+            return retry
+        return lambda attempt_fn: retry(
+            observe_attempts(attempt_fn, listener, self.model)
         )
 
     def _timeout_error(self, detail: str, seconds: float) -> LiteLLMTimeout:
