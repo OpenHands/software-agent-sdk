@@ -37,6 +37,7 @@ import httpx
 import mcp.types
 from fastapi import APIRouter, HTTPException, Request
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
+from mcp.shared.exceptions import MCPError as MCPProtocolError
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher, get_config
@@ -611,6 +612,16 @@ def _probe_mcp_server(
     mask = SecretMask(secret_values)
     scrub = _error_scrubber(mask)
 
+    last_http_status: list[int] = []
+
+    def observe_http_response(response: Any) -> None:
+        last_http_status.append(response.status_code)
+
+    def http_status_detail(status: int, message: str) -> str:
+        reason = {401: "Unauthorized", 403: "Forbidden"}.get(status)
+        prefix = f"HTTP {status}" + (f" {reason}" if reason else "")
+        return f"{prefix}: {message}"
+
     try:
         server = request.resolved_server
         oauth_auth = server.oauth_auth
@@ -623,7 +634,8 @@ def _probe_mcp_server(
         # and a (possibly long-lived) subprocess. Use the context-manager
         # form so we always tear it down, even when listing succeeded.
         create_tools_kwargs: dict[str, Any] = {
-            "mcp_oauth_token_storage": oauth_token_storage
+            "mcp_oauth_token_storage": oauth_token_storage,
+            "response_observer": observe_http_response,
         }
         if mcp_oauth_factory is not None:
             create_tools_kwargs["mcp_oauth_factory"] = mcp_oauth_factory
@@ -690,12 +702,16 @@ def _probe_mcp_server(
                     request.name,
                     masked,
                 )
-        return MCPTestFailure(
-            error=scrub(
-                f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-            ),
-            error_kind="unknown",
+        message = scrub(
+            f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         )
+        if (
+            isinstance(exc, MCPProtocolError)
+            and last_http_status
+            and last_http_status[-1] in (401, 403)
+        ):
+            message = http_status_detail(last_http_status[-1], message)
+        return MCPTestFailure(error=message, error_kind="unknown")
 
 
 def _expand_secret_references(

@@ -7,11 +7,14 @@ import base64
 import json
 import logging
 import sys
+import threading
 import time
 from collections.abc import Generator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
 import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -28,6 +31,7 @@ from openhands.agent_server.mcp_router import (
     _MCPOAuthProbeJob,
     _oauth_probe_jobs,
     _oauth_probe_jobs_lock,
+    _probe_mcp_server,
     _register_oauth_job,
 )
 from openhands.agent_server.persistence import get_secrets_store, reset_stores
@@ -100,6 +104,38 @@ def slack_like_mcp_server():
     server.stop()
 
 
+@pytest.fixture
+def rejecting_http_server() -> Generator[str]:
+    """A plain HTTP server that rejects every request with 401."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            self.rfile.read(length)
+            body = b"invalid token"
+            self.send_response(401)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self.do_POST()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/mcp"
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -143,6 +179,94 @@ def test_mcp_test_http_transport_is_accepted(
 
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
+
+
+def test_mcp_test_remote_rejected_bearer_reports_401(
+    client: TestClient, rejecting_http_server: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "protected-server",
+            "server": {
+                "transport": "http",
+                "url": rejecting_http_server,
+                "auth": {"strategy": "bearer", "value": "wrong"},
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert "HTTP 401 Unauthorized" in body["error"]
+    assert body["error_kind"] == "unknown"
+
+
+def test_mcp_test_does_not_report_an_earlier_401_for_a_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An OAuth challenge (401) followed by a 500 must not be reported as the 401."""
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    statuses: list[int] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            self.rfile.read(length)
+            status = 401 if not statuses else 500
+            statuses.append(status)
+            body = b"challenge" if status == 401 else b"boom"
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self.do_POST()
+
+        def log_message(self, format, *args):
+            pass
+
+    class RetryAuth(httpx2.Auth):
+        async def async_auth_flow(self, request):
+            response = yield request
+            if response.status_code == 401:
+                request.headers["Authorization"] = "Bearer retried"
+                yield request
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = MCPTestRequest.model_validate(
+            {
+                "server": {
+                    "type": "http",
+                    "url": f"http://127.0.0.1:{server.server_address[1]}/mcp",
+                    "auth": {"strategy": "oauth2"},
+                },
+                "timeout": 10,
+            }
+        )
+        result = _probe_mcp_server(
+            request, None, mcp_oauth_factory=lambda *args: RetryAuth()
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert isinstance(result, MCPTestFailure)
+    assert result.error_kind == "unknown"
+    assert "401" not in result.error
 
 
 def test_mcp_test_stdio_success(client: TestClient):
