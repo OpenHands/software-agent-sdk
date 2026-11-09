@@ -32,7 +32,9 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
 `GET /api/canvas-extensions/installed/{extension_name}/backend/logs`,
 `DELETE /api/canvas-extensions/installed/{extension_name}/backend/data`,
 `GET /api/canvas-extensions/installed/{extension_name}/bundle`,
-`GET /api/canvas-extensions/installed/{extension_name}/icon`
+`GET /api/canvas-extensions/installed/{extension_name}/icon`,
+`POST /api/canvas-extensions/installed/{extension_name}/backend/secret-grant`,
+`DELETE /api/canvas-extensions/installed/{extension_name}/backend/secret-grant`
 
 ## Sub-features
 
@@ -65,6 +67,7 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
 - `F28.status-probe-latch`: a backend that missed one status health probe (it answered slower than the 1 s probe timeout) is reported `ready` again once it answers its health check.
 - `F28.status-exit-hang`: when a backend's leader process exits while a child it forked still holds its stdout, `GET .../backend` answers promptly with `unhealthy` and `stop` reaps the child.
 - `F28.hard-restart-orphan`: a backend that was running when the server was SIGKILLed does not survive the server's restart.
+- `F28.backend-secret-grant`: `POST .../backend/secret-grant` with the installed revision and exactly the manifest's declared `secret_refs` answers the status with `secret_grant_revision` set (a backend that declares secrets refuses `start` before it); a wrong revision, a missing, extra, different or duplicated name is 409, an extra field or a missing or empty field is 422, and none of them grants; `DELETE` clears `secret_grant_revision`, stops a running backend, disables the app and removes the grant, and no response, grant file or log holds a credential value.
 
 ## How to get to it (agent POV)
 
@@ -76,7 +79,11 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
 - REST (backend lifecycle): `GET .../backend`, `POST .../backend/prepare` and
   `POST .../backend/start` (both `{"revision": "<GET .../backend .revision>"}`),
   `POST .../backend/stop`, `GET .../backend/logs?limit_bytes=N` and
-  `DELETE .../backend/data`. Driven directly as well.
+  `DELETE .../backend/data`. Driven directly as well. The credential consent
+  is `POST .../backend/secret-grant` (`{"revision", "secret_refs"}`, names only,
+  no other field) and `DELETE .../backend/secret-grant`
+  (`F28.backend-secret-grant`); `PATCH` with `revision` and `secret_refs` grants
+  as part of enabling.
 - TypeScript client: `OpenHandsClient.canvasExtensions` (`CanvasExtensionsClient`
   in `clients/typescript/src/client/canvas-extensions-client.ts`) has
   `getBackendStatus`, `prepareBackend`, `startBackend`, `stopBackend`,
@@ -122,7 +129,9 @@ Preconditions:
   whose `/exit` route kills the leader without answering), `qa-f28-env` (the
   same server, asking to inherit `PATH`, `TZ` and `LANG`), `qa-f28-env-secret`
   and `qa-f28-env-dup` (asking for `OH_SECRET_KEY`, and for `TZ` twice) and
-  `qa-f28-remote` (a remote `url` artifact on a closed loopback HTTPS port).
+  `qa-f28-remote` (a remote `url` artifact on a closed loopback HTTPS port) and
+  `qa-f28-secret` (the same server, declaring `secret_refs` `QA_F28_SECRET_A`
+  and `QA_F28_SECRET_B`).
   The family launches with `TZ=UTC` (`Launch:`), so the server has a `TZ` to
   pass on. `node` runs the TypeScript client from `clients/typescript/dist`
   (a checkout without it builds it with `npm ci && npm run build`, which
@@ -146,7 +155,7 @@ Preconditions:
               info.size, info.mode = len(data), 0o755
               tar.addfile(info, io.BytesIO(data))
       return buffer.getvalue()
-  def app(name, archive, argv=("{artifact_dir}/run.sh", "{port}"), inherit=None):
+  def app(name, archive, argv=("{artifact_dir}/run.sh", "{port}"), inherit=None, secret_refs=None):
       pkg = root / name
       (pkg / "dist").mkdir(parents=True, exist_ok=True)
       (pkg / "backend").mkdir(exist_ok=True)
@@ -161,6 +170,8 @@ Preconditions:
                               "health": {"path": "/health", "timeout_seconds": 30, "interval_seconds": 0.2}}}
       if inherit is not None:
           manifest["backend"]["inherit_environment"] = list(inherit)
+      if secret_refs is not None:
+          manifest["backend"]["secret_refs"] = list(secret_refs)
       (pkg / "canvas-extension.json").write_text(json.dumps(manifest, indent=2))
   app("qa-f28-logs", targz(("run.sh", b"#!/bin/sh\necho qa-f28-out\necho qa-f28-err >&2\nexec /bin/sleep 120\n")))
   app("qa-f28-unsafe", targz(("run.sh", b"#!/bin/sh\n"), ("../qa-f28-escape", b"x\n")))
@@ -191,6 +202,8 @@ Preconditions:
                          ("qa-f28-env-dup", ["TZ", "TZ"])):
       app(env_app, targz(("run.py", f"#!{sys.executable}\n{FLAKY}".encode())), argv=("{artifact_dir}/run.py", "{port}"),
           inherit=names)
+  app("qa-f28-secret", targz(("run.py", f"#!{sys.executable}\n{FLAKY}".encode())), argv=("{artifact_dir}/run.py", "{port}"),
+      secret_refs=["QA_F28_SECRET_A", "QA_F28_SECRET_B"])
   remote = root / "qa-f28-remote"
   (remote / "dist").mkdir(parents=True, exist_ok=True)
   (remote / "dist" / "index.js").write_text("export const app = 'qa-f28-remote';\n")
@@ -543,7 +556,7 @@ Preconditions:
 - **Start (`F28.backend-start`).** Start the prepared revision of the
   (still disabled) app and look at the process it runs.
 
-  Requires: `F28.install-local`, `F28.install-git`
+  Requires: `F28.install-local`, `F28.install-git`, `F28.backend-prepare`
   ```sh
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BREV\"}" \
     --expect 200 --check state eq ready --check pid exists --check port exists --check detail eq null \
@@ -1029,6 +1042,108 @@ Preconditions:
   live backend. The leftover check matches the run-private artifact path
   rather than the pid, so a recycled pid cannot fake a survivor; the `pgrep`
   before the crash shows the pattern finds the live backend.
+
+- **Secret grant (`F28.backend-secret-grant`).** `qa-f28-secret` declares two
+  `secret_refs`; the credentials are stored as fake `qa-` values that no
+  command prints or saves, and every response is compared against them.
+
+  Requires: `F28.backend-start`
+  ```sh
+  QV_A="qa-f28-$(python3 -c 'import secrets; print(secrets.token_hex(12))')"
+  QV_B="qa-f28-$(python3 -c 'import secrets; print(secrets.token_hex(12))')"
+  control-agent-server api PUT /api/settings/secrets --json "{\"name\": \"QA_F28_SECRET_A\", \"value\": \"$QV_A\"}" --expect 200 --quiet
+  control-agent-server api PUT /api/settings/secrets --json "{\"name\": \"QA_F28_SECRET_B\", \"value\": \"$QV_B\"}" --expect 200 --quiet
+  control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$F28FX/qa-f28-secret\"}" --expect 200 --quiet
+  SG=/api/canvas-extensions/installed/qa-f28-secret
+  SREV=$(control-agent-server api GET "$SG/backend" --expect 200 --check state eq stopped --check secret_grant_revision eq null \
+    --check secret_refs len-eq 2 --save F28.backend-secret-grant/before --field revision)
+  control-agent-server api POST "$SG/backend/prepare" --json "{\"revision\": \"$SREV\"}" --expect 200 --check secret_grant_revision eq null --quiet
+  control-agent-server api POST "$SG/backend/start" --json "{\"revision\": \"$SREV\"}" \
+    --expect 409 --check detail eq 'Backend secrets require an exact revision-bound grant' --save F28.backend-secret-grant/start-ungranted
+  GRANT_ERR='Grant must match installed revision and declared names'
+  control-agent-server api POST "$SG/backend/secret-grant" --json '{"revision": "qa-wrong", "secret_refs": ["QA_F28_SECRET_A", "QA_F28_SECRET_B"]}' \
+    --expect 409 --check detail eq "$GRANT_ERR" --save F28.backend-secret-grant/wrong-revision
+  for REFS in '[]' '["QA_F28_SECRET_A"]' '["QA_F28_SECRET_A", "QA_F28_SECRET_B", "QA_F28_SECRET_C"]' \
+    '["QA_F28_SECRET_A", "QA_F28_OTHER"]' '["QA_F28_SECRET_A", "QA_F28_SECRET_A"]' \
+    '["QA_F28_SECRET_A", "QA_F28_SECRET_A", "QA_F28_SECRET_B"]'; do
+    control-agent-server api POST "$SG/backend/secret-grant" --json "{\"revision\": \"$SREV\", \"secret_refs\": $REFS}" \
+      --expect 409 --check detail eq "$GRANT_ERR" --quiet
+  done
+  control-agent-server api POST "$SG/backend/secret-grant" \
+    --json "{\"revision\": \"$SREV\", \"secret_refs\": [\"QA_F28_SECRET_A\", \"QA_F28_SECRET_B\"], \"value\": \"x\"}" \
+    --expect 422 --check detail.0.type eq extra_forbidden --save F28.backend-secret-grant/extra-field
+  control-agent-server api POST "$SG/backend/secret-grant" --json "{\"revision\": \"$SREV\"}" --expect 422 --check detail.0.loc.1 eq secret_refs
+  control-agent-server api POST "$SG/backend/secret-grant" --json '{"revision": "", "secret_refs": []}' --expect 422
+  control-agent-server api POST "$SG/backend/secret-grant" --json '{}' --expect 422
+  control-agent-server api POST /api/canvas-extensions/installed/qa-ghost/backend/secret-grant \
+    --json '{"revision": "qa-x", "secret_refs": []}' --expect 409 --check detail eq "$GRANT_ERR"
+  control-agent-server api POST /api/canvas-extensions/installed/Bad_Name/backend/secret-grant \
+    --json '{"revision": "qa-x", "secret_refs": []}' --expect 422 --check detail.0.loc.1 eq extension_name
+  control-agent-server api POST "$SG/backend/secret-grant" --auth none \
+    --json "{\"revision\": \"$SREV\", \"secret_refs\": [\"QA_F28_SECRET_A\", \"QA_F28_SECRET_B\"]}" --expect 401
+  control-agent-server api DELETE "$SG/backend/secret-grant" --auth none --expect 401
+  control-agent-server api DELETE /api/canvas-extensions/installed/qa-ghost/backend/secret-grant --expect 200 \
+    --check state eq missing --check secret_grant_revision eq null
+  control-agent-server api GET "$SG/backend" --check secret_grant_revision eq null
+  test ! -e "$BK/secret-grants/qa-f28-secret.json"
+  GRANTED="$AGENT_SERVER_VERIFY_RUN/fixtures/f28/secret-grant.json"
+  control-agent-server api POST "$SG/backend/secret-grant" \
+    --json "{\"revision\": \"$SREV\", \"secret_refs\": [\"QA_F28_SECRET_B\", \"QA_F28_SECRET_A\"]}" \
+    --expect 200 --check state eq stopped --check secret_grant_revision eq "$SREV" --check revision eq "$SREV" \
+    --check secret_refs len-eq 2 --raw-out "$GRANTED" --save F28.backend-secret-grant/grant
+  control-agent-server api GET "$SG/backend" --check secret_grant_revision eq "$SREV" --check prepared_revision eq "$SREV"
+  control-agent-server state cat home/.openhands/canvas-extensions/backends/secret-grants/qa-f28-secret.json \
+    --check revision eq "$SREV" --check secret_refs len-eq 2 --not-contains "$QV_A" --not-contains "$QV_B"
+  test "$(stat -c %a "$BK/secret-grants/qa-f28-secret.json")" = 600
+  SPID2=$(control-agent-server api POST "$SG/backend/start" --json "{\"revision\": \"$SREV\"}" --expect 200 \
+    --check state eq ready --check secret_grant_revision eq "$SREV" --quiet --field pid)
+  test "$(tr '\0' '\n' < "/proc/$SPID2/environ" | grep -c '^QA_F28_SECRET_[AB]=')" = 2
+  control-agent-server api PATCH "$SG" --json "{\"enabled\": true, \"revision\": \"$SREV\"}" --expect 200 --check enabled eq true
+  control-agent-server api GET "$SG" --check enabled eq true
+  control-agent-server api DELETE "$SG/backend/secret-grant" --expect 200 --check state eq stopped \
+    --check secret_grant_revision eq null --check pid eq null --check port eq null --check prepared_revision eq "$SREV" \
+    --expect-max-ms 7000 --raw-out "$GRANTED.revoked" --save F28.backend-secret-grant/revoke
+  if kill -0 "$SPID2" 2>/dev/null; then false; fi
+  control-agent-server api GET "$SG/backend" --check state eq stopped --check secret_grant_revision eq null
+  control-agent-server api GET "$SG" --expect 200 --check enabled eq false --save F28.backend-secret-grant/disabled
+  control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json --check extensions.qa-f28-secret.enabled eq false
+  test ! -e "$BK/secret-grants/qa-f28-secret.json"
+  control-agent-server api POST "$SG/backend/start" --json "{\"revision\": \"$SREV\"}" --expect 409 \
+    --check detail eq 'Backend secrets require an exact revision-bound grant' --save F28.backend-secret-grant/start-revoked
+  control-agent-server api DELETE "$SG/backend/secret-grant" --expect 200 --check state eq stopped --check secret_grant_revision eq null
+  control-agent-server api POST "$SG/backend/secret-grant" \
+    --json "{\"revision\": \"$SREV\", \"secret_refs\": [\"QA_F28_SECRET_A\", \"QA_F28_SECRET_B\"]}" \
+    --expect 200 --check secret_grant_revision eq "$SREV" --quiet
+  control-agent-server api DELETE "$SG/backend/secret-grant" --expect 200 --check secret_grant_revision eq null --quiet
+  for LEAK in "$GRANTED" "$GRANTED.revoked"; do
+    if grep -qF -e "$QV_A" -e "$QV_B" "$LEAK"; then false; fi
+  done
+  control-agent-server logs --grep "$QV_A" --expect-none
+  control-agent-server logs --grep "$QV_B" --expect-none
+  control-agent-server api DELETE /api/canvas-extensions/installed/qa-f28-secret --expect 200 --quiet
+  control-agent-server api DELETE /api/settings/secrets/QA_F28_SECRET_A --expect 200 --quiet
+  control-agent-server api DELETE /api/settings/secrets/QA_F28_SECRET_B --expect 200 --quiet
+  ```
+  Before a grant the status shows the declared names and
+  `secret_grant_revision: null`, and `start` of the prepared revision is 409
+  (`Backend secrets require an exact revision-bound grant`). A wrong revision,
+  a missing, extra, different or duplicated name (also a duplicate that pads
+  the list to the right length) and an unknown app are 409 `Grant must match
+  installed revision and declared names`; an extra body field (`value`), a
+  missing `secret_refs`, an empty `revision` and an empty body are 422, a bad
+  name blames `extension_name`, no key is 401 (a DELETE of an unknown app is a 200 `missing`), and the status stays ungranted
+  with no grant file. The declared names in any order answer the status with
+  `secret_grant_revision` equal to the revision, a `0600` grant file holds the
+  revision and the names only, and `start` then reaches `ready` with both
+  names in the backend's environment (counted, never printed), and enabling
+  with the `revision` (the granted names stay) keeps that backend. `DELETE
+  .../secret-grant` while the app is enabled and running answers `stopped`
+  with `secret_grant_revision` and `pid` null (the approval stays), the
+  process is gone, the app reads `enabled: false` in GET and
+  `.installed.json`, the grant file is gone and `start` is 409 again; a second
+  DELETE is a harmless 200. No response, grant file or server log holds either
+  credential value. The app is uninstalled and the secrets deleted, so the
+  catalog counts above are unchanged.
 
 ## Gotchas
 

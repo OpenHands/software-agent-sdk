@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@4db1ad742ad143ddc3411631f04efb70323f40f9 (2026-11-09). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **952 sub-features**.
+The map has **953 sub-features**.
 
 ## Baseline preconditions
 
@@ -92,7 +92,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F25 | [Skills catalog, install and marketplace](F25-skills.md) | the merged skill catalog, public-repo sync, installed skills (install, enable, refresh, uninstall), marketplace, trigger-word activation in a conversation | `POST /api/skills`, `/api/skills/sync`, `/api/skills/install`, `/api/skills/installed[/{name}]`, `/api/skills/marketplace` | git; recipes: llm, network, node | 34 |
 | F26 | [Plugins catalog, install and marketplace](F26-plugins.md) | plugin catalog, install from a path or git source, enable, refresh, uninstall, marketplace, loading a plugin into a conversation | `POST /api/plugins`, `/api/plugins/install`, `/api/plugins/installed[/{name}]`, `/api/plugins/marketplace`, `/api/plugins/fetch` | llm, git, node, network | 26 |
 | F27 | [Hooks, sub-agents and tool catalogs](F27-hooks-subagents-tools.md) | hooks and sub-agent catalogs, blocking hooks in a conversation, the tool registry and catalog, client tools, forwarded agent definitions, custom tool modules | `POST /api/hooks`, `POST /api/sub-agents`, `GET /api/tools/`, `/api/tools/catalog` | llm, git, tmux, chromium | 32 |
-| F28 | [Canvas apps: install, catalog and backend lifecycle](F28-canvas-extensions.md) | Canvas app install, catalog, enable, uninstall, bundle and icon; backend approval, prepare, start, stop, logs, data, failure states, restart | `/api/canvas-extensions/install`, `/api/canvas-extensions/installed[/{name}][/backend...]` | git, node; launch `--env TZ=UTC` | 29 |
+| F28 | [Canvas apps: install, catalog and backend lifecycle](F28-canvas-extensions.md) | Canvas app install, catalog, enable, uninstall, bundle and icon; backend approval, prepare, start, stop, logs, data, failure states, restart | `/api/canvas-extensions/install`, `/api/canvas-extensions/installed[/{name}][/backend...]` | git, node; launch `--env TZ=UTC` | 30 |
 | F29 | [Canvas App backend bridge (session, HTTP and WebSocket proxy)](F29-app-backend-bridge.md) | the app-backend bridge: session cookies, origin and host checks, proxied HTTP methods and WebSockets, revocation | `/app-backends/{name}/session`, `/app-backends/{name}[/{path}]`, `WS /app-backends/{name}[/{path}]` | git; launch `--canvas-ingress` | 29 |
 | F30 | [OpenAI-compatible gateway (/v1)](F30-openai-gateway.md) | the OpenAI-compatible gateway: models, chat completions (plain and streaming), responses, conversation reuse, usage, the official OpenAI SDK | `GET /v1/models`, `POST /v1/chat/completions`, `/v1/responses` | llm, tmux | 28 |
 | F31 | [Persistence, restart recovery, leases and limits](F31-persistence-and-limits.md) | state that survives graceful and SIGKILL restarts, crash recovery, conversation ownership leases and takeover between servers, idle eviction, run capacity, config file vs environment precedence | behavior only: `restart`, `restart --hard`, a second server on shared storage | llm, tmux | 23 |
