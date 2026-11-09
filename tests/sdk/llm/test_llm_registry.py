@@ -126,6 +126,20 @@ def test_llm_registry_remove_method():
     registry.remove("never-registered")
 
 
+def test_llm_registry_readd_after_remove_keeps_metrics():
+    from pydantic import SecretStr
+
+    registry = LLMRegistry()
+    llm = LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="slot")
+    registry.add(llm)
+    llm.metrics.add_cost(3.0)
+
+    registry.remove("slot")
+    registry.add(llm)
+
+    assert llm.metrics.accumulated_cost == 3.0
+
+
 def test_llm_registry_add_method():
     """Test the new add() method for LLMRegistry."""
     registry = LLMRegistry()

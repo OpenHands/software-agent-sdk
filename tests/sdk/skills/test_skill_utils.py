@@ -347,14 +347,20 @@ Add proper error handling."""
     assert agent.source == to_posix_path(cursorrules_path)
 
 
-def test_skill_version_as_integer(tmp_path):
-    """Test loading a skill with version as integer (reproduces the bug)."""
-    # Create a skill with version as an unquoted integer
-    # This should be parsed as an integer by YAML but converted to string by our code
-    skill_content = """---
-name: test_agent
+@pytest.mark.parametrize(
+    ("name", "version"),
+    [
+        # An unquoted integer version used to fail to load.
+        pytest.param("test_agent", "2512312", id="integer"),
+        pytest.param("test_agent_float", "1.5", id="float"),
+        pytest.param("test_agent_string", '"1.0.0"', id="string_unchanged"),
+    ],
+)
+def test_skill_version_loads_from_any_yaml_scalar(tmp_path, name, version):
+    skill_content = f"""---
+name: {name}
 type: knowledge
-version: 2512312
+version: {version}
 agent: CodeActAgent
 triggers:
   - test
@@ -362,79 +368,16 @@ triggers:
 
 # Test Agent
 
-This is a test agent with integer version.
+This is a test agent.
 """
 
-    test_path = tmp_path / "test_agent.md"
+    test_path = tmp_path / f"{name}.md"
     test_path.write_text(skill_content)
 
-    # This should not raise an error even though version is an integer in YAML
     agent = Skill.load(test_path)
 
-    # Verify the agent was loaded correctly
     assert isinstance(agent, Skill)
-    assert agent.name == "test_agent"
-    # .metadata was deprecated in V1. this test simply tests
-    # that we are backward compatible
-    # assert agent.metadata.version == '2512312'  # Should be converted to string
-    assert isinstance(agent.trigger, KeywordTrigger)
-
-
-def test_skill_version_as_float(tmp_path):
-    """Test loading a skill with version as float."""
-    # Create a skill with version as an unquoted float
-    skill_content = """---
-name: test_agent_float
-type: knowledge
-version: 1.5
-agent: CodeActAgent
-triggers:
-  - test
----
-
-# Test Agent Float
-
-This is a test agent with float version.
-"""
-
-    test_path = tmp_path / "test_agent_float.md"
-    test_path.write_text(skill_content)
-
-    # This should not raise an error even though version is a float in YAML
-    agent = Skill.load(test_path)
-
-    # Verify the agent was loaded correctly
-    assert isinstance(agent, Skill)
-    assert agent.name == "test_agent_float"
-    assert isinstance(agent.trigger, KeywordTrigger)
-
-
-def test_skill_version_as_string_unchanged(tmp_path):
-    """Test loading a skill with version as string (should remain unchanged)."""
-    # Create a skill with version as a quoted string
-    skill_content = """---
-name: test_agent_string
-type: knowledge
-version: "1.0.0"
-agent: CodeActAgent
-triggers:
-  - test
----
-
-# Test Agent String
-
-This is a test agent with string version.
-"""
-
-    test_path = tmp_path / "test_agent_string.md"
-    test_path.write_text(skill_content)
-
-    # This should work normally
-    agent = Skill.load(test_path)
-
-    # Verify the agent was loaded correctly
-    assert isinstance(agent, Skill)
-    assert agent.name == "test_agent_string"
+    assert agent.name == name
     assert isinstance(agent.trigger, KeywordTrigger)
 
 
@@ -933,3 +876,13 @@ def test_find_third_party_files_collision_winner_deterministic(tmp_path, monkeyp
     monkeypatch.setattr(Path, "iterdir", lambda self: iter(entries))
     files = find_third_party_files(tmp_path, {"agents.md": "agents"})
     assert [f.name for f in files] == ["AGENTS.md"]
+
+
+def test_find_regular_md_files_recursive_skips_readme_any_case(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.md").write_text("docs")
+    (tmp_path / "skill-a.md").write_text("a")
+
+    files = find_regular_md_files(tmp_path, set())
+
+    assert [f.name for f in files] == ["skill-a.md"]

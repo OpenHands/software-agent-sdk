@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# sdk-map: check, route, replay and report on the in-process SDK feature map.
+# See ../SKILL.md and `--help`. Standard library only, so any python3 works.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "${SDK_MAP_PYTHON:-python3}" "$SCRIPT_DIR/sdk_map.py" "$@"

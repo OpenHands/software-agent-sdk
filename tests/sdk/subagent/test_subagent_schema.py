@@ -141,22 +141,47 @@ Content.
 
         assert AgentDefinition.load(agent_md).max_iteration_per_run is None
 
-    def test_max_iteration_per_run_not_in_metadata(self, tmp_path: Path):
-        """Test that max_iteration_per_run doesn't leak into metadata."""
+    @pytest.mark.parametrize(
+        ("field", "frontmatter"),
+        [
+            pytest.param(
+                "max_iteration_per_run",
+                "max_iteration_per_run: 5",
+                id="max_iteration_per_run",
+            ),
+            pytest.param("skills", "skills: my-skill", id="skills"),
+            pytest.param(
+                "profile_store_dir",
+                "profile_store_dir: /some/path",
+                id="profile_store_dir",
+            ),
+            pytest.param(
+                "mcp_config",
+                "mcp_config:\n"
+                "  fetch:\n"
+                "    command: uvx\n"
+                "    args:\n"
+                "      - mcp-server-fetch",
+                id="mcp_config",
+            ),
+            pytest.param(
+                "permission_mode",
+                "permission_mode: never_confirm",
+                id="permission_mode",
+            ),
+        ],
+    )
+    def test_known_field_not_in_metadata(
+        self, tmp_path: Path, field: str, frontmatter: str
+    ):
         agent_md = tmp_path / "meta-check.md"
         agent_md.write_text(
-            """---
-name: meta-check
-max_iteration_per_run: 5
-custom_field: value
----
-
-Content.
-"""
+            f"---\nname: meta-check\n{frontmatter}\ncustom_field: value\n---\n"
+            "\nContent.\n"
         )
 
         agent = AgentDefinition.load(agent_md)
-        assert "max_iteration_per_run" not in agent.metadata
+        assert field not in agent.metadata
         assert agent.metadata.get("custom_field") == "value"
 
     def test_max_iteration_per_run_zero_raises(self):
@@ -309,23 +334,6 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         assert agent.skills == []
 
-    def test_load_skills_not_in_metadata(self, tmp_path: Path):
-        """Test that skills field is excluded from extra metadata."""
-        agent_md = tmp_path / "agent.md"
-        agent_md.write_text(
-            """---
-name: agent
-skills: my-skill
-custom_field: value
----
-
-Prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
-        assert "skills" not in agent.metadata
-        assert agent.metadata.get("custom_field") == "value"
-
     def test_load_agent_with_profile_store_dir(self, tmp_path: Path):
         """Test loading agent with profile_store_dir from frontmatter."""
         agent_md = tmp_path / "profiled.md"
@@ -356,24 +364,6 @@ Content.
 
         agent = AgentDefinition.load(agent_md)
         assert agent.profile_store_dir is None
-
-    def test_profile_store_dir_not_in_metadata(self, tmp_path: Path):
-        """Test that profile_store_dir doesn't leak into metadata."""
-        agent_md = tmp_path / "meta-check.md"
-        agent_md.write_text(
-            """---
-name: meta-check
-profile_store_dir: /some/path
-custom_field: value
----
-
-Content.
-"""
-        )
-
-        agent = AgentDefinition.load(agent_md)
-        assert "profile_store_dir" not in agent.metadata
-        assert agent.metadata.get("custom_field") == "value"
 
     def test_profile_store_dir_default_none(self):
         """Test that profile_store_dir defaults to None on direct construction."""
@@ -423,27 +413,6 @@ You are an agent with MCP tools.
         assert servers["fetch"]["command"] == "uvx"
         assert servers["fetch"]["args"] == ["mcp-server-fetch"]
         assert "filesystem" in agent.mcp_config
-
-    def test_load_mcp_config_not_in_metadata(self, tmp_path: Path):
-        """Test that mcp_config doesn't leak into metadata."""
-        agent_md = tmp_path / "agent.md"
-        agent_md.write_text(
-            """---
-name: agent
-mcp_config:
-  fetch:
-    command: uvx
-    args:
-      - mcp-server-fetch
-custom_field: value
----
-
-Prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
-        assert "mcp_config" not in agent.metadata
-        assert agent.metadata.get("custom_field") == "value"
 
     def test_load_without_mcp_config(self, tmp_path: Path):
         """Test that loading from file without mcp_config gives None."""
@@ -603,23 +572,6 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         assert agent.permission_mode is None
 
-    def test_load_permission_mode_not_in_metadata(self, tmp_path: Path):
-        """Test that permission_mode is excluded from extra metadata."""
-        agent_md = tmp_path / "agent.md"
-        agent_md.write_text(
-            """---
-name: agent
-permission_mode: never_confirm
-custom_field: value
----
-
-Prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
-        assert "permission_mode" not in agent.metadata
-        assert agent.metadata.get("custom_field") == "value"
-
     def test_get_confirmation_policy_none(self):
         """Test that None permission_mode returns None (inherit parent)."""
         agent = AgentDefinition(name="test")
@@ -698,18 +650,12 @@ class TestAgentDefinitionCondenser:
         agent_md.write_text("---\nname: a\n---\n\nPrompt.\n")
         assert AgentDefinition.load(agent_md).condenser is None
 
-    def test_condenser_none_disables(self, tmp_path: Path):
+    @pytest.mark.parametrize("value", ["none", "false"])
+    def test_condenser_disables(self, tmp_path: Path, value: str):
         from openhands.sdk.context.condenser import NoOpCondenser
 
         agent_md = tmp_path / "a.md"
-        agent_md.write_text("---\nname: a\ncondenser: none\n---\n\nPrompt.\n")
-        assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
-
-    def test_condenser_false_disables(self, tmp_path: Path):
-        from openhands.sdk.context.condenser import NoOpCondenser
-
-        agent_md = tmp_path / "a.md"
-        agent_md.write_text("---\nname: a\ncondenser: false\n---\n\nPrompt.\n")
+        agent_md.write_text(f"---\nname: a\ncondenser: {value}\n---\n\nPrompt.\n")
         assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
 
     def test_condenser_invalid_string_raises(self, tmp_path: Path):
@@ -733,17 +679,40 @@ class TestAgentDefinitionMaxBudget:
         md.write_text("---\nname: a\n---\n\nPrompt.\n")
         assert AgentDefinition.load(md).max_budget_per_run is None
 
-    def test_numeric_value(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            pytest.param("2.5", 2.5, id="numeric"),
+            pytest.param('"1.0"', 1.0, id="string"),
+        ],
+    )
+    def test_parses_value(self, tmp_path: Path, value: str, expected: float):
         md = tmp_path / "a.md"
-        md.write_text("---\nname: a\nmax_budget_per_run: 2.5\n---\n\nPrompt.\n")
-        assert AgentDefinition.load(md).max_budget_per_run == 2.5
-
-    def test_string_value(self, tmp_path: Path):
-        md = tmp_path / "a.md"
-        md.write_text('---\nname: a\nmax_budget_per_run: "1.0"\n---\n\nPrompt.\n')
-        assert AgentDefinition.load(md).max_budget_per_run == 1.0
+        md.write_text(f"---\nname: a\nmax_budget_per_run: {value}\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run == expected
 
     def test_not_in_metadata(self, tmp_path: Path):
         md = tmp_path / "a.md"
         md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
         assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
+
+
+def test_load_empty_frontmatter_values_fall_back_to_defaults(tmp_path: Path):
+    md = tmp_path / "reviewer.md"
+    md.write_text("---\nname:\ndescription:\nmodel:\n---\n\nPrompt.\n")
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "reviewer"
+    assert agent.description == ""
+    assert agent.model == "inherit"
+
+
+def test_load_utf8_bom_frontmatter(tmp_path: Path):
+    md = tmp_path / "file-stem.md"
+    md.write_bytes("\ufeff---\nname: bom-agent\n---\n\nPrompt.\n".encode())
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "bom-agent"
+    assert agent.system_prompt == "Prompt."

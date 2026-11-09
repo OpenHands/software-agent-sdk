@@ -156,9 +156,20 @@ def _process_schema_node(
     if "description" in node:
         result["description"] = node["description"]
 
+    # A type may be a list of alternatives (e.g. ``["object", "null"]``); the
+    # nested structure still belongs to the non-null member. Collapse the list
+    # to that member only when it is the only non-null type left: a list with
+    # several real types (``["string", "array"]``) tells the model both are
+    # allowed, so it keeps its meaning.
+    node_type = node.get("type")
+    type_names = node_type if isinstance(node_type, list) else [node_type]
+    non_null_types = [name for name in type_names if name != "null"]
+    collapsed_type = non_null_types[0] if len(non_null_types) == 1 else None
+
     # Handle object properties recursively
-    if node.get("type") == "object" and "properties" in node:
-        result["type"] = "object"
+    if "object" in type_names and "properties" in node:
+        if collapsed_type == "object":
+            result["type"] = "object"
         result["properties"] = {}
 
         # Process each property
@@ -172,8 +183,9 @@ def _process_schema_node(
             result["required"] = node["required"]
 
     # Handle arrays
-    if node.get("type") == "array" and "items" in node:
-        result["type"] = "array"
+    if "array" in type_names and "items" in node:
+        if collapsed_type == "array":
+            result["type"] = "array"
         items = node["items"]
         if isinstance(items, list):
             # Draft-07 tuple form: one schema per position.
@@ -277,11 +289,12 @@ class Schema(DiscriminatedUnionMixin):
             desc: str | None = spec.get("description")
             field_name = fname
             field_alias = None
-            if fname in discriminator_fields:
+            if fname in discriminator_fields or fname.startswith("_"):
                 # MCP tool argument names are user-defined JSON object keys. If
                 # one collides with OpenHands' internal discriminator (e.g.
-                # "kind"), keep the external name as an alias and use a safe
-                # internal field name for Pydantic.
+                # "kind"), or is a name Pydantic refuses (a leading underscore
+                # means a private attribute), keep the external name as an
+                # alias and use a safe internal field name for Pydantic.
                 field_alias = fname
                 has_aliased_field = True
                 alias_specs[fname] = copy.deepcopy(spec)

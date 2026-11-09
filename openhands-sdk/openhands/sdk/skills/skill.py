@@ -1129,7 +1129,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     all_skills.append(skill)
                     seen_names.add(skill.name)
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-            except (SkillError, OSError, yaml.YAMLError) as e:
+            except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load nested third-party files (e.g. server/AGENTS.md) as directory-scoped

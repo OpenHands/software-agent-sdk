@@ -15,7 +15,10 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.request import ConversationConfig
-from openhands.sdk.conversation.title_utils import generate_title_with_llm
+from openhands.sdk.conversation.title_utils import (
+    generate_fallback_title,
+    generate_title_with_llm,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
@@ -220,7 +223,7 @@ def test_generate_title_with_llm_uses_default_for_blank_prompt(mock_completion, 
 
     user_prompt = get_completion_user_prompt(mock_completion)
     assert user_prompt.startswith("Generate a title (maximum 50 characters)")
-    assert "🐛 bugfix: Bug fixes" in user_prompt
+    assert "emoji" not in user_prompt.lower()
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
@@ -593,3 +596,8 @@ def test_generate_title_keeps_text_without_reasoning(mock_completion):
     assert generate_title_with_llm("Help me write a script", llm) == (
         "✨ Create Python Script"
     )
+
+
+@pytest.mark.parametrize("max_length", [0, 1, 2])
+def test_fallback_title_never_exceeds_tiny_max_length(max_length):
+    assert len(generate_fallback_title("hello world", max_length)) <= max_length

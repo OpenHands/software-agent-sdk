@@ -88,6 +88,7 @@ from openhands.sdk.plugin import (
     fetch_plugin_with_resolution,
     load_available_plugins,
 )
+from openhands.sdk.plugin.strict_fetch import expand_plugin_source
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -113,7 +114,6 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -879,10 +879,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Deprecated. ``LocalConversation`` has no title field;
-                ``ConversationState`` does not store titles (they live on
-                ``StoredConversation`` in the agent-server layer). Passing a
-                value is accepted for backwards compatibility but has no effect.
+            title: Accepted for signature compatibility with
+                ``RemoteConversation.fork()`` but ignored: ``LocalConversation``
+                has no title field (titles live on ``StoredConversation`` in
+                the agent-server layer).
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -897,17 +897,7 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
-        if title is not None:
-            warn_deprecated(
-                "LocalConversation.fork() title parameter",
-                deprecated_in="1.54.0",
-                removed_in="1.60.0",
-                details=(
-                    "LocalConversation has no title field; titles are managed by "
-                    "StoredConversation in the agent-server layer."
-                ),
-                stacklevel=2,
-            )
+        del title  # no local title storage; see docstring
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -1068,7 +1058,7 @@ class LocalConversation(BaseConversation):
             registrations = [
                 registration.model_copy(
                     update={
-                        "source": self._expand_plugin_source_ref(registration.source),
+                        "source": self._expand_plugin_source(registration.source),
                         "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
@@ -1148,7 +1138,7 @@ class LocalConversation(BaseConversation):
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
-                    fetch_source = self._expand_plugin_source_ref(spec.source)
+                    fetch_source = self._expand_plugin_source(spec.source)
                     fetch_ref = (
                         self._expand_plugin_source_ref(spec.ref)
                         if spec.ref
@@ -1405,6 +1395,12 @@ class LocalConversation(BaseConversation):
 
         self._plugins_loaded = True
 
+    def _expand_plugin_source(self, source: str) -> str:
+        # As strict fetch does: a value in a URL's user info is percent-encoded.
+        return expand_plugin_source(
+            source, self._state.secret_registry.get_secret_value
+        )
+
     def _expand_plugin_source_ref(self, value: str) -> str:
         return expand_variable_references(
             value,
@@ -1431,7 +1427,7 @@ class LocalConversation(BaseConversation):
             [
                 registration.model_copy(
                     update={
-                        "source": self._expand_plugin_source_ref(registration.source),
+                        "source": self._expand_plugin_source(registration.source),
                         "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
@@ -1604,7 +1600,7 @@ class LocalConversation(BaseConversation):
         self._ensure_plugins_loaded()
         spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
 
-        fetch_source = self._expand_plugin_source_ref(spec.source)
+        fetch_source = self._expand_plugin_source(spec.source)
         fetch_ref = self._expand_plugin_source_ref(spec.ref) if spec.ref else spec.ref
         path, resolved_ref = fetch_plugin_with_resolution(
             source=fetch_source,
@@ -1809,6 +1805,15 @@ class LocalConversation(BaseConversation):
         condenser_llm.reset_metrics()
         return condenser.model_copy(update={"llm": condenser_llm})
 
+    def _reject_llm_switch_on_acp(self) -> None:
+        # The ACP subprocess owns its model; swapping OpenHands' LLM would only
+        # overwrite the acp-managed placeholder without changing what runs.
+        if isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_llm and switch_profile are not supported for ACP "
+                "conversations; use switch_acp_model instead."
+            )
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -1821,7 +1826,11 @@ class LocalConversation(BaseConversation):
 
         Args:
             llm: LLM to install on the agent.
+
+        Raises:
+            ValueError: If the conversation's agent is an :class:`ACPAgent`.
         """
+        self._reject_llm_switch_on_acp()
         usage_id = llm.usage_id
         try:
             registered = self.llm_registry.get(usage_id)
@@ -1871,8 +1880,10 @@ class LocalConversation(BaseConversation):
 
         Raises:
             FileNotFoundError: If the profile does not exist.
-            ValueError: If the profile is corrupted or invalid.
+            ValueError: If the profile is corrupted or invalid, or the
+                conversation's agent is an :class:`ACPAgent`.
         """
+        self._reject_llm_switch_on_acp()
         usage_id = f"profile:{profile_name}"
         try:
             cached = self.llm_registry.get(usage_id)

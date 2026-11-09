@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
 from openhands.agent_server.launch import container_browser_enabled
+from openhands.agent_server.local_storage import remove_conversation_worktree
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
@@ -520,6 +521,15 @@ class DockerConversationRegistry(ConversationRegistry):
                 self._stopping.pop(conversation_id, None)
                 stop_event.set()
 
+    def cleanup_worktree(self, conversation_id: UUID) -> None:
+        """Unregister the conversation's worktrees (and its children's) from
+        their host repositories. Branches stay, as for a local conversation."""
+        worktrees_dir = self.provisioning.runtime_dir(conversation_id) / "worktrees"
+        if worktrees_dir.is_symlink() or not worktrees_dir.is_dir():
+            return
+        for conversation_dir in worktrees_dir.iterdir():
+            remove_conversation_worktree(conversation_dir)
+
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
             self._eviction_task.cancel()
@@ -609,9 +619,18 @@ class DockerConversationRegistry(ConversationRegistry):
         options = identity.container or ConversationContainerOptions()
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
         persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
+        # Git records absolute links in both directions, so the repository and
+        # conversation worktrees need identical host/container paths. Keep the
+        # /workspace alias for compatibility with non-worktree conversations.
+        worktrees_dir = self.provisioning.direct_child(runtime_dir, "worktrees")
         conversation_dir = self.conversation_dir(conversation_id)
         workspace_dir = self.workspace_dir(conversation_id)
-        for directory in (persistence_dir, conversation_dir, workspace_dir):
+        for directory in (
+            persistence_dir,
+            worktrees_dir,
+            conversation_dir,
+            workspace_dir,
+        ):
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
 
         env = sanitized_env()
@@ -621,6 +640,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 "OH_CONVERSATIONS_PATH": _CONVERSATIONS_DIR,
                 "OH_PERSISTENCE_DIR": _PERSISTENCE_DIR,
                 "OH_CONVERSATION_RUNTIME": "local",
+                "OH_CONVERSATION_WORKTREE_ROOT": str(worktrees_dir),
                 "OH_ENABLE_BROWSER": (
                     "1"
                     if container_browser_enabled(self.config) and options.browser
@@ -653,6 +673,7 @@ class DockerConversationRegistry(ConversationRegistry):
             "OH_CONVERSATIONS_PATH",
             "OH_PERSISTENCE_DIR",
             "OH_CONVERSATION_RUNTIME",
+            "OH_CONVERSATION_WORKTREE_ROOT",
             "OH_ENABLE_BROWSER",
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
@@ -665,11 +686,21 @@ class DockerConversationRegistry(ConversationRegistry):
         for name in forwarded_env_names:
             if name in env:
                 flags.extend(("-e", name))
-        for host, target in (
+        mounts = [
             (conversation_dir, f"{_CONVERSATIONS_DIR}/{conversation_id.hex}"),
             (persistence_dir, _PERSISTENCE_DIR),
             (workspace_dir, _WORKSPACE_DIR),
+            (worktrees_dir, str(worktrees_dir)),
+        ]
+        repo_mount = identity.worktree_repository_path
+        if repo_mount is not None and str(repo_mount) != _WORKSPACE_DIR:
+            mounts.append((repo_mount, str(repo_mount)))
+        git_common_dir_mount = identity.worktree_git_common_dir_path
+        if git_common_dir_mount is not None and (
+            repo_mount is None or not git_common_dir_mount.is_relative_to(repo_mount)
         ):
+            mounts.append((git_common_dir_mount, str(git_common_dir_mount)))
+        for host, target in mounts:
             flags.extend(("-v", f"{host}:{target}"))
         memory = options.memory or self.config.conversation_container_memory
         if memory:

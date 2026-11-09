@@ -1,7 +1,9 @@
 """Tests for VSCode service."""
 
 import asyncio
+import json
 import signal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -30,7 +32,7 @@ def mock_openvscode_binary(tmp_path):
     bin_dir = openvscode_root / "bin"
     bin_dir.mkdir()
 
-    binary = bin_dir / "openvscode-server"
+    binary = bin_dir / "code-server"
     binary.write_text("#!/bin/bash\necho 'mock vscode server'")
     binary.chmod(0o755)
 
@@ -221,20 +223,20 @@ async def test_set_connection_token_restarts_running_server(
     vscode_service.connection_token = "boot-token"
     vscode_service.process = AsyncMock(pid=4321, returncode=None)
     new_process = AsyncMock(returncode=None)
+    new_process.stdin.write = MagicMock()
+    new_process.stdin.close = MagicMock()
 
     with (
         patch("openhands.agent_server.vscode_service.os.killpg") as mock_killpg,
         patch.object(vscode_service, "_is_port_available", return_value=True),
-        patch(
-            "asyncio.create_subprocess_shell", return_value=new_process
-        ) as mock_create,
+        patch("asyncio.create_subprocess_exec", return_value=new_process),
         patch.object(vscode_service, "_wait_for_startup"),
     ):
         await vscode_service.set_connection_token("session-key")
 
     mock_killpg.assert_called_once_with(4321, signal.SIGTERM)
     assert vscode_service.process is new_process
-    assert "--connection-token session-key " in mock_create.call_args[0][0]
+    assert json.loads(new_process.stdin.write.call_args[0][0])["token"] == "session-key"
     assert vscode_service.get_vscode_url() == (
         "http://localhost:8001/?tkn=session-key&folder=workspace"
     )
@@ -450,10 +452,12 @@ async def test_start_vscode_process(vscode_service, tmp_path):
 
     mock_process = AsyncMock()
     mock_process.stdout = AsyncMock()
+    mock_process.stdin.write = MagicMock()
+    mock_process.stdin.close = MagicMock()
 
     with (
         patch(
-            "asyncio.create_subprocess_shell", return_value=mock_process
+            "asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_create,
         patch.object(vscode_service, "_wait_for_startup") as mock_wait,
     ):
@@ -466,6 +470,38 @@ async def test_start_vscode_process(vscode_service, tmp_path):
         assert vscode_service.process == mock_process
 
 
+def test_proxy_script_path_source_tree(vscode_service):
+    """In a source checkout the proxy sits next to vscode_service.py."""
+    assert vscode_service._proxy_script_path().name == "code_server_proxy.cjs"
+    assert vscode_service._proxy_script_path().exists()
+
+
+def test_proxy_script_path_frozen(vscode_service, tmp_path, monkeypatch):
+    """In the frozen binary the proxy is resolved under sys._MEIPASS."""
+    monkeypatch.setattr("sys._MEIPASS", str(tmp_path), raising=False)
+    expected = tmp_path / "openhands" / "agent_server" / "code_server_proxy.cjs"
+    assert vscode_service._proxy_script_path() == expected
+
+
+def test_spec_bundles_proxy_from_source_tree():
+    """The frozen build must bundle the proxy from the source tree.
+
+    collect_data_files() on the installed package silently yields nothing
+    for non-editable installs whose wheel lacks the .cjs, which shipped an
+    agent-server image whose editor could never start.
+    """
+    spec = (
+        Path(__file__).parents[2]
+        / "openhands-agent-server/openhands/agent_server/agent-server.spec"
+    ).read_text()
+    assert "code_server_proxy.cjs" in spec
+    assert 'collect_data_files("openhands.agent_server"' not in spec
+    # The Docker build context is an sdist governed by MANIFEST.in; without
+    # an include line the proxy never reaches the image build at all.
+    manifest = (Path(__file__).parents[2] / "MANIFEST.in").read_text()
+    assert "code_server_proxy.cjs" in manifest
+
+
 @pytest.mark.asyncio
 async def test_start_vscode_process_with_server_base_path():
     """Test starting VSCode process with server_base_path includes the arg."""
@@ -475,18 +511,19 @@ async def test_start_vscode_process_with_server_base_path():
 
     mock_process = AsyncMock()
     mock_process.stdout = AsyncMock()
+    mock_process.stdin.write = MagicMock()
+    mock_process.stdin.close = MagicMock()
 
     with (
-        patch(
-            "asyncio.create_subprocess_shell", return_value=mock_process
-        ) as mock_create,
+        patch("asyncio.create_subprocess_exec", return_value=mock_process),
         patch.object(service, "_wait_for_startup"),
     ):
         await service._start_vscode_process()
 
-        # Verify the command includes --server-base-path
-        cmd = mock_create.call_args[0][0]
-        assert "--server-base-path /runtime/vscode" in cmd
+        assert (
+            json.loads(mock_process.stdin.write.call_args[0][0])["basePath"]
+            == "/runtime/vscode"
+        )
 
 
 @pytest.mark.asyncio
@@ -496,18 +533,16 @@ async def test_start_vscode_process_without_server_base_path():
 
     mock_process = AsyncMock()
     mock_process.stdout = AsyncMock()
+    mock_process.stdin.write = MagicMock()
+    mock_process.stdin.close = MagicMock()
 
     with (
-        patch(
-            "asyncio.create_subprocess_shell", return_value=mock_process
-        ) as mock_create,
+        patch("asyncio.create_subprocess_exec", return_value=mock_process),
         patch.object(service, "_wait_for_startup"),
     ):
         await service._start_vscode_process()
 
-        # Verify the command does not include --server-base-path
-        cmd = mock_create.call_args[0][0]
-        assert "--server-base-path" not in cmd
+        assert json.loads(mock_process.stdin.write.call_args[0][0])["basePath"] is None
 
 
 @pytest.mark.asyncio
@@ -517,7 +552,7 @@ async def test_wait_for_startup_success(vscode_service):
     mock_stdout.readline = AsyncMock(
         side_effect=[
             b"Starting server...\n",
-            b"Web UI available at http://localhost:8001\n",
+            b"OpenHands editor ready\n",
             b"",
         ]
     )
@@ -545,8 +580,8 @@ async def test_wait_for_startup_timeout(vscode_service):
     mock_process.returncode = None
     vscode_service.process = mock_process
 
-    # Should not raise exception, just return
-    await vscode_service._wait_for_startup()
+    with pytest.raises(RuntimeError, match="timed out"):
+        await vscode_service._wait_for_startup()
 
 
 # Tests for get_vscode_service with enable_vscode configuration
