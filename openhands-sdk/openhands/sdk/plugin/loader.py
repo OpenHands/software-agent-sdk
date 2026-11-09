@@ -103,9 +103,10 @@ def load_plugins(
         if plugin.hooks and not plugin.hooks.is_empty():
             all_hooks.append(plugin.hooks)
 
-    # Expand MCP server variables with per-conversation secrets
-    # This handles ${VAR} placeholders that reference secrets injected via API
-    if merged_mcp_config and get_secret:
+    # Expand MCP server variables: per-conversation secrets first, then the
+    # environment, then defaults. Plugin loading leaves every ${VAR} for this
+    # pass, so it runs even without a secret lookup.
+    if merged_mcp_config:
         merged_mcp_config = expand_mcp_servers(merged_mcp_config, get_secret)
         logger.debug("Expanded MCP config variables")
 

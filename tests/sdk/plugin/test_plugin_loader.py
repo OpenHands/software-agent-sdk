@@ -10,7 +10,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
-from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 from openhands.sdk.plugin import (
     PluginFetchError,
     PluginSource,
@@ -235,6 +235,36 @@ class TestLoadPluginsSinglePlugin:
 
         assert "test-server" in updated_agent.mcp_config
         assert hooks is None
+
+    @pytest.mark.parametrize("with_secrets", [False, True])
+    def test_load_plugins_mcp_secret_wins_over_host_env(
+        self,
+        tmp_path: Path,
+        basic_agent,
+        monkeypatch: pytest.MonkeyPatch,
+        with_secrets: bool,
+    ):
+        """Secrets beat the host environment; without secrets the host still
+        fills ${VAR} (#6643)."""
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={
+                "mcpServers": {
+                    "test-server": {"command": "test-cmd", "env": {"T": "${TOKEN}"}}
+                }
+            },
+        )
+        monkeypatch.setenv("TOKEN", "host-token")
+
+        updated_agent, _ = load_plugins(
+            [PluginSource(source=str(plugin_dir))],
+            basic_agent,
+            get_secret={"TOKEN": "secret-token"}.get if with_secrets else None,
+        )
+
+        env = dump_mcp_config(updated_agent.mcp_config)["test-server"]["env"]
+        assert env == {"T": "secret-token" if with_secrets else "host-token"}
 
     def test_load_single_plugin_with_hooks(self, tmp_path: Path, basic_agent):
         """Test loading a plugin with hooks returns hook config."""
