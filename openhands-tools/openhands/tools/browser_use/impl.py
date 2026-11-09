@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
 from uuid import uuid4
 
+import psutil
+
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
@@ -250,6 +252,27 @@ def _get_chromium_error_message() -> str:
     )
 
 
+def _kill_processes(processes: list[psutil.Process], timeout: float = 3.0) -> None:
+    """Kill the processes that are still running and wait briefly for them.
+
+    Used for a browser that a timed-out cleanup left behind, which otherwise
+    outlives the conversation and the program (re-parented to PID 1).
+    """
+    alive = []
+    for process in processes:
+        try:
+            if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                process.kill()
+                alive.append(process)
+        except psutil.Error:
+            continue
+    if alive:
+        logger.warning(
+            "Killed %d browser process(es) left running after cleanup", len(alive)
+        )
+        psutil.wait_procs(alive, timeout=timeout)
+
+
 class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     """Executor that wraps browser-use MCP server for OpenHands integration."""
 
@@ -435,8 +458,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 self._consecutive_failures,
             )
             # Best-effort cleanup of the old browser process/session.
-            # If the browser truly crashed this will fail fast; if it's
-            # wedged this avoids leaking the process.
+            # If the browser truly crashed this will fail fast. A wedged
+            # browser can outlast the cleanup, so its processes are killed
+            # afterwards and the server forgets the session either way;
+            # otherwise the next action reuses the hung session.
+            processes = self._browser_processes()
             try:
                 self._async_executor.run_async(self.cleanup, timeout=5.0)
             except Exception as e:
@@ -445,6 +471,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     "(expected if browser crashed): %s",
                     e,
                 )
+            _kill_processes(processes)
+            self._forget_browser_session()
             self._initialized = False
             self._consecutive_failures = 0
             error_text = (
@@ -686,6 +714,26 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
 
+    def _browser_processes(self) -> list[psutil.Process]:
+        """The local browser process and its descendants, if one is running."""
+        # getattr: close() also runs on an executor whose __init__ failed.
+        server = getattr(self, "_server", None)
+        session = getattr(server, "browser_session", None)
+        watchdog = getattr(session, "_local_browser_watchdog", None)
+        process = getattr(watchdog, "_subprocess", None)
+        if not isinstance(process, psutil.Process):
+            return []
+        try:
+            return [process, *process.children(recursive=True)]
+        except psutil.Error:
+            return [process]
+
+    def _forget_browser_session(self) -> None:
+        """Drop the server's session references so the next action starts anew."""
+        self._server.browser_session = None
+        self._server.tools = None
+        self._server.active_sessions.clear()
+
     def close(self):
         """Close the browser executor and cleanup resources."""
         with self._close_lock:
@@ -695,12 +743,15 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     self._release_shared_executor_creation_lock()
                 return
             self._cleanup_initiated = True
+            processes = self._browser_processes()
             try:
                 # Run cleanup in the async executor with a shorter timeout
                 self._async_executor.run_async(self.cleanup, timeout=30.0)
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
+                # A hung browser can outlast the cleanup; don't leave it behind.
+                _kill_processes(processes)
                 # Remove the browser profile directory to avoid disk accumulation.
                 # browser_use doesn't clean up the user_data_dir on shutdown.
                 user_data_dir = self._config.get("user_data_dir")
