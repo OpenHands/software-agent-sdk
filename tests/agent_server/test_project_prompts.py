@@ -57,3 +57,19 @@ def test_guidance_bullets_stay_on_one_line_each():
     lines = text.split("\n")
     assert lines[0] == WORKER_GUIDANCE_MARKER
     assert all(line.startswith("- ") for line in lines[1:])
+
+
+def test_guidance_names_the_worker_tools_and_the_coordinator():
+    cid = uuid4()
+    text = worker_guidance("Cat", cid)
+
+    assert f'"Cat" (conversation {cid.hex})' in text
+    for tool in (
+        "read_project_memory",
+        "update_project_memory",
+        "save_project_artifact",
+    ):
+        assert tool in text
+    # Coordinator-only tools are not offered to workers.
+    for tool in ("message_project_conversation", "list_project_conversations"):
+        assert tool not in text
