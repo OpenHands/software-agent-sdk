@@ -63,6 +63,15 @@ class HookDefinition(BaseModel):
     timeout: int = 60
     max_iterations: int = 3
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
+    plugin_root: str | None = Field(
+        default=None,
+        description=(
+            "Resolved root directory of the plugin that supplied this hook. Set by "
+            "the plugin loader rather than in hooks.json, and exported to command "
+            "hooks as the PLUGIN_ROOT environment variable. None for hooks that do "
+            "not come from a plugin."
+        ),
+    )
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input
@@ -245,6 +254,14 @@ class HookConfig(BaseModel):
                     "Extra top-level keys will be ignored."
                 )
             data = data["hooks"]
+            if not isinstance(data, dict):
+                # A wrapper holding a scalar or a list is malformed input, not a
+                # crash: report it as a validation error like any other bad value.
+                raise ValueError(
+                    "HookConfig legacy wrapper must be an object, e.g. "
+                    '{"hooks": {"PreToolUse": [...]}}; '
+                    f"got {type(data).__name__}"
+                )
 
         # Convert PascalCase keys to snake_case field names
         normalized: dict[str, Any] = {}

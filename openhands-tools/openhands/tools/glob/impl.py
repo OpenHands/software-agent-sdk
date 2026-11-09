@@ -20,6 +20,35 @@ from openhands.tools.utils import (
 )
 
 
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand ``{a,b}`` groups, which ripgrep's -g supports and glob does not."""
+    start = pattern.find("{")
+    if start == -1:
+        return [pattern]
+    # Split the first group on its top-level commas; nested groups are
+    # expanded by the recursion.
+    depth, options, option_start = 0, [], start + 1
+    for end in range(start, len(pattern)):
+        if pattern[end] == "{":
+            depth += 1
+        elif pattern[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        elif pattern[end] == "," and depth == 1:
+            options.append(pattern[option_start:end])
+            option_start = end + 1
+    else:
+        return [pattern]  # unbalanced: leave it to glob as-is
+    options.append(pattern[option_start:end])
+    head, tail = pattern[:start], pattern[end + 1 :]
+    return [
+        expanded
+        for option in options
+        for expanded in _expand_braces(head + option + tail)
+    ]
+
+
 class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
     """Executor for glob pattern matching operations.
 
@@ -207,7 +236,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                 pattern = f"**/{pattern}"
 
             # Use glob to find matching files
-            matches = glob_module.glob(pattern, recursive=True)
+            matches = {
+                match
+                for expanded in _expand_braces(pattern)
+                for match in glob_module.glob(expanded, recursive=True)
+            }
 
             # Convert to absolute paths without resolving symlinks and sort by
             # modification time.

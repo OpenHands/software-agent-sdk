@@ -33,6 +33,7 @@ from openhands.sdk.llm.exceptions import (
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
 from tests.sdk.llm.test_auth_refresh_retry import create_mock_responses_response
 
@@ -544,7 +545,7 @@ def test_profile_store_errors_have_stable_codes_without_exposing_details(
     client, _store = client_and_store
 
     class FailingProfileStore:
-        def load(self, _name, *, cipher=None):
+        def load(self, _name, *, cipher=None, strict=False):
             raise failure
 
     monkeypatch.setattr(router_module, "get_llm_profile_store", FailingProfileStore)
@@ -557,6 +558,99 @@ def test_profile_store_errors_have_stable_codes_without_exposing_details(
     assert error_code(response) == code
     assert "8a41" not in response.text
     assert "8a41" not in caplog.text
+
+
+@pytest.mark.parametrize("operation", ["availability", "enhance"])
+@pytest.mark.parametrize(
+    "secret_field",
+    ["api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"],
+)
+@pytest.mark.parametrize(
+    ("active_key", "previous_keys", "expected_status"),
+    [
+        ("qa-new-key", [], 422),
+        (None, [], 422),
+        ("qa-old-key", [], 200),
+        ("qa-new-key", ["qa-old-key"], 200),
+    ],
+    ids=["wrong-key", "missing-key", "matching-key", "rotated-key"],
+)
+def test_encrypted_profile_requires_a_decryptable_key(
+    client_and_store,
+    monkeypatch,
+    caplog,
+    operation,
+    secret_field,
+    active_key,
+    previous_keys,
+    expected_status,
+):
+    client, store = client_and_store
+    secret = "sk-encrypted-profile-sentinel-8a41"
+    store.save(
+        "encrypted-profile",
+        LLM.model_validate(
+            {"model": "openai/gpt-4.1-mini", "api_mode": "chat", secret_field: secret}
+        ),
+        include_secrets=True,
+        cipher=Cipher("qa-old-key"),
+    )
+    profile_path = store.base_dir / "encrypted-profile.json"
+    profile_before = profile_path.read_bytes()
+    client.app.state.config = client.app.state.config.model_copy(
+        update={
+            "secret_key": SecretStr(active_key) if active_key is not None else None,
+            "previous_secret_keys": [SecretStr(key) for key in previous_keys],
+        }
+    )
+    captured = []
+    mock_completion(monkeypatch, "Improved draft.", captured)
+
+    if operation == "availability":
+        response = client.get("/api/prompt-enhancement/availability/encrypted-profile")
+    else:
+        response = client.post(
+            "/api/prompt-enhancement/enhance",
+            json={"profile_name": "encrypted-profile", "text": "Private draft."},
+        )
+
+    assert response.status_code == expected_status
+    if expected_status == 422:
+        assert error_code(response) == "profile_unavailable"
+    elif operation == "availability":
+        assert response.json()["available"] is True
+    else:
+        assert getattr(captured[0][0], secret_field).get_secret_value() == secret
+    assert len(captured) == int(operation == "enhance" and expected_status == 200)
+    assert profile_path.read_bytes() == profile_before
+    assert secret not in response.text + caplog.text
+
+
+@pytest.mark.parametrize("api_key", [None, "sk-plaintext-profile"])
+def test_profiles_without_encryption_still_support_enhancement(
+    client_and_store, monkeypatch, api_key
+):
+    client, store = client_and_store
+    store.save(
+        "draft-profile",
+        LLM(model="ollama/llama3.2", api_key=api_key, api_mode="chat"),
+        include_secrets=True,
+    )
+    captured = []
+    mock_completion(monkeypatch, "Improved draft.", captured)
+
+    availability = client.get("/api/prompt-enhancement/availability/draft-profile")
+    response = client.post(
+        "/api/prompt-enhancement/enhance",
+        json={"profile_name": "draft-profile", "text": "Private draft."},
+    )
+
+    assert availability.status_code == 200
+    assert availability.json()["available"] is True
+    assert response.status_code == 200
+    assert len(captured) == 1
+    loaded_key = captured[0][0].api_key
+    assert (loaded_key.get_secret_value() if loaded_key else None) == api_key
 
 
 def test_enhance_enforces_output_validation_limits_and_timeout(
@@ -638,6 +732,23 @@ def test_openapi_describes_prompt_enhancement_and_input_limit(client_and_store):
         "properties"
     ]["text"]
     assert text_schema["maxLength"] == router_module.MAX_PROMPT_CHARS
+    for path, method, status_code, detail_type in (
+        ("/api/prompt-enhancement/enhance", "post", "400", "string"),
+        ("/api/prompt-enhancement/enhance", "post", "422", "array"),
+        ("/api/prompt-enhancement/availability/{name}", "get", "422", "array"),
+    ):
+        response_schema = schema["paths"][path][method]["responses"][status_code][
+            "content"
+        ]["application/json"]["schema"]
+        alternatives = [
+            schema["components"]["schemas"][item["$ref"].rsplit("/", 1)[-1]]
+            for item in response_schema.get("anyOf", [])
+        ]
+        assert any(
+            "detail" in item.get("required", [])
+            and item["properties"]["detail"].get("type") == detail_type
+            for item in alternatives
+        ), (path, status_code, response_schema)
 
 
 def test_prompt_enhancement_is_unavailable_when_payload_tracing_is_enabled(
@@ -856,11 +967,21 @@ def test_invalid_request_fields_are_rejected_without_echoing_values(
             "admin": sentinel,
         },
     )
+    private_field_name = client.post(
+        f"{client.app.root_path}/api/prompt-enhancement/enhance",
+        json={"profile_name": "draft-profile", "text": "valid draft", sentinel: None},
+    )
 
-    for response in (wrong_type, unexpected_field):
+    for response, expected_type in (
+        (private_field_name, "extra_forbidden"),
+        (wrong_type, "string_type"),
+        (unexpected_field, "extra_forbidden"),
+    ):
         assert response.status_code == 422
-        assert all("input" not in error for error in response.json()["detail"])
-    assert sentinel not in wrong_type.text + unexpected_field.text + caplog.text
+        assert sentinel not in response.text + caplog.text
+        assert response.json()["detail"] == [
+            {"type": expected_type, "loc": ["body"], "msg": "Invalid request."}
+        ]
 
 
 @pytest.mark.parametrize(

@@ -716,16 +716,20 @@ def _sanitize_validation_errors(
         errors: The list of error dicts produced by ``exc.errors()``.
 
     Returns:
-        A new list with input values sanitized or omitted when ``include_input``
-        is false.
+        A new list with input values sanitized. When ``include_input`` is false,
+        only the error type, request source, and a fixed message are included.
     """
     sanitized: list[dict] = []
     for error in errors:
         error = dict(error)  # shallow copy so we don't mutate the original
-        if "input" in error and include_input:
+        if not include_input:
+            error = {
+                "type": error["type"],
+                "loc": error["loc"][:1],
+                "msg": "Invalid request.",
+            }
+        elif "input" in error:
             error["input"] = sanitize_dict(error["input"])
-        elif not include_input:
-            error.pop("input", None)
         if isinstance(error.get("ctx"), dict) and isinstance(
             error["ctx"].get("error"), Exception
         ):

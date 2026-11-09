@@ -38,6 +38,16 @@ export type PromptEnhancementError = {
 };
 
 /**
+ * PromptEnhancementValidationError
+ */
+export type PromptEnhancementValidationError = {
+  /**
+   * Detail
+   */
+  detail: Array<PromptEnhancementValidationDetail>;
+};
+
+/**
  * PromptEnhancementRequest
  */
 export type PromptEnhancementRequest = {
@@ -66,6 +76,16 @@ export type PromptEnhancementResponse = {
 };
 
 /**
+ * PromptEnhancementParsingError
+ */
+export type PromptEnhancementParsingError = {
+  /**
+   * Detail
+   */
+  detail: string;
+};
+
+/**
  * PromptEnhancementErrorCode
  */
 export type PromptEnhancementErrorCode =
@@ -79,6 +99,24 @@ export type PromptEnhancementErrorCode =
   | 'profile_store_timeout'
   | 'enhancement_timeout'
   | 'provider_error';
+
+/**
+ * PromptEnhancementValidationDetail
+ */
+export type PromptEnhancementValidationDetail = {
+  /**
+   * Loc
+   */
+  loc: Array<string | number>;
+  /**
+   * Msg
+   */
+  msg: string;
+  /**
+   * Type
+   */
+  type: string;
+};
 
 export type CheckPromptEnhancementAvailabilityApiPromptEnhancementAvailabilityNameGetData = {
   body?: never;
@@ -94,9 +132,11 @@ export type CheckPromptEnhancementAvailabilityApiPromptEnhancementAvailabilityNa
 
 export type CheckPromptEnhancementAvailabilityApiPromptEnhancementAvailabilityNameGetErrors = {
   /**
+   * Response 422 Check Prompt Enhancement Availability Api Prompt Enhancement Availability  Name  Get
+   *
    * Unprocessable Content
    */
-  422: PromptEnhancementError;
+  422: PromptEnhancementError | PromptEnhancementValidationError;
   /**
    * Service Unavailable
    */
@@ -125,9 +165,11 @@ export type EnhancePromptApiPromptEnhancementEnhancePostData = {
 
 export type EnhancePromptApiPromptEnhancementEnhancePostErrors = {
   /**
+   * Response 400 Enhance Prompt Api Prompt Enhancement Enhance Post
+   *
    * Bad Request
    */
-  400: PromptEnhancementError;
+  400: PromptEnhancementError | PromptEnhancementParsingError;
   /**
    * Not Found
    */
@@ -137,9 +179,11 @@ export type EnhancePromptApiPromptEnhancementEnhancePostErrors = {
    */
   413: PromptEnhancementError;
   /**
+   * Response 422 Enhance Prompt Api Prompt Enhancement Enhance Post
+   *
    * Unprocessable Content
    */
-  422: PromptEnhancementError;
+  422: PromptEnhancementError | PromptEnhancementValidationError;
   /**
    * Bad Gateway
    */

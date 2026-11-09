@@ -52,6 +52,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     MCPOAuthState,
     MCPServer,
+    drop_mcp_servers_without_endpoint,
 )
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -534,7 +535,7 @@ def _default_llm_settings() -> LLM:
 _RequestT = TypeVar("_RequestT")
 
 type AgentKind = Literal["openhands", "llm", "acp"]
-AGENT_SETTINGS_SCHEMA_VERSION = 9
+AGENT_SETTINGS_SCHEMA_VERSION = 10
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 _RUNTIME_SECTION_METADATA = SettingsSectionMetadata(
@@ -795,6 +796,21 @@ def _migrate_agent_settings_v8_to_v9(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("agent_kind", "openhands") == "acp":
         migrated.pop("llm", None)
     migrated["schema_version"] = 9
+    return migrated
+
+
+def _migrate_agent_settings_v9_to_v10(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop stored MCP servers that have neither ``command`` nor ``url``.
+
+    Before v10 the settings API stored such a server (``{"enabled": true}``);
+    ``MCPServer`` now rejects it, so drop it with a warning on load instead of
+    failing to load the whole settings file.
+    """
+    migrated = dict(payload)
+    mcp_config = migrated.get("mcp_config")
+    if isinstance(mcp_config, Mapping):
+        migrated["mcp_config"] = drop_mcp_servers_without_endpoint(mcp_config)
+    migrated["schema_version"] = 10
     return migrated
 
 
@@ -1126,11 +1142,13 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     6: _migrate_agent_settings_v6_to_v7,
     7: _migrate_agent_settings_v7_to_v8,
     8: _migrate_agent_settings_v8_to_v9,
+    9: _migrate_agent_settings_v9_to_v10,
 }
 _REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     **_AGENT_SETTINGS_MIGRATIONS,
     7: lambda payload: {**payload, "schema_version": 8},
     8: lambda payload: {**payload, "schema_version": 9},
+    9: lambda payload: {**payload, "schema_version": 10},
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1869,7 +1887,10 @@ class ACPAgentSettings(AgentSettingsBase):
             "Model identifier for the ACP server to use (e.g. ``'sonnet'`` or "
             "``'gpt-5.5'``). Applied via the protocol — set_config_option(model) "
             "for configOptions-based servers (codex, claude), else "
-            "set_session_model. Leave blank to let the server pick its default."
+            "set_session_model. Codex and Claude also accept "
+            "``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or "
+            "``'opus[1m]/high'``) to set reasoning effort. Leave blank to let "
+            "the server pick its default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(

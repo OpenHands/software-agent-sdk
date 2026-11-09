@@ -530,6 +530,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 url=f"{self.host}/api/settings/secrets/{item.name}",
                 headers=dict(self._headers),
                 description=item.description,
+                scope=item.scope,
+                scope_description=item.scope_description,
             )
 
         return result

@@ -1166,3 +1166,60 @@ class TestMarketplaceCatalogCache:
 
         assert success is False
         mock_fetch.assert_called_once()
+
+
+class TestFetchCatalogEntries:
+    """Tests for _fetch_catalog_entries manifest discovery and fallback."""
+
+    def test_loads_plugin_manifest_without_default_json(self, tmp_path):
+        """The real extensions layout has .plugin/marketplace.json and no
+        marketplaces/default.json; the catalog must still list its entries."""
+        from openhands.agent_server.skills_service import _fetch_catalog_entries
+
+        repo = _create_test_marketplace(tmp_path / "extensions")
+        assert not (repo / "marketplaces" / "default.json").exists()
+
+        with patch(
+            "openhands.agent_server.skills_service.update_skills_repository",
+            return_value=repo,
+        ):
+            entries = _fetch_catalog_entries("marketplaces/default.json")
+
+        assert sorted(name for name, _, _ in entries) == ["auto", "manual"]
+
+    def test_falls_back_to_explicit_marketplace_path(self, tmp_path):
+        """Without a .plugin manifest, the explicit marketplace file is used."""
+        from openhands.agent_server.skills_service import _fetch_catalog_entries
+
+        repo = tmp_path / "extensions"
+        _create_standalone_skill(repo / "skills" / "greet", "greet")
+        (repo / "marketplaces").mkdir(parents=True)
+        (repo / "marketplaces" / "default.json").write_text(
+            json.dumps(
+                {
+                    "name": "fallback",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [],
+                    "skills": [{"name": "greet", "source": "./skills/greet"}],
+                }
+            )
+        )
+
+        with patch(
+            "openhands.agent_server.skills_service.update_skills_repository",
+            return_value=repo,
+        ):
+            entries = _fetch_catalog_entries("marketplaces/default.json")
+
+        assert [name for name, _, _ in entries] == ["greet"]
+
+    def test_returns_empty_without_manifest_or_fallback(self, tmp_path):
+        from openhands.agent_server.skills_service import _fetch_catalog_entries
+
+        repo = tmp_path / "extensions"
+        repo.mkdir()
+        with patch(
+            "openhands.agent_server.skills_service.update_skills_repository",
+            return_value=repo,
+        ):
+            assert _fetch_catalog_entries("marketplaces/default.json") == []

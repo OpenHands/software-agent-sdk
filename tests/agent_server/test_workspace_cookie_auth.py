@@ -30,7 +30,9 @@ SESSION_KEY = "test-key-abc"
 def client_factory(tmp_path):
     """Build a TestClient with auth configured and one workspace served."""
 
-    def _build(*, conversation_id: UUID, workspace_dir=None) -> TestClient:
+    def _build(
+        *, conversation_id: UUID, workspace_dir=None, web_url: str | None = None
+    ) -> TestClient:
         ws = workspace_dir if workspace_dir is not None else tmp_path
 
         event_service = AsyncMock(spec=EventService)
@@ -46,7 +48,7 @@ def client_factory(tmp_path):
 
         conversation_service.get_event_service.side_effect = _get_event_service
 
-        app = create_app(Config(session_api_keys=[SESSION_KEY]))
+        app = create_app(Config(session_api_keys=[SESSION_KEY], web_url=web_url))
         # Override the lifespan-managed conversation service with our mock.
         app.dependency_overrides[get_conversation_service] = (
             lambda: conversation_service
@@ -248,6 +250,41 @@ def test_workspace_rejects_bogus_cookie(client_factory, workspace_with_index):
     client.cookies.set(WORKSPACE_SESSION_COOKIE_NAME, "definitely-wrong")
     resp = client.get(_workspace_url(cid))
     assert resp.status_code == 401
+
+
+def test_cookie_path_includes_root_path(client_factory, workspace_with_index):
+    """Behind a path prefix the browser uses the prefixed workspace URLs, so
+    the cookie must be scoped to them or it is never sent back."""
+    cid = uuid4()
+    client = client_factory(
+        conversation_id=cid,
+        workspace_dir=workspace_with_index,
+        web_url="http://127.0.0.1/qa-prefix",
+    )
+
+    mint = client.post(
+        "/qa-prefix/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY},
+    )
+    assert mint.status_code == 204
+    assert "Path=/qa-prefix/api/conversations" in mint.headers["set-cookie"]
+
+    # The client's cookie jar honors Path, like a browser.
+    resp = client.get(f"/qa-prefix{_workspace_url(cid)}")
+    assert resp.status_code == 200
+    assert resp.text == "<title>hello</title>"
+
+    # The value stays a valid credential on the unprefixed URL (what a
+    # prefix-stripping proxy forwards) when the cookie is presented there.
+    client.cookies.clear()
+    client.cookies.set(WORKSPACE_SESSION_COOKIE_NAME, SESSION_KEY)
+    assert client.get(_workspace_url(cid)).status_code == 200
+
+    cleared = client.delete(
+        "/qa-prefix/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY},
+    )
+    assert "Path=/qa-prefix/api/conversations" in cleared.headers["set-cookie"]
 
 
 # ---- Cookie is rejected by non-workspace endpoints ------------------------

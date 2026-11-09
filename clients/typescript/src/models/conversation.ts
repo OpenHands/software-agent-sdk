@@ -151,6 +151,8 @@ export interface StaticSecret {
   kind: 'StaticSecret';
   value?: string | null;
   description?: string | null;
+  scope?: string | null;
+  scope_description?: string | null;
 }
 
 export interface LookupSecret {
@@ -158,6 +160,8 @@ export interface LookupSecret {
   url: string;
   headers?: Record<string, string>;
   description?: string | null;
+  scope?: string | null;
+  scope_description?: string | null;
   /**
    * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
    */

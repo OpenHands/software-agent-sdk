@@ -6,7 +6,7 @@ from enum import StrEnum
 
 from fastapi import APIRouter, Path, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.persistence import get_llm_profile_store
@@ -18,9 +18,11 @@ from openhands.sdk.llm.exceptions import (
     LLMNoResponseError,
     LLMTimeoutError,
 )
+from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.observability.laminar import should_enable_observability
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
 
 
 prompt_enhancement_router = APIRouter(
@@ -71,6 +73,20 @@ class PromptEnhancementError(BaseModel):
     message: str
 
 
+class PromptEnhancementValidationDetail(BaseModel):
+    type: str
+    loc: list[str | int]
+    msg: str
+
+
+class PromptEnhancementValidationError(BaseModel):
+    detail: list[PromptEnhancementValidationDetail]
+
+
+class PromptEnhancementParsingError(BaseModel):
+    detail: str
+
+
 class PromptEnhancementAvailabilityResponse(BaseModel):
     available: bool
     code: PromptEnhancementErrorCode | None = None
@@ -112,8 +128,15 @@ async def _load_profile(name: str, request: Request) -> LLM:
     config = get_config(request)
     try:
         llm = await asyncio.to_thread(
-            get_llm_profile_store().load, name, cipher=config.cipher
+            get_llm_profile_store().load, name, cipher=config.cipher, strict=True
         )
+        if config.cipher is None:
+            for field in LLM_SECRET_FIELDS:
+                value = getattr(llm, field)
+                if isinstance(value, SecretStr) and value.get_secret_value().startswith(
+                    FERNET_TOKEN_PREFIX
+                ):
+                    raise ValueError("Encrypted profile credentials require a cipher.")
     except FileNotFoundError:
         raise _EnhancementFailure(
             status.HTTP_404_NOT_FOUND,
@@ -196,7 +219,7 @@ _SYSTEM_PROMPT = (
     "/availability/{name}",
     response_model=PromptEnhancementAvailabilityResponse,
     responses={
-        422: {"model": PromptEnhancementError},
+        422: {"model": PromptEnhancementError | PromptEnhancementValidationError},
         503: {"model": PromptEnhancementError},
     },
 )
@@ -224,10 +247,10 @@ async def check_prompt_enhancement_availability(
     "/enhance",
     response_model=PromptEnhancementResponse,
     responses={
-        400: {"model": PromptEnhancementError},
+        400: {"model": PromptEnhancementError | PromptEnhancementParsingError},
         404: {"model": PromptEnhancementError},
         413: {"model": PromptEnhancementError},
-        422: {"model": PromptEnhancementError},
+        422: {"model": PromptEnhancementError | PromptEnhancementValidationError},
         502: {"model": PromptEnhancementError},
         503: {"model": PromptEnhancementError},
         504: {"model": PromptEnhancementError},

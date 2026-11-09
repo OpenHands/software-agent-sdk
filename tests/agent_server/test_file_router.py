@@ -2229,3 +2229,20 @@ def test_git_delta_dir_only_exclude_keeps_same_named_file(client, tmp_path):
     assert "diff --git a/build b/build" in patch  # the file is kept
     assert "authored marker" in patch
     assert "sub/build/out.o" not in patch  # the directory is excluded
+
+
+def test_archive_non_latin1_base_ref_is_percent_encoded(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["branch", "功能"], repo)
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "base_ref": "功能"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-base-ref"] == quote("功能", safe="")
+    assert [p.name for p in tmp_path.iterdir()] == ["repo"]
