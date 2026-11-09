@@ -1530,6 +1530,10 @@ class _OpenHandsACPBridge:
                     self._fork_accumulated_text.append(
                         self._mask_value(update.content.text)
                     )
+            elif isinstance(update, UsageUpdate):
+                # ask_agent() waits for this to bill the fork's cost; without
+                # it every call stalls until the usage-update timeout.
+                self._store_usage_update(session_id, update)
             return
 
         if isinstance(update, AgentMessageChunk):
@@ -1551,13 +1555,7 @@ class _OpenHandsACPBridge:
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(self._mask_value(update.content.text))
         elif isinstance(update, UsageUpdate):
-            # Store the update for step()/ask_agent() to process in one place.
-            self._context_window = update.size
-            self._context_window_by_session[session_id] = update.size
-            self._turn_usage_updates[session_id] = update
-            event = self._usage_received.get(session_id)
-            if event is not None:
-                event.set()
+            self._store_usage_update(session_id, update)
         elif isinstance(update, ToolCallStart):
             self._emit_text_segment()
             entry = {
@@ -1629,6 +1627,18 @@ class _OpenHandsACPBridge:
             self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _store_usage_update(self, session_id: str, update: UsageUpdate) -> None:
+        """Keep a usage update for step()/ask_agent() and release its waiter."""
+        if session_id != self._fork_session_id:
+            # The fork's window is not the main session's; only the main
+            # session's size feeds the conversation-wide context window.
+            self._context_window = update.size
+        self._context_window_by_session[session_id] = update.size
+        self._turn_usage_updates[session_id] = update
+        event = self._usage_received.get(session_id)
+        if event is not None:
+            event.set()
 
     def segment_text(self) -> str:
         """Text said since the last emitted segment (the whole turn if none)."""
