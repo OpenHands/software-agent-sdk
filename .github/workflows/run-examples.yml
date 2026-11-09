@@ -81,7 +81,12 @@ jobs:
                   # listed in the proxy's `ignored_key_aliases`; see saas-deploy
                   # PRs #1929 (staging) / #1930 (prod) and issue #6434). Falls
                   # back to LLM_API_KEY so the examples still run for
-                  # contributors without the secret.
+                  # contributors without the secret. Also export it as
+                  # ACP_LLM_API_KEY so example 09 (which reads that var and
+                  # then forwards ANTHROPIC_API_KEY to the remote runtime
+                  # container) resolves to the bypass key instead of falling
+                  # back to LLM_API_KEY — see issue #6711.
+                  ACP_LLM_API_KEY: ${{ secrets.ACP_LLM_API_KEY || secrets.LLM_API_KEY }}
                   ANTHROPIC_BASE_URL: https://llm-proxy.app.all-hands.dev
                   ANTHROPIC_API_KEY: ${{ secrets.ACP_LLM_API_KEY || secrets.LLM_API_KEY }}
                   OPENAI_BASE_URL: https://llm-proxy.app.all-hands.dev
