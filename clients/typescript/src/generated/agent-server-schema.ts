@@ -40,7 +40,7 @@ export type AcpAgentInput = {
   /**
    * Acp Model
    *
-   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. If None, the server picks its default.
+   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Codex and Claude also accept '<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') to set reasoning effort. If None, the server picks its default.
    */
   acp_model?: string | null;
   /**
@@ -186,7 +186,7 @@ export type AcpAgentOutput = {
   /**
    * Acp Model
    *
-   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. If None, the server picks its default.
+   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Codex and Claude also accept '<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') to set reasoning effort. If None, the server picks its default.
    */
   acp_model?: string | null;
   /**
@@ -445,7 +445,7 @@ export type AcpAgentSettings = {
   /**
    * Acp Model
    *
-   * Model identifier for the ACP server to use (e.g. ``'sonnet'`` or ``'gpt-5.5'``). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Leave blank to let the server pick its default.
+   * Model identifier for the ACP server to use (e.g. ``'sonnet'`` or ``'gpt-5.5'``). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Codex and Claude also accept ``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or ``'opus[1m]/high'``) to set reasoning effort. Leave blank to let the server pick its default.
    */
   acp_model?: string | null;
   /**
@@ -1045,6 +1045,30 @@ export type Action =
   | ({
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorAction-Output__1';
     } & PlanningFileEditorAction)
+  | ({
+      kind: 'openhands__tools__project__definition__ListProjectConversationsAction-Output__1';
+    } & ListProjectConversationsAction)
+  | ({
+      kind: 'openhands__tools__project__definition__MessageProjectConversationAction-Output__1';
+    } & MessageProjectConversationAction)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectConversationAction-Output__1';
+    } & ReadProjectConversationAction)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectMemoryAction-Output__1';
+    } & ReadProjectMemoryAction)
+  | ({
+      kind: 'openhands__tools__project__definition__SaveProjectArtifactAction-Output__1';
+    } & SaveProjectArtifactAction)
+  | ({
+      kind: 'openhands__tools__project__definition__UpdateProjectMemoryAction-Output__1';
+    } & UpdateProjectMemoryAction)
+  | ({
+      kind: 'openhands__tools__reaction__definition__ReactAction-Output__1';
+    } & ReactAction)
+  | ({
+      kind: 'openhands__tools__reaction__definition__UnreactAction-Output__1';
+    } & UnreactAction)
   | ({
       kind: 'openhands__tools__task__definition__TaskAction-Output__1';
     } & TaskAction)
@@ -2643,6 +2667,20 @@ export type BodyUploadFileQueryApiFileUploadPost = {
    * File
    */
   file: Blob | File;
+};
+
+/**
+ * Body_upload_project_artifact_api_projects__project_id__artifacts_post
+ */
+export type BodyUploadProjectArtifactApiProjectsProjectIdArtifactsPost = {
+  /**
+   * File
+   */
+  file: Blob | File;
+  /**
+   * Name
+   */
+  name?: string | null;
 };
 
 /**
@@ -4627,6 +4665,32 @@ export type ConversationWorktreeOptions = {
   ref?: string | null;
 };
 
+/**
+ * CreateProjectRequest
+ */
+export type CreateProjectRequest = {
+  /**
+   * Coordinator Conversation Id
+   *
+   * An existing conversation to make the coordinator. It is tagged as a member of the new project.
+   */
+  coordinator_conversation_id?: string | null;
+  /**
+   * Description
+   */
+  description?: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Worker Agent Profile Id
+   *
+   * Agent profile for the conversations project members start. Unset, they start from the person's active agent profile.
+   */
+  worker_agent_profile_id?: string | null;
+};
+
 export type CriticBaseInput =
   | ({
       kind: 'openhands__sdk__critic__impl__agent_finished__AgentFinishedCritic-Input__1';
@@ -4686,7 +4750,11 @@ export type CriticResult = {
 /**
  * DelegateAction
  *
- * Schema for delegation operations.
+ * Legacy delegation action, deprecated since v1.60.0.
+ *
+ * Use TaskAction for new tasks. Retained to read stored events.
+ *
+ * @deprecated
  */
 export type DelegateAction = {
   /**
@@ -4724,7 +4792,11 @@ export type DelegateAction = {
 /**
  * DelegateObservation
  *
- * Observation from delegation operations.
+ * Legacy delegation observation, deprecated since v1.60.0.
+ *
+ * Use TaskObservation for new tasks. Retained to read stored events.
+ *
+ * @deprecated
  */
 export type DelegateObservation = {
   /**
@@ -5141,6 +5213,9 @@ export type Event =
   | ({
       kind: 'openhands__sdk__event__llm_convertible__system__SystemPromptEvent-Output__1';
     } & SystemPromptEvent)
+  | ({
+      kind: 'openhands__sdk__event__reaction__ReactionEvent-Output__1';
+    } & ReactionEvent)
   | ({
       kind: 'openhands__sdk__event__security__SecurityAnalysisEvent-Output__1';
     } & SecurityAnalysisEvent)
@@ -5782,6 +5857,56 @@ export type GitProviderRepositoryPage = {
 };
 
 /**
+ * GitPullRequestChecks
+ *
+ * Combined CI result of a pull request's head commit.
+ */
+export type GitPullRequestChecks = 'success' | 'failure' | 'pending' | 'none';
+
+/**
+ * GitPullRequestState
+ */
+export type GitPullRequestState = 'open' | 'closed' | 'merged';
+
+/**
+ * GitPullRequestStatus
+ *
+ * Live state of one pull request on a git provider, for status badges.
+ */
+export type GitPullRequestStatus = {
+  checks: GitPullRequestChecks;
+  /**
+   * Draft
+   */
+  draft?: boolean;
+  /**
+   * Git Provider
+   */
+  git_provider: string;
+  /**
+   * Head Sha
+   */
+  head_sha?: string | null;
+  /**
+   * Number
+   */
+  number: number;
+  /**
+   * Repository
+   */
+  repository: string;
+  state: GitPullRequestState;
+  /**
+   * Title
+   */
+  title: string;
+  /**
+   * Url
+   */
+  url: string;
+};
+
+/**
  * GlobAction
  *
  * Schema for glob pattern matching operations.
@@ -6264,6 +6389,12 @@ export type HookDefinition = {
    */
   name?: string | null;
   /**
+   * Plugin Root
+   *
+   * Resolved root directory of the plugin that supplied this hook. Set by the plugin loader rather than in hooks.json, and exported to command hooks as the PLUGIN_ROOT environment variable. None for hooks that do not come from a plugin.
+   */
+  plugin_root?: string | null;
+  /**
    * Prompt
    */
   prompt?: string | null;
@@ -6479,7 +6610,7 @@ export type HooksResponse = {
 /**
  * Icon
  *
- * An icon for display in user interfaces.
+ * An optionally-sized icon for display in a user interface (2025-11-25+).
  */
 export type Icon = {
   /**
@@ -6494,7 +6625,10 @@ export type Icon = {
    * Src
    */
   src: string;
-  [key: string]: unknown;
+  /**
+   * Theme
+   */
+  theme?: 'light' | 'dark' | null;
 };
 
 /**
@@ -8235,6 +8369,83 @@ export type ListDirectoryTool = {
 };
 
 /**
+ * ListProjectConversationsAction
+ *
+ * List the other conversations in this conversation's project.
+ */
+export type ListProjectConversationsAction = {
+  /**
+   * Kind
+   */
+  kind: 'ListProjectConversationsAction';
+};
+
+/**
+ * ListProjectConversationsObservation
+ */
+export type ListProjectConversationsObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Conversations
+   */
+  conversations?: Array<ProjectConversationSummary>;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'ListProjectConversationsObservation';
+  /**
+   * Project Id
+   */
+  project_id?: string | null;
+};
+
+/**
+ * ListProjectConversationsTool
+ *
+ * Tool that lists the conversations of the caller's project.
+ */
+export type ListProjectConversationsTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ListProjectConversationsTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
  * LocalWorkspace
  *
  * Local workspace implementation that operates on the host filesystem.
@@ -8313,6 +8524,18 @@ export type LookupSecretInput = {
    */
   kind?: 'LookupSecret';
   /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
+  /**
    * Url
    */
   url: string;
@@ -8340,6 +8563,18 @@ export type LookupSecretOutput = {
    * Kind
    */
   kind: 'LookupSecret';
+  /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
   /**
    * Url
    */
@@ -8825,6 +9060,8 @@ export type McpoAuthTokenStateOutput = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServer = {
   /**
@@ -8903,7 +9140,7 @@ export type McpServer = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -8914,6 +9151,8 @@ export type McpServer = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServerInput = {
   /**
@@ -8988,7 +9227,7 @@ export type McpServerInput = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -8999,6 +9238,8 @@ export type McpServerInput = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServerOutput = {
   /**
@@ -9077,7 +9318,7 @@ export type McpServerOutput = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -9166,7 +9407,7 @@ export type McpServerPatch = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -9384,7 +9625,7 @@ export type McpToolDefinition = {
   /**
    * The MCP tool definition.
    */
-  mcp_tool: McpTypesTool;
+  mcp_tool: McpTypesTypesTool;
   /**
    * Meta
    */
@@ -9550,6 +9791,62 @@ export type MaterializeAgentProfileRequest = {
 };
 
 /**
+ * MemoryFile
+ */
+export type MemoryFile = {
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Revision
+   *
+   * Pass it back to replace or delete the file.
+   */
+  revision: string;
+  /**
+   * Size
+   *
+   * Size in bytes.
+   */
+  size: number;
+  /**
+   * Updated At
+   */
+  updated_at: string;
+};
+
+/**
+ * MemoryFileContent
+ */
+export type MemoryFileContent = {
+  /**
+   * Content
+   */
+  content: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Revision
+   *
+   * Pass it back to replace or delete the file.
+   */
+  revision: string;
+  /**
+   * Size
+   *
+   * Size in bytes.
+   */
+  size: number;
+  /**
+   * Updated At
+   */
+  updated_at: string;
+};
+
+/**
  * Message
  */
 export type Message = {
@@ -9657,6 +9954,101 @@ export type MessageEvent = {
    * Event timestamp
    */
   timestamp?: string;
+};
+
+/**
+ * MessageProjectConversationAction
+ *
+ * Send a follow-up message to another conversation in this project.
+ */
+export type MessageProjectConversationAction = {
+  /**
+   * Conversation Id
+   *
+   * Id of the conversation to message, exactly as list_project_conversations or start_child_conversation returned it.
+   */
+  conversation_id: string;
+  /**
+   * Kind
+   */
+  kind: 'MessageProjectConversationAction';
+  /**
+   * Message
+   *
+   * Self-contained message for the conversation. It cannot see this conversation, so include the context it needs.
+   */
+  message: string;
+};
+
+/**
+ * MessageProjectConversationObservation
+ */
+export type MessageProjectConversationObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Conversation Id
+   */
+  conversation_id?: string | null;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'MessageProjectConversationObservation';
+  /**
+   * Previous Status
+   */
+  previous_status?: string | null;
+  /**
+   * Run
+   *
+   * started, queued, waiting_for_confirmation or not_run, as the server reported it.
+   */
+  run?: string | null;
+};
+
+/**
+ * MessageProjectConversationTool
+ *
+ * Tool that sends a follow-up message to a conversation of the caller's project.
+ */
+export type MessageProjectConversationTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'MessageProjectConversationTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
 };
 
 /**
@@ -9996,6 +10388,27 @@ export type Observation =
   | ({
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorObservation-Output__1';
     } & PlanningFileEditorObservation)
+  | ({
+      kind: 'openhands__tools__project__definition__ListProjectConversationsObservation-Output__1';
+    } & ListProjectConversationsObservation)
+  | ({
+      kind: 'openhands__tools__project__definition__MessageProjectConversationObservation-Output__1';
+    } & MessageProjectConversationObservation)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectConversationObservation-Output__1';
+    } & ReadProjectConversationObservation)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectMemoryObservation-Output__1';
+    } & ReadProjectMemoryObservation)
+  | ({
+      kind: 'openhands__tools__project__definition__SaveProjectArtifactObservation-Output__1';
+    } & SaveProjectArtifactObservation)
+  | ({
+      kind: 'openhands__tools__project__definition__UpdateProjectMemoryObservation-Output__1';
+    } & UpdateProjectMemoryObservation)
+  | ({
+      kind: 'openhands__tools__reaction__definition__ReactionObservation-Output__1';
+    } & ReactionObservation)
   | ({
       kind: 'openhands__tools__task__definition__TaskObservation-Output__1';
     } & TaskObservation)
@@ -11020,6 +11433,308 @@ export type ProfileVerificationSettings = {
 };
 
 /**
+ * ProjectArtifact
+ */
+export type ProjectArtifact = {
+  /**
+   * Conversation Id
+   *
+   * The conversation that saved it, for `agent`.
+   */
+  conversation_id?: string | null;
+  /**
+   * Created At
+   */
+  created_at: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Size
+   *
+   * Size in bytes.
+   */
+  size: number;
+  /**
+   * Source
+   *
+   * `user` for an upload, `agent` for a file a conversation saved.
+   */
+  source: 'user' | 'agent';
+  /**
+   * Updated At
+   */
+  updated_at: string;
+};
+
+/**
+ * ProjectArtifactsResponse
+ */
+export type ProjectArtifactsResponse = {
+  /**
+   * Artifacts
+   *
+   * Newest-updated first.
+   */
+  artifacts?: Array<ProjectArtifact>;
+};
+
+/**
+ * ProjectAttention
+ *
+ * What a conversation needs from the person.
+ *
+ * Derived from the execution status, then refined by the conversation's tags: a
+ * finished conversation whose last message asked something needs input, and a
+ * resolved conversation is resolved unless it is blocked on the person.
+ */
+export type ProjectAttention =
+  'needs_you' | 'needs_input' | 'working' | 'finished' | 'idle' | 'resolved';
+
+/**
+ * ProjectConversation
+ *
+ * A conversation in a project, with what it needs from the person.
+ */
+export type ProjectConversation = {
+  /**
+   * Ask
+   *
+   * While `turn` is `asked`: the question the agent stopped on, in one short line (at most 200 characters). Backed by the `ask` tag; a new user message clears it.
+   */
+  ask?: string | null;
+  attention: ProjectAttention;
+  /**
+   * Automation Id
+   *
+   * The automation that started this conversation, if any.
+   */
+  automation_id?: string | null;
+  /**
+   * Conversation Id
+   */
+  conversation_id: string;
+  /**
+   * Created At
+   */
+  created_at: string;
+  execution_status: ConversationExecutionStatus;
+  /**
+   * Parent Conversation Id
+   */
+  parent_conversation_id?: string | null;
+  /**
+   * Resolved
+   *
+   * `user` when the person resolved the conversation, `auto` when the server did because the critic scored the finished task at least 0.9. Backed by the `resolved` tag; a new user message clears it.
+   */
+  resolved?: 'user' | 'auto' | null;
+  /**
+   * Title
+   */
+  title?: string | null;
+  /**
+   * Turn
+   *
+   * How the agent's last run ended: `asked` when its final message asked the person something, `answered` otherwise. Backed by the `turn` tag; a new user message clears it.
+   */
+  turn?: 'asked' | 'answered' | null;
+  /**
+   * Updated At
+   */
+  updated_at: string;
+};
+
+/**
+ * ProjectConversationSummary
+ *
+ * One conversation of the project, as the conversations endpoint reports it.
+ */
+export type ProjectConversationSummary = {
+  /**
+   * Ask
+   */
+  ask?: string | null;
+  /**
+   * Attention
+   */
+  attention: string;
+  /**
+   * Automation Id
+   */
+  automation_id?: string | null;
+  /**
+   * Conversation Id
+   */
+  conversation_id: string;
+  /**
+   * Execution Status
+   */
+  execution_status: string;
+  /**
+   * Parent Conversation Id
+   */
+  parent_conversation_id?: string | null;
+  /**
+   * Resolved
+   */
+  resolved?: string | null;
+  /**
+   * Title
+   */
+  title?: string | null;
+  /**
+   * Turn
+   */
+  turn?: string | null;
+  /**
+   * Updated At
+   */
+  updated_at?: string | null;
+};
+
+/**
+ * ProjectConversationsResponse
+ */
+export type ProjectConversationsResponse = {
+  /**
+   * Conversations
+   *
+   * Every other member conversation, grouped by attention (needs_you, needs_input, working, finished, idle, resolved) and newest-updated first within each group.
+   */
+  conversations?: Array<ProjectConversation>;
+  /**
+   * The coordinator conversation, when it is set and exists.
+   */
+  coordinator?: ProjectConversation | null;
+  /**
+   * Project Id
+   */
+  project_id: string;
+};
+
+/**
+ * ProjectItem
+ *
+ * A project: a named group of conversations led by a coordinator.
+ *
+ * Membership is not stored here. A conversation belongs to a project when
+ * its ``project`` tag holds the project's id, so child conversations a
+ * coordinator starts inherit the membership with the rest of its tags.
+ */
+export type ProjectItem = {
+  /**
+   * Coordinator Conversation Id
+   *
+   * The conversation the person mainly talks to about this project. It is also a member of the project.
+   */
+  coordinator_conversation_id?: string | null;
+  /**
+   * Created At
+   */
+  created_at?: string;
+  /**
+   * Description
+   */
+  description?: string;
+  /**
+   * Id
+   */
+  id?: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Updated At
+   */
+  updated_at?: string;
+  /**
+   * Worker Agent Profile Id
+   *
+   * Agent profile for the conversations project members start. Unset, they start from the person's active agent profile.
+   */
+  worker_agent_profile_id?: string | null;
+};
+
+/**
+ * ProjectMemoryResponse
+ */
+export type ProjectMemoryResponse = {
+  /**
+   * Files
+   *
+   * `MEMORY.md` first, then topic files.
+   */
+  files?: Array<MemoryFile>;
+};
+
+/**
+ * ProjectTranscriptMessage
+ */
+export type ProjectTranscriptMessage = {
+  /**
+   * Finish
+   *
+   * True for the agent's `finish` message.
+   */
+  finish?: boolean;
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Sender
+   *
+   * `conversation:<id hex>` when another conversation sent it.
+   */
+  sender?: string | null;
+  /**
+   * Source
+   *
+   * `user`, `agent` or `environment`.
+   */
+  source: string;
+  /**
+   * Text
+   *
+   * The message text, cut at 4000 characters.
+   */
+  text: string;
+  /**
+   * Timestamp
+   */
+  timestamp: string;
+};
+
+/**
+ * ProjectTranscriptResponse
+ */
+export type ProjectTranscriptResponse = {
+  /**
+   * Conversation Id
+   */
+  conversation_id: string;
+  /**
+   * Messages
+   *
+   * Oldest first.
+   */
+  messages?: Array<ProjectTranscriptMessage>;
+};
+
+/**
+ * ProjectsListResponse
+ */
+export type ProjectsListResponse = {
+  /**
+   * Projects
+   */
+  projects?: Array<ProjectItem>;
+};
+
+/**
  * ProviderConnectionCreateRequest
  */
 export type ProviderConnectionCreateRequest = {
@@ -11103,6 +11818,187 @@ export type ProvidersResponse = {
    * Providers
    */
   providers: Array<string>;
+};
+
+/**
+ * ReactAction
+ *
+ * Put an emoji reaction on a message.
+ */
+export type ReactAction = {
+  /**
+   * Emoji
+   *
+   * The emoji, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Kind
+   */
+  kind: 'ReactAction';
+  /**
+   * Message Id
+   *
+   * Id of the message to react to. Leave it out to use the person's latest message, which is almost always the one you mean.
+   */
+  message_id?: string | null;
+};
+
+/**
+ * ReactTool
+ *
+ * Tool that puts an emoji reaction on a message.
+ */
+export type ReactTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
+ * ReactionEvent
+ *
+ * An emoji reaction added to, or removed from, a message.
+ *
+ * The agent reacts with the ``react``/``unreact`` tools, and a person
+ * through ``POST /api/conversations/{id}/reactions``. Clients fold these
+ * events into each message's current set of reactions: the latest event for
+ * a (message, emoji, source) wins. Reactions never reach the LLM.
+ */
+export type ReactionEvent = {
+  /**
+   * Emoji
+   *
+   * The emoji, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Id
+   *
+   * Unique event id (ULID/UUID)
+   */
+  id?: string;
+  /**
+   * Kind
+   */
+  kind: 'ReactionEvent';
+  /**
+   * Parent Id
+   *
+   * Parent event id in the conversation tree. None for the root, or for legacy events predating the tree (see EventLog's effective-parent rule). Events sharing a parent_id are sibling branches.
+   */
+  parent_id?: string | null;
+  /**
+   * Removed
+   *
+   * True when this removes the reaction.
+   */
+  removed?: boolean;
+  /**
+   * Source
+   */
+  source?: 'agent' | 'user' | 'environment' | 'hook';
+  /**
+   * Target Event Id
+   *
+   * The message reacted to: a `MessageEvent`, or the agent's `finish` `ActionEvent`.
+   */
+  target_event_id: string;
+  /**
+   * Timestamp
+   *
+   * Event timestamp
+   */
+  timestamp?: string;
+};
+
+/**
+ * ReactionObservation
+ *
+ * The result of ``react`` or ``unreact``.
+ *
+ * On success it carries the reaction, which the agent records as a
+ * :class:`ReactionEvent` right after this observation.
+ */
+export type ReactionObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Emoji
+   */
+  emoji?: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart' | null;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'ReactionObservation';
+  /**
+   * Removed
+   */
+  removed?: boolean;
+  /**
+   * Target Event Id
+   */
+  target_event_id?: string | null;
+};
+
+/**
+ * ReactionRequest
+ *
+ * Payload to add or remove the person's emoji reaction on a message.
+ */
+export type ReactionRequest = {
+  /**
+   * Emoji
+   *
+   * The emoji, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Removed
+   *
+   * True to remove the reaction.
+   */
+  removed?: boolean;
+  /**
+   * Target Event Id
+   *
+   * The message to react to; the agent's latest when left out.
+   */
+  target_event_id?: string | null;
 };
 
 /**
@@ -11208,6 +12104,174 @@ export type ReadFileTool = {
    * Kind
    */
   kind: 'ReadFileTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
+ * ReadProjectConversationAction
+ *
+ * Read the latest messages of one conversation of this project.
+ */
+export type ReadProjectConversationAction = {
+  /**
+   * Conversation Id
+   *
+   * Id of the conversation to read, as list_project_conversations returned it.
+   */
+  conversation_id: string;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectConversationAction';
+  /**
+   * Limit
+   *
+   * How many recent messages to read.
+   */
+  limit?: number;
+};
+
+/**
+ * ReadProjectConversationObservation
+ */
+export type ReadProjectConversationObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Conversation Id
+   */
+  conversation_id?: string | null;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectConversationObservation';
+};
+
+/**
+ * ReadProjectConversationTool
+ *
+ * Tool that reads the recent messages of a project conversation.
+ */
+export type ReadProjectConversationTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectConversationTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
+ * ReadProjectMemoryAction
+ *
+ * Read one file of the project's memory.
+ */
+export type ReadProjectMemoryAction = {
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectMemoryAction';
+  /**
+   * Name
+   *
+   * The file to read: MEMORY.md (the index) or a topic file.
+   */
+  name?: string;
+};
+
+/**
+ * ReadProjectMemoryObservation
+ */
+export type ReadProjectMemoryObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectMemoryObservation';
+  /**
+   * Name
+   */
+  name?: string | null;
+  /**
+   * Revision
+   */
+  revision?: string | null;
+};
+
+/**
+ * ReadProjectMemoryTool
+ *
+ * Tool that reads a file of the caller's project memory.
+ */
+export type ReadProjectMemoryTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectMemoryTool';
   /**
    * Meta
    */
@@ -11433,6 +12497,30 @@ export type SandboxConfig = {
 };
 
 /**
+ * SaveConversationArtifactRequest
+ */
+export type SaveConversationArtifactRequest = {
+  /**
+   * Conversation Id
+   *
+   * A member conversation whose workspace holds the file.
+   */
+  conversation_id: string;
+  /**
+   * Name
+   *
+   * The artifact's name; the file's own name when left out.
+   */
+  name?: string | null;
+  /**
+   * Path
+   *
+   * The file, relative to the conversation's working directory or absolute inside it.
+   */
+  path: string;
+};
+
+/**
  * SaveProfileRequest
  */
 export type SaveProfileRequest = {
@@ -11443,6 +12531,99 @@ export type SaveProfileRequest = {
    */
   include_secrets?: boolean;
   llm: LlmInput;
+};
+
+/**
+ * SaveProjectArtifactAction
+ *
+ * Save a file from this conversation's workspace as a project artifact.
+ */
+export type SaveProjectArtifactAction = {
+  /**
+   * Kind
+   */
+  kind: 'SaveProjectArtifactAction';
+  /**
+   * Name
+   *
+   * Name to save it under; the file's own name when left out. A flat file name of letters, digits, spaces and ._()+-. An artifact of the same name is replaced.
+   */
+  name?: string | null;
+  /**
+   * Path
+   *
+   * The file to save, relative to the working directory or absolute inside it.
+   */
+  path: string;
+};
+
+/**
+ * SaveProjectArtifactObservation
+ */
+export type SaveProjectArtifactObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'SaveProjectArtifactObservation';
+  /**
+   * Name
+   */
+  name?: string | null;
+  /**
+   * Project Id
+   */
+  project_id?: string | null;
+  /**
+   * Size
+   */
+  size?: number | null;
+};
+
+/**
+ * SaveProjectArtifactTool
+ *
+ * Tool that copies a workspace file into the caller's project artifacts.
+ */
+export type SaveProjectArtifactTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'SaveProjectArtifactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
 };
 
 /**
@@ -11479,6 +12660,14 @@ export type SecretItemResponse = {
    * Name
    */
   name: string;
+  /**
+   * Scope
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   */
+  scope_description?: string | null;
 };
 
 /**
@@ -11673,6 +12862,12 @@ export type SendMessageRequest = {
    */
   content?: Array<TextContent | ImageContent>;
   /**
+   * Refuse Pending Confirmation
+   *
+   * With `run`, never run a conversation that is waiting for confirmation, since that run would approve its pending actions. A conversation already waiting answers 409 and nothing is saved; one that reaches a confirmation while the message is delivered keeps the message and is not run (`run: waiting_for_confirmation`).
+   */
+  refuse_pending_confirmation?: boolean;
+  /**
    * Role
    */
   role?: 'user' | 'system' | 'assistant' | 'tool';
@@ -11682,6 +12877,34 @@ export type SendMessageRequest = {
    * Whether the agent loop should automatically run if not running
    */
   run?: boolean;
+  /**
+   * Sender Conversation Id
+   *
+   * The conversation sending this message, such as a project's coordinator. The saved message then records it as its `sender` (`conversation:<id hex>`) and starts with a line telling the receiving agent who sent it and that it approves nothing on the person's behalf. A sender in a project may only message conversations of the same project. Leave it out for the person's own messages.
+   */
+  sender_conversation_id?: string | null;
+};
+
+/**
+ * SendMessageResponse
+ *
+ * What became of a message sent with ``run``.
+ */
+export type SendMessageResponse = {
+  /**
+   * The conversation's execution status just before the message; set with `refuse_pending_confirmation`.
+   */
+  previous_status?: ConversationExecutionStatus | null;
+  /**
+   * Run
+   *
+   * Set when the request asked to run. `started`: a run was started for the message. `queued`: a run was already active; it takes the message, or the conversation runs again when it ends. `waiting_for_confirmation` (only with `refuse_pending_confirmation`): the conversation reached a confirmation while the message was delivered, so it was not run and the message waits for the person's decision. `not_run`: a stop arrived meanwhile and the conversation was left as it is.
+   */
+  run?: 'started' | 'queued' | 'waiting_for_confirmation' | 'not_run' | null;
+  /**
+   * Success
+   */
+  success?: boolean;
 };
 
 /**
@@ -12855,7 +14078,7 @@ export type StartConversationRequest = {
   /**
    * Worktree
    *
-   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under `/tmp/conversation-worktrees/<conversation_id>/<project_name>`.
+   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under the server's conversation worktree root (by default `/tmp/conversation-worktrees/<conversation_id>/<project_name>`).
    */
   worktree?: boolean;
   /**
@@ -12901,6 +14124,18 @@ export type StaticSecretInput = {
    */
   kind?: 'StaticSecret';
   /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
+  /**
    * Value
    */
   value?: null;
@@ -12922,6 +14157,18 @@ export type StaticSecretOutput = {
    * Kind
    */
   kind: 'StaticSecret';
+  /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
   /**
    * Value
    */
@@ -14393,6 +15640,30 @@ export type ToolDefinition =
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorTool-Output__1';
     } & PlanningFileEditorTool)
   | ({
+      kind: 'openhands__tools__project__definition__ListProjectConversationsTool-Output__1';
+    } & ListProjectConversationsTool)
+  | ({
+      kind: 'openhands__tools__project__definition__MessageProjectConversationTool-Output__1';
+    } & MessageProjectConversationTool)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectConversationTool-Output__1';
+    } & ReadProjectConversationTool)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectMemoryTool-Output__1';
+    } & ReadProjectMemoryTool)
+  | ({
+      kind: 'openhands__tools__project__definition__SaveProjectArtifactTool-Output__1';
+    } & SaveProjectArtifactTool)
+  | ({
+      kind: 'openhands__tools__project__definition__UpdateProjectMemoryTool-Output__1';
+    } & UpdateProjectMemoryTool)
+  | ({
+      kind: 'openhands__tools__reaction__definition__ReactTool-Output__1';
+    } & ReactTool)
+  | ({
+      kind: 'openhands__tools__reaction__definition__UnreactTool-Output__1';
+    } & UnreactTool)
+  | ({
       kind: 'openhands__tools__task__definition__TaskTool-Output__1';
     } & TaskTool)
   | ({
@@ -14414,14 +15685,13 @@ export type ToolDefinition =
 /**
  * ToolExecution
  *
- * Execution-related properties for a tool.
+ * Execution-related properties for a tool (2025-11-25 only).
  */
 export type ToolExecution = {
   /**
    * Tasksupport
    */
   taskSupport?: 'forbidden' | 'optional' | 'required' | null;
-  [key: string]: unknown;
 };
 
 /**
@@ -14633,6 +15903,65 @@ export type UninstallSkillResponse = {
 };
 
 /**
+ * UnreactAction
+ *
+ * Take an emoji reaction off a message.
+ */
+export type UnreactAction = {
+  /**
+   * Emoji
+   *
+   * The emoji to remove, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Kind
+   */
+  kind: 'UnreactAction';
+  /**
+   * Message Id
+   *
+   * Id of the message to react to. Leave it out to use the person's latest message, which is almost always the one you mean.
+   */
+  message_id?: string | null;
+};
+
+/**
+ * UnreactTool
+ *
+ * Tool that takes an emoji reaction off a message.
+ */
+export type UnreactTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'UnreactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
  * UpdateCanvasExtensionStateRequest
  *
  * Request body for updating canvas extension state (enable/disable).
@@ -14735,6 +16064,127 @@ export type UpdatePluginStateResponse = {
    * Name
    */
   name: string;
+};
+
+/**
+ * UpdateProjectMemoryAction
+ *
+ * Replace one file of the project's memory.
+ */
+export type UpdateProjectMemoryAction = {
+  /**
+   * Base Revision
+   *
+   * The revision read_project_memory returned for this file; leave it out only to create a file that does not exist yet.
+   */
+  base_revision?: string | null;
+  /**
+   * Content
+   *
+   * The whole new file. Keep what is still true from the old one.
+   */
+  content: string;
+  /**
+   * Kind
+   */
+  kind: 'UpdateProjectMemoryAction';
+  /**
+   * Name
+   *
+   * The file to write: MEMORY.md or a topic file (a lowercase name of letters, digits and ._- ending in .md).
+   */
+  name?: string;
+};
+
+/**
+ * UpdateProjectMemoryObservation
+ */
+export type UpdateProjectMemoryObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'UpdateProjectMemoryObservation';
+  /**
+   * Name
+   */
+  name?: string | null;
+  /**
+   * Revision
+   */
+  revision?: string | null;
+};
+
+/**
+ * UpdateProjectMemoryTool
+ *
+ * Tool that writes a file of the caller's project memory.
+ */
+export type UpdateProjectMemoryTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'UpdateProjectMemoryTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
+ * UpdateProjectRequest
+ */
+export type UpdateProjectRequest = {
+  /**
+   * Coordinator Conversation Id
+   *
+   * A conversation to make the coordinator; it is tagged as a member. An explicit null clears the coordinator and leaves the conversation a member.
+   */
+  coordinator_conversation_id?: string | null;
+  /**
+   * Description
+   */
+  description?: string | null;
+  /**
+   * Name
+   */
+  name?: string | null;
+  /**
+   * Worker Agent Profile Id
+   *
+   * Agent profile for the conversations project members start. An explicit null goes back to the person's active agent profile.
+   */
+  worker_agent_profile_id?: string | null;
 };
 
 /**
@@ -15446,6 +16896,24 @@ export type WriteFileTool = {
 };
 
 /**
+ * WriteMemoryRequest
+ */
+export type WriteMemoryRequest = {
+  /**
+   * Base Revision
+   *
+   * The revision this change is based on, from the last read; leave it out (or null) to create a new file. A different current revision answers 409 with the current file to merge.
+   */
+  base_revision?: string | null;
+  /**
+   * Content
+   *
+   * The whole new file.
+   */
+  content: string;
+};
+
+/**
  * _RemoteMCPServerSpec
  *
  * Legacy remote MCP server spec accepted by the public REST API.
@@ -15539,14 +17007,14 @@ export type StdioMcpServerSpec = {
  *
  * Definition for a tool the client can call.
  */
-export type McpTypesTool = {
+export type McpTypesTypesTool = {
   /**
    * Meta
    */
   _meta?: {
     [key: string]: unknown;
   } | null;
-  annotations?: McpTypesToolAnnotations | null;
+  annotations?: McpTypesTypesToolAnnotations | null;
   /**
    * Description
    */
@@ -15576,7 +17044,6 @@ export type McpTypesTool = {
    * Title
    */
   title?: string | null;
-  [key: string]: unknown;
 };
 
 /**
@@ -15591,7 +17058,7 @@ export type McpTypesTool = {
  * Clients should never make tool use decisions based on ToolAnnotations
  * received from untrusted servers.
  */
-export type McpTypesToolAnnotations = {
+export type McpTypesTypesToolAnnotations = {
   /**
    * Destructivehint
    */
@@ -15612,7 +17079,6 @@ export type McpTypesToolAnnotations = {
    * Title
    */
   title?: string | null;
-  [key: string]: unknown;
 };
 
 /**
@@ -15737,7 +17203,7 @@ export type AcpAgentInputWritable = {
   /**
    * Acp Model
    *
-   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. If None, the server picks its default.
+   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Codex and Claude also accept '<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') to set reasoning effort. If None, the server picks its default.
    */
   acp_model?: string | null;
   /**
@@ -15883,7 +17349,7 @@ export type AcpAgentOutputWritable = {
   /**
    * Acp Model
    *
-   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. If None, the server picks its default.
+   * Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Codex and Claude also accept '<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') to set reasoning effort. If None, the server picks its default.
    */
   acp_model?: string | null;
   /**
@@ -16040,7 +17506,7 @@ export type AcpAgentSettingsWritable = {
   /**
    * Acp Model
    *
-   * Model identifier for the ACP server to use (e.g. ``'sonnet'`` or ``'gpt-5.5'``). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Leave blank to let the server pick its default.
+   * Model identifier for the ACP server to use (e.g. ``'sonnet'`` or ``'gpt-5.5'``). Applied via the protocol — set_config_option(model) for configOptions-based servers (codex, claude), else set_session_model. Codex and Claude also accept ``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or ``'opus[1m]/high'``) to set reasoning effort. Leave blank to let the server pick its default.
    */
   acp_model?: string | null;
   /**
@@ -17918,6 +19384,9 @@ export type EventWritable =
       kind: 'openhands__sdk__event__llm_convertible__system__SystemPromptEvent-Output__1';
     } & SystemPromptEventWritable)
   | ({
+      kind: 'openhands__sdk__event__reaction__ReactionEvent-Output__1';
+    } & ReactionEvent)
+  | ({
       kind: 'openhands__sdk__event__security__SecurityAnalysisEvent-Output__1';
     } & SecurityAnalysisEvent)
   | ({
@@ -19165,6 +20634,37 @@ export type ListDirectoryToolWritable = {
 };
 
 /**
+ * ListProjectConversationsTool
+ *
+ * Tool that lists the conversations of the caller's project.
+ */
+export type ListProjectConversationsToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ListProjectConversationsTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
  * MCPApiKeyAuthCredential
  */
 export type McpApiKeyAuthCredentialInputWritable = {
@@ -19334,6 +20834,8 @@ export type McpoAuthTokenStateInputWritable = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServerInputWritable = {
   /**
@@ -19412,7 +20914,7 @@ export type McpServerInputWritable = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -19501,7 +21003,7 @@ export type McpServerPatchWritable = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -19564,7 +21066,38 @@ export type McpToolDefinitionWritable = {
   /**
    * The MCP tool definition.
    */
-  mcp_tool: McpTypesTool;
+  mcp_tool: McpTypesTypesTool;
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
+ * MessageProjectConversationTool
+ *
+ * Tool that sends a follow-up message to a conversation of the caller's project.
+ */
+export type MessageProjectConversationToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'MessageProjectConversationTool';
   /**
    * Meta
    */
@@ -19747,6 +21280,37 @@ export type ProviderConnectionUpdateRequestWritable = {
 };
 
 /**
+ * ReactTool
+ *
+ * Tool that puts an emoji reaction on a message.
+ */
+export type ReactToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
  * ReadFileTool
  *
  * Tool for reading file contents with pagination support.
@@ -19765,6 +21329,68 @@ export type ReadFileToolWritable = {
    * Kind
    */
   kind: 'ReadFileTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
+ * ReadProjectConversationTool
+ *
+ * Tool that reads the recent messages of a project conversation.
+ */
+export type ReadProjectConversationToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectConversationTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
+ * ReadProjectMemoryTool
+ *
+ * Tool that reads a file of the caller's project memory.
+ */
+export type ReadProjectMemoryToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReadProjectMemoryTool';
   /**
    * Meta
    */
@@ -19845,6 +21471,37 @@ export type SaveProfileRequestWritable = {
    */
   include_secrets?: boolean;
   llm: LlmInputWritable;
+};
+
+/**
+ * SaveProjectArtifactTool
+ *
+ * Tool that copies a workspace file into the caller's project artifacts.
+ */
+export type SaveProjectArtifactToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'SaveProjectArtifactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
 };
 
 /**
@@ -20366,7 +22023,7 @@ export type StartConversationRequestWritable = {
   /**
    * Worktree
    *
-   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under `/tmp/conversation-worktrees/<conversation_id>/<project_name>`.
+   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under the server's conversation worktree root (by default `/tmp/conversation-worktrees/<conversation_id>/<project_name>`).
    */
   worktree?: boolean;
   /**
@@ -20392,6 +22049,18 @@ export type StaticSecretInputWritable = {
    */
   kind?: 'StaticSecret';
   /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
+  /**
    * Value
    */
   value?: string | null;
@@ -20413,6 +22082,18 @@ export type StaticSecretOutputWritable = {
    * Kind
    */
   kind: 'StaticSecret';
+  /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
   /**
    * Value
    */
@@ -20976,6 +22657,30 @@ export type ToolDefinitionWritable =
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorTool-Output__1';
     } & PlanningFileEditorToolWritable)
   | ({
+      kind: 'openhands__tools__project__definition__ListProjectConversationsTool-Output__1';
+    } & ListProjectConversationsToolWritable)
+  | ({
+      kind: 'openhands__tools__project__definition__MessageProjectConversationTool-Output__1';
+    } & MessageProjectConversationToolWritable)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectConversationTool-Output__1';
+    } & ReadProjectConversationToolWritable)
+  | ({
+      kind: 'openhands__tools__project__definition__ReadProjectMemoryTool-Output__1';
+    } & ReadProjectMemoryToolWritable)
+  | ({
+      kind: 'openhands__tools__project__definition__SaveProjectArtifactTool-Output__1';
+    } & SaveProjectArtifactToolWritable)
+  | ({
+      kind: 'openhands__tools__project__definition__UpdateProjectMemoryTool-Output__1';
+    } & UpdateProjectMemoryToolWritable)
+  | ({
+      kind: 'openhands__tools__reaction__definition__ReactTool-Output__1';
+    } & ReactToolWritable)
+  | ({
+      kind: 'openhands__tools__reaction__definition__UnreactTool-Output__1';
+    } & UnreactToolWritable)
+  | ({
       kind: 'openhands__tools__task__definition__TaskTool-Output__1';
     } & TaskToolWritable)
   | ({
@@ -21138,6 +22843,68 @@ export type ToolShieldLlmSecurityAnalyzerOutputWritable = {
    * - Any non-empty string: used as-is. The intended pattern is to call one of the helpers (``default_safety_experiences()``, ``load_safety_experiences(tool_names)``, ``auto_detect_safety_experiences()``) which require the ``[toolshield]`` optional extra (``pip install openhands-sdk[toolshield]``). Callers with their own source of guidelines can pass any custom string.
    */
   safety_experiences?: string;
+};
+
+/**
+ * UnreactTool
+ *
+ * Tool that takes an emoji reaction off a message.
+ */
+export type UnreactToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'UnreactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
+ * UpdateProjectMemoryTool
+ *
+ * Tool that writes a file of the caller's project memory.
+ */
+export type UpdateProjectMemoryToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'UpdateProjectMemoryTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
 };
 
 /**
@@ -22971,6 +24738,10 @@ export type SendMessageApiConversationsConversationIdEventsPostData = {
 
 export type SendMessageApiConversationsConversationIdEventsPostErrors = {
   /**
+   * With refuse_pending_confirmation: the conversation is waiting for confirmation; nothing was saved
+   */
+  409: unknown;
+  /**
    * Validation Error
    */
   422: HttpValidationError;
@@ -22987,7 +24758,7 @@ export type SendMessageApiConversationsConversationIdEventsPostResponses = {
   /**
    * Successful Response
    */
-  200: Success;
+  200: SendMessageResponse;
 };
 
 export type SendMessageApiConversationsConversationIdEventsPostResponse =
@@ -23523,6 +25294,46 @@ export type PauseConversationApiConversationsConversationIdPausePostResponses = 
 export type PauseConversationApiConversationsConversationIdPausePostResponse =
   PauseConversationApiConversationsConversationIdPausePostResponses[keyof PauseConversationApiConversationsConversationIdPausePostResponses];
 
+export type ReactToMessageApiConversationsConversationIdReactionsPostData = {
+  body: ReactionRequest;
+  path: {
+    /**
+     * Conversation Id
+     */
+    conversation_id: string;
+  };
+  query?: never;
+  url: '/api/conversations/{conversation_id}/reactions';
+};
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostErrors = {
+  /**
+   * There is no such message to react to
+   */
+  400: unknown;
+  /**
+   * Item not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostError =
+  ReactToMessageApiConversationsConversationIdReactionsPostErrors[keyof ReactToMessageApiConversationsConversationIdReactionsPostErrors];
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: ReactionEvent;
+};
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostResponse =
+  ReactToMessageApiConversationsConversationIdReactionsPostResponses[keyof ReactToMessageApiConversationsConversationIdReactionsPostResponses];
+
 export type RunConversationApiConversationsConversationIdRunPostData = {
   body?: never;
   path: {
@@ -23767,6 +25578,10 @@ export type SwitchConversationLlmApiConversationsConversationIdSwitchLlmPostData
 
 export type SwitchConversationLlmApiConversationsConversationIdSwitchLlmPostErrors = {
   /**
+   * Agent is ACP (use switch_acp_model)
+   */
+  400: unknown;
+  /**
    * Conversation not found
    */
   404: unknown;
@@ -23803,7 +25618,7 @@ export type SwitchConversationProfileApiConversationsConversationIdSwitchProfile
 
 export type SwitchConversationProfileApiConversationsConversationIdSwitchProfilePostErrors = {
   /**
-   * Invalid or corrupted profile
+   * Invalid or corrupted profile, or an ACP agent
    */
   400: unknown;
   /**
@@ -25161,6 +26976,59 @@ export type GitRepositoriesSearchApiGitRepositoriesSearchGetResponses = {
 export type GitRepositoriesSearchApiGitRepositoriesSearchGetResponse =
   GitRepositoriesSearchApiGitRepositoriesSearchGetResponses[keyof GitRepositoriesSearchApiGitRepositoriesSearchGetResponses];
 
+export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetData = {
+  body?: never;
+  path: {
+    /**
+     * Owner
+     */
+    owner: string;
+    /**
+     * Repo
+     */
+    repo: string;
+    /**
+     * Number
+     */
+    number: number;
+  };
+  query: {
+    /**
+     * Git provider hosting the repository
+     */
+    provider: GitProvider;
+  };
+  url: '/api/git/repositories/{owner}/{repo}/pull-requests/{number}';
+};
+
+export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetErrors = {
+  /**
+   * No token is configured for the provider. The detail is {"code": "missing_provider_token", "message": ...}, so a client can hide the status instead of showing an error.
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+  /**
+   * The provider's rate limit was reached.
+   */
+  429: unknown;
+};
+
+export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetError =
+  GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetErrors[keyof GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetErrors];
+
+export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: GitPullRequestStatus;
+};
+
+export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponse =
+  GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponses[keyof GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponses];
+
 export type GetHooksApiHooksPostData = {
   body: HooksRequest;
   path?: never;
@@ -26265,6 +28133,717 @@ export type ValidateProfileApiProfilesNameValidatePostResponses = {
 
 export type ValidateProfileApiProfilesNameValidatePostResponse =
   ValidateProfileApiProfilesNameValidatePostResponses[keyof ValidateProfileApiProfilesNameValidatePostResponses];
+
+export type ListProjectsApiProjectsGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: '/api/projects';
+};
+
+export type ListProjectsApiProjectsGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: ProjectsListResponse;
+};
+
+export type ListProjectsApiProjectsGetResponse =
+  ListProjectsApiProjectsGetResponses[keyof ListProjectsApiProjectsGetResponses];
+
+export type CreateProjectApiProjectsPostData = {
+  body: CreateProjectRequest;
+  path?: never;
+  query?: never;
+  url: '/api/projects';
+};
+
+export type CreateProjectApiProjectsPostErrors = {
+  /**
+   * Coordinator conversation or agent profile not found
+   */
+  404: unknown;
+  /**
+   * Coordinator already leads another project
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CreateProjectApiProjectsPostError =
+  CreateProjectApiProjectsPostErrors[keyof CreateProjectApiProjectsPostErrors];
+
+export type CreateProjectApiProjectsPostResponses = {
+  /**
+   * Successful Response
+   */
+  201: ProjectItem;
+};
+
+export type CreateProjectApiProjectsPostResponse =
+  CreateProjectApiProjectsPostResponses[keyof CreateProjectApiProjectsPostResponses];
+
+export type DeleteProjectApiProjectsProjectIdDeleteData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}';
+};
+
+export type DeleteProjectApiProjectsProjectIdDeleteErrors = {
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteProjectApiProjectsProjectIdDeleteError =
+  DeleteProjectApiProjectsProjectIdDeleteErrors[keyof DeleteProjectApiProjectsProjectIdDeleteErrors];
+
+export type DeleteProjectApiProjectsProjectIdDeleteResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteResponse;
+};
+
+export type DeleteProjectApiProjectsProjectIdDeleteResponse =
+  DeleteProjectApiProjectsProjectIdDeleteResponses[keyof DeleteProjectApiProjectsProjectIdDeleteResponses];
+
+export type GetProjectApiProjectsProjectIdGetData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}';
+};
+
+export type GetProjectApiProjectsProjectIdGetErrors = {
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetProjectApiProjectsProjectIdGetError =
+  GetProjectApiProjectsProjectIdGetErrors[keyof GetProjectApiProjectsProjectIdGetErrors];
+
+export type GetProjectApiProjectsProjectIdGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: ProjectItem;
+};
+
+export type GetProjectApiProjectsProjectIdGetResponse =
+  GetProjectApiProjectsProjectIdGetResponses[keyof GetProjectApiProjectsProjectIdGetResponses];
+
+export type UpdateProjectApiProjectsProjectIdPatchData = {
+  body: UpdateProjectRequest;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}';
+};
+
+export type UpdateProjectApiProjectsProjectIdPatchErrors = {
+  /**
+   * Project, coordinator conversation or agent profile not found
+   */
+  404: unknown;
+  /**
+   * Coordinator already leads another project
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateProjectApiProjectsProjectIdPatchError =
+  UpdateProjectApiProjectsProjectIdPatchErrors[keyof UpdateProjectApiProjectsProjectIdPatchErrors];
+
+export type UpdateProjectApiProjectsProjectIdPatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: ProjectItem;
+};
+
+export type UpdateProjectApiProjectsProjectIdPatchResponse =
+  UpdateProjectApiProjectsProjectIdPatchResponses[keyof UpdateProjectApiProjectsProjectIdPatchResponses];
+
+export type ListProjectArtifactsApiProjectsProjectIdArtifactsGetData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/artifacts';
+};
+
+export type ListProjectArtifactsApiProjectsProjectIdArtifactsGetErrors = {
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListProjectArtifactsApiProjectsProjectIdArtifactsGetError =
+  ListProjectArtifactsApiProjectsProjectIdArtifactsGetErrors[keyof ListProjectArtifactsApiProjectsProjectIdArtifactsGetErrors];
+
+export type ListProjectArtifactsApiProjectsProjectIdArtifactsGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: ProjectArtifactsResponse;
+};
+
+export type ListProjectArtifactsApiProjectsProjectIdArtifactsGetResponse =
+  ListProjectArtifactsApiProjectsProjectIdArtifactsGetResponses[keyof ListProjectArtifactsApiProjectsProjectIdArtifactsGetResponses];
+
+export type UploadProjectArtifactApiProjectsProjectIdArtifactsPostData = {
+  body: BodyUploadProjectArtifactApiProjectsProjectIdArtifactsPost;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/artifacts';
+};
+
+export type UploadProjectArtifactApiProjectsProjectIdArtifactsPostErrors = {
+  /**
+   * Invalid artifact name
+   */
+  400: unknown;
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * File too large
+   */
+  413: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UploadProjectArtifactApiProjectsProjectIdArtifactsPostError =
+  UploadProjectArtifactApiProjectsProjectIdArtifactsPostErrors[keyof UploadProjectArtifactApiProjectsProjectIdArtifactsPostErrors];
+
+export type UploadProjectArtifactApiProjectsProjectIdArtifactsPostResponses = {
+  /**
+   * Successful Response
+   */
+  201: ProjectArtifact;
+};
+
+export type UploadProjectArtifactApiProjectsProjectIdArtifactsPostResponse =
+  UploadProjectArtifactApiProjectsProjectIdArtifactsPostResponses[keyof UploadProjectArtifactApiProjectsProjectIdArtifactsPostResponses];
+
+export type SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostData = {
+  body: SaveConversationArtifactRequest;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/artifacts/from-conversation';
+};
+
+export type SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostErrors = {
+  /**
+   * Invalid name, or path outside the workspace
+   */
+  400: unknown;
+  /**
+   * Project not found, or conversation not a member
+   */
+  404: unknown;
+  /**
+   * File too large
+   */
+  413: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostError =
+  SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostErrors[keyof SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostErrors];
+
+export type SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostResponses = {
+  /**
+   * Successful Response
+   */
+  201: ProjectArtifact;
+};
+
+export type SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostResponse =
+  SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostResponses[keyof SaveConversationArtifactApiProjectsProjectIdArtifactsFromConversationPostResponses];
+
+export type DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Name
+     */
+    name: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/artifacts/{name}';
+};
+
+export type DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteErrors = {
+  /**
+   * Project or artifact not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteError =
+  DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteErrors[keyof DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteErrors];
+
+export type DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteResponse;
+};
+
+export type DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteResponse =
+  DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteResponses[keyof DeleteProjectArtifactApiProjectsProjectIdArtifactsNameDeleteResponses];
+
+export type DownloadProjectArtifactApiProjectsProjectIdArtifactsNameGetData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Name
+     */
+    name: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/artifacts/{name}';
+};
+
+export type DownloadProjectArtifactApiProjectsProjectIdArtifactsNameGetErrors = {
+  /**
+   * Project or artifact not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DownloadProjectArtifactApiProjectsProjectIdArtifactsNameGetError =
+  DownloadProjectArtifactApiProjectsProjectIdArtifactsNameGetErrors[keyof DownloadProjectArtifactApiProjectsProjectIdArtifactsNameGetErrors];
+
+export type DownloadProjectArtifactApiProjectsProjectIdArtifactsNameGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type ListProjectConversationsApiProjectsProjectIdConversationsGetData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/conversations';
+};
+
+export type ListProjectConversationsApiProjectsProjectIdConversationsGetErrors = {
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListProjectConversationsApiProjectsProjectIdConversationsGetError =
+  ListProjectConversationsApiProjectsProjectIdConversationsGetErrors[keyof ListProjectConversationsApiProjectsProjectIdConversationsGetErrors];
+
+export type ListProjectConversationsApiProjectsProjectIdConversationsGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: ProjectConversationsResponse;
+};
+
+export type ListProjectConversationsApiProjectsProjectIdConversationsGetResponse =
+  ListProjectConversationsApiProjectsProjectIdConversationsGetResponses[keyof ListProjectConversationsApiProjectsProjectIdConversationsGetResponses];
+
+export type RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Conversation Id
+     */
+    conversation_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/conversations/{conversation_id}';
+};
+
+export type RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteErrors = {
+  /**
+   * Project not found, or conversation not a member
+   */
+  404: unknown;
+  /**
+   * Conversation is the project's coordinator
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteError =
+  RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteErrors[keyof RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteErrors];
+
+export type RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteResponses =
+  {
+    /**
+     * Successful Response
+     */
+    200: DeleteResponse;
+  };
+
+export type RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteResponse =
+  RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteResponses[keyof RemoveProjectConversationApiProjectsProjectIdConversationsConversationIdDeleteResponses];
+
+export type AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Conversation Id
+     */
+    conversation_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/conversations/{conversation_id}';
+};
+
+export type AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutErrors = {
+  /**
+   * Project or conversation not found
+   */
+  404: unknown;
+  /**
+   * Conversation is the coordinator of another project
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutError =
+  AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutErrors[keyof AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutErrors];
+
+export type AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutResponses = {
+  /**
+   * Successful Response
+   */
+  204: void;
+};
+
+export type AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutResponse =
+  AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutResponses[keyof AddProjectConversationApiProjectsProjectIdConversationsConversationIdPutResponses];
+
+export type ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetData =
+  {
+    body?: never;
+    path: {
+      /**
+       * Project Id
+       */
+      project_id: string;
+      /**
+       * Conversation Id
+       */
+      conversation_id: string;
+    };
+    query?: {
+      /**
+       * Limit
+       */
+      limit?: number;
+    };
+    url: '/api/projects/{project_id}/conversations/{conversation_id}/messages';
+  };
+
+export type ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetErrors =
+  {
+    /**
+     * Project or conversation not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+  };
+
+export type ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetError =
+  ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetErrors[keyof ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetErrors];
+
+export type ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetResponses =
+  {
+    /**
+     * Successful Response
+     */
+    200: ProjectTranscriptResponse;
+  };
+
+export type ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetResponse =
+  ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetResponses[keyof ReadProjectConversationApiProjectsProjectIdConversationsConversationIdMessagesGetResponses];
+
+export type ListProjectMemoryApiProjectsProjectIdMemoryGetData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/memory';
+};
+
+export type ListProjectMemoryApiProjectsProjectIdMemoryGetErrors = {
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListProjectMemoryApiProjectsProjectIdMemoryGetError =
+  ListProjectMemoryApiProjectsProjectIdMemoryGetErrors[keyof ListProjectMemoryApiProjectsProjectIdMemoryGetErrors];
+
+export type ListProjectMemoryApiProjectsProjectIdMemoryGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: ProjectMemoryResponse;
+};
+
+export type ListProjectMemoryApiProjectsProjectIdMemoryGetResponse =
+  ListProjectMemoryApiProjectsProjectIdMemoryGetResponses[keyof ListProjectMemoryApiProjectsProjectIdMemoryGetResponses];
+
+export type DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Name
+     */
+    name: string;
+  };
+  query?: {
+    /**
+     * Base Revision
+     */
+    base_revision?: string | null;
+  };
+  url: '/api/projects/{project_id}/memory/{name}';
+};
+
+export type DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteErrors = {
+  /**
+   * Project or memory file not found
+   */
+  404: unknown;
+  /**
+   * Stale base_revision; the body has the current file
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteError =
+  DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteErrors[keyof DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteErrors];
+
+export type DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteResponse;
+};
+
+export type DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteResponse =
+  DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteResponses[keyof DeleteProjectMemoryApiProjectsProjectIdMemoryNameDeleteResponses];
+
+export type ReadProjectMemoryApiProjectsProjectIdMemoryNameGetData = {
+  body?: never;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Name
+     */
+    name: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/memory/{name}';
+};
+
+export type ReadProjectMemoryApiProjectsProjectIdMemoryNameGetErrors = {
+  /**
+   * Project or memory file not found
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ReadProjectMemoryApiProjectsProjectIdMemoryNameGetError =
+  ReadProjectMemoryApiProjectsProjectIdMemoryNameGetErrors[keyof ReadProjectMemoryApiProjectsProjectIdMemoryNameGetErrors];
+
+export type ReadProjectMemoryApiProjectsProjectIdMemoryNameGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: MemoryFileContent;
+};
+
+export type ReadProjectMemoryApiProjectsProjectIdMemoryNameGetResponse =
+  ReadProjectMemoryApiProjectsProjectIdMemoryNameGetResponses[keyof ReadProjectMemoryApiProjectsProjectIdMemoryNameGetResponses];
+
+export type WriteProjectMemoryApiProjectsProjectIdMemoryNamePutData = {
+  body: WriteMemoryRequest;
+  path: {
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Name
+     */
+    name: string;
+  };
+  query?: never;
+  url: '/api/projects/{project_id}/memory/{name}';
+};
+
+export type WriteProjectMemoryApiProjectsProjectIdMemoryNamePutErrors = {
+  /**
+   * Project not found
+   */
+  404: unknown;
+  /**
+   * Stale base_revision; the body has the current file
+   */
+  409: unknown;
+  /**
+   * The file is too large
+   */
+  413: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type WriteProjectMemoryApiProjectsProjectIdMemoryNamePutError =
+  WriteProjectMemoryApiProjectsProjectIdMemoryNamePutErrors[keyof WriteProjectMemoryApiProjectsProjectIdMemoryNamePutErrors];
+
+export type WriteProjectMemoryApiProjectsProjectIdMemoryNamePutResponses = {
+  /**
+   * Successful Response
+   */
+  200: MemoryFileContent;
+};
+
+export type WriteProjectMemoryApiProjectsProjectIdMemoryNamePutResponse =
+  WriteProjectMemoryApiProjectsProjectIdMemoryNamePutResponses[keyof WriteProjectMemoryApiProjectsProjectIdMemoryNamePutResponses];
 
 export type GetSettingsApiSettingsGetData = {
   body?: never;
