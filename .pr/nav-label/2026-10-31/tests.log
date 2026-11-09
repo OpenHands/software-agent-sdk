@@ -1,0 +1,336 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: <TASK>/software-agent-sdk
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+created: 2/2 workers
+2 workers [2963 items]
+
+........................................................................ [  2%]
+........................................................................ [  4%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+...............................................................s........ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+.......................................ss.sssssssssssssss.sF.F........FF [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+.........................................................s.............. [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+........FF.                                                              [100%][10/31/26 10:35:58] INFO     Process exiting via atexit handler  __main__.py:229
+[10/31/26 10:35:58] INFO     Process exiting via atexit handler  __main__.py:229
+
+=================================== FAILURES ===================================
+__________________ test_revision_bound_store_secret_lifecycle __________________
+[gw1] darwin -- Python 3.13.13 <VENV>/bin/python
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:957: in test_revision_bound_store_secret_lifecycle
+    with pytest.raises(ValueError, match="grant"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE <class 'ValueError'>
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:32:36] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_revisio
+                             n_bound_store_secr0/source/my-extens
+                             ion
+[10/31/26 10:32:36] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_revisio
+                             n_bound_store_secr0/installed/my-ext
+                             ension
+[10/31/26 10:32:36] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:32:36] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_revision_bound_store_secr0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_revision_bound_store_secr0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+____________ test_secret_grant_api_requires_exact_names_and_revokes ____________
+[gw1] darwin -- Python 3.13.13 <VENV>/bin/python
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1049: in test_secret_grant_api_requires_exact_names_and_revokes
+    assert (
+E   AssertionError: assert 200 == 409
+E    +  where 200 = <Response [200 OK]>.status_code
+E    +    where <Response [200 OK]> = post(('/api/canvas-extensions/installed/my-extension/backend' + '/start'), json={'revision': 'sha256:c10f4c9e92ff89cd7ddd7c91cbcd71c2c20ba3e839155b833c8c627e331dfd3e'})
+E    +      where post = <starlette.testclient.TestClient object at 0x12395f3f0>.post
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:32:36] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_secret_
+                             grant_api_requires0/source/my-extens
+                             ion
+[10/31/26 10:32:36] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_secret_
+                             grant_api_requires0/installed/my-ext
+                             ension
+[10/31/26 10:32:36] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:32:36] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_secret_grant_api_requires0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_secret_grant_api_requires0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+_____ test_enable_orchestrates_backend_and_retains_revision_consent[False] _____
+[gw1] darwin -- Python 3.13.13 <VENV>/bin/python
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1154: in test_enable_orchestrates_backend_and_retains_revision_consent
+    assert (await manager.status("my-extension")).state == "stopped"
+E   AssertionError: assert 'unsupported' == 'stopped'
+E
+E     - stopped
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:32:36] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_enable_
+                             orchestrates_backe0/source/my-extens
+                             ion
+[10/31/26 10:32:36] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_enable_
+                             orchestrates_backe0/installed/my-ext
+                             ension
+[10/31/26 10:32:36] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:32:36] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+[10/31/26 10:32:36] INFO     Successfully enabled extension       manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_enable_orchestrates_backe0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_enable_orchestrates_backe0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully enabled extension 'my-extension'
+_____ test_enable_orchestrates_backend_and_retains_revision_consent[True] ______
+[gw1] darwin -- Python 3.13.13 <VENV>/bin/python
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1154: in test_enable_orchestrates_backend_and_retains_revision_consent
+    assert (await manager.status("my-extension")).state == "stopped"
+E   AssertionError: assert 'unsupported' == 'stopped'
+E
+E     - stopped
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:32:36] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_enable_
+                             orchestrates_backe1/source/my-extens
+                             ion
+[10/31/26 10:32:36] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-107/popen-gw1/test_enable_
+                             orchestrates_backe1/installed/my-ext
+                             ension
+[10/31/26 10:32:36] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:32:36] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_enable_orchestrates_backe1/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-107/popen-gw1/test_enable_orchestrates_backe1/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+_____________ test_cyclic_failure_keeps_server_responsive[socket] ______________
+[gw0] darwin -- Python 3.13.13 <VENV>/bin/python
+tests/agent_server/test_logging_live_server.py:98: in test_cyclic_failure_keeps_server_responsive
+    pytest.fail(f"Server did not start: {log_path.read_text()}")
+E   Failed: Server did not start:
+_____________ test_cyclic_failure_keeps_server_responsive[handler] _____________
+[gw0] darwin -- Python 3.13.13 <VENV>/bin/python
+tests/agent_server/test_logging_live_server.py:98: in test_cyclic_failure_keeps_server_responsive
+    pytest.fail(f"Server did not start: {log_path.read_text()}")
+E   Failed: Server did not start:
+=============================== warnings summary ===============================
+../../../../../../..<VENV>/lib/python3.13/site-packages/fastapi/testclient.py:1
+../../../../../../..<VENV>/lib/python3.13/site-packages/fastapi/testclient.py:1
+  <VENV>/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/agent_server/test_conversation_service.py::TestConversationServiceStartConversation::test_concurrent_fork_same_id_forks_once
+tests/agent_server/test_event_service.py::test_close_blocks_until_executor_thread_finishes
+tests/agent_server/test_event_streaming.py::test_callback_publishes_delta[content-delta]
+  <VENV>/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:1480: UserWarning: Item 'summary' on TypedDict class 'ChatCompletionReasoningItem' is using the `ReadOnly` qualifier. Pydantic will not protect items from any mutation on dictionary instances.
+    warnings.warn(
+
+tests/agent_server/test_profiles_router.py::test_activate_profile_with_dangling_provider_connection_fails
+tests/agent_server/test_conversation_router.py::test_switch_conversation_llm_missing_provider_connection_rejects_before_switch
+tests/agent_server/test_profiles_router.py::test_validate_profile_with_dangling_provider_connection_returns_422
+  <HOME>/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/contextlib.py:162: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    self.gen.throw(value)
+
+tests/agent_server/test_conversation_router.py: 2 warnings
+tests/agent_server/test_settings_router.py: 6 warnings
+tests/agent_server/test_credential_binding.py: 5 warnings
+tests/agent_server/test_parent_child_conversations.py: 1 warning
+tests/agent_server/test_acp_router.py: 1 warning
+tests/cross/test_remote_conversation_live_server.py: 1 warning
+  <VENV>/lib/python3.13/site-packages/fastapi/routing.py:328: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return await dependant.call(**values)
+
+tests/agent_server/test_profiles_router.py::test_patch_provider_connection_rejects_clearing_api_key
+  <VENV>/lib/python3.13/site-packages/anyio/_backends/_asyncio.py:1033: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    result = context.run(func, *args)
+
+tests/agent_server/test_settings_router.py::test_patch_settings_null_on_scalar_field_fails_loudly
+tests/agent_server/test_settings_router.py::test_patch_settings_validation_error_returns_422
+tests/agent_server/test_settings_router.py::test_patch_settings_validation_error_does_not_leak_secrets
+tests/agent_server/test_settings_router.py::test_patch_settings_corrupted_file_returns_409
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:248: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return _apply_settings_update(
+
+tests/agent_server/test_agent_profiles_router.py::test_save_missing_required_ref_returns_422
+tests/agent_server/test_agent_profiles_router.py::test_save_schemaless_body_with_stray_skills_key_rejected
+tests/agent_server/test_agent_profiles_router.py::test_save_current_schema_version_rejects_stray_skills_key
+tests/agent_server/test_agent_profiles_router.py::test_save_extra_field_returns_422
+tests/agent_server/test_agent_profiles_router.py::test_materialize_rejects_a_draft_newer_than_save_accepts
+tests/agent_server/test_agent_profiles_router.py::test_save_rejects_removed_tool_switches
+tests/agent_server/test_agent_profiles_router.py::test_save_rejects_params_on_a_parameterless_builtin
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/agent_profiles_router.py:420: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    profile = _validate_profile_payload({**body, "name": name})
+
+tests/agent_server/test_settings_router.py::test_secret_name_validation
+tests/agent_server/test_settings_router.py::test_secret_routes_document_the_invalid_name_status[put-/api/settings/secrets-request_kwargs2]
+tests/cross/test_remote_conversation_live_server.py::test_settings_and_secrets_api_with_live_server
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:581: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    _validate_secret_name(secret.name)
+
+tests/agent_server/test_settings_router.py::test_secret_name_validation_on_get
+tests/agent_server/test_settings_router.py::test_secret_routes_document_the_invalid_name_status[get-/api/settings/secrets/{name}-request_kwargs0]
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:549: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    _validate_secret_name(name)
+
+tests/agent_server/test_settings_router.py::test_secret_name_validation_on_delete
+tests/agent_server/test_settings_router.py::test_secret_routes_document_the_invalid_name_status[delete-/api/settings/secrets/{name}-request_kwargs1]
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:633: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    _validate_secret_name(name)
+
+tests/agent_server/test_agent_profile_conv_start.py::TestConversationRouterProfileErrors::test_dangling_references_return_one_structured_422
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/conversation_router.py:351: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    raise launch_http_exception(e) from e
+
+tests/agent_server/test_agent_profiles_router.py::test_materialize_invalid_draft_returns_422
+tests/agent_server/test_agent_profiles_router.py::test_materialize_rejects_a_draft_newer_than_save_accepts
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/agent_profiles_router.py:608: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    profile = _validate_profile_payload({**body.profile, "name": name})
+
+tests/agent_server/test_mcp_router.py::test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp
+  <VENV>/lib/python3.13/site-packages/fastmcp/client/auth/oauth.py:225: UserWarning: Using in-memory token storage -- tokens will be lost when the client restarts. For persistent storage across multiple MCP servers, provide an encrypted AsyncKeyValue backend. See https://gofastmcp.com/clients/auth/oauth#token-storage for details.
+    self._bind(mcp_url)
+
+tests/agent_server/test_init_router.py::TestEndToEndOverLifespan::test_init_rejects_empty_session_keys[session_api_keys0]
+tests/agent_server/test_init_router.py::TestEndToEndOverLifespan::test_init_rejects_empty_session_keys[session_api_keys1]
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/init_router.py:469: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return await init_service.initialize(req)
+
+tests/agent_server/test_webhook_subscriber.py: 12 warnings
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/conversation_service.py:2894: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    response.raise_for_status()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/agent_server/test_webhook_subscriber.py::TestConversationWebhookSubscriber::test_post_conversation_info_success
+tests/agent_server/test_webhook_subscriber.py::TestConversationWebhookSubscriber::test_post_conversation_info_with_session_api_key
+tests/agent_server/test_webhook_subscriber.py::TestConversationWebhookSubscriber::test_post_conversation_info_http_error_with_retries
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/conversation_service.py:3061: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    response.raise_for_status()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/agent_server/test_managed_llm_key.py::test_canonical_managed_provider_refreshes[False]
+tests/agent_server/test_managed_llm_key.py::test_canonical_managed_provider_refreshes[True]
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:398: UserWarning: Cost calculation failed: This model isn't mapped yet. model=deepseek-v4.1-flash, custom_llm_provider=litellm_proxy. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+    warnings.warn(f"Cost calculation failed: {e}")
+
+tests/agent_server/test_tool_router.py::test_builtin_agents_registered_on_tool_router_import
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/registry.py:404: DeprecatedWarning: Agent name 'default' is deprecated as of 1.12.0 and will be removed in 2.0.0. Use 'general-purpose' instead.
+    warn_deprecated(
+
+tests/agent_server/test_tool_router.py::test_builtin_agents_registered_on_tool_router_import
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/registry.py:404: DeprecatedWarning: Agent name 'explore' is deprecated as of 1.12.0 and will be removed in 2.0.0. Use 'code-explorer' instead.
+    warn_deprecated(
+
+tests/agent_server/test_tool_router.py::test_builtin_agents_registered_on_tool_router_import
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/registry.py:404: DeprecatedWarning: Agent name 'bash' is deprecated as of 1.12.0 and will be removed in 2.0.0. Use 'bash-runner' instead.
+    warn_deprecated(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/agent_server/test_file_router.py:998: filesystem does not distinguish case-only directory names
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:154: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:211: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:298: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [3] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:371: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:394: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:411: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:436: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:486: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:565: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [3] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:622: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [2] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:704: backend artifact fixture only supports Linux amd64/arm64
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.59.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:801: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:875: backend artifact fixture only supports Linux amd64/arm64
+SKIPPED [1] tests/cross/test_remote_conversation_live_server.py:1927: Flaky due to WebSocket disconnect timing - ActionEvent may be emitted after client starts closing, causing delivery failure. This is a separate issue from #1785 (subscription race). Test should use REST API for event verification.
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_revision_bound_store_secret_lifecycle
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_secret_grant_api_requires_exact_names_and_revokes
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_enable_orchestrates_backend_and_retains_revision_consent[False]
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_enable_orchestrates_backend_and_retains_revision_consent[True]
+FAILED tests/agent_server/test_logging_live_server.py::test_cyclic_failure_keeps_server_responsive[socket]
+FAILED tests/agent_server/test_logging_live_server.py::test_cyclic_failure_keeps_server_responsive[handler]
+===== 6 failed, 2937 passed, 20 skipped, 69 warnings in 344.94s (0:05:44) ======

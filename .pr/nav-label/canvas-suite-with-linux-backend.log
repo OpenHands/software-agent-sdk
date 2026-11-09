@@ -1,0 +1,239 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: <TASK>/software-agent-sdk
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 201 items / 24 deselected / 177 selected
+
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py FF [  1%]
+FFFF.F                                                                   [  4%]
+tests/agent_server/canvas_extensions/test_canvas_extension_bridge.py ... [  6%]
+.....                                                                    [  9%]
+tests/agent_server/canvas_extensions/test_canvas_extensions_entrypoint_containment.py . [  9%]
+..............                                                           [ 17%]
+tests/agent_server/canvas_extensions/test_canvas_extensions_installed.py . [ 18%]
+.........................                                                [ 32%]
+tests/agent_server/canvas_extensions/test_canvas_extensions_manifest.py . [ 32%]
+......................................                                   [ 54%]
+tests/agent_server/canvas_extensions/test_canvas_extensions_refresh.py . [ 54%]
+....................................                                     [ 75%]
+tests/agent_server/test_canvas_extensions_router.py .................... [ 86%]
+.......................                                                  [ 99%]
+tests/cross/test_remote_conversation_live_server.py .                    [100%]
+
+=================================== FAILURES ===================================
+________________ test_prepare_start_logs_stop_and_preserve_data ________________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:114: in test_prepare_start_logs_stop_and_preserve_data
+    assert (await manager.status("my-extension")).state == "stopped"
+E   AssertionError: assert 'unsupported' == 'stopped'
+E
+E     - stopped
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:20] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_prepare_start_logs_s
+                             top_a0/source/my-extension
+[10/05/26 10:43:20] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_prepare_start_log
+                             s_stop_a0/installed/my-extension
+[10/05/26 10:43:20] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:20] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_prepare_start_logs_stop_a0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_prepare_start_logs_stop_a0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+__________ test_prepare_rejects_revision_checksum_and_unsafe_archive ___________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:164: in test_prepare_rejects_revision_checksum_and_unsafe_archive
+    with pytest.raises(ValueError, match="revision"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE <class 'ValueError'>
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:20] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_prepare_rejects_revi
+                             sion_0/source/my-extension
+[10/05/26 10:43:20] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_prepare_rejects_r
+                             evision_0/installed/my-extension
+[10/05/26 10:43:20] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:20] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_prepare_rejects_revision_0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_prepare_rejects_revision_0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+_________ test_start_rejects_executable_that_resolves_outside_artifact _________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:211: in test_start_rejects_executable_that_resolves_outside_artifact
+    outside.write_text("#!/bin/sh\nexit 0\n")
+/Users/rishabh/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:555: in write_text
+    return PathBase.write_text(self, data, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/rishabh/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_abc.py:651: in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/rishabh/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:537: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_start_rejects_executable_0/state-escape/artifacts/my-extension/outside'
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:20] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_start_rejects_execut
+                             able_0/source/my-extension
+[10/05/26 10:43:20] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_start_rejects_exe
+                             cutable_0/installed-escape/my-extens
+                             ion
+[10/05/26 10:43:20] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:20] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_start_rejects_executable_0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_start_rejects_executable_0/installed-escape/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+_______________ test_failed_start_cleanup_and_unsupported_states _______________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:247: in test_failed_start_cleanup_and_unsupported_states
+    assert failed.state == "unhealthy"
+E   AssertionError: assert 'unsupported' == 'unhealthy'
+E
+E     - unhealthy
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:20] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_failed_start_cleanup
+                             _and_0/source/my-extension
+[10/05/26 10:43:20] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_failed_start_clea
+                             nup_and_0/installed/my-extension
+[10/05/26 10:43:20] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:20] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_failed_start_cleanup_and_0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_failed_start_cleanup_and_0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+_________ test_status_reports_starting_and_stop_abandons_hung_backend __________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:299: in test_status_reports_starting_and_stop_abandons_hung_backend
+    assert saw_starting, "`starting` was never observable"
+E   AssertionError: `starting` was never observable
+E   assert False
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:20] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_status_reports_start
+                             ing_a0/source/my-extension
+[10/05/26 10:43:20] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_status_reports_st
+                             arting_a0/installed/my-extension
+[10/05/26 10:43:20] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:20] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_status_reports_starting_a0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_status_reports_starting_a0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+_________________ test_stop_kills_sigterm_ignoring_descendant __________________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:360: in test_stop_kills_sigterm_ignoring_descendant
+    assert (await manager.start("my-extension", revision)).state == "ready"
+E   AssertionError: assert 'unsupported' == 'ready'
+E
+E     - ready
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:31] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_stop_kills_sigterm_i
+                             gnori0/source/my-extension
+[10/05/26 10:43:31] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_stop_kills_sigter
+                             m_ignori0/installed/my-extension
+[10/05/26 10:43:31] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:31] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_stop_kills_sigterm_ignori0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_stop_kills_sigterm_ignori0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+________________ test_backend_http_lifecycle_and_data_deletion _________________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:407: in test_backend_http_lifecycle_and_data_deletion
+    assert status["state"] == "stopped"
+E   AssertionError: assert 'unsupported' == 'stopped'
+E
+E     - stopped
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/05/26 10:43:31] INFO     Fetching extension from               manager.py:88
+                             /private/var/folders/ch/25hs30cn2t510
+                             6cfrcl8mkyw0000gn/T/pytest-of-rishabh
+                             /pytest-102/test_backend_http_lifecyc
+                             le_an0/source/my-extension
+[10/05/26 10:43:31] INFO     Installing extension 'my-extension'  manager.py:111
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-102/test_backend_http_life
+                             cycle_an0/installed/my-extension
+[10/05/26 10:43:31] INFO     Successfully installed extension     manager.py:130
+                             'my-extension' v1.0.0
+[10/05/26 10:43:31] INFO     Successfully disabled extension      manager.py:214
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:88 Fetching extension from /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_backend_http_lifecycle_an0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Installing extension 'my-extension' to /private/var/folders/ch/25hs30cn2t5106cfrcl8mkyw0000gn/T/pytest-of-rishabh/pytest-102/test_backend_http_lifecycle_an0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:130 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:214 Successfully disabled extension 'my-extension'
+=============================== warnings summary ===============================
+.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+  <TASK>/software-agent-sdk/.venv/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_prepare_start_logs_stop_and_preserve_data
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_prepare_rejects_revision_checksum_and_unsafe_archive
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_start_rejects_executable_that_resolves_outside_artifact
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_failed_start_cleanup_and_unsupported_states
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_status_reports_starting_and_stop_abandons_hung_backend
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_stop_kills_sigterm_ignoring_descendant
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_backend_http_lifecycle_and_data_deletion
+=========== 7 failed, 170 passed, 24 deselected, 1 warning in 18.51s ===========
