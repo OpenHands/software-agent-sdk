@@ -1,0 +1,4 @@
+[
+  {"tool": "terminal", "args": {"command": "echo one"}},
+  {"finish": "finished on the last allowed step"}
+]

@@ -1305,20 +1305,16 @@ Preconditions:
   queued message was replayed on the new socket, and the message posted
   after the restart arrived on it (live or in that replay). REST shows both
   user messages and the conversation still `idle`.
-- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`), known bug.**
+- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`).**
   The same restart with two streams side by side: the `ws`-backed one
   (positive control) and one on Node's global `WebSocket`, which
   `F34.event-stream` uses and the README presents as all the stream
   needs. This regression recipe pins Node 22.22.0 (undici 6.23.0), the
-  affected runtime in [upstream #5651](https://github.com/OpenHands/software-agent-sdk/issues/5651);
-  the main consumer lane can use the machine's current Node. The prewarm
-  records the version before the watcher readiness timeout starts. On this
-  Node version, a handshake to a port that refuses fires
-  `error` but never `close`, and the stream schedules its retries only
-  from `onclose` (`clients/typescript/src/client/conversation-event-stream.ts:145`);
-  its own 10 s handshake abort only calls `close()`, which fires no
-  `close` either. So the first refused attempt during the restart is the
-  last one.
+  affected runtime in [upstream #5651](https://github.com/OpenHands/software-agent-sdk/issues/5651).
+  The prewarm records the version before the watcher readiness timeout starts.
+  In this runtime a refused handshake fires `error` without `close`; the stream
+  ends an unopened attempt on `error` or its handshake timeout and keeps
+  retrying through the restart.
   ```sh
   control-agent-server exec --timeout 120 --expect-output v22.22.0 --save F34.event-stream-reconnect-native/runtime -- \
     npm exec --yes --package=node@22.22.0 -- node --version
@@ -1336,15 +1332,11 @@ Preconditions:
   wait "$RPID"
   cat "$F34/reconnect-native.json"
   jq -e '.ws.reconnected and .ws.sent_after >= 1 and .native.went_down' "$F34/reconnect-native.json"
-  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1  # bug: value.native.reconnected eq false && value.native.last_state.attemptCount eq 1
+  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1
   ```
-  Expected: both streams come back and see the message posted after the
-  restart. On Node 22.22.0 the `ws`-backed stream does, while the native one stays
-  `{"isConnected": false, "isReconnecting": true, "attemptCount": 1}`
-  for the whole minute the watcher gives it, never retrying. Node 24.19.0
-  (undici 7.29.0) emits `close` after the handshake error, so both BASE and
-  TARGET pass there with byte-identical client code; that environment result
-  does not retire the Node 22 regression.
+  Expected: both streams come back, end at
+  `{"isConnected": true, "isReconnecting": false, "attemptCount": 0}`
+  and see the message posted after the restart.
 - **Endpoint audit against this checkout (`F34.endpoint-audit`).** The
   client's own drift tooling, offline, in a fixture directory (nothing is
   written into `clients/typescript`).
@@ -1454,12 +1446,10 @@ Preconditions:
   reconnects through `ConversationEventStream`, so the refused-handshake
   gotcha below applies to it too.
 - Node 22's global `WebSocket` (undici 6) fires `error` but no `close` when
-  a handshake is refused, so a `ConversationEventStream` on it stops
-  retrying after the first refused reconnect attempt (a server restart
-  always produces one) and stays `isReconnecting` forever
-  (`F34.event-stream-reconnect-native`). Pass the `ws` package's
-  constructor as `createWebSocket` for a Node consumer that must survive a
-  restart (`F34.event-stream-reconnect`).
+  a handshake is refused, and `close()` on such a socket fires no `close`
+  either. `ConversationEventStream` treats `error` before `open` as the end
+  of the attempt, so it reconnects on either transport
+  (`F34.event-stream-reconnect-native`, `F34.event-stream-reconnect`).
 - A real model shown a `UserRejectObservation` often refuses to propose
   the same command again ("a deliberate block"), so a recipe that needs
   both an accept and a reject accepts first and rejects a later, different

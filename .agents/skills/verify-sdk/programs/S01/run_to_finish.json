@@ -1,0 +1,4 @@
+[
+  {"text": "Creating the file.", "tool": "terminal", "args": {"command": "echo done > result.txt"}},
+  {"text": "result.txt now says done."}
+]

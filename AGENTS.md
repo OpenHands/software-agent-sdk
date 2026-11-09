@@ -417,5 +417,3 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
   exception.
 - Use the committed lock for reproducible installs; review newly resolved
   artifacts before committing a lock update.
-
-- PR identity2: release-please PRs via release-actions App token (RELEASE_APP_ID) as openhands-release-bot[bot]; SDK PR #6516 switches prepare-release.yml + version-bump-prs.yml to same.

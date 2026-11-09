@@ -592,7 +592,7 @@ async def set_conversation_security_analyzer(
 @conversation_router.post(
     "/{conversation_id}/switch_profile",
     responses={
-        400: {"description": "Invalid or corrupted profile"},
+        400: {"description": "Invalid or corrupted profile, or an ACP agent"},
         404: {"description": "Conversation or profile not found"},
     },
 )
@@ -623,7 +623,10 @@ async def switch_conversation_profile(
 
 @conversation_router.post(
     "/{conversation_id}/switch_llm",
-    responses={404: {"description": "Conversation not found"}},
+    responses={
+        400: {"description": "Agent is ACP (use switch_acp_model)"},
+        404: {"description": "Conversation not found"},
+    },
 )
 async def switch_conversation_llm(
     request: Request,
@@ -654,7 +657,13 @@ async def switch_conversation_llm(
     # byte-identical to the old path.
     with store_errors():
         llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
-    conversation.switch_llm(llm)
+    try:
+        conversation.switch_llm(llm)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     return Success()
 
 
