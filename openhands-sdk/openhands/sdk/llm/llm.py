@@ -249,6 +249,24 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _set_system_cache_ttl(chat_dicts: list[dict], ttl: str) -> None:
+    """Give the leading system messages' cache breakpoints a lifetime.
+
+    Only the leading system messages are touched: Anthropic requires
+    longer-lived breakpoints to precede shorter ones.
+    """
+    for message in chat_dicts:
+        if message["role"] != "system":
+            return
+        content = message["content"]
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            cache_control = block.get("cache_control")
+            if cache_control is not None:
+                block["cache_control"] = {**cache_control, "ttl": ttl}
+
+
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
 
@@ -616,6 +634,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "stripped for all others."
         ),
         json_schema_extra=field_meta(),
+    )
+    prompt_cache_ttl: Literal["1h"] | None = Field(
+        default=None,
+        description=(
+            "Lifetime of the system-prompt cache breakpoint when explicit "
+            "prompt caching is active (cache_control markers, e.g. Anthropic). "
+            "None keeps the provider default (5 minutes). '1h' requests the "
+            "extended cache for the system prompt only; later breakpoints keep "
+            "the default. A 1-hour cache write costs more than a 5-minute one."
+        ),
+        json_schema_extra=field_meta(depends_on=("caching_prompt",)),
     )
     extended_thinking_budget: int | None = Field(
         default=200_000,
@@ -3124,7 +3153,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
-        return [
+        chat_dicts = [
             message.to_chat_dict(
                 cache_enabled=cache_enabled,
                 vision_enabled=vision_enabled,
@@ -3134,6 +3163,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             for message in messages
         ]
+        if cache_enabled and self.prompt_cache_ttl is not None:
+            _set_system_cache_ttl(chat_dicts, self.prompt_cache_ttl)
+        return chat_dicts
 
     def format_messages_for_llm(self, messages: list[Message]) -> list[dict]:
         """Formats Message objects for LLM consumption."""

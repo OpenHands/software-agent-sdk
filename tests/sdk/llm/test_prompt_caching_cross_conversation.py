@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 from litellm.types.llms.openai import AllMessageValues
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
@@ -331,3 +331,76 @@ def test_cross_conversation_cache_sharing(tmp_path, first_suffix, second_suffix)
 
     assert static_prompts[0] == static_prompts[1]
     assert dynamic_contexts[0] != dynamic_contexts[1]
+
+
+def _system_and_user_messages() -> list[Message]:
+    return [
+        Message(
+            role="system",
+            content=[
+                TextContent(text="Static system prompt"),
+                TextContent(text="Dynamic context"),
+            ],
+        ),
+        Message(role="user", content=[TextContent(text="Question")]),
+    ]
+
+
+def test_prompt_cache_ttl_extends_only_the_system_breakpoint():
+    llm = LLM(
+        model="anthropic/claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        caching_prompt=True,
+        prompt_cache_ttl="1h",
+    )
+
+    formatted = llm.format_messages_for_llm(_system_and_user_messages())
+    request = AnthropicConfig().transform_request(
+        model="claude-sonnet-4-20250514",
+        messages=cast(list[AllMessageValues], formatted),
+        optional_params={"max_tokens": 16},
+        litellm_params={},
+        headers={},
+    )
+
+    static_block, dynamic_block = request["system"]
+    assert static_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert "cache_control" not in dynamic_block
+    assert request["messages"][-1]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"
+    }
+
+
+def test_prompt_cache_ttl_unset_keeps_default_breakpoints():
+    llm = LLM(
+        model="anthropic/claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        caching_prompt=True,
+    )
+
+    formatted = llm.format_messages_for_llm(_system_and_user_messages())
+
+    assert formatted[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_prompt_cache_ttl_adds_no_marker_when_caching_is_off():
+    llm = LLM(
+        model="anthropic/claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        caching_prompt=False,
+        prompt_cache_ttl="1h",
+    )
+
+    formatted = llm.format_messages_for_llm(_system_and_user_messages())
+
+    for message in formatted:
+        content = message["content"]
+        blocks = content if isinstance(content, list) else []
+        assert all("cache_control" not in block for block in blocks)
+
+
+def test_prompt_cache_ttl_rejects_unsupported_values():
+    with pytest.raises(ValidationError):
+        LLM.model_validate(
+            {"model": "anthropic/claude-sonnet-4-20250514", "prompt_cache_ttl": "5m"}
+        )
