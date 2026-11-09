@@ -190,7 +190,11 @@ def fix_malformed_tool_arguments(
 
             origin = get_origin(expected_type)
             if origin is Union or origin is types.UnionType:
-                type_args = get_args(expected_type)
+                # Unwrap Annotated members too, e.g. Annotated[list[int], ...] | None
+                type_args = [
+                    get_args(arg)[0] if get_origin(arg) is Annotated else arg
+                    for arg in get_args(expected_type)
+                ]
                 expected_origins = [get_origin(arg) or arg for arg in type_args]
             else:
                 expected_origins = [origin or expected_type]

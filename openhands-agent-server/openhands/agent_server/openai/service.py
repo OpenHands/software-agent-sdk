@@ -566,6 +566,7 @@ async def _run_reused_local_agent(
     try:
         state_before = await event_service.get_state()
         min_event_count = len(state_before.events) + 1
+        usage_baseline = state_before.stats.get_combined_metrics().deep_copy()
         # Claim capacity before saving the message: a 429 must leave nothing
         # behind so an OpenAI client can retry the same request.
         run_slot = await event_service.reserve_run_slot()
@@ -586,10 +587,11 @@ async def _run_reused_local_agent(
         _raise_for_terminal_error(status_value)
         state = await event_service.get_state()
         final_response = await event_service.get_agent_final_response()
+        metrics = state.stats.get_combined_metrics()
         return OpenAIAgentRunResult(
             conversation_id=conversation_id,
             final_response=final_response,
-            usage=state.stats.get_combined_metrics().accumulated_token_usage,
+            usage=metrics.diff(usage_baseline).accumulated_token_usage,
         )
     finally:
         event_service._active_gateway_runs -= 1

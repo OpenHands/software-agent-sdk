@@ -150,8 +150,8 @@ async def test_direct_event_cannot_change_gateway_reply_and_usage(
             assert direct_response.status_code == 409, direct_response.text
             assert local_result.final_response == "gateway"
             assert local_result.usage is not None
-            assert local_result.usage.prompt_tokens == 16
-            assert local_result.usage.completion_tokens == 3
+            assert local_result.usage.prompt_tokens == 11
+            assert local_result.usage.completion_tokens == 2
             assert fake.sent == ["gateway"]
         else:
             docker_result = cast(dict[str, Any], gateway_result)

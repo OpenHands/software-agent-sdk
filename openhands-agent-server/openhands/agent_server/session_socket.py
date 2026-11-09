@@ -182,6 +182,9 @@ class _SessionSubscriber(Subscriber[Event]):
     events: EventLog
 
     _buffer: list[Event] | None = field(default_factory=list, init=False)
+    _through_seq: int | None = field(default=None, init=False)
+    snapshot_log_length: int | None = field(default=None, init=False)
+    _snapshot_id: str | None = field(default=None, init=False)
 
     async def __call__(self, event: Event) -> None:
         if isinstance(event, StreamingDeltaEvent):
@@ -195,6 +198,12 @@ class _SessionSubscriber(Subscriber[Event]):
 
     def _emit(self, event: Event) -> None:
         seq = self._seq_of(event)
+        if (
+            seq is not None
+            and self._through_seq is not None
+            and seq <= self._through_seq
+        ):
+            return
         frame: SessionFrameBase = (
             TransientFrame(event=event)
             if seq is None
@@ -223,14 +232,43 @@ class _SessionSubscriber(Subscriber[Event]):
             return None
         return self.events.get_seq(idx)
 
+    async def on_initial_state(self, event: Event, log_length: int | None) -> None:
+        self.snapshot_log_length = log_length
+        self._snapshot_id = event.id
+        await self(event)
+
+    def _index_of(self, event: Event) -> int | None:
+        try:
+            return self.events.get_index(event.id)
+        except KeyError:
+            return None
+
+    def _order_around_snapshot(self, buffered: list[Event]) -> list[Event]:
+        """Move buffered events newer than the connect snapshot to after it."""
+        limit = self.snapshot_log_length
+        pos = next(
+            (i for i, e in enumerate(buffered) if e.id == self._snapshot_id), None
+        )
+        if limit is None or pos is None:
+            return buffered
+        older: list[Event] = []
+        newer: list[Event] = []
+        for event in buffered[:pos]:
+            idx = self._index_of(event)
+            is_newer = (
+                event.timestamp > buffered[pos].timestamp
+                if idx is None
+                else idx >= limit
+            )
+            (newer if is_newer else older).append(event)
+        return [*older, buffered[pos], *newer, *buffered[pos + 1 :]]
+
     def go_live(self, through_seq: int | None) -> None:
         """Flush the buffer, dropping anything already replayed from disk."""
         buffered = self._buffer
         self._buffer = None
-        for event in buffered or ():
-            seq = self._seq_of(event)
-            if seq is not None and through_seq is not None and seq <= through_seq:
-                continue  # already sent from disk during replay
+        self._through_seq = through_seq
+        for event in self._order_around_snapshot(buffered or []):
             self._emit(event)
 
 
@@ -378,9 +416,6 @@ async def session_socket(
     except Exception:
         # subscribe_to_events registers before it can fail, and this lands
         # before the try/finally below, so clean up the writer and socket here.
-        # The registration itself can't be reclaimed (the id is only returned
-        # on success); it is inert but holds a slot. Belongs in
-        # subscribe_to_events, which has the same hole for the legacy endpoint.
         logger.exception("session_socket_subscribe_failed: %s", conversation_id)
         await writer.aclose()
         await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
@@ -397,7 +432,9 @@ async def session_socket(
             # losing progress only costs it the live typing effect.
             logger.warning("session_socket_progress_limit: %s", conversation_id)
 
-        length = len(events)
+        length = subscriber.snapshot_log_length
+        if length is None:
+            length = len(events)
         through_seq = events.get_seq(length - 1) if length else None
 
         if not writer.send(SyncFrame(from_seq=after_seq, through_seq=through_seq)):
