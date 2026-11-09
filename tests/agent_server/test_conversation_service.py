@@ -70,6 +70,38 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 
 
+@pytest.mark.parametrize("missing_worktree", ["sibling", "owned"])
+def test_worktree_creation_preserves_unmounted_sibling(tmp_path, missing_worktree):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    workspace = LocalWorkspace(working_dir=repo)
+    root = tmp_path / "worktrees"
+    sibling_id, conversation_id = uuid4(), uuid4()
+    sibling_plan = _plan_conversation_worktree(workspace, sibling_id, root, None)
+    owned_plan = _plan_conversation_worktree(workspace, conversation_id, root, None)
+    assert sibling_plan is not None
+    assert owned_plan is not None
+    sibling = _create_conversation_worktree(sibling_plan)
+    missing_root = Path(sibling.working_dir)
+    if missing_worktree == "owned":
+        owned = _create_conversation_worktree(owned_plan)
+        missing_root = Path(owned.working_dir)
+    hidden_root = tmp_path / "unmounted"
+    missing_root.rename(hidden_root)
+
+    created = _create_conversation_worktree(owned_plan)
+
+    assert created is not None
+    if missing_worktree == "sibling":
+        hidden_root.rename(missing_root)
+    assert run_git_command(
+        ["git", "branch", "--show-current"], sibling.working_dir
+    ) == (f"openhands/{sibling_id}")
+    assert run_git_command(
+        ["git", "branch", "--show-current"], created.working_dir
+    ) == (f"openhands/{conversation_id}")
+
+
 @pytest.fixture
 def mock_event_service():
     """Create a mock EventService with stored conversation data."""
@@ -4534,6 +4566,33 @@ class TestConversationSearchScaling:
                 )
                 == 2
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "corrupt_payload",
+        [
+            pytest.param('{"execution_status": "idl', id="truncated"),
+            pytest.param('{"execution_status": "no-such-status"}', id="bad-enum"),
+            pytest.param("[]", id="non-object"),
+        ],
+    )
+    async def test_status_index_keeps_cached_status_for_corrupt_state(
+        self, tmp_path, corrupt_payload
+    ):
+        """A corrupt base_state.json must not break status-filtered listing."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        ids = self._seed(conversations_dir, 2, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            idle = ConversationExecutionStatus.IDLE
+            assert await svc.count_conversations(execution_status=idle) == 2
+
+            base_state = conversations_dir / ids[0].hex / "base_state.json"
+            base_state.write_text(corrupt_payload)
+
+            assert await svc.count_conversations(execution_status=idle) == 2
 
     @pytest.mark.asyncio
     async def test_live_conversation_status_is_read_from_memory(self, tmp_path):

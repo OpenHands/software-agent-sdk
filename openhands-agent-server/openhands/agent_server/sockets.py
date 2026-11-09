@@ -15,7 +15,7 @@ authentication.  Three auth methods are supported (highest to lowest precedence)
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -48,6 +48,11 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.sdk import Event, Message
+from openhands.sdk.event import StreamingDeltaEvent
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.utils.paging import page_iterator
 
 
@@ -296,10 +301,11 @@ async def events_socket(
         await websocket.close(code=4004, reason="Conversation not found")
         return
 
+    subscriber = _WebSocketSubscriber(
+        websocket, buffering=resend_mode is not None or resend_all
+    )
     try:
-        subscriber_id = await event_service.subscribe_to_events(
-            _WebSocketSubscriber(websocket)
-        )
+        subscriber_id = await event_service.subscribe_to_events(subscriber)
     except MaxSubscribersError:
         logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
         await websocket.close(
@@ -328,7 +334,7 @@ async def events_socket(
         if effective_mode == "all":
             logger.info(f"Resending all events: {conversation_id}")
             async for event in page_iterator(event_service.search_events):
-                await _send_event(event, websocket)
+                await subscriber.send_replayed(event)
         elif effective_mode == "since":
             if not normalized_after_timestamp:
                 logger.warning(
@@ -344,7 +350,8 @@ async def events_socket(
                     event_service.search_events,
                     timestamp__gte=normalized_after_timestamp,
                 ):
-                    await _send_event(event, websocket)
+                    await subscriber.send_replayed(event)
+        await subscriber.go_live()
 
         # Listen for messages over the socket
         while True:
@@ -545,9 +552,37 @@ class _WebSocketSubscriber(Subscriber):
     receives_streaming_deltas = True
 
     websocket: WebSocket
+    buffering: bool = False
+    _buffer: list[Event] = field(default_factory=list)
+    _replayed_ids: set[str] = field(default_factory=set)
 
     async def __call__(self, event: Event):
+        if self.buffering and not (
+            isinstance(event, StreamingDeltaEvent)
+            or (
+                isinstance(event, ConversationStateUpdateEvent)
+                and event.key == FULL_STATE_KEY
+            )
+        ):
+            self._buffer.append(event)
+            return
+        if event.id in self._replayed_ids:
+            return
         await _send_event(event, self.websocket)
+
+    async def on_initial_state(self, event: Event, log_length: int | None) -> None:  # noqa: ARG002
+        await _send_event(event, self.websocket)
+
+    async def send_replayed(self, event: Event) -> None:
+        self._replayed_ids.add(event.id)
+        await _send_event(event, self.websocket)
+
+    async def go_live(self) -> None:
+        while self._buffer:
+            event = self._buffer.pop(0)
+            if event.id not in self._replayed_ids:
+                await _send_event(event, self.websocket)
+        self.buffering = False
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
