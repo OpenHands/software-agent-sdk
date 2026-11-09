@@ -232,6 +232,7 @@ class TaskManager:
                     mcp_tool_provider=self.parent_conversation._mcp_tool_provider,
                     _mcp_config_from_parent=True,
                     delete_on_close=True,
+                    prompt_cache_key=str(self.parent_conversation.state.id),
                     observability_metadata=self._delegate_observability_metadata(
                         task_id=resume, subagent_type=subagent_type, link=link
                     ),

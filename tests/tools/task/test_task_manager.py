@@ -398,6 +398,20 @@ class TestTaskManager:
 
         assert sub_keys == [parent_key, parent_key]
 
+    def test_resumed_sub_agent_keeps_parent_prompt_cache_key(self, tmp_path):
+        """A resumed task stays on the parent's prefix-cache shard (#6655)."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        manager._evict_task(task)
+        resumed = manager._resume_task(resume=task.id, subagent_type="general-purpose")
+
+        assert resumed.conversation is not None
+        assert resumed.conversation.get_llm_call_context().prompt_cache_key == str(
+            parent.state.id
+        )
+
     def test_marks_conversation_as_delegate_with_linking_metadata(self, tmp_path):
         """A sub-agent conversation must be built inside a detached trace,
         tagged with the originating task_id/subagent_type (software-agent-sdk#4365).
