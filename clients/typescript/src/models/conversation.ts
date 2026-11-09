@@ -178,14 +178,17 @@ export interface UpdateSecretsRequest {
   secrets: Record<string, SecretObject>;
 }
 
-/** Value is sent only to the target agent server and never returned. */
-export interface ConversationSecretCreateRequest {
-  name: string;
-  value: string;
+/** Secret values are sent only to the owning agent server, never returned. */
+export type ConversationConfigurationOperation =
+  { type: 'secret.grant'; name: string; value: string } | { type: 'mcp.attach'; ref: string };
+
+/** One operation per request until atomic multi-operation changes are supported. */
+export interface ConversationConfigurationChangesRequest {
+  operations: [ConversationConfigurationOperation];
 }
 
-export interface ConversationSecretResponse {
-  name: string;
+export interface ConversationConfigurationChangesResponse {
+  applied: [{ type: 'secret.grant'; name: string } | { type: 'mcp.attach'; ref: string }];
 }
 
 export interface ConversationSearchRequest {

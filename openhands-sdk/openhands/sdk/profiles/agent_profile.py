@@ -401,6 +401,13 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
+    mcp_server_refs: list[str] | None = Field(
+        default_factory=list,
+        description=(
+            "MCP server allow-list captured at launch; null is unrestricted "
+            "when explicitly captured."
+        ),
+    )
     integration_refs: list[str] | None = Field(
         default=None,
         description=(
@@ -418,6 +425,9 @@ class LaunchedAgentProfile(BaseModel):
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs
+
+    def allows_mcp_server(self, name: str) -> bool:
+        return self.mcp_server_refs is None or name in self.mcp_server_refs
 
     def allows_integration(self, name: str) -> bool:
         return self.integration_refs is None or name in self.integration_refs

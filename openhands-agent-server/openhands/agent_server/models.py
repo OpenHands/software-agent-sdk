@@ -3,10 +3,10 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -463,17 +463,43 @@ class EventPage(OpenHandsModel):
     next_page_id: str | None = None
 
 
-class ConversationSecretCreateRequest(BaseModel):
-    """Add a secret to one conversation without changing saved user settings."""
+class GrantConversationSecret(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
+    type: Literal["secret.grant"]
     name: str
     value: SecretStr
 
 
-class ConversationSecretResponse(BaseModel):
-    """Acknowledge a secret without returning its value."""
+class AttachConversationMCP(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    name: str
+    type: Literal["mcp.attach"]
+    ref: str
+
+
+ConversationConfigurationOperation = Annotated[
+    GrantConversationSecret | AttachConversationMCP,
+    Field(discriminator="type"),
+]
+
+
+class ConversationConfigurationChangesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operations: list[ConversationConfigurationOperation] = Field(
+        min_length=1, max_length=1
+    )
+
+
+class AppliedConfigurationChange(BaseModel):
+    type: Literal["secret.grant", "mcp.attach"]
+    name: str | None = None
+    ref: str | None = None
+
+
+class ConversationConfigurationChangesResponse(BaseModel):
+    applied: list[AppliedConfigurationChange]
 
 
 class UpdateSecretsRequest(BaseModel):

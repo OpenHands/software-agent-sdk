@@ -146,26 +146,48 @@ describe('Auxiliary API clients', () => {
 
     it('ConversationClient sends a scoped secret only to its conversation', async () => {
       global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ name: 'TOKEN' }), {
+        new Response(JSON.stringify({ applied: [{ type: 'secret.grant', name: 'TOKEN' }] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
       ) as typeof fetch;
 
       const client = new ConversationClient({ host: 'http://example.com', apiKey: 'session' });
-      const result = await client.addConversationSecret('conversation-1', {
-        name: 'TOKEN',
-        value: 'private-value',
+      const change = {
+        operations: [{ type: 'secret.grant', name: 'TOKEN', value: 'private-value' }],
+      } as const;
+      const result = await client.changeConfiguration('conversation-1', {
+        operations: [...change.operations],
       });
 
-      expect(result).toEqual({ name: 'TOKEN' });
+      expect(result).toEqual({ applied: [{ type: 'secret.grant', name: 'TOKEN' }] });
       expect(global.fetch).toHaveBeenCalledWith(
-        'http://example.com/api/conversations/conversation-1/conversation-secrets',
+        'http://example.com/api/conversations/conversation-1/configuration/changes',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ name: 'TOKEN', value: 'private-value' }),
+          body: JSON.stringify(change),
           headers: expect.objectContaining({ 'X-Session-API-Key': 'session' }),
         })
+      );
+    });
+
+    it('ConversationClient attaches a saved MCP server to a conversation', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ applied: [{ type: 'mcp.attach', ref: 'fetch' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+      const client = new ConversationClient({ host: 'http://example.com', apiKey: 'session' });
+      const request = { operations: [{ type: 'mcp.attach', ref: 'fetch' }] } as const;
+      const response = await client.changeConfiguration('conversation-1', {
+        operations: [...request.operations],
+      });
+
+      expect(response.applied).toEqual([{ type: 'mcp.attach', ref: 'fetch' }]);
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://example.com/api/conversations/conversation-1/configuration/changes',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify(request) })
       );
     });
 

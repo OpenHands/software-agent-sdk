@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import asyncio
 import json
 from typing import Annotated
 from uuid import UUID
@@ -15,6 +16,7 @@ from fastapi import (
     Response,
     status,
 )
+from mcp.shared.exceptions import MCPError
 from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
@@ -34,16 +36,19 @@ from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
+    AppliedConfigurationChange,
     AskAgentRequest,
     AskAgentResponse,
+    AttachConversationMCP,
+    ConversationConfigurationChangesRequest,
+    ConversationConfigurationChangesResponse,
     ConversationInfo,
     ConversationPage,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
-    ConversationSecretCreateRequest,
-    ConversationSecretResponse,
     ConversationSortOrder,
     ForkConversationRequest,
+    GrantConversationSecret,
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
@@ -59,6 +64,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
     get_llm_profile_store,
+    get_settings_store,
 )
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -84,6 +90,17 @@ conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 _OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
 _OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
 _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
+
+
+def _configuration_changes_schema() -> dict:
+    schema = ConversationConfigurationChangesRequest.model_json_schema()
+    variants = schema.pop("$defs")
+    items = schema["properties"]["operations"]["items"]
+    items["oneOf"] = [
+        variants[ref["$ref"].rsplit("/", 1)[-1]] for ref in items["oneOf"]
+    ]
+    items.pop("discriminator", None)
+    return schema
 
 
 def _request_with_observability_headers(
@@ -540,34 +557,88 @@ async def resume_goal_in_conversation(
 
 
 @conversation_router.post(
-    "/{conversation_id}/conversation-secrets",
-    response_model=ConversationSecretResponse,
-    responses={404: {"description": "Conversation not found"}},
+    "/{conversation_id}/configuration/changes",
+    response_model=ConversationConfigurationChangesResponse,
+    response_model_exclude_none=True,
+    responses={404: {"description": "Conversation or MCP server not found"}},
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {"schema": _configuration_changes_schema()}
+            },
+            "required": True,
+        }
+    },
 )
-async def create_conversation_secret(
+async def change_conversation_configuration(
+    request: Request,
     conversation_id: UUID,
-    secret: ConversationSecretCreateRequest,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ConversationSecretResponse:
-    """Add a recoverable secret to one conversation, never to shared settings."""
-    if not SECRET_NAME_PATTERN.fullmatch(secret.name):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret name")
-    value = secret.value.get_secret_value()
-    if not value.strip() or is_redacted_secret(value):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret value"
+) -> ConversationConfigurationChangesResponse:
+    """Add one MCP or secret to a live conversation, not to shared settings."""
+    try:
+        changes = ConversationConfigurationChangesRequest.model_validate(
+            await request.json()
         )
+    except (ValueError, ValidationError) as exc:
+        # FastAPI's default validation response echoes submitted input, which
+        # may contain a plaintext secret. Never reflect it in this response.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid change"
+        ) from exc
 
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
-    try:
-        await event_service.add_conversation_secret(secret.name, value)
-    except PermissionError as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    return ConversationSecretResponse(name=secret.name)
+    change = changes.operations[0]
+    if isinstance(change, GrantConversationSecret):
+        if not SECRET_NAME_PATTERN.fullmatch(change.name):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret name"
+            )
+        value = change.value.get_secret_value()
+        if not value.strip() or is_redacted_secret(value):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret value"
+            )
+        try:
+            await event_service.add_conversation_secret(change.name, value)
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Secret not allowed"
+            ) from exc
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Secret not available"
+            ) from exc
+        applied = AppliedConfigurationChange(type="secret.grant", name=change.name)
+    elif isinstance(change, AttachConversationMCP):
+        settings = await asyncio.to_thread(get_settings_store().load)
+        if settings is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Settings unavailable"
+            )
+        server = settings.agent_settings.mcp_config.get(change.ref)
+        if server is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "MCP server not found")
+        if not server.enabled:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "MCP server disabled"
+            )
+        try:
+            await event_service.attach_mcp_server(change.ref, server)
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "MCP server not allowed"
+            ) from exc
+        except (MCPError, RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "MCP server could not be attached"
+            ) from exc
+        applied = AppliedConfigurationChange(type="mcp.attach", ref=change.ref)
+    else:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unsupported change")
+    return ConversationConfigurationChangesResponse(applied=[applied])
 
 
 @conversation_router.post(

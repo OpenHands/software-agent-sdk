@@ -116,7 +116,7 @@ def test_server_info_reports_credential_binding_probe(client):
     payload = response.json()
     assert {
         "profile_secret_scope_v1",
-        "conversation_scoped_secrets_v1",
+        "conversation_configuration_additions_v1",
         "profile_persona_v1",
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",

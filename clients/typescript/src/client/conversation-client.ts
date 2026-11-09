@@ -10,8 +10,8 @@ import type {
   ConversationEventPage,
   ConversationEventSearchOptions,
   ConversationInfo,
-  ConversationSecretCreateRequest,
-  ConversationSecretResponse,
+  ConversationConfigurationChangesRequest,
+  ConversationConfigurationChangesResponse,
   ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
@@ -350,12 +350,12 @@ export class ConversationClient {
     return response.data;
   }
 
-  async addConversationSecret(
+  async changeConfiguration(
     conversationId: string,
-    request: ConversationSecretCreateRequest
-  ): Promise<ConversationSecretResponse> {
-    const response = await this.client.post<ConversationSecretResponse>(
-      `/api/conversations/${conversationId}/conversation-secrets`,
+    request: ConversationConfigurationChangesRequest
+  ): Promise<ConversationConfigurationChangesResponse> {
+    const response = await this.client.post<ConversationConfigurationChangesResponse>(
+      `/api/conversations/${conversationId}/configuration/changes`,
       request
     );
     return response.data;

@@ -3,6 +3,7 @@
 import logging
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,8 +12,10 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.event import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.mcp.client import MCPClient
@@ -21,7 +24,9 @@ from openhands.sdk.mcp.definition import MCPToolObservation
 from openhands.sdk.mcp.exceptions import MCPError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool.client_tool import ClientToolSpec
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -431,3 +436,216 @@ def test_single_enabled_mcp_server_keeps_unprefixed_tool_names(
 
     assert _mcp_tool_names(conversation) == {"fetch"}
     conversation.close()
+
+
+def test_attach_mcp_server_is_live_and_stable_across_resume_and_fork(
+    tmp_path: Path,
+) -> None:
+    conversation_id = uuid.uuid4()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config({"base": FETCH_SERVER}),
+        ),
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "conversations",
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+    server = MCPServer.model_validate(FETCH_SERVER)
+    try:
+        conversation.attach_mcp_server("added", server)
+        assert _mcp_tool_names(conversation) == {"fetch", "added_fetch"}
+        conversation.attach_mcp_server("second", server)
+        assert _mcp_tool_names(conversation) == {
+            "fetch",
+            "added_fetch",
+            "second_fetch",
+        }
+        assert set(conversation.state.agent.mcp_config) == {
+            "base",
+            "added",
+            "second",
+        }
+        fork = conversation.fork()
+        try:
+            fork._ensure_agent_ready()
+            assert _mcp_tool_names(fork) == {"fetch"}
+            assert set(fork.agent.mcp_config) == {"base"}
+        finally:
+            fork.close()
+    finally:
+        conversation.close()
+
+    resumed = LocalConversation(
+        agent=None,
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "conversations",
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+    try:
+        resumed._ensure_agent_ready()
+        assert _mcp_tool_names(resumed) == {"fetch", "added_fetch", "second_fetch"}
+    finally:
+        resumed.close()
+
+
+def test_attach_mcp_server_rejects_duplicates_disabled_and_startup_errors(
+    tmp_path: Path,
+) -> None:
+    conversation = _mcp_conversation(tmp_path, {})
+    server = MCPServer.model_validate(FETCH_SERVER)
+    try:
+        conversation.attach_mcp_server("docs", server)
+        with pytest.raises(ValueError, match="already configured"):
+            conversation.attach_mcp_server("docs", server)
+        with pytest.raises(ValueError, match="disabled"):
+            conversation.attach_mcp_server(
+                "off", server.model_copy(update={"enabled": False})
+            )
+        with pytest.raises(Exception):
+            conversation.attach_mcp_server(
+                "broken", MCPServer(command="missing-mcp-server-command")
+            )
+        assert set(conversation.agent.mcp_config) == {"docs"}
+        assert _mcp_tool_names(conversation) == {"docs_fetch"}
+    finally:
+        conversation.close()
+
+
+def test_attach_mcp_server_rolls_back_conflicting_tool(tmp_path: Path) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        client_tools=[ClientToolSpec(name="docs_fetch", description="Existing tool")],
+    )
+    try:
+        conversation._ensure_agent_ready()
+        before = set(conversation.agent.tools_map)
+        with pytest.raises(ValueError, match="Duplicate tool names"):
+            conversation.attach_mcp_server(
+                "docs", MCPServer.model_validate(FETCH_SERVER)
+            )
+        assert set(conversation.agent.tools_map) == before
+        assert "docs" not in conversation.agent.mcp_config
+    finally:
+        conversation.close()
+
+
+def test_attach_mcp_server_rolls_back_failed_state_write(tmp_path: Path) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "conversations",
+        visualizer=None,
+    )
+    conversation._ensure_agent_ready()
+    state_path = Path(conversation.state._fs.get_full_path(BASE_STATE))
+    original_state = state_path.read_text()
+    original_agent = conversation.agent
+    state_path.unlink()
+    state_path.mkdir()
+    try:
+        with pytest.raises(OSError):
+            conversation.attach_mcp_server(
+                "docs", MCPServer.model_validate(FETCH_SERVER)
+            )
+        assert conversation.agent is original_agent
+        assert conversation.state.agent is original_agent
+        assert conversation.state.attached_mcp_servers == []
+        assert "docs" not in conversation.agent.mcp_config
+        assert "docs_fetch" not in conversation.agent.tools_map
+        assert "docs" not in conversation._attached_mcp_clients
+    finally:
+        state_path.rmdir()
+        state_path.write_text(original_state)
+        conversation.close()
+
+
+def test_attach_mcp_server_expands_conversation_secrets(tmp_path: Path) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        secrets={
+            "MCP_TEST_VALUE": StaticSecret(value=SecretStr("only-for-this-convo"))
+        },
+        visualizer=None,
+    )
+    try:
+        server = MCPServer.model_validate(
+            {**FETCH_SERVER, "env": {"MY_KEY": "${MCP_TEST_VALUE}"}}
+        )
+        conversation.attach_mcp_server("docs", server)
+        assert _mcp_tool_names(conversation) == {"docs_fetch"}
+        assert conversation.agent.mcp_config["docs"].env == {
+            "MY_KEY": SecretStr("only-for-this-convo")
+        }
+    finally:
+        conversation.close()
+
+
+def test_attach_mcp_server_rejects_acp_without_starting_it(tmp_path: Path) -> None:
+    conversation = LocalConversation(
+        agent=ACPAgent(acp_command=["unused"]),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    try:
+        with pytest.raises(ValueError, match="not supported for ACP"):
+            conversation.attach_mcp_server(
+                "docs", MCPServer.model_validate(FETCH_SERVER)
+            )
+    finally:
+        conversation.close()
+
+
+def test_attached_stdio_tool_executes_in_same_conversation(tmp_path: Path) -> None:
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-1",
+                        name="docs_fetch",
+                        arguments='{"url": "https://example.com"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="done")]),
+        ]
+    )
+    conversation = _mcp_conversation(tmp_path, {}, llm)
+    try:
+        conversation._ensure_agent_ready()
+        conversation.attach_mcp_server("docs", MCPServer.model_validate(FETCH_SERVER))
+        conversation.send_message("Fetch https://example.com")
+        conversation.run()
+        observations = [
+            event.observation
+            for event in conversation.state.events
+            if isinstance(event, ObservationEvent) and event.tool_name == "docs_fetch"
+        ]
+        assert len(observations) == 1
+        assert isinstance(observations[0], MCPToolObservation)
+        assert "Fetched https://example.com" in observations[0].text
+    finally:
+        conversation.close()

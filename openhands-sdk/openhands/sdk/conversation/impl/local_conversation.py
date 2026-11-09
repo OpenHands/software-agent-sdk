@@ -227,6 +227,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _attached_mcp_clients: dict[str, MCPClient]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
@@ -356,6 +357,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._attached_mcp_clients = {}
         self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -905,12 +907,6 @@ class LocalConversation(BaseConversation):
         # shared/aliased agent would clobber the source conversation's
         # context. Round-trip via JSON avoids thread-lock pickling issues
         # with model_copy(deep=True).
-        source_agent = agent if agent is not None else self.agent
-        agent_cls = type(source_agent)
-        fork_agent = agent_cls.model_validate(
-            source_agent.model_dump(context={"expose_secrets": True}),
-        )
-
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
         with self._state:
@@ -918,6 +914,22 @@ class LocalConversation(BaseConversation):
             # does not leave an orphaned persistence directory behind.
             if from_event_id is not None and from_event_id not in self._state.events:
                 raise ValueError(f"Unknown from_event_id: {from_event_id}")
+
+            source_agent = agent if agent is not None else self.agent
+            fork_agent = type(source_agent).model_validate(
+                source_agent.model_dump(context={"expose_secrets": True}),
+            )
+            if agent is None and self._state.attached_mcp_servers:
+                attached = set(self._state.attached_mcp_servers)
+                fork_agent = fork_agent.model_copy(
+                    update={
+                        "mcp_config": {
+                            name: server
+                            for name, server in fork_agent.mcp_config.items()
+                            if name not in attached
+                        }
+                    }
+                )
 
             # Determine persistence_dir for the fork.
             # Pass the *base* directory only — __init__ calls
@@ -1473,12 +1485,83 @@ class LocalConversation(BaseConversation):
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
+    def attach_mcp_server(self, name: str, server: MCPServer) -> None:
+        """Connect and expose an MCP server only in this conversation.
+
+        Attached servers use prefixed tool names even when they are the only
+        server, so subsequent attachments and resume cannot rename their tools.
+        """
+        if not self.agent.supports_openhands_mcp:
+            raise ValueError("Live MCP attachment is not supported for ACP agents")
+        if not name or not name.strip():
+            raise ValueError("MCP server name must not be empty")
+        if not server.enabled:
+            raise ValueError(f"MCP server {name!r} is disabled")
+        self._ensure_agent_ready()
+        old_agent = self.agent
+        client: MCPClient | None = None
+        active = False
+        changed = False
+        try:
+            with self._state:
+                if name in self.agent.mcp_config:
+                    raise ValueError(f"MCP server {name!r} is already configured")
+                old_state_agent = self._state.agent
+                old_attached = list(self._state.attached_mcp_servers)
+                old_dirty = self._state._dirty
+                expanded = expand_mcp_servers(
+                    {name: server}, self._state.secret_registry.get_secret_value
+                )[name]
+
+                def named(
+                    tools: Sequence[MCPToolDefinition],
+                ) -> list[MCPToolDefinition]:
+                    return [tool.with_server_prefix(name) for tool in tools]
+
+                def on_changed(tools: Sequence[MCPToolDefinition]) -> None:
+                    if active:
+                        self.agent._on_mcp_tools_changed(named(tools))
+
+                def on_reconciled(
+                    client: MCPClient, tools: Sequence[MCPToolDefinition]
+                ) -> None:
+                    if active:
+                        self._on_mcp_tools_reconciled(client, named(tools))
+
+                create_kwargs: dict[str, Any] = {"on_tools_changed": on_changed}
+                if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+                    create_kwargs["on_tools_reconciled"] = on_reconciled
+                client = self._mcp_tool_provider.create_tools(
+                    {name: expanded}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+                )
+                updated_agent = self.agent.model_copy(
+                    update={"mcp_config": {**self.agent.mcp_config, name: expanded}}
+                )
+                updated_agent.add_runtime_tools(named(client.tools))
+                changed = True
+                self._state.agent = updated_agent
+                self._state.attached_mcp_servers = [*old_attached, name]
+            self.agent = updated_agent
+            self._attached_mcp_clients[name] = client
+            active = True
+        except BaseException:
+            if client is not None:
+                client.sync_close()
+            if changed:
+                with self._state:
+                    self._state.agent = old_state_agent
+                    self._state.attached_mcp_servers = old_attached
+                    self._state._dirty = old_dirty
+            self.agent = old_agent
+            raise
+
     def _runtime_mcp_tools(
         self,
         mcp_config: dict[str, MCPServer],
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
+        prefix_single: bool = False,
     ) -> list[ToolDefinition]:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
@@ -1498,7 +1581,7 @@ class LocalConversation(BaseConversation):
         # One connection per server, so a server that fails or never answers
         # costs only its own tools. They start side by side: startup takes as
         # long as the slowest server, not all of them in a row.
-        prefixed = len(mcp_config) > 1
+        prefixed = prefix_single or len(mcp_config) > 1
         with ThreadPoolExecutor(
             max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
         ) as pool:
@@ -1563,11 +1646,28 @@ class LocalConversation(BaseConversation):
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
-        return self._runtime_mcp_tools(
-            self.agent.mcp_config,
-            on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
-            on_tools_reconciled=self._on_mcp_tools_reconciled,
+        attached = set(self._state.attached_mcp_servers)
+        callbacks: dict[str, Any] = {
+            "on_tools_changed": lambda tools: self.agent._on_mcp_tools_changed(tools),
+            "on_tools_reconciled": self._on_mcp_tools_reconciled,
+        }
+        tools = self._runtime_mcp_tools(
+            {
+                name: server
+                for name, server in self.agent.mcp_config.items()
+                if name not in attached
+            },
+            **callbacks,
         )
+        for name in self._state.attached_mcp_servers:
+            server = self.agent.mcp_config.get(name)
+            if server is not None:
+                tools.extend(
+                    self._runtime_mcp_tools(
+                        {name: server}, prefix_single=True, **callbacks
+                    )
+                )
+        return tools
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -3062,6 +3162,12 @@ class LocalConversation(BaseConversation):
                             logger.warning(
                                 f"Error closing executor for tool '{tool.name}': {e}"
                             )
+            for client in self._attached_mcp_clients.values():
+                try:
+                    client.sync_close()
+                except Exception as exc:
+                    logger.warning("Error closing attached MCP client: %s", exc)
+            self._attached_mcp_clients.clear()
         if isinstance(agent_error, CredentialBindingError):
             raise agent_error
         self._cleanup_complete = True

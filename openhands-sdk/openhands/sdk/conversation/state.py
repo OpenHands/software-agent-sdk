@@ -214,6 +214,10 @@ class ConversationState(OpenHandsModel):
         "up to 256 characters.",
     )
 
+    # Names of MCP servers added to this conversation after launch. These are
+    # excluded from forks and keep their tool naming stable on resume.
+    attached_mcp_servers: list[str] = Field(default_factory=list)
+
     # Agent-specific runtime state (simple dict for flexibility)
     agent_state: dict[str, Any] = Field(
         default_factory=dict,
