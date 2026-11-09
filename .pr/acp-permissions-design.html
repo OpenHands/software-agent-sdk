@@ -1,0 +1,2767 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Explicit ACP permissions: SDK, server and typed client</title><style>
+:root{--fg:#1a1a1a;--muted:#5a5a5a;--subtle:#8a8a82;--bg:#fdfdfb;--card:#fff;--elevated:#f7f6f1;--accent:#2b4eaa;--accent-soft:#e6ecfa;--rule:#e2e2dc;--code-bg:#f3f1ec;--warn:#b25b0e;--mono:ui-monospace,Consolas,monospace;--sans:Segoe UI,Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans)}.wrap{display:grid;grid-template-columns:220px minmax(0,1fr);gap:34px;max-width:1240px;margin:auto;padding:30px 24px 90px}nav{position:sticky;top:24px;align-self:start;font-size:12px}nav a{color:var(--fg);text-decoration:none}nav li{margin:6px 0;overflow-wrap:anywhere}nav ol{padding-left:18px}h1{font-size:32px;line-height:1.15;margin:8px 0 16px}h2{font-size:22px;margin:34px 0 12px}h3{font-size:17px;margin:14px 0}.eyebrow{font-size:11px;letter-spacing:.12em;color:var(--accent);text-transform:uppercase}.sub,.muted{color:var(--muted)}header{border-bottom:1px solid var(--rule);padding-bottom:20px}.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 15px}.warn{border-color:var(--warn);background:#fbf1e6}.ba{display:grid;grid-template-columns:1fr 1fr;gap:14px}figure{margin:14px 0}svg{width:100%;height:auto;background:var(--card);border:1px solid var(--rule);border-radius:5px}figcaption{font-size:12px;color:var(--muted);margin:7px 0}code,pre{font-family:var(--mono);font-size:12px}code{background:var(--code-bg);padding:2px 4px}pre{overflow:auto;background:var(--code-bg);padding:14px;white-space:pre;border-radius:4px}.src{font-family:var(--mono);font-size:11px;color:var(--accent);overflow-wrap:anywhere}.card{border-top:1px solid var(--rule);padding-top:12px;margin-top:26px}details{border:1px solid var(--rule);padding:8px 12px;margin:12px 0}summary{cursor:pointer;font-size:13px;color:var(--muted)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--rule);text-align:left;vertical-align:top}th{background:var(--code-bg)}.badge{color:var(--warn);font-size:11px}.existing{fill:var(--code-bg);stroke:var(--subtle);stroke-dasharray:5 3}.new{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2}.edge{stroke:var(--warn);stroke-width:2;stroke-dasharray:5 3}.node{font:600 12px var(--mono);fill:var(--fg)}.detail{font:11px var(--sans);fill:var(--muted)}@media(max-width:800px){.wrap,.ba{grid-template-columns:1fr}nav{position:static}}
+</style></head><body><div class="wrap"><nav><strong>Source changes</strong><ol><li><a href="#file-0">clients/typescript/src/__tests__/acp-permissions.test.ts</a></li><li><a href="#file-1">clients/typescript/src/client/conversation-client.ts</a></li><li><a href="#file-2">clients/typescript/src/generated/acp-permissions-schema.ts</a></li><li><a href="#file-3">clients/typescript/src/index.ts</a></li><li><a href="#file-4">clients/typescript/src/models/acp-permissions.ts</a></li><li><a href="#file-5">openhands-agent-server/openhands/agent_server/acp_permissions.py</a></li><li><a href="#file-6">openhands-agent-server/openhands/agent_server/api.py</a></li><li><a href="#file-7">openhands-agent-server/openhands/agent_server/api_access.py</a></li><li><a href="#file-8">openhands-agent-server/openhands/agent_server/config.py</a></li><li><a href="#file-9">openhands-agent-server/openhands/agent_server/conversation_router.py</a></li><li><a href="#file-10">openhands-agent-server/openhands/agent_server/conversation_service.py</a></li><li><a href="#file-11">openhands-agent-server/openhands/agent_server/event_service.py</a></li><li><a href="#file-12">openhands-sdk/openhands/sdk/agent/acp_agent.py</a></li><li><a href="#file-13">openhands-sdk/openhands/sdk/agent/acp_permissions.py</a></li><li><a href="#file-14">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py</a></li><li><a href="#file-15">openhands-sdk/openhands/sdk/profiles/agent_profile.py</a></li><li><a href="#file-16">openhands-sdk/openhands/sdk/profiles/resolver.py</a></li><li><a href="#file-17">openhands-sdk/openhands/sdk/profiles/seed.py</a></li><li><a href="#file-18">openhands-sdk/openhands/sdk/settings/model.py</a></li><li><a href="#file-19">tests/agent_server/test_acp_permissions.py</a></li><li><a href="#file-20">tests/sdk/agent/acp_permission_peer.py</a></li><li><a href="#file-21">tests/sdk/agent/test_acp_environment.py</a></li><li><a href="#file-22">tests/sdk/agent/test_acp_permissions.py</a></li><li><a href="#file-23">tests/sdk/launch/test_field_ownership.py</a></li></ol></nav><main><header><div class="eyebrow">Agent-generated draft review aid · OpenHands/software-agent-sdk</div><h1>Explicit ACP permissions: SDK, server and typed client</h1><p class="sub">The host can choose an offered option or cancel a bounded ACP request. A server broker and typed client carry that choice without changing legacy defaults.</p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/pull/6557">Draft PR</a> · <a class="src" href="https://github.com/team-majaniemi/majaniemi-autoforge/blob/448caaf42ed8d366eaece9b5f41e67f143cb54dd/docs/VALIDATION.md">Validation and limitations</a></p></header>
+<p class="callout">★ This is a source proposal. Maintainer/API acceptance, human-only PR text, published server/client integration and current-main native/browser/Cloud evidence remain separate gates. The verified local factory retains its audited installed build.</p>
+<section><h2>1. The API is additive; controlled behavior is explicit</h2>
+<figure><svg viewBox="0 0 900 260" role="img" aria-labelledby="overview-title"><title id="overview-title">Permission control before and after</title><desc>Dashed grey is existing behavior or a marked conceptual absence. Blue nodes and orange edges carry the opt-in decision path. Linked nodes name exact code locations.</desc><text class="detail" x="18" y="26">Before: immediate bridge answer</text><rect class="existing" x="18" y="42" width="202" height="64" rx="6"/><text class="node" x="119" y="69" text-anchor="middle">ACP runtime</text><text class="detail" style="font-size:9px" x="119" y="90" text-anchor="middle">concept / unchanged participant</text><path class="edge" d="M220 74 h18 l-5 -4 m5 4 l-5 4"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1703"><rect class="existing" x="238" y="42" width="202" height="64" rx="6"/><text class="node" x="339" y="69" text-anchor="middle">request_permission</text><text class="detail" style="font-size:9px" x="339" y="90" text-anchor="middle">acp_agent.py:1703</text></a><path class="edge" d="M440 74 h18 l-5 -4 m5 4 l-5 4"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1703"><rect class="existing" x="458" y="42" width="202" height="64" rx="6"/><text class="node" x="559" y="69" text-anchor="middle">options[0] selected</text><text class="detail" style="font-size:9px" x="559" y="90" text-anchor="middle">acp_agent.py:1703</text></a><text class="detail" x="18" y="152">After: the host owns a bounded decision</text><rect class="existing" x="18" y="168" width="202" height="64" rx="6"/><text class="node" x="119" y="195" text-anchor="middle">ACP runtime</text><text class="detail" style="font-size:9px" x="119" y="216" text-anchor="middle">concept / unchanged participant</text><path class="edge" d="M220 200 h18 l-5 -4 m5 4 l-5 4"/><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_permissions.py#L42"><rect class="new" x="238" y="168" width="202" height="64" rx="6"/><text class="node" x="339" y="195" text-anchor="middle">resolve_acp_permission</text><text class="detail" style="font-size:9px" x="339" y="216" text-anchor="middle">acp_permissions.py:42</text></a><path class="edge" d="M440 200 h18 l-5 -4 m5 4 l-5 4"/><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/acp_permissions.py#L53"><rect class="new" x="458" y="168" width="202" height="64" rx="6"/><text class="node" x="559" y="195" text-anchor="middle">ACPPermissionBroker</text><text class="detail" style="font-size:9px" x="559" y="216" text-anchor="middle">acp_permissions.py:53</text></a><path class="edge" d="M660 200 h18 l-5 -4 m5 4 l-5 4"/><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_permissions.py#L42"><rect class="new" x="678" y="168" width="202" height="64" rx="6"/><text class="node" x="779" y="195" text-anchor="middle">offered ID / cancelled</text><text class="detail" style="font-size:9px" x="779" y="216" text-anchor="middle">acp_permissions.py:42</text></a></svg><figcaption>The new path waits for an explicit host/user decision. Linked nodes are code; unlinked runtime/absence nodes are concepts. The legacy default remains unchanged.</figcaption></figure>
+<div class="ba"><div><h3>Before</h3><pre>ACPAgent(acp_command=[...])
+request_permission → options[0]</pre></div><div><h3>After</h3><pre>ACPAgent(
+  acp_command=[...],
+  acp_permission_mode="callback",
+  acp_permission_handler=decide,
+  acp_permission_timeout=60,
+)
+GET  /{id}/acp/permissions
+POST /{id}/acp/permissions/{request_id}
+{ "option_id": "offered-id" | null }</pre></div></div>
+<p>Legacy permission mode, ambient/registry inheritance, model switching and rejected-load restart remain default-compatible. Callback objects stay runtime-only. Persisted callback mode requires a trusted host to reinstall its handler; an absent handler cannot grant permission.</p>
+<p>API/flow source: <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/acp_permissions.py#L53">openhands-agent-server/openhands/agent_server/acp_permissions.py:53</a></p>
+<p>API/flow source: <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/api_access.py#L58">openhands-agent-server/openhands/agent_server/api_access.py:58</a></p>
+<p>API/flow source: <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/conversation_router.py#L572">openhands-agent-server/openhands/agent_server/conversation_router.py:572</a></p>
+<p>API/flow source: <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/event_service.py#L2246">openhands-agent-server/openhands/agent_server/event_service.py:2246</a></p>
+<p>API/flow source: <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1736">openhands-sdk/openhands/sdk/agent/acp_agent.py:1736</a></p>
+<p>API/flow source: <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_permissions.py#L42">openhands-sdk/openhands/sdk/agent/acp_permissions.py:42</a></p>
+</section><section><h2>2. Validation has an explicit boundary</h2><table><tr><th>Scope</th><th>Observed result</th><th>Limit</th></tr>
+<tr><td>SDK focused source</td><td>379 passed, 15 deselected</td><td>13 live cases and 2 oversized Windows pytest IDs excluded</td></tr>
+<tr><td>Typed client</td><td>405 tests; lint, build, format passed</td><td>Compiled candidate package; no published release</td></tr>
+<tr><td>Settings</td><td>29 historical fixtures / 8 published-baseline payloads passed</td><td>Accepted-release schema integration remains</td></tr>
+<tr><td>Server API/CLI</td><td>32 synthetic checks; termination confirmed</td><td>No personal state, inference or proposed tool execution</td></tr>
+<tr><td>Server unit file</td><td>All 6 standalone functions passed in Linux (17.136s)</td><td>Frozen source overlay; direct calls because pytest is absent</td></tr>
+<tr><td>Windows server unit file</td><td>5 passed / 1 fixture failure</td><td>WinError 1314 creating an outside-root symlink; no assertion skipped</td></tr>
+<tr><td>Type checking</td><td>Changed-file Linux-target Pyright passed</td><td>Full Windows hook retains reproduced base locale-cleanup issue</td></tr>
+</table><p><a class="src" href="https://github.com/team-majaniemi/majaniemi-autoforge/blob/448caaf42ed8d366eaece9b5f41e67f143cb54dd/docs/VALIDATION.md">Commands, timings, retained failures and proof scope</a></p></section><section><h2>3. Follow the code by responsibility</h2>
+<article class="card" id="file-0"><span class="badge">added · config/type/transport/test propagation</span><h3>clients/typescript/src/__tests__/acp-permissions.test.ts</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/__tests__/acp-permissions.test.ts#L1">clients/typescript/src/__tests__/acp-permissions.test.ts:1</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/__tests__/acp-permissions.test.ts#L1">clients/typescript/src/__tests__/acp-permissions.test.ts:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/clients/typescript/src/__tests__/acp-permissions.test.ts b/clients/typescript/src/__tests__/acp-permissions.test.ts
+new file mode 100644
+index 0000000..64fdf8e
+--- /dev/null
++++ b/clients/typescript/src/__tests__/acp-permissions.test.ts
+@@ -0,0 +1,45 @@
++import { createServer, type Server } from &#x27;node:http&#x27;;
++import type { AddressInfo } from &#x27;node:net&#x27;;
++import { ConversationClient } from &#x27;../client/conversation-client&#x27;;
++
++describe(&#x27;ACP permission transport&#x27;, () =&gt; {
++  let server: Server;
++  let host: string;
++  const observed: { method: string; url: string; key: string | undefined; body: string }[] = [];
++  beforeAll(async () =&gt; {
++    server = createServer(async (request, response) =&gt; {
++      let body = &#x27;&#x27;;
++      for await (const chunk of request) body += chunk;
++      observed.push({
++        method: request.method ?? &#x27;&#x27;,
++        url: request.url ?? &#x27;&#x27;,
++        key: request.headers[&#x27;x-session-api-key&#x27;] as string | undefined,
++        body,
++      });
++      response.setHeader(&#x27;content-type&#x27;, &#x27;application/json&#x27;);
++      response.statusCode = request.url?.includes(&#x27;stale&#x27;) ? 404 : 200;
++      response.end(JSON.stringify(request.method === &#x27;GET&#x27; ? { items: [] } : { success: true }));
++    });
++    await new Promise&lt;void&gt;((resolve) =&gt; server.listen(0, &#x27;127.0.0.1&#x27;, resolve));
++    host = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  });
++  afterAll(async () =&gt; {
++    server.closeAllConnections();
++    await new Promise&lt;void&gt;((resolve) =&gt; server.close(() =&gt; resolve()));
++  });
++  it(&#x27;authenticates scoped decisions, preserves null cancellation and rejects stale responses&#x27;, async () =&gt; {
++    const client = new ConversationClient({ host, apiKey: &#x27;fixture-only&#x27; });
++    await expect(client.listACPPermissions(&#x27;conversation&#x27;)).resolves.toEqual({ items: [] });
++    await client.respondToACPPermission(&#x27;conversation&#x27;, &#x27;request&#x27;, { option_id: null });
++    await expect(
++      client.respondToACPPermission(&#x27;conversation&#x27;, &#x27;stale&#x27;, { option_id: &#x27;offered&#x27; })
++    ).rejects.toThrow();
++    expect(observed.map((entry) =&gt; [entry.method, entry.url, entry.key])).toEqual([
++      [&#x27;GET&#x27;, &#x27;/api/conversations/conversation/acp/permissions&#x27;, &#x27;fixture-only&#x27;],
++      [&#x27;POST&#x27;, &#x27;/api/conversations/conversation/acp/permissions/request&#x27;, &#x27;fixture-only&#x27;],
++      [&#x27;POST&#x27;, &#x27;/api/conversations/conversation/acp/permissions/stale&#x27;, &#x27;fixture-only&#x27;],
++    ]);
++    expect(JSON.parse(observed[1].body)).toEqual({ option_id: null });
++    client.close();
++  });
++});</pre></details></article>
+<article class="card" id="file-1"><span class="badge">changed · config/type/transport/test propagation</span><h3>clients/typescript/src/client/conversation-client.ts</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/client/conversation-client.ts#L1">clients/typescript/src/client/conversation-client.ts:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/clients/typescript/src/client/conversation-client.ts#L1">Before: clients/typescript/src/client/conversation-client.ts:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/client/conversation-client.ts#L1">clients/typescript/src/client/conversation-client.ts:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/clients/typescript/src/client/conversation-client.ts b/clients/typescript/src/client/conversation-client.ts
+index f563927..61a55f0 100644
+--- a/clients/typescript/src/client/conversation-client.ts
++++ b/clients/typescript/src/client/conversation-client.ts
+@@ -21,8 +21,9 @@ import type {
+   UpdateConversationRequest,
+   UpdateSecretsRequest,
+ } from &#x27;../models/conversation&#x27;;
+ import type { ConfirmationPolicyBase } from &#x27;../types/base&#x27;;
++import type { ACPPermissionPage, ACPPermissionDecision } from &#x27;../models/acp-permissions&#x27;;
+&#32;
+ export interface ConversationClientOptions {
+   host: string;
+   apiKey?: string;
+@@ -441,8 +442,27 @@ export class ConversationClient {
+     await this.client.patch&lt;Success&gt;(`/api/conversations/${conversationId}`, update);
+     return this.getConversation&lt;TConversation&gt;(conversationId);
+   }
+&#32;
++  async listACPPermissions(conversationId: string): Promise&lt;ACPPermissionPage&gt; {
++    const response = await this.client.get&lt;ACPPermissionPage&gt;(
++      `/api/conversations/${encodeURIComponent(conversationId)}/acp/permissions`
++    );
++    return response.data;
++  }
++
++  async respondToACPPermission(
++    conversationId: string,
++    requestId: string,
++    decision: ACPPermissionDecision
++  ): Promise&lt;Success&gt; {
++    const response = await this.client.post&lt;Success&gt;(
++      `/api/conversations/${encodeURIComponent(conversationId)}/acp/permissions/${encodeURIComponent(requestId)}`,
++      decision
++    );
++    return response.data;
++  }
++
+   close(): void {
+     this.client.close();
+   }
+ }</pre></details></article>
+<article class="card" id="file-2"><span class="badge">added · config/type/transport/test propagation</span><h3>clients/typescript/src/generated/acp-permissions-schema.ts</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/generated/acp-permissions-schema.ts#L6">clients/typescript/src/generated/acp-permissions-schema.ts:6</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/generated/acp-permissions-schema.ts#L6">clients/typescript/src/generated/acp-permissions-schema.ts:6</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/clients/typescript/src/generated/acp-permissions-schema.ts b/clients/typescript/src/generated/acp-permissions-schema.ts
+new file mode 100644
+index 0000000..3aadfec
+--- /dev/null
++++ b/clients/typescript/src/generated/acp-permissions-schema.ts
+@@ -0,0 +1,206 @@
++// Generated file. Do not edit by hand.
++// Source: permission-route projection of unpublished candidate API (proof 60df5aa464f44746); regenerate from accepted release before publication
++// Regenerate with: npm run generate:agent-server-api
++// This file is auto-generated by @hey-api/openapi-ts
++
++export type ClientOptions = {
++  baseUrl: `${string}://${string}` | (string &amp; {});
++};
++
++/**
++ * ACPPermissionChoice
++ */
++export type AcpPermissionChoice = {
++  /**
++   * Id
++   */
++  id: string;
++  /**
++   * Kind
++   */
++  kind: string;
++  /**
++   * Name
++   */
++  name: string;
++};
++
++/**
++ * ACPPermissionDecision
++ */
++export type AcpPermissionDecision = {
++  /**
++   * Option Id
++   */
++  option_id: string | null;
++};
++
++/**
++ * ACPPermissionPage
++ */
++export type AcpPermissionPage = {
++  /**
++   * Items
++   */
++  items: Array&lt;AcpPermissionView&gt;;
++};
++
++/**
++ * ACPPermissionView
++ */
++export type AcpPermissionView = {
++  /**
++   * Details
++   */
++  details: string;
++  /**
++   * Details Truncated
++   */
++  details_truncated: boolean;
++  /**
++   * Expires At
++   */
++  expires_at: string;
++  /**
++   * Kind
++   */
++  kind: string | null;
++  /**
++   * Options
++   */
++  options: Array&lt;AcpPermissionChoice&gt;;
++  /**
++   * Request Id
++   */
++  request_id: string;
++  /**
++   * Session Id
++   */
++  session_id: string;
++  /**
++   * Title
++   */
++  title: string;
++};
++
++/**
++ * HTTPValidationError
++ */
++export type HttpValidationError = {
++  /**
++   * Detail
++   */
++  detail?: Array&lt;ValidationError&gt;;
++};
++
++/**
++ * Success
++ */
++export type Success = {
++  /**
++   * Success
++   */
++  success?: boolean;
++};
++
++/**
++ * ValidationError
++ */
++export type ValidationError = {
++  /**
++   * Context
++   */
++  ctx?: {
++    [key: string]: unknown;
++  };
++  /**
++   * Input
++   */
++  input?: unknown;
++  /**
++   * Location
++   */
++  loc: Array&lt;string | number&gt;;
++  /**
++   * Message
++   */
++  msg: string;
++  /**
++   * Error Type
++   */
++  type: string;
++};
++
++export type PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetData = {
++  body?: never;
++  path: {
++    /**
++     * Conversation Id
++     */
++    conversation_id: string;
++  };
++  query?: never;
++  url: &#x27;/api/conversations/{conversation_id}/acp/permissions&#x27;;
++};
++
++export type PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetErrors = {
++  /**
++   * Conversation not found
++   */
++  404: unknown;
++  /**
++   * Validation Error
++   */
++  422: HttpValidationError;
++};
++
++export type PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetError =
++  PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetErrors[keyof PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetErrors];
++
++export type PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetResponses = {
++  /**
++   * Successful Response
++   */
++  200: AcpPermissionPage;
++};
++
++export type PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetResponse =
++  PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetResponses[keyof PendingAcpPermissionsApiConversationsConversationIdAcpPermissionsGetResponses];
++
++export type DecideAcpPermissionApiConversationsConversationIdAcpPermissionsRequestIdPostData = {
++  body: AcpPermissionDecision;
++  path: {
++    /**
++     * Conversation Id
++     */
++    conversation_id: string;
++    /**
++     * Request Id
++     */
++    request_id: string;
++  };
++  query?: never;
++  url: &#x27;/api/conversations/{conversation_id}/acp/permissions/{request_id}&#x27;;
++};
++
++export type DecideAcpPermissionApiConversationsConversationIdAcpPermissionsRequestIdPostErrors = {
++  /**
++   * Conversation or live permission request not found
++   */
++  404: unknown;
++  /**
++   * Option not offered or incomplete details
++   */
++  422: unknown;
++};
++
++export type DecideAcpPermissionApiConversationsConversationIdAcpPermissionsRequestIdPostResponses =
++  {
++    /**
++     * Successful Response
++     */
++    200: Success;
++  };
++
++export type DecideAcpPermissionApiConversationsConversationIdAcpPermissionsRequestIdPostResponse =
++  DecideAcpPermissionApiConversationsConversationIdAcpPermissionsRequestIdPostResponses[keyof DecideAcpPermissionApiConversationsConversationIdAcpPermissionsRequestIdPostResponses];</pre></details></article>
+<article class="card" id="file-3"><span class="badge">changed · config/type/transport/test propagation</span><h3>clients/typescript/src/index.ts</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/index.ts#L9">clients/typescript/src/index.ts:9</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/clients/typescript/src/index.ts#L1">Before: clients/typescript/src/index.ts:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/index.ts#L9">clients/typescript/src/index.ts:9</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/clients/typescript/src/index.ts b/clients/typescript/src/index.ts
+index 37b9def..9bb8607 100644
+--- a/clients/typescript/src/index.ts
++++ b/clients/typescript/src/index.ts
+@@ -219,8 +219,15 @@ export type {
+   BaseConversationOptions,
+   ConversationType,
+ } from &#x27;./conversation/base&#x27;;
+&#32;
++export type {
++  ACPPermissionChoice,
++  ACPPermissionView,
++  ACPPermissionPage,
++  ACPPermissionDecision,
++} from &#x27;./models/acp-permissions&#x27;;
++
+ // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
+ export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from &#x27;./models/acp&#x27;;
+ export type { ACPProviderInfo, ACPProviderKey } from &#x27;./models/acp&#x27;;
+ export type {</pre></details></article>
+<article class="card" id="file-4"><span class="badge">added · config/type/transport/test propagation</span><h3>clients/typescript/src/models/acp-permissions.ts</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/models/acp-permissions.ts#L2">clients/typescript/src/models/acp-permissions.ts:2</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/clients/typescript/src/models/acp-permissions.ts#L2">clients/typescript/src/models/acp-permissions.ts:2</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/clients/typescript/src/models/acp-permissions.ts b/clients/typescript/src/models/acp-permissions.ts
+new file mode 100644
+index 0000000..684d74e
+--- /dev/null
++++ b/clients/typescript/src/models/acp-permissions.ts
+@@ -0,0 +1,7 @@
++/** Public aliases for the generated Agent Server permission contract. */
++export type {
++  AcpPermissionChoice as ACPPermissionChoice,
++  AcpPermissionDecision as ACPPermissionDecision,
++  AcpPermissionPage as ACPPermissionPage,
++  AcpPermissionView as ACPPermissionView,
++} from &#x27;../generated/acp-permissions-schema&#x27;;</pre></details></article>
+<article class="card" id="file-5"><span class="badge">added · behavior</span><h3>Pending choices belong to one broker</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/acp_permissions.py#L53">openhands-agent-server/openhands/agent_server/acp_permissions.py:53</a></p><p>New file/symbol: no before implementation.</p></details>
+<p>Opaque one-shot request IDs, masking, bounded details, expiry and cancellation are owned by the broker. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/acp_permissions.py#L53">openhands-agent-server/openhands/agent_server/acp_permissions.py:53</a></p>
+<div class="ba"><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-5-b"><title id="flow-5-b">New symbol: no before — No pending-decision broker</title><desc>No pending-decision broker</desc><rect class="existing" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">New symbol: no before</text><text class="detail" x="200" y="74" text-anchor="middle">No pending-decision broker</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">concept / no prior source</text></svg><figcaption>Before: No pending-decision broker</figcaption></figure><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-5-a"><title id="flow-5-a">ACPPermissionBroker — One-shot request ID to option or cancellation</title><desc>One-shot request ID to option or cancellation</desc><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/acp_permissions.py#L53"><rect class="new" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">ACPPermissionBroker</text><text class="detail" x="200" y="74" text-anchor="middle">One-shot request ID to option or cancellation</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">acp_permissions.py:53</text></a><path class="edge" d="M200 108 L200 130"/></svg><figcaption>After: One-shot request ID to option or cancellation</figcaption></figure></div>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/acp_permissions.py b/openhands-agent-server/openhands/agent_server/acp_permissions.py
+new file mode 100644
+index 0000000..4b2c0fd
+--- /dev/null
++++ b/openhands-agent-server/openhands/agent_server/acp_permissions.py
+@@ -0,0 +1,152 @@
++&quot;&quot;&quot;Conversation-owned ACP permission requests, independent of the state lock.&quot;&quot;&quot;
++
++from __future__ import annotations
++
++import asyncio
++import json
++import threading
++import time
++from collections.abc import Callable
++from concurrent.futures import Future
++from dataclasses import dataclass
++from datetime import UTC, datetime, timedelta
++from uuid import UUID, uuid4
++
++from pydantic import BaseModel
++
++from openhands.sdk.agent.acp_permissions import ACPPermissionRequest
++
++
++class ACPPermissionChoice(BaseModel):
++    id: UUID
++    name: str
++    kind: str
++
++
++class ACPPermissionView(BaseModel):
++    request_id: UUID
++    session_id: str
++    title: str
++    kind: str | None
++    details: str
++    details_truncated: bool
++    expires_at: datetime
++    options: list[ACPPermissionChoice]
++
++
++class ACPPermissionPage(BaseModel):
++    items: list[ACPPermissionView]
++
++
++class ACPPermissionDecision(BaseModel):
++    option_id: UUID | None
++
++
++@dataclass
++class _Pending:
++    view: ACPPermissionView
++    choices: dict[UUID, tuple[str, str]]
++    deadline: float
++    future: Future[str | None]
++
++
++class ACPPermissionBroker:
++    def __init__(self, timeout: float, mask: Callable[[str], str]) -&gt; None:
++        self.timeout = timeout
++        self.mask = mask
++        self._lock = threading.Lock()
++        self._pending: dict[UUID, _Pending] = {}
++        self._closed = False
++
++    def _masked(self, value):
++        if isinstance(value, str):
++            return self.mask(value)
++        if isinstance(value, dict):
++            return {
++                self.mask(str(key)): self._masked(item) for key, item in value.items()
++            }
++        if isinstance(value, list):
++            return [self._masked(item) for item in value]
++        return value
++
++    async def request(self, request: ACPPermissionRequest) -&gt; str | None:
++        details = json.dumps(
++            self._masked(request.tool_call.model_dump(mode=&quot;json&quot;, by_alias=True)),
++            ensure_ascii=False,
++            indent=2,
++        )
++        choices = {
++            uuid4(): (option.option_id, option.kind) for option in request.options
++        }
++        view = ACPPermissionView(
++            request_id=uuid4(),
++            session_id=self.mask(request.session_id),
++            title=self.mask(request.tool_call.title or &quot;ACP permission request&quot;)[:512],
++            kind=request.tool_call.kind,
++            details=details[:16384],
++            details_truncated=len(details) &gt; 16384,
++            expires_at=datetime.now(UTC) + timedelta(seconds=self.timeout),
++            options=[
++                ACPPermissionChoice(
++                    id=key, name=self.mask(option.name)[:256], kind=option.kind
++                )
++                for key, option in zip(choices, request.options, strict=True)
++            ],
++        )
++        pending = _Pending(view, choices, time.monotonic() + self.timeout, Future())
++        with self._lock:
++            if self._closed or len(self._pending) &gt;= 16:
++                return None
++            self._pending[view.request_id] = pending
++        try:
++            return await asyncio.wait_for(
++                asyncio.wrap_future(pending.future), timeout=self.timeout
++            )
++        except TimeoutError:
++            return None
++        finally:
++            with self._lock:
++                self._pending.pop(view.request_id, None)
++
++    def _expire(self) -&gt; None:
++        for key, pending in list(self._pending.items()):
++            if pending.deadline &lt;= time.monotonic():
++                self._pending.pop(key)
++                if not pending.future.done():
++                    pending.future.set_result(None)
++
++    def snapshot(self) -&gt; ACPPermissionPage:
++        with self._lock:
++            self._expire()
++            return ACPPermissionPage(
++                items=[
++                    pending.view.model_copy(deep=True)
++                    for pending in self._pending.values()
++                ]
++            )
++
++    def decide(self, request_id: UUID, decision: ACPPermissionDecision) -&gt; bool:
++        with self._lock:
++            self._expire()
++            pending = self._pending.get(request_id)
++            if pending is None or pending.future.done():
++                return False
++            selected = None
++            if decision.option_id is not None:
++                choice = pending.choices.get(decision.option_id)
++                if choice is None:
++                    raise ValueError(&quot;Option was not offered for this request&quot;)
++                if pending.view.details_truncated and choice[1].startswith(&quot;allow&quot;):
++                    raise ValueError(&quot;Cannot approve truncated permission details&quot;)
++                selected = choice[0]
++            self._pending.pop(request_id)
++            pending.future.set_result(selected)
++            return True
++
++    def cancel_pending(self, *, close: bool = False) -&gt; None:
++        with self._lock:
++            self._closed = self._closed or close
++            pending, self._pending = self._pending, {}
++            for item in pending.values():
++                if not item.future.done():
++                    item.future.set_result(None)</pre></details></article>
+<article class="card" id="file-6"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-agent-server/openhands/agent_server/api.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/api.py#L1">openhands-agent-server/openhands/agent_server/api.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-agent-server/openhands/agent_server/api.py#L1">Before: openhands-agent-server/openhands/agent_server/api.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/api.py#L1">openhands-agent-server/openhands/agent_server/api.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/api.py b/openhands-agent-server/openhands/agent_server/api.py
+index 5f4338e..9fd08a4 100644
+--- a/openhands-agent-server/openhands/agent_server/api.py
++++ b/openhands-agent-server/openhands/agent_server/api.py
+@@ -21,8 +21,9 @@ from starlette.requests import Request
+ from starlette.types import ASGIApp
+&#32;
+ from openhands.agent_server.acp_router import acp_router
+ from openhands.agent_server.agent_profiles_router import agent_profiles_router
++from openhands.agent_server.api_access import ClientAPIAccessMiddleware
+ from openhands.agent_server.auth_router import auth_router
+ from openhands.agent_server.bash_router import bash_router
+ from openhands.agent_server.bash_service import get_default_bash_event_service
+ from openhands.agent_server.canvas_extensions.backend import (
+@@ -920,8 +921,14 @@ def create_app(config: Config | None = None) -&gt; FastAPI:
+             RuntimeDispatchMiddleware,
+         )
+&#32;
+         app.add_middleware(RuntimeDispatchMiddleware)
++    if config.client_api_policy is not None:
++        app.add_middleware(
++            ClientAPIAccessMiddleware,
++            policy=config.client_api_policy,
++            workspace_path=config.workspace_path,
++        )
+     # CORS is not added as user middleware here: AgentServerApp wraps the
+     # complete stack (including ServerErrorMiddleware) in CORSDispatcher so
+     # unhandled 500 responses also carry CORS headers.
+     _add_exception_handlers(app)</pre></details></article>
+<article class="card" id="file-7"><span class="badge">added · behavior</span><h3>A client key has an explicit API scope</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/api_access.py#L58">openhands-agent-server/openhands/agent_server/api_access.py:58</a></p><p>New file/symbol: no before implementation.</p></details>
+<p>The new middleware narrows client access and keeps operator access distinct; path normalization is checked before workspace APIs are admitted. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/api_access.py#L58">openhands-agent-server/openhands/agent_server/api_access.py:58</a></p>
+<div class="ba"><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-7-b"><title id="flow-7-b">New symbol: no before — No client-scope middleware</title><desc>No client-scope middleware</desc><rect class="existing" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">New symbol: no before</text><text class="detail" x="200" y="74" text-anchor="middle">No client-scope middleware</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">concept / no prior source</text></svg><figcaption>Before: No client-scope middleware</figcaption></figure><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-7-a"><title id="flow-7-a">ClientAPIAccessMiddleware — Client route/path allowlist; separate operator</title><desc>Client route/path allowlist; separate operator</desc><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/api_access.py#L58"><rect class="new" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">ClientAPIAccessMiddleware</text><text class="detail" x="200" y="74" text-anchor="middle">Client route/path allowlist; separate operator</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">api_access.py:58</text></a><path class="edge" d="M200 108 L200 130"/></svg><figcaption>After: Client route/path allowlist; separate operator</figcaption></figure></div>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/api_access.py b/openhands-agent-server/openhands/agent_server/api_access.py
+new file mode 100644
+index 0000000..5705079
+--- /dev/null
++++ b/openhands-agent-server/openhands/agent_server/api_access.py
+@@ -0,0 +1,111 @@
++&quot;&quot;&quot;Opt-in request scopes for clients of a privileged local Agent Server.
++
++Session authentication still applies. An orchestrator can retain a separate
++operator key while giving a client a limited set of HTTP/WebSocket routes.
++&quot;&quot;&quot;
++
++import hmac
++import re
++from pathlib import Path
++from typing import Literal
++from urllib.parse import parse_qs
++
++from pydantic import BaseModel, Field, SecretStr, field_validator
++from starlette.responses import JSONResponse
++from starlette.types import ASGIApp, Receive, Scope, Send
++
++
++class APIAccessRule(BaseModel):
++    method: Literal[&quot;GET&quot;, &quot;HEAD&quot;, &quot;POST&quot;, &quot;PUT&quot;, &quot;PATCH&quot;, &quot;DELETE&quot;, &quot;OPTIONS&quot;]
++    path: str = Field(
++        min_length=1,
++        max_length=256,
++        description=&quot;Regex matched against the complete decoded request path.&quot;,
++    )
++    workspace_query_parameters: list[str] = Field(default_factory=list)
++
++    @field_validator(&quot;path&quot;)
++    @classmethod
++    def valid_pattern(cls, value: str) -&gt; str:
++        re.compile(value)
++        return value
++
++
++class ClientAPIPolicy(BaseModel):
++    operator_api_key: SecretStr
++    http_rules: list[APIAccessRule] = Field(default_factory=list, max_length=128)
++    websocket_paths: list[str] = Field(default_factory=list, max_length=16)
++
++    @field_validator(&quot;operator_api_key&quot;)
++    @classmethod
++    def nonempty_operator_key(cls, value: SecretStr) -&gt; SecretStr:
++        if len(value.get_secret_value()) &lt; 32:
++            raise ValueError(
++                &quot;A separate operator credential of at least 32 characters is required&quot;
++            )
++        return value
++
++    @field_validator(&quot;websocket_paths&quot;)
++    @classmethod
++    def valid_websocket_patterns(cls, values: list[str]) -&gt; list[str]:
++        for value in values:
++            if len(value) &gt; 256:
++                raise ValueError(&quot;WebSocket path pattern is too long&quot;)
++            re.compile(value)
++        return values
++
++
++class ClientAPIAccessMiddleware:
++    def __init__(self, app: ASGIApp, *, policy: ClientAPIPolicy, workspace_path: Path):
++        self.app, self.policy = app, policy
++        self.workspace = workspace_path.resolve()
++
++    async def __call__(self, scope: Scope, receive: Receive, send: Send) -&gt; None:
++        kind = scope[&quot;type&quot;]
++        if kind not in (&quot;http&quot;, &quot;websocket&quot;):
++            await self.app(scope, receive, send)
++            return
++        supplied = dict(scope.get(&quot;headers&quot;, [])).get(b&quot;x-operator-api-key&quot;, b&quot;&quot;)
++        operator = hmac.compare_digest(
++            supplied, self.policy.operator_api_key.get_secret_value().encode()
++        )
++        path = scope[&quot;path&quot;]
++        allowed = operator
++        if not allowed and kind == &quot;websocket&quot;:
++            allowed = any(
++                re.fullmatch(pattern, path) for pattern in self.policy.websocket_paths
++            )
++        if not allowed and kind == &quot;http&quot;:
++            query = parse_qs(
++                scope.get(&quot;query_string&quot;, b&quot;&quot;).decode(&quot;utf-8&quot;, errors=&quot;replace&quot;),
++                keep_blank_values=True,
++            )
++            for rule in self.policy.http_rules:
++                if rule.method != scope[&quot;method&quot;] or not re.fullmatch(rule.path, path):
++                    continue
++                allowed = True
++                for name in rule.workspace_query_parameters:
++                    values = query.get(name, [])
++                    if len(values) != 1 or not self._inside_workspace(values[0]):
++                        allowed = False
++                        break
++                if allowed:
++                    break
++        if allowed:
++            await self.app(scope, receive, send)
++        elif kind == &quot;websocket&quot;:
++            await send({&quot;type&quot;: &quot;websocket.close&quot;, &quot;code&quot;: 1008})
++        else:
++            await JSONResponse(
++                {&quot;detail&quot;: &quot;Request is outside this client&#x27;s API scope&quot;},
++                status_code=403,
++            )(scope, receive, send)
++
++    def _inside_workspace(self, value: str) -&gt; bool:
++        try:
++            candidate = Path(value)
++            return candidate.is_absolute() and candidate.resolve().is_relative_to(
++                self.workspace
++            )
++        except (OSError, ValueError):
++            return False</pre></details></article>
+<article class="card" id="file-8"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-agent-server/openhands/agent_server/config.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/config.py#L1">openhands-agent-server/openhands/agent_server/config.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-agent-server/openhands/agent_server/config.py#L1">Before: openhands-agent-server/openhands/agent_server/config.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/config.py#L1">openhands-agent-server/openhands/agent_server/config.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/config.py b/openhands-agent-server/openhands/agent_server/config.py
+index 31c060f..087bff6 100644
+--- a/openhands-agent-server/openhands/agent_server/config.py
++++ b/openhands-agent-server/openhands/agent_server/config.py
+@@ -1,9 +1,11 @@
++import hashlib
+ import json
+ import logging
+ import os
+ from pathlib import Path
+ from typing import Any, ClassVar, Final, Literal, Self
++from uuid import UUID
+&#32;
+ from pydantic import (
+     BaseModel,
+     ConfigDict,
+@@ -14,8 +16,9 @@ from pydantic import (
+     field_validator,
+     model_validator,
+ )
+&#32;
++from openhands.agent_server.api_access import ClientAPIPolicy
+ from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
+ from openhands.agent_server.env_parser import (
+     MISSING,
+     _get_default_parsers,
+@@ -236,8 +239,31 @@ class TelemetrySpec(BaseModel):
+         default=5.0, ge=0, description=&quot;Base seconds between delivery retries.&quot;
+     )
+&#32;
+&#32;
++class ConversationScope(BaseModel):
++    &quot;&quot;&quot;Optional deployment boundary for one admitted conversation and workspace.&quot;&quot;&quot;
++
++    model_config = ConfigDict(frozen=True, extra=&quot;forbid&quot;)
++    id: UUID
++    workspace_path: Path
++    agent_sha256: str | None = Field(default=None, pattern=r&quot;^[a-f0-9]{64}$&quot;)
++
++    @staticmethod
++    def agent_digest(agent: BaseModel) -&gt; str:
++        encoded = json.dumps(
++            agent.model_dump(mode=&quot;json&quot;), sort_keys=True, separators=(&quot;,&quot;, &quot;:&quot;)
++        ).encode()
++        return hashlib.sha256(encoded).hexdigest()
++
++    @field_validator(&quot;workspace_path&quot;)
++    @classmethod
++    def absolute_workspace(cls, value: Path) -&gt; Path:
++        if not value.is_absolute():
++            raise ValueError(&quot;A conversation scope requires an absolute workspace&quot;)
++        return value.resolve()
++
++
+ class Config(BaseModel):
+     &quot;&quot;&quot;
+     Immutable configuration for a server running in local mode.
+     (Typically inside a sandbox).
+@@ -283,8 +309,43 @@ class Config(BaseModel):
+         description=(
+             &quot;Default workspace directory for conversations created by the server.&quot;
+         ),
+     )
++    conversation_scope: ConversationScope | None = Field(
++        default=None,
++        description=(
++            &quot;Opt-in single-conversation deployment; rejects other conversation &quot;
++            &quot;IDs, workspace changes and worktree creation.&quot;
++        ),
++    )
++    client_api_policy: ClientAPIPolicy | None = Field(
++        default=None,
++        description=(
++            &quot;Opt-in client HTTP/WebSocket allowlist, workspace query-path scope &quot;
++            &quot;and separate operator credential. Session authentication still applies.&quot;
++        ),
++    )
++
++    @model_validator(mode=&quot;after&quot;)
++    def validate_conversation_scope(self) -&gt; Self:
++        if self.client_api_policy and (
++            not self.session_api_keys
++            or self.client_api_policy.operator_api_key.get_secret_value()
++            in self.session_api_keys
++        ):
++            raise ValueError(
++                &quot;Client API scope requires authenticated sessions and a &quot;
++                &quot;different operator credential&quot;
++            )
++        if (
++            self.conversation_scope
++            and self.workspace_path.resolve() != self.conversation_scope.workspace_path
++        ):
++            raise ValueError(
++                &quot;Default workspace must match the admitted conversation scope&quot;
++            )
++        return self
++
+     conversation_worktree_root: Path = Field(
+         default=Path(&quot;/tmp/conversation-worktrees&quot;),
+         description=(
+             &quot;Root directory for conversation git worktrees. Each conversation gets a &quot;</pre></details></article>
+<article class="card" id="file-9"><span class="badge">changed · behavior</span><h3>Permission decisions have dedicated routes</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/conversation_router.py#L572">openhands-agent-server/openhands/agent_server/conversation_router.py:572</a></p><p>New file/symbol: no before implementation.</p></details>
+<p>The conversation router exposes typed pending/decision operations and rejects changes outside admitted immutable conversation/model scope. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/conversation_router.py#L572">openhands-agent-server/openhands/agent_server/conversation_router.py:572</a></p>
+<div class="ba"><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-9-b"><title id="flow-9-b">New symbol: no before — No ACP pending/decision routes</title><desc>No ACP pending/decision routes</desc><rect class="existing" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">New symbol: no before</text><text class="detail" x="200" y="74" text-anchor="middle">No ACP pending/decision routes</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">concept / no prior source</text></svg><figcaption>Before: No ACP pending/decision routes</figcaption></figure><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-9-a"><title id="flow-9-a">pending_acp_permissions — Typed list and exact request-ID decisions</title><desc>Typed list and exact request-ID decisions</desc><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/conversation_router.py#L572"><rect class="new" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">pending_acp_permissions</text><text class="detail" x="200" y="74" text-anchor="middle">Typed list and exact request-ID decisions</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">conversation_router.py:572</text></a><path class="edge" d="M200 108 L200 130"/></svg><figcaption>After: Typed list and exact request-ID decisions</figcaption></figure></div>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/conversation_router.py b/openhands-agent-server/openhands/agent_server/conversation_router.py
+index 0172f84..bdb2ea4 100644
+--- a/openhands-agent-server/openhands/agent_server/conversation_router.py
++++ b/openhands-agent-server/openhands/agent_server/conversation_router.py
+@@ -21,10 +21,15 @@ from openhands.agent_server._secrets_exposure import (
+     decrypt_incoming_llm_secrets,
+     get_cipher,
+     store_errors,
+ )
++from openhands.agent_server.acp_permissions import (
++    ACPPermissionDecision,
++    ACPPermissionPage,
++)
+ from openhands.agent_server.conversation_registry import ConversationRegistry
+ from openhands.agent_server.conversation_service import (
++    ConversationScopeViolation,
+     ConversationService,
+     InvalidParentConversation,
+     UnavailableAgentTool,
+ )
+@@ -352,9 +357,13 @@ async def start_conversation(
+     except ClientToolRegistrationError as e:
+         raise HTTPException(
+             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+         ) from e
+-    except (InvalidParentConversation, UnavailableAgentTool) as e:
++    except (
++        InvalidParentConversation,
++        UnavailableAgentTool,
++        ConversationScopeViolation,
++    ) as e:
+         raise HTTPException(
+             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+         ) from e
+     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
+@@ -554,8 +563,52 @@ async def update_conversation_secrets(
+     await event_service.update_secrets(secrets)
+     return Success()
+&#32;
+&#32;
++@conversation_router.get(
++    &quot;/{conversation_id}/acp/permissions&quot;,
++    response_model=ACPPermissionPage,
++    responses={404: {&quot;description&quot;: &quot;Conversation not found&quot;}},
++)
++async def pending_acp_permissions(
++    conversation_id: UUID,
++    conversation_service: ConversationService = Depends(get_conversation_service),
++) -&gt; ACPPermissionPage:
++    &quot;&quot;&quot;List live ACP decisions without waiting for the running conversation lock.&quot;&quot;&quot;
++    event_service = await conversation_service.get_event_service(conversation_id)
++    if event_service is None:
++        raise HTTPException(status.HTTP_404_NOT_FOUND)
++    return event_service.pending_acp_permissions()
++
++
++@conversation_router.post(
++    &quot;/{conversation_id}/acp/permissions/{request_id}&quot;,
++    responses={
++        404: {&quot;description&quot;: &quot;Conversation or live permission request not found&quot;},
++        422: {&quot;description&quot;: &quot;Option not offered or incomplete details&quot;},
++    },
++)
++async def decide_acp_permission(
++    conversation_id: UUID,
++    request_id: UUID,
++    request: ACPPermissionDecision,
++    conversation_service: ConversationService = Depends(get_conversation_service),
++) -&gt; Success:
++    &quot;&quot;&quot;Answer one live, conversation-scoped ACP request. Stale IDs cannot approve.&quot;&quot;&quot;
++    event_service = await conversation_service.get_event_service(conversation_id)
++    if event_service is None:
++        raise HTTPException(status.HTTP_404_NOT_FOUND)
++    try:
++        decided = await event_service.decide_acp_permission(request_id, request)
++    except ValueError as error:
++        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from None
++    if not decided:
++        raise HTTPException(
++            status.HTTP_404_NOT_FOUND, &quot;Permission request is no longer pending&quot;
++        )
++    return Success()
++
++
+ @conversation_router.post(
+     &quot;/{conversation_id}/confirmation_policy&quot;,
+     responses={404: {&quot;description&quot;: &quot;Item not found&quot;}},
+ )</pre></details></article>
+<article class="card" id="file-10"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-agent-server/openhands/agent_server/conversation_service.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/conversation_service.py#L1">openhands-agent-server/openhands/agent_server/conversation_service.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-agent-server/openhands/agent_server/conversation_service.py#L1">Before: openhands-agent-server/openhands/agent_server/conversation_service.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/conversation_service.py#L1">openhands-agent-server/openhands/agent_server/conversation_service.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/conversation_service.py b/openhands-agent-server/openhands/agent_server/conversation_service.py
+index e92cd9c..4be8afe 100644
+--- a/openhands-agent-server/openhands/agent_server/conversation_service.py
++++ b/openhands-agent-server/openhands/agent_server/conversation_service.py
+@@ -14,9 +14,14 @@ from weakref import WeakValueDictionary
+&#32;
+ import httpx
+ from pydantic import BaseModel
+&#32;
+-from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
++from openhands.agent_server.config import (
++    ACPSkillSourcing,
++    Config,
++    ConversationScope,
++    WebhookSpec,
++)
+ from openhands.agent_server.conversation_lease import (
+     DEFAULT_LEASE_TTL_SECONDS,
+     ConversationLeaseHeldError,
+ )
+@@ -316,8 +321,12 @@ class InvalidParentConversation(ValueError):
+     &quot;&quot;&quot;``parent_conversation_id`` is unknown, self-referential, or in
+     a different workspace.&quot;&quot;&quot;
+&#32;
+&#32;
++class ConversationScopeViolation(ValueError):
++    &quot;&quot;&quot;A request differs from the deployment&#x27;s admitted conversation/workspace.&quot;&quot;&quot;
++
++
+ class UnavailableAgentTool(ValueError):
+     &quot;&quot;&quot;The agent names a tool whose ``tool_module_qualnames`` module the server
+     cannot import, so the agent could never be built.&quot;&quot;&quot;
+&#32;
+@@ -569,8 +578,9 @@ class ConversationService:
+         default=Path(&quot;/tmp/conversation-worktrees&quot;)
+     )
+     acp_skill_sourcing: ACPSkillSourcing = &quot;native&quot;
+     enable_browser: bool = True
++    conversation_scope: ConversationScope | None = None
+     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
+     _conversation_records: dict[UUID, _ConversationRecord] = field(
+         default_factory=dict, init=False
+     )
+@@ -603,8 +613,13 @@ class ConversationService:
+             if conversation_id is not None
+             else self.conversations_dir.iterdir()
+         )
+         for conversation_dir in directories:
++            if (
++                self.conversation_scope
++                and conversation_dir.name != self.conversation_scope.id.hex
++            ):
++                continue
+             meta_file = conversation_dir / &quot;meta.json&quot;
+             if not meta_file.exists():
+                 continue
+             try:
+@@ -1502,8 +1517,14 @@ class ConversationService:
+         &quot;&quot;&quot;Start a local event_service and return its id.&quot;&quot;&quot;
+         if self._event_services is None:
+             raise ValueError(&quot;inactive_service&quot;)
+         conversation_id = request.conversation_id or uuid4()
++        self._check_conversation_scope(conversation_id, request.workspace)
++        self._check_scoped_agent(request.agent)
++        if self.conversation_scope and request.worktree:
++            raise ConversationScopeViolation(
++                &quot;Admitted conversations cannot create a different workspace worktree&quot;
++            )
+         if self._has_conversation(conversation_id):
+             async with self._conversation_lifecycle(conversation_id):
+                 return await self._reuse_existing_conversation_locked(
+                     conversation_id, request
+@@ -1517,8 +1538,9 @@ class ConversationService:
+         request: StartConversationRequest,
+         conversation_id: UUID,
+         run_slot: RunSlot,
+     ) -&gt; tuple[ConversationInfo, bool]:
++        self._check_conversation_scope(conversation_id, request.workspace)
+         # The link is immutable after creation, so cycles beyond self-parent are
+         # impossible; allowing reparenting would require a real ancestor walk.
+         if request.parent_conversation_id is not None:
+             if request.parent_conversation_id == conversation_id:
+@@ -2471,10 +2493,35 @@ class ConversationService:
+             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
+             conversation_worktree_root=config.conversation_worktree_root,
+             acp_skill_sourcing=config.acp_skill_sourcing,
+             enable_browser=config.enable_browser,
++            conversation_scope=config.conversation_scope,
+         )
+&#32;
++    def _check_conversation_scope(self, conversation_id: UUID, workspace: Any) -&gt; None:
++        scope = self.conversation_scope
++        if scope is None:
++            return
++        if conversation_id != scope.id:
++            raise ConversationScopeViolation(
++                &quot;This server accepts only its admitted conversation&quot;
++            )
++        if (
++            not isinstance(workspace, LocalWorkspace)
++            or Path(workspace.working_dir).resolve() != scope.workspace_path
++        ):
++            raise ConversationScopeViolation(
++                &quot;Conversation workspace differs from its admitted scope&quot;
++            )
++
++    def _check_scoped_agent(self, agent: AgentBase | None) -&gt; None:
++        scope = self.conversation_scope
++        if scope is not None and scope.agent_sha256 is not None:
++            if agent is None or scope.agent_digest(agent) != scope.agent_sha256:
++                raise ConversationScopeViolation(
++                    &quot;Conversation agent differs from its admitted scope&quot;
++                )
++
+     async def _start_event_service(
+         self,
+         stored: StoredConversation,
+         *,
+@@ -2482,16 +2529,21 @@ class ConversationService:
+         launched: LaunchedAgent | None = None,
+         persisted_agent: AgentBase | None = None,
+         max_budget_per_run: float | None = None,
+     ) -&gt; EventService:
++        self._check_conversation_scope(stored.id, stored.workspace)
+         event_services = self._event_services
+         if event_services is None:
+             raise ValueError(&quot;inactive_service&quot;)
+&#32;
+         # A new conversation starts with the ``launched`` agent (meta.json does
+         # not carry it). Otherwise the agent is read from base_state.json, and
+         # ``persisted_agent`` only spares the credential check that read.
+         agent = launched.agent if launched is not None else persisted_agent
++        if self.conversation_scope and self.conversation_scope.agent_sha256:
++            if agent is None:
++                agent = await asyncio.to_thread(self._agent_from_base_state, stored.id)
++            self._check_scoped_agent(agent)
+         credential_bindings = await self._resolve_credential_bindings(
+             stored, agent=agent
+         )
+         event_service = EventService(</pre></details></article>
+<article class="card" id="file-11"><span class="badge">changed · behavior</span><h3>The run lifecycle owns the callback broker</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/event_service.py#L2246">openhands-agent-server/openhands/agent_server/event_service.py:2246</a></p><p>New file/symbol: no before implementation.</p></details>
+<p>The event service installs the callback and exposes broker snapshots/decisions; pause and close cancel pending requests. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/event_service.py#L2246">openhands-agent-server/openhands/agent_server/event_service.py:2246</a></p>
+<div class="ba"><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-11-b"><title id="flow-11-b">New symbol: no before — No broker snapshot on the event service</title><desc>No broker snapshot on the event service</desc><rect class="existing" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">New symbol: no before</text><text class="detail" x="200" y="74" text-anchor="middle">No broker snapshot on the event service</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">concept / no prior source</text></svg><figcaption>Before: No broker snapshot on the event service</figcaption></figure><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-11-a"><title id="flow-11-a">pending_acp_permissions — Install callback; cancel pending on lifecycle stop</title><desc>Install callback; cancel pending on lifecycle stop</desc><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-agent-server/openhands/agent_server/event_service.py#L2246"><rect class="new" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">pending_acp_permissions</text><text class="detail" x="200" y="74" text-anchor="middle">Install callback; cancel pending on lifecycle stop</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">event_service.py:2246</text></a><path class="edge" d="M200 108 L200 130"/></svg><figcaption>After: Install callback; cancel pending on lifecycle stop</figcaption></figure></div>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/event_service.py b/openhands-agent-server/openhands/agent_server/event_service.py
+index 5c2718d..c82c188 100644
+--- a/openhands-agent-server/openhands/agent_server/event_service.py
++++ b/openhands-agent-server/openhands/agent_server/event_service.py
+@@ -12,8 +12,13 @@ from typing import cast
+ from uuid import UUID, uuid4
+&#32;
+ from pydantic import ValidationError
+&#32;
++from openhands.agent_server.acp_permissions import (
++    ACPPermissionBroker,
++    ACPPermissionDecision,
++    ACPPermissionPage,
++)
+ from openhands.agent_server.bash_service import BashEventService
+ from openhands.agent_server.conversation_lease import (
+     DEFAULT_LEASE_TTL_SECONDS,
+     ConversationLease,
+@@ -262,8 +267,9 @@ class EventService:
+     # supersede restarts compare this generation after their interrupt drains
+     # so a later Stop/Pause cannot be overwritten by an automatic restart.
+     _explicit_interrupt_generation: int = field(default=0, init=False)
+     _closing: bool = field(default=False, init=False)
++    _acp_permissions: ACPPermissionBroker | None = field(default=None, init=False)
+     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+     _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
+     _lease: ConversationLease | None = field(default=None, init=False)
+@@ -1390,8 +1396,16 @@ class EventService:
+             if not streaming_enabled:
+                 conversation.set_token_callbacks(None)
+         self._conversation = conversation
+         if isinstance(conversation.agent, ACPAgent):
++            if conversation.agent.acp_permission_mode == &quot;callback&quot;:
++                self._acp_permissions = ACPPermissionBroker(
++                    conversation.agent.acp_permission_timeout,
++                    conversation.state.secret_registry.mask_secrets_in_output,
++                )
++                conversation.agent.set_acp_permission_handler(
++                    self._acp_permissions.request
++                )
+             for secret_name, binding in self.credential_bindings.items():
+                 conversation.agent.activate_file_credential_binding(
+                     secret_name,
+                     binding,
+@@ -2106,8 +2120,10 @@ class EventService:
+             None, self._conversation.reject_pending_actions, reason
+         )
+&#32;
+     async def pause(self):
++        if self._acp_permissions is not None:
++            self._acp_permissions.cancel_pending()
+         if self._conversation:
+             self._explicit_interrupt_generation += 1
+             self._rerun_requested = False
+             self._acp_internal_rerun_requested = False
+@@ -2122,8 +2138,10 @@ class EventService:
+         Delegates to :meth:`LocalConversation.interrupt` which cancels the
+         ``arun()`` task.  If no async run is in progress the call falls
+         back to :meth:`pause`.
+         &quot;&quot;&quot;
++        if self._acp_permissions is not None:
++            self._acp_permissions.cancel_pending()
+         if self._conversation:
+             if not internal_acp_rerun:
+                 self._explicit_interrupt_generation += 1
+                 self._rerun_requested = False
+@@ -2224,9 +2242,29 @@ class EventService:
+             raise ValueError(&quot;inactive_service&quot;)
+         loop = asyncio.get_running_loop()
+         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
+&#32;
++    def pending_acp_permissions(self) -&gt; ACPPermissionPage:
++        if self._acp_permissions is None or self._closing:
++            return ACPPermissionPage(items=[])
++        return self._acp_permissions.snapshot()
++
++    async def decide_acp_permission(
++        self, request_id: UUID, decision: ACPPermissionDecision
++    ) -&gt; bool:
++        if self._acp_permissions is None or self._closing:
++            return False
++
++        def decide() -&gt; bool:
++            with self._write_guard():
++                assert self._acp_permissions is not None
++                return self._acp_permissions.decide(request_id, decision)
++
++        return await asyncio.to_thread(decide)
++
+     async def close(self):
++        if self._acp_permissions is not None:
++            self._acp_permissions.cancel_pending(close=True)
+         if self.bash_event_service is not None:
+             await self.bash_event_service.close()
+         self._closing = True
+         self._explicit_interrupt_generation += 1</pre></details></article>
+<article class="card" id="file-12"><span class="badge">changed · behavior</span><h3>The bridge delegates explicit decisions</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1736">openhands-sdk/openhands/sdk/agent/acp_agent.py:1736</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1703">Before: openhands-sdk/openhands/sdk/agent/acp_agent.py:1703</a></p></details>
+<p>The bridge now carries bounded tool context into the policy resolver; opted-in strict resume and model controls prevent silent session substitution. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1736">openhands-sdk/openhands/sdk/agent/acp_agent.py:1736</a></p>
+<div class="ba"><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-12-b"><title id="flow-12-b">_OpenHandsACPBridge.request_permission — Select the first offered option immediately</title><desc>Select the first offered option immediately</desc><a href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1703"><rect class="existing" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">_OpenHandsACPBridge.request_permission</text><text class="detail" x="200" y="74" text-anchor="middle">Select the first offered option immediately</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">acp_agent.py:1703</text></a></svg><figcaption>Before: Select the first offered option immediately</figcaption></figure><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-12-a"><title id="flow-12-a">_OpenHandsACPBridge.request_permission — Delegate to explicit policy and callback</title><desc>Delegate to explicit policy and callback</desc><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_agent.py#L1736"><rect class="new" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">_OpenHandsACPBridge.request_permission</text><text class="detail" x="200" y="74" text-anchor="middle">Delegate to explicit policy and callback</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">acp_agent.py:1736</text></a><path class="edge" d="M200 108 L200 130"/></svg><figcaption>After: Delegate to explicit policy and callback</figcaption></figure></div>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/agent/acp_agent.py b/openhands-sdk/openhands/sdk/agent/acp_agent.py
+index 9a633ef..1c81c1b 100644
+--- a/openhands-sdk/openhands/sdk/agent/acp_agent.py
++++ b/openhands-sdk/openhands/sdk/agent/acp_agent.py
+@@ -47,9 +47,8 @@ from acp.meta import AGENT_METHODS
+ from acp.schema import (
+     AcpMcpServer,
+     AgentMessageChunk,
+     AgentThoughtChunk,
+-    AllowedOutcome,
+     CreateElicitationResponse,
+     CreateTerminalResponse,
+     DeclineElicitationResponse,
+     ElicitationMode,
+@@ -86,8 +85,9 @@ from pydantic import (
+     ValidationInfo,
+     field_serializer,
+     field_validator,
+ )
++from pydantic.json_schema import SkipJsonSchema
+&#32;
+ from openhands.sdk.agent.acp_contracts import (
+     ACPLegacySessionModels,
+     extract_session_models,
+@@ -107,8 +107,13 @@ from openhands.sdk.agent.acp_file_credentials import (
+     file_credential_looks_usable,
+     write_secret_file,
+ )
+ from openhands.sdk.agent.acp_models import ACPModelInfo
++from openhands.sdk.agent.acp_permissions import (
++    ACPPermissionHandler,
++    ACPPermissionMode,
++    resolve_acp_permission,
++)
+ from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
+ from openhands.sdk.agent.acp_tracing import ACPTurnTrace
+ from openhands.sdk.agent.base import AgentBase
+ from openhands.sdk.agent.stream_context import StreamContext
+@@ -1338,12 +1343,22 @@ class _OpenHandsACPBridge:
+       order a consumer sees, and dedupe-by-id+&quot;last-seen wins&quot; would
+       treat the post-message event as authoritative.
+     &quot;&quot;&quot;
+&#32;
+-    def __init__(self) -&gt; None:
++    def __init__(
++        self,
++        *,
++        permission_mode: ACPPermissionMode = &quot;legacy-auto-approve&quot;,
++        permission_handler: ACPPermissionHandler | None = None,
++        permission_timeout: float = 60.0,
++    ) -&gt; None:
++        self.permission_mode: ACPPermissionMode = permission_mode
++        self.permission_handler = permission_handler
++        self.permission_timeout = permission_timeout
+         self.accumulated_text: list[str] = []
+         self.accumulated_thoughts: list[str] = []
+         self.accumulated_tool_calls: list[dict[str, Any]] = []
++        self._permission_tool_context: dict[tuple[str, str], dict[str, Any]] = {}
+         # Text and thoughts said before a tool call are emitted as their own
+         # message ahead of that call (``on_text_segment``), so the transcript
+         # keeps the agent&#x27;s narration where it was said. These mark where the
+         # segment not yet emitted starts; the rest of the turn ends it.
+@@ -1395,8 +1410,9 @@ class _OpenHandsACPBridge:
+     def reset(self) -&gt; None:
+         self.accumulated_text.clear()
+         self.accumulated_thoughts.clear()
+         self.accumulated_tool_calls.clear()
++        self._permission_tool_context.clear()
+         self._segment_text_start = 0
+         self._segment_thought_start = 0
+         self.text_segments_emitted = 0
+         self.on_text_segment = None
+@@ -1495,8 +1511,25 @@ class _OpenHandsACPBridge:
+         update: Any,
+         **kwargs: Any,  # noqa: ARG002
+     ) -&gt; None:
+         logger.debug(&quot;ACP session_update: type=%s&quot;, type(update).__name__)
++        if self.permission_mode == &quot;callback&quot; and isinstance(
++            update, (ToolCallStart, ToolCallProgress)
++        ):
++            key = (session_id, update.tool_call_id)
++            known = self._permission_tool_context.setdefault(key, {})
++            snapshot = update.model_copy(deep=True)
++            for field, value in {
++                &quot;title&quot;: snapshot.title,
++                &quot;kind&quot;: snapshot.kind,
++                &quot;raw_input&quot;: snapshot.raw_input,
++            }.items():
++                if value is not None and len(json.dumps(value, default=str)) &lt;= 65536:
++                    known[field] = value
++            while len(self._permission_tool_context) &gt; 128:
++                self._permission_tool_context.pop(
++                    next(iter(self._permission_tool_context))
++                )
+&#32;
+         # Any update — token, thought, tool-call start/progress, usage — is
+         # progress: reset the idle clock so the prompt&#x27;s inactivity watchdog
+         # keeps a steadily-working agent alive (unthrottled, unlike the
+@@ -1701,23 +1734,33 @@ class _OpenHandsACPBridge:
+                 logger.debug(&quot;on_activity callback failed&quot;, exc_info=True)
+&#32;
+     async def request_permission(
+         self,
+-        session_id: str,  # noqa: ARG002
++        session_id: str,
+         tool_call: ToolCallUpdate,
+         options: list[PermissionOption],
+         **kwargs: Any,  # noqa: ARG002
+     ) -&gt; RequestPermissionResponse:
+-        &quot;&quot;&quot;Auto-approve all permission requests from the ACP server.&quot;&quot;&quot;
+-        # Pick the first option (usually &quot;allow once&quot;)
+-        option_id = options[0].option_id if options else &quot;allow_once&quot;
+-        logger.info(
+-            &quot;ACP auto-approving permission: %s (option: %s)&quot;,
+-            tool_call,
+-            option_id,
++        known = self._permission_tool_context.get(
++            (session_id, tool_call.tool_call_id), {}
+         )
+-        return RequestPermissionResponse(
+-            outcome=AllowedOutcome(outcome=&quot;selected&quot;, option_id=option_id),
++        provided = {
++            &quot;title&quot;: tool_call.title,
++            &quot;kind&quot;: tool_call.kind,
++            &quot;raw_input&quot;: tool_call.raw_input,
++        }
++        missing = {
++            field: value for field, value in known.items() if provided[field] is None
++        }
++        if missing:
++            tool_call = tool_call.model_copy(update=missing, deep=True)
++        return await resolve_acp_permission(
++            mode=self.permission_mode,
++            handler=self.permission_handler,
++            timeout=self.permission_timeout,
++            session_id=session_id,
++            tool_call=tool_call,
++            options=options,
+         )
+&#32;
+     async def create_elicitation(
+         self,
+@@ -1845,16 +1888,76 @@ class ACPAgent(AgentBase):
+     acp_args: list[str] = Field(
+         default_factory=list,
+         description=&quot;Additional arguments for the ACP server command&quot;,
+     )
++    acp_env_allowlist: list[str] | None = Field(
++        default=None,
++        description=(
++            &quot;Ambient environment names inherited by the ACP child. None preserves &quot;
++            &quot;legacy inheritance; an empty list inherits none. Registry credentials &quot;
++            &quot;are controlled separately by acp_secret_allowlist. SDK-generated &quot;
++            &quot;credential paths may still be added for selected file secrets.&quot;
++        ),
++    )
++    acp_allow_model_switch: bool = Field(
++        default=True,
++        frozen=True,
++        description=&quot;Allow changing the selected model after conversation creation.&quot;,
++    )
++    acp_resume_policy: Literal[&quot;restart&quot;, &quot;strict&quot;] = Field(
++        default=&quot;restart&quot;,
++        frozen=True,
++        description=&quot;Restart rejected session loads, or require explicit recovery.&quot;,
++    )
++    acp_secret_allowlist: list[str] | None = Field(
++        default=None,
++        description=(
++            &quot;Registry secret names delivered to the ACP child, including file &quot;
++            &quot;credentials. None preserves legacy delivery; an empty list delivers &quot;
++            &quot;none. Unselected secrets are not resolved or materialised.&quot;
++        ),
++    )
++    acp_permission_mode: ACPPermissionMode = Field(
++        default=&quot;legacy-auto-approve&quot;,
++        description=(
++            &quot;ACP permission handling: preserve legacy automatic approval, &quot;
++            &quot;deny requests, or delegate to an async host callback. &quot;
++            &quot;Conversation confirmation_policy does not intercept ACP requests.&quot;
++        ),
++    )
++    acp_permission_handler: SkipJsonSchema[ACPPermissionHandler | None] = Field(
++        default=None,
++        exclude=True,
++        repr=False,
++        description=&quot;Runtime-only async handler; return an offered option ID or None.&quot;,
++    )
++    acp_permission_timeout: float = Field(
++        default=60.0,
++        gt=0,
++        allow_inf_nan=False,
++        description=&quot;Deadline in seconds for an async ACP permission decision.&quot;,
++    )
++
++    @field_validator(&quot;acp_permission_handler&quot;)
++    @classmethod
++    def _validate_permission_handler(
++        cls, value: ACPPermissionHandler | None
++    ) -&gt; ACPPermissionHandler | None:
++        if value is not None and not (
++            inspect.iscoroutinefunction(value)
++            or inspect.iscoroutinefunction(value.__call__)
++        ):
++            raise ValueError(&quot;acp_permission_handler must be an async callable&quot;)
++        return value
++
+     acp_session_mode: str | None = Field(
+         default=None,
+         description=(
+             &quot;Session mode ID to set after creating a session. &quot;
+-            &quot;If None (default), auto-detected from the ACP server type: &quot;
++            &quot;In legacy-auto-approve mode, None is auto-detected from the server: &quot;
+             &quot;&#x27;bypassPermissions&#x27; for claude-agent-acp, &quot;
+             &quot;&#x27;agent-full-access&#x27; for codex-acp; a provider with no such mode &quot;
+-            &quot;(pi-acp) skips the call.&quot;
++            &quot;(pi-acp) skips the call. Controlled modes retain the server default.&quot;
+         ),
+     )
+     acp_prompt_timeout: float = Field(
+         default=1800.0,
+@@ -1995,8 +2098,24 @@ class ACPAgent(AgentBase):
+             return value
+         return value.model_copy(update={&quot;load_project_skills&quot;: False})
+&#32;
+     def model_post_init(self, __context: object) -&gt; None:
++        if (
++            self.acp_permission_handler is not None
++            and self.acp_permission_mode != &quot;callback&quot;
++        ):
++            raise ValueError(&quot;An ACP permission handler requires callback mode&quot;)
++        if (
++            self.acp_permission_mode != &quot;legacy-auto-approve&quot;
++            and self.acp_session_mode
++            in {
++                &quot;bypassPermissions&quot;,
++                &quot;agent-full-access&quot;,
++            }
++        ):
++            raise ValueError(
++                &quot;Controlled ACP permissions cannot use a bypass session mode&quot;
++            )
+         super().model_post_init(__context)
+         # Propagate the actual model name to the sentinel LLM and its
+         # metrics so that logs, serialized state, and cost/token entries
+         # show the real model instead of the &quot;acp-managed&quot; placeholder.
+@@ -2007,8 +2126,21 @@ class ACPAgent(AgentBase):
+             self.llm.metrics.model_name = self.acp_model
+             if self.llm.metrics.accumulated_token_usage is not None:
+                 self.llm.metrics.accumulated_token_usage.model = self.acp_model
+&#32;
++    def set_acp_permission_handler(self, handler: ACPPermissionHandler | None) -&gt; None:
++        &quot;&quot;&quot;Install a trusted runtime handler for future permission requests.
++
++        Pending decisions retain their original handler. The callable is never
++        serialized; a resumed host must install it again.
++        &quot;&quot;&quot;
++        if self.acp_permission_mode != &quot;callback&quot;:
++            raise ValueError(&quot;A permission handler requires callback mode&quot;)
++        handler = self._validate_permission_handler(handler)
++        object.__setattr__(self, &quot;acp_permission_handler&quot;, handler)
++        if self._client is not None:
++            self._client.permission_handler = handler
++
+     # Private runtime state
+     _executor: Any = PrivateAttr(default=None)
+     _conn: ClientSideConnection | None = PrivateAttr(default=None)
+     _session_id: str | None = PrivateAttr(default=None)
+@@ -2319,9 +2451,9 @@ class ACPAgent(AgentBase):
+&#32;
+         See
+         :meth:`~openhands.sdk.conversation.impl.local_conversation.LocalConversation.switch_acp_model`.
+         &quot;&quot;&quot;
+-        if self._session_id is None:
++        if not self.acp_allow_model_switch or self._session_id is None:
+             return False
+         provider = detect_acp_provider_by_agent_name(self._agent_name)
+         return provider is not None and provider.supports_runtime_model_switch
+&#32;
+@@ -2791,23 +2923,26 @@ class ACPAgent(AgentBase):
+         An unrecognised server keeps every spec, matching
+         :meth:`_strip_conflicting_env`: without an identity we cannot tell whose
+         credential a reserved name belongs to.
+         &quot;&quot;&quot;
++        selected = self.acp_file_secrets
++        if self.acp_secret_allowlist is not None:
++            selected = [
++                spec
++                for spec in selected
++                if spec.secret_name in self.acp_secret_allowlist
++            ]
+         provider = self._resolved_provider()
+         if provider is None:
+-            return list(self.acp_file_secrets)
++            return list(selected)
+         own = {spec.secret_name for spec in provider.file_secrets}
+         owned_elsewhere = {
+             spec.secret_name
+             for key, info in ACP_PROVIDERS.items()
+             if key != provider.key
+             for spec in info.file_secrets
+         } - own
+-        return [
+-            spec
+-            for spec in self.acp_file_secrets
+-            if spec.secret_name not in owned_elsewhere
+-        ]
++        return [spec for spec in selected if spec.secret_name not in owned_elsewhere]
+&#32;
+     def _strip_conflicting_env(self, env: dict[str, str]) -&gt; None:
+         &quot;&quot;&quot;Remove env vars that would defeat this provider&#x27;s own credential.
+&#32;
+@@ -3049,9 +3184,18 @@ class ACPAgent(AgentBase):
+         )
+&#32;
+     def _start_acp_server(self, state: ConversationState) -&gt; None:
+         &quot;&quot;&quot;Start the ACP subprocess and initialize the session.&quot;&quot;&quot;
+-        client = _OpenHandsACPBridge()
++        client = _OpenHandsACPBridge(
++            permission_mode=self.acp_permission_mode,
++            permission_handler=self.acp_permission_handler,
++            permission_timeout=self.acp_permission_timeout,
++        )
++        if self.acp_permission_mode == &quot;legacy-auto-approve&quot;:
++            logger.warning(
++                &quot;ACP permissions use legacy automatic approval; &quot;
++                &quot;select deny or callback mode for host-controlled decisions&quot;
++            )
+         self._client = client
+         # Bind the secret masker for the conversation&#x27;s lifetime. It&#x27;s derived
+         # from state.secret_registry (stable for the conversation) and touches
+         # only that registry, so it has none of the cross-thread/state-lock
+@@ -3074,20 +3218,32 @@ class ACPAgent(AgentBase):
+         # the registry is now the single channel for all secrets including
+         # provider credentials (keyed by the provider&#x27;s env var name).
+         env = default_environment()
+         env.update(os.environ)
++        if self.acp_env_allowlist is not None:
++            env = {
++                key: value
++                for key, value in env.items()
++                if key in self.acp_env_allowlist
++            }
+         _strip_inherited_npm_env(env)
+         # Reserved file-content credential secrets (Codex auth.json, Gemini
+         # Vertex SA — see _materialise_file_secrets) are written to disk, not
+         # injected as env vars, so exclude their (large blob) names from the
+         # plain env-injection below; materialisation sets only the path env var.
+         file_secret_names = self._present_file_secret_names(state)
++        excluded_secrets = set(file_secret_names)
++        if self.acp_secret_allowlist is not None:
++            excluded_secrets.update(
++                set(state.secret_registry.secret_sources)
++                - set(self.acp_secret_allowlist)
++            )
+         # Inject the whole registry: an ACP CLI is a black box we can&#x27;t
+         # name-scan per command (unlike the regular agent&#x27;s bash tool), so
+         # credentials must be delivered upfront. Registry values override
+         # ambient os.environ. Skip file secrets (materialised to disk below).
+         env.update(
+-            state.secret_registry.get_all_secrets_as_env_vars(exclude=file_secret_names)
++            state.secret_registry.get_all_secrets_as_env_vars(exclude=excluded_secrets)
+         )
+         if self.acp_isolate_data_dir:
+             self._isolate_acp_data_dir(state, env)
+&#32;
+@@ -3166,8 +3322,12 @@ class ACPAgent(AgentBase):
+         if prior_session_id is not None and prior_session_cwd not in (
+             None,
+             working_dir,
+         ):
++            if self.acp_resume_policy == &quot;strict&quot;:
++                raise RuntimeError(
++                    &quot;ACP session workspace changed; explicit restart is required&quot;
++                )
+             logger.warning(
+                 &quot;ACP session %s was created with cwd=%s; current cwd=%s differs, &quot;
+                 &quot;starting a fresh session instead of resuming&quot;,
+                 _fingerprint_session_id(prior_session_id),
+@@ -3349,8 +3509,16 @@ class ACPAgent(AgentBase):
+             session_id: str | None = None
+             reported_model_id: str | None = None
+             available_models: list[ACPModelInfo] | None = None
+             if prior_session_id is not None:
++                if self.acp_resume_policy == &quot;strict&quot; and not (
++                    init_response.agent_capabilities
++                    and init_response.agent_capabilities.load_session
++                ):
++                    raise RuntimeError(
++                        &quot;ACP server cannot load the original session; &quot;
++                        &quot;explicit restart is required&quot;
++                    )
+                 try:
+                     load_response = await conn.load_session(
+                         cwd=working_dir,
+                         session_id=prior_session_id,
+@@ -3379,8 +3547,13 @@ class ACPAgent(AgentBase):
+                         _fingerprint_session_id(session_id),
+                         working_dir,
+                     )
+                 except ACPRequestError as e:
++                    if self.acp_resume_policy == &quot;strict&quot;:
++                        raise RuntimeError(
++                            &quot;ACP session could not be resumed; &quot;
++                            &quot;explicit restart is required&quot;
++                        ) from None
+                     logger.warning(
+                         &quot;ACP load_session(%s) failed (%s); starting a fresh session&quot;,
+                         _fingerprint_session_id(prior_session_id),
+                         e,
+@@ -3457,11 +3630,11 @@ class ACPAgent(AgentBase):
+             # Resolve the permission mode. Known providers each have their own
+             # mode ID; unknown/custom servers get None — skip the call rather
+             # than sending a provider-specific string they won&#x27;t recognise.
+             provider = detect_acp_provider_by_agent_name(agent_name)
+-            mode_id = self.acp_session_mode or (
+-                provider.default_session_mode if provider else None
+-            )
++            mode_id = self.acp_session_mode
++            if mode_id is None and self.acp_permission_mode == &quot;legacy-auto-approve&quot;:
++                mode_id = provider.default_session_mode if provider else None
+             if mode_id is not None:
+                 logger.info(&quot;Setting ACP session mode: %s&quot;, mode_id)
+                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
+&#32;
+@@ -4650,8 +4823,10 @@ class ACPAgent(AgentBase):
+             agent&#x27;s self-reported identity can lag (e.g. still says &quot;haiku&quot;
+             after switching to sonnet) until a new session. The switch itself
+             is applied; only the model&#x27;s self-description is stale.
+         &quot;&quot;&quot;
++        if not self.acp_allow_model_switch:
++            raise ValueError(&quot;ACP model is fixed for this conversation&quot;)
+         if not model or not model.strip():
+             raise ValueError(&quot;model must be a non-empty string&quot;)
+         if not self.has_live_acp_session:
+             raise RuntimeError(</pre></details></article>
+<article class="card" id="file-13"><span class="badge">added · behavior</span><h3>The host returns an offered ID or cancellation</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_permissions.py#L42">openhands-sdk/openhands/sdk/agent/acp_permissions.py:42</a></p><p>New file/symbol: no before implementation.</p></details>
+<p>This new module validates offered options and bounds the async callback. Missing handlers, invalid selections, errors and timeout do not grant permission. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_permissions.py#L42">openhands-sdk/openhands/sdk/agent/acp_permissions.py:42</a></p>
+<div class="ba"><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-13-b"><title id="flow-13-b">New symbol: no before — No policy resolver module</title><desc>No policy resolver module</desc><rect class="existing" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">New symbol: no before</text><text class="detail" x="200" y="74" text-anchor="middle">No policy resolver module</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">concept / no prior source</text></svg><figcaption>Before: No policy resolver module</figcaption></figure><figure><svg viewBox="0 0 400 150" role="img" aria-labelledby="flow-13-a"><title id="flow-13-a">resolve_acp_permission — Mode, deadline and offered-ID validation</title><desc>Mode, deadline and offered-ID validation</desc><a href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/agent/acp_permissions.py#L42"><rect class="new" x="18" y="26" width="364" height="72" rx="6"/><text class="node" x="200" y="53" text-anchor="middle">resolve_acp_permission</text><text class="detail" x="200" y="74" text-anchor="middle">Mode, deadline and offered-ID validation</text><text class="detail" style="font-size:9px" x="200" y="91" text-anchor="middle">acp_permissions.py:42</text></a><path class="edge" d="M200 108 L200 130"/></svg><figcaption>After: Mode, deadline and offered-ID validation</figcaption></figure></div>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/agent/acp_permissions.py b/openhands-sdk/openhands/sdk/agent/acp_permissions.py
+new file mode 100644
+index 0000000..c1e2ae6
+--- /dev/null
++++ b/openhands-sdk/openhands/sdk/agent/acp_permissions.py
+@@ -0,0 +1,80 @@
++&quot;&quot;&quot;Public permission decisions for external ACP agents.&quot;&quot;&quot;
++
++from __future__ import annotations
++
++import asyncio
++from collections.abc import Awaitable, Callable
++from dataclasses import dataclass
++from typing import Literal
++
++from acp.schema import (
++    AllowedOutcome,
++    DeniedOutcome,
++    PermissionOption,
++    RequestPermissionResponse,
++    ToolCallUpdate,
++)
++
++from openhands.sdk.logger import get_logger
++
++
++logger = get_logger(__name__)
++
++ACPPermissionMode = Literal[&quot;legacy-auto-approve&quot;, &quot;deny&quot;, &quot;callback&quot;]
++
++
++@dataclass(frozen=True)
++class ACPPermissionRequest:
++    &quot;&quot;&quot;Untrusted agent request delivered to a trusted, async host handler.
++
++    A handler must not acquire the conversation state lock: it runs on the
++    ACP portal while the caller may hold that lock. Use a separate UI/channel.
++    &quot;&quot;&quot;
++
++    session_id: str
++    tool_call: ToolCallUpdate
++    options: tuple[PermissionOption, ...]
++
++
++ACPPermissionHandler = Callable[[ACPPermissionRequest], Awaitable[str | None]]
++
++
++async def resolve_acp_permission(
++    *,
++    mode: ACPPermissionMode,
++    handler: ACPPermissionHandler | None,
++    timeout: float,
++    session_id: str,
++    tool_call: ToolCallUpdate,
++    options: list[PermissionOption],
++) -&gt; RequestPermissionResponse:
++    &quot;&quot;&quot;Select an offered option, or cancel without granting permission.&quot;&quot;&quot;
++    if mode == &quot;legacy-auto-approve&quot;:
++        option_id = options[0].option_id if options else &quot;allow_once&quot;
++        return RequestPermissionResponse(
++            outcome=AllowedOutcome(outcome=&quot;selected&quot;, option_id=option_id),
++        )
++
++    cancelled = RequestPermissionResponse(outcome=DeniedOutcome(outcome=&quot;cancelled&quot;))
++    if mode == &quot;deny&quot; or handler is None:
++        return cancelled
++    offered_ids = tuple(option.option_id for option in options)
++    if not offered_ids or len(set(offered_ids)) != len(offered_ids):
++        return cancelled
++
++    request = ACPPermissionRequest(
++        session_id=session_id,
++        tool_call=tool_call.model_copy(deep=True),
++        options=tuple(option.model_copy(deep=True) for option in options),
++    )
++    try:
++        selected = await asyncio.wait_for(handler(request), timeout=timeout)
++    except Exception:
++        # Agent input and handler exceptions may contain secrets.
++        logger.warning(&quot;ACP permission handler failed or timed out; request cancelled&quot;)
++        return cancelled
++    if selected not in offered_ids:
++        return cancelled
++    return RequestPermissionResponse(
++        outcome=AllowedOutcome(outcome=&quot;selected&quot;, option_id=selected),
++    )</pre></details></article>
+<article class="card" id="file-14"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1">Before: openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+index feacfc4..b724059 100644
+--- a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
++++ b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+@@ -1927,8 +1927,10 @@ class LocalConversation(BaseConversation):
+         if not isinstance(self.agent, ACPAgent):
+             raise ValueError(
+                 &quot;switch_acp_model is only supported for ACP conversations.&quot;
+             )
++        if not self.agent.acp_allow_model_switch:
++            raise ValueError(&quot;ACP model is fixed for this conversation&quot;)
+         # Check here, not only in set_acp_model: the pre-run path below skips
+         # that call and would persist a blank model unchecked.
+         if not model or not model.strip():
+             raise ValueError(&quot;model must be a non-empty string&quot;)</pre></details></article>
+<article class="card" id="file-15"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-sdk/openhands/sdk/profiles/agent_profile.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/profiles/agent_profile.py#L1">openhands-sdk/openhands/sdk/profiles/agent_profile.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/profiles/agent_profile.py#L1">Before: openhands-sdk/openhands/sdk/profiles/agent_profile.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/profiles/agent_profile.py#L1">openhands-sdk/openhands/sdk/profiles/agent_profile.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/profiles/agent_profile.py b/openhands-sdk/openhands/sdk/profiles/agent_profile.py
+index 0ffa7e7..fe42b83 100644
+--- a/openhands-sdk/openhands/sdk/profiles/agent_profile.py
++++ b/openhands-sdk/openhands/sdk/profiles/agent_profile.py
+@@ -349,8 +349,19 @@ class ACPAgentProfile(AgentProfileBase):
+             &quot;Session mode ID (e.g. &#x27;bypassPermissions&#x27;). Leave blank to &quot;
+             &quot;auto-detect from the ACP server type.&quot;
+         ),
+     )
++    acp_permission_mode: Literal[&quot;legacy-auto-approve&quot;, &quot;deny&quot;, &quot;callback&quot;] = Field(
++        default=&quot;legacy-auto-approve&quot;,
++        description=(
++            &quot;ACP permission decision mode for conversations launched from this profile.&quot;
++        ),
++    )
++    acp_permission_timeout: float = Field(default=60.0, gt=0, allow_inf_nan=False)
++    acp_env_allowlist: list[str] | None = Field(default=None)
++    acp_allow_model_switch: bool = Field(default=True)
++    acp_resume_policy: Literal[&quot;restart&quot;, &quot;strict&quot;] = Field(default=&quot;restart&quot;)
++    acp_secret_allowlist: list[str] | None = Field(default=None)
+     acp_prompt_timeout: float = Field(
+         default=1800.0,
+         gt=0,
+         description=(</pre></details></article>
+<article class="card" id="file-16"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-sdk/openhands/sdk/profiles/resolver.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/profiles/resolver.py#L1">openhands-sdk/openhands/sdk/profiles/resolver.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/profiles/resolver.py#L1">Before: openhands-sdk/openhands/sdk/profiles/resolver.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/profiles/resolver.py#L1">openhands-sdk/openhands/sdk/profiles/resolver.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/profiles/resolver.py b/openhands-sdk/openhands/sdk/profiles/resolver.py
+index 1975662..a7e88df 100644
+--- a/openhands-sdk/openhands/sdk/profiles/resolver.py
++++ b/openhands-sdk/openhands/sdk/profiles/resolver.py
+@@ -365,8 +365,14 @@ def _build_acp_settings(
+         &quot;agent_kind&quot;: &quot;acp&quot;,
+         &quot;acp_server&quot;: profile.acp_server,
+         &quot;acp_model&quot;: profile.acp_model,
+         &quot;acp_session_mode&quot;: profile.acp_session_mode,
++        &quot;acp_permission_mode&quot;: profile.acp_permission_mode,
++        &quot;acp_permission_timeout&quot;: profile.acp_permission_timeout,
++        &quot;acp_env_allowlist&quot;: profile.acp_env_allowlist,
++        &quot;acp_allow_model_switch&quot;: profile.acp_allow_model_switch,
++        &quot;acp_resume_policy&quot;: profile.acp_resume_policy,
++        &quot;acp_secret_allowlist&quot;: profile.acp_secret_allowlist,
+         &quot;acp_prompt_timeout&quot;: profile.acp_prompt_timeout,
+         &quot;acp_startup_timeout&quot;: profile.acp_startup_timeout,
+         &quot;acp_command&quot;: command,
+         &quot;acp_args&quot;: list(profile.acp_args) if profile.acp_args else [],</pre></details></article>
+<article class="card" id="file-17"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-sdk/openhands/sdk/profiles/seed.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/profiles/seed.py#L1">openhands-sdk/openhands/sdk/profiles/seed.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/profiles/seed.py#L1">Before: openhands-sdk/openhands/sdk/profiles/seed.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/profiles/seed.py#L1">openhands-sdk/openhands/sdk/profiles/seed.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/profiles/seed.py b/openhands-sdk/openhands/sdk/profiles/seed.py
+index 465a574..cc270e9 100644
+--- a/openhands-sdk/openhands/sdk/profiles/seed.py
++++ b/openhands-sdk/openhands/sdk/profiles/seed.py
+@@ -44,8 +44,14 @@ def build_seed_profile(
+             name=name,
+             acp_server=agent_settings.acp_server,
+             acp_model=agent_settings.acp_model,
+             acp_session_mode=agent_settings.acp_session_mode,
++            acp_permission_mode=agent_settings.acp_permission_mode,
++            acp_permission_timeout=agent_settings.acp_permission_timeout,
++            acp_env_allowlist=agent_settings.acp_env_allowlist,
++            acp_allow_model_switch=agent_settings.acp_allow_model_switch,
++            acp_resume_policy=agent_settings.acp_resume_policy,
++            acp_secret_allowlist=agent_settings.acp_secret_allowlist,
+             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
+             acp_startup_timeout=agent_settings.acp_startup_timeout,
+             # Settings store the command as a token list; the profile holds a
+             # single (re-parseable) string. Empty list =&gt; use the server default.</pre></details></article>
+<article class="card" id="file-18"><span class="badge">changed · config/type/transport/test propagation</span><h3>openhands-sdk/openhands/sdk/settings/model.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/settings/model.py#L1">openhands-sdk/openhands/sdk/settings/model.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/openhands-sdk/openhands/sdk/settings/model.py#L1">Before: openhands-sdk/openhands/sdk/settings/model.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/openhands-sdk/openhands/sdk/settings/model.py#L1">openhands-sdk/openhands/sdk/settings/model.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/settings/model.py b/openhands-sdk/openhands/sdk/settings/model.py
+index 0963edd..b26fa51 100644
+--- a/openhands-sdk/openhands/sdk/settings/model.py
++++ b/openhands-sdk/openhands/sdk/settings/model.py
+@@ -33,8 +33,9 @@ from pydantic import (
+     model_validator,
+ )
+ from pydantic.fields import FieldInfo
+&#32;
++from openhands.sdk.agent.acp_permissions import ACPPermissionMode
+ from openhands.sdk.agent.base import AgentBase
+ from openhands.sdk.context.agent_context import AgentContext
+ from openhands.sdk.conversation.message_request import SendMessageRequest
+ from openhands.sdk.conversation.types import (
+@@ -86,8 +87,9 @@ from .metadata import (
+&#32;
+&#32;
+ if TYPE_CHECKING:
+     from openhands.sdk.agent import ACPAgent, Agent
++    from openhands.sdk.agent.acp_permissions import ACPPermissionHandler
+     from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
+     from openhands.sdk.critic.base import CriticBase
+&#32;
+&#32;
+@@ -1882,8 +1884,22 @@ class ACPAgentSettings(AgentSettingsBase):
+                 variant=&quot;acp&quot;,
+             ).model_dump(),
+         },
+     )
++    acp_permission_mode: ACPPermissionMode = Field(
++        default=&quot;legacy-auto-approve&quot;,
++        description=(
++            &quot;ACP permission mode. deny cancels requests; callback requires a &quot;
++            &quot;trusted host handler. Legacy automatic approval is retained &quot;
++            &quot;for compatibility.&quot;
++        ),
++    )
++    acp_permission_timeout: float = Field(
++        default=60.0,
++        gt=0,
++        allow_inf_nan=False,
++        description=&quot;Deadline in seconds for an async ACP permission decision.&quot;,
++    )
+     acp_session_mode: str | None = Field(
+         default=None,
+         description=(
+             &quot;Session mode ID (e.g. ``bypassPermissions``). Leave blank to &quot;
+@@ -1976,8 +1992,24 @@ class ACPAgentSettings(AgentSettingsBase):
+             &quot;default. Enable from the deploying application when several &quot;
+             &quot;conversations share one sandbox (see #1019).&quot;
+         ),
+     )
++    acp_env_allowlist: list[str] | None = Field(
++        default=None,
++        description=(
++            &quot;Ambient environment names inherited by the ACP child; None &quot;
++            &quot;preserves legacy inheritance and [] inherits none.&quot;
++        ),
++    )
++    acp_allow_model_switch: bool = Field(default=True)
++    acp_resume_policy: Literal[&quot;restart&quot;, &quot;strict&quot;] = Field(default=&quot;restart&quot;)
++    acp_secret_allowlist: list[str] | None = Field(
++        default=None,
++        description=(
++            &quot;Registry secret names delivered to the ACP child, including file &quot;
++            &quot;credentials; None preserves legacy delivery and [] delivers none.&quot;
++        ),
++    )
+     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
+     # settings-form UI (no SETTINGS_METADATA_KEY): it&#x27;s a list of structured
+     # specs a downstream application supplies in code to support other ACP CLIs,
+     # not an end-user field. The built-in providers work via the default.
+@@ -2138,9 +2170,11 @@ class ACPAgentSettings(AgentSettingsBase):
+             return command
+&#32;
+         return [info.binary_name, *extra]
+&#32;
+-    def create_agent(self) -&gt; ACPAgent:
++    def create_agent(
++        self, *, acp_permission_handler: ACPPermissionHandler | None = None
++    ) -&gt; ACPAgent:
+         &quot;&quot;&quot;Build an :class:`ACPAgent` from these settings.
+&#32;
+         The subprocess command is resolved via :meth:`resolve_acp_command`
+         which maps :attr:`acp_server` to a default when no explicit
+@@ -2165,11 +2199,18 @@ class ACPAgentSettings(AgentSettingsBase):
+             acp_server=self.acp_server,
+             acp_args=list(self.acp_args),
+             acp_model=self.acp_model,
+             acp_session_mode=self.acp_session_mode,
++            acp_permission_mode=self.acp_permission_mode,
++            acp_permission_handler=acp_permission_handler,
++            acp_permission_timeout=self.acp_permission_timeout,
+             acp_prompt_timeout=self.acp_prompt_timeout,
+             acp_startup_timeout=self.acp_startup_timeout,
+             acp_isolate_data_dir=self.acp_isolate_data_dir,
++            acp_env_allowlist=self.acp_env_allowlist,
++            acp_allow_model_switch=self.acp_allow_model_switch,
++            acp_resume_policy=self.acp_resume_policy,
++            acp_secret_allowlist=self.acp_secret_allowlist,
+             acp_file_secrets=list(self.acp_file_secrets),
+             agent_context=self.agent_context,
+             mcp_config=self.mcp_config,
+         )</pre></details></article>
+<article class="card" id="file-19"><span class="badge">added · config/type/transport/test propagation</span><h3>tests/agent_server/test_acp_permissions.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/agent_server/test_acp_permissions.py#L1">tests/agent_server/test_acp_permissions.py:1</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/agent_server/test_acp_permissions.py#L1">tests/agent_server/test_acp_permissions.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/tests/agent_server/test_acp_permissions.py b/tests/agent_server/test_acp_permissions.py
+new file mode 100644
+index 0000000..b66e7d3
+--- /dev/null
++++ b/tests/agent_server/test_acp_permissions.py
+@@ -0,0 +1,249 @@
++&quot;&quot;&quot;Conversation-scoped pending decisions; no model or execution required.&quot;&quot;&quot;
++
++import asyncio
++from uuid import uuid4
++
++from acp.schema import PermissionOption, ToolCallUpdate
++from pydantic import SecretStr
++
++from openhands.agent_server.acp_permissions import (
++    ACPPermissionBroker,
++    ACPPermissionDecision,
++)
++from openhands.sdk.agent.acp_permissions import ACPPermissionRequest
++
++
++def request(details=&quot;safe&quot;):
++    return ACPPermissionRequest(
++        session_id=&quot;session&quot;,
++        tool_call=ToolCallUpdate(
++            tool_call_id=&quot;tool&quot;,
++            title=&quot;secret title&quot;,
++            status=&quot;pending&quot;,
++            raw_input={&quot;command&quot;: details},
++        ),
++        options=(
++            PermissionOption(option_id=&quot;native-allow&quot;, name=&quot;Allow&quot;, kind=&quot;allow_once&quot;),
++            PermissionOption(
++                option_id=&quot;native-deny&quot;, name=&quot;Reject&quot;, kind=&quot;reject_once&quot;
++            ),
++        ),
++    )
++
++
++def test_decisions_are_scoped_one_shot_masked_and_not_implicitly_granted():
++    async def scenario():
++        broker = ACPPermissionBroker(
++            1, lambda text: text.replace(&quot;secret&quot;, &quot;[redacted]&quot;)
++        )
++        other = ACPPermissionBroker(1, str)
++        task = asyncio.create_task(broker.request(request(&quot;secret&quot;)))
++        await asyncio.sleep(0)
++        view = broker.snapshot().items[0]
++        assert &quot;secret&quot; not in view.model_dump_json()
++        assert not task.done()
++        assert not other.decide(
++            view.request_id, ACPPermissionDecision(option_id=view.options[0].id)
++        )
++        try:
++            broker.decide(view.request_id, ACPPermissionDecision(option_id=uuid4()))
++        except ValueError:
++            pass
++        else:
++            raise AssertionError(&quot;Unknown option accepted&quot;)
++        assert broker.decide(
++            view.request_id, ACPPermissionDecision(option_id=view.options[1].id)
++        )
++        assert await task == &quot;native-deny&quot;
++        assert not broker.decide(
++            view.request_id, ACPPermissionDecision(option_id=view.options[0].id)
++        )
++        assert not broker.snapshot().items
++
++    asyncio.run(scenario())
++
++
++def test_truncation_expiry_and_close_fail_closed():
++    async def scenario():
++        broker = ACPPermissionBroker(1, str)
++        task = asyncio.create_task(broker.request(request(&quot;x&quot; * 17000)))
++        await asyncio.sleep(0)
++        view = broker.snapshot().items[0]
++        assert view.details_truncated
++        try:
++            broker.decide(
++                view.request_id, ACPPermissionDecision(option_id=view.options[0].id)
++            )
++        except ValueError:
++            pass
++        else:
++            raise AssertionError(&quot;Truncated operation approved&quot;)
++        broker.cancel_pending(close=True)
++        assert await task is None
++        assert await broker.request(request()) is None
++        broker = ACPPermissionBroker(0.01, str)
++        task = asyncio.create_task(broker.request(request()))
++        await asyncio.sleep(0.02)
++        assert not broker.snapshot().items
++        assert await task is None
++
++    asyncio.run(scenario())
++
++
++def test_cancellation_removes_request_and_explicit_allow_maps_native_id():
++    async def scenario():
++        broker = ACPPermissionBroker(1, str)
++        task = asyncio.create_task(broker.request(request()))
++        await asyncio.sleep(0)
++        task.cancel()
++        try:
++            await task
++        except asyncio.CancelledError:
++            pass
++        assert not broker.snapshot().items
++        task = asyncio.create_task(broker.request(request()))
++        await asyncio.sleep(0)
++        view = broker.snapshot().items[0]
++        assert broker.decide(
++            view.request_id, ACPPermissionDecision(option_id=view.options[0].id)
++        )
++        assert await task == &quot;native-allow&quot;
++
++    asyncio.run(scenario())
++
++
++def test_conversation_scope_configuration_roundtrips_and_rejects_mismatch():
++    import tempfile
++    from pathlib import Path
++
++    from openhands.agent_server.config import Config, ConversationScope
++
++    identifier = uuid4()
++    workspace = Path(tempfile.gettempdir()).resolve() / &quot;admitted-workspace&quot;
++    settings = Config(
++        workspace_path=workspace,
++        conversation_scope=ConversationScope(id=identifier, workspace_path=workspace),
++    )
++    restored = Config.model_validate_json(settings.model_dump_json())
++    assert restored.conversation_scope is not None
++    assert restored.conversation_scope.id == identifier
++    assert restored.conversation_scope.workspace_path == workspace
++    for values in (
++        {
++            &quot;workspace_path&quot;: workspace.parent / &quot;other&quot;,
++            &quot;conversation_scope&quot;: {
++                &quot;id&quot;: str(identifier),
++                &quot;workspace_path&quot;: workspace,
++            },
++        },
++        {
++            &quot;workspace_path&quot;: workspace,
++            &quot;conversation_scope&quot;: {&quot;id&quot;: str(identifier), &quot;workspace_path&quot;: &quot;relative&quot;},
++        },
++    ):
++        try:
++            Config(**values)
++        except ValueError:
++            pass
++        else:
++            raise AssertionError(&quot;Invalid conversation scope accepted&quot;)
++
++
++def test_client_api_scope_denies_unknown_routes_and_outside_paths():
++    import tempfile
++    from pathlib import Path
++
++    from openhands.agent_server.api_access import (
++        APIAccessRule,
++        ClientAPIAccessMiddleware,
++        ClientAPIPolicy,
++    )
++
++    async def scenario(root):
++        workspace = root / &quot;workspace&quot;
++        workspace.mkdir()
++        (workspace / &quot;outside-link&quot;).symlink_to(root / &quot;private&quot;)
++
++        async def application(scope, receive, send):
++            await send({&quot;type&quot;: &quot;http.response.start&quot;, &quot;status&quot;: 200, &quot;headers&quot;: []})
++            await send({&quot;type&quot;: &quot;http.response.body&quot;, &quot;body&quot;: b&quot;allowed&quot;})
++
++        policy = ClientAPIPolicy(
++            operator_api_key=SecretStr(&quot;operator-&quot; + &quot;x&quot; * 40),
++            http_rules=[
++                APIAccessRule(
++                    method=&quot;GET&quot;,
++                    path=r&quot;/api/file/download&quot;,
++                    workspace_query_parameters=[&quot;path&quot;],
++                )
++            ],
++        )
++        wrapped = ClientAPIAccessMiddleware(
++            application, policy=policy, workspace_path=workspace
++        )
++        from urllib.parse import urlencode
++
++        async def receive():
++            return {&quot;type&quot;: &quot;http.disconnect&quot;}
++
++        for path, values, expected in (
++            (&quot;/api/file/download&quot;, {&quot;path&quot;: str(workspace / &quot;ok.txt&quot;)}, 200),
++            (&quot;/api/file/download&quot;, {&quot;path&quot;: str(root / &quot;private&quot;)}, 403),
++            (&quot;/api/file/download&quot;, {&quot;path&quot;: str(workspace / &quot;outside-link&quot;)}, 403),
++            (&quot;/api/file/download&quot;, {&quot;path&quot;: &quot;relative&quot;}, 403),
++            (&quot;/api/file/download&quot;, {}, 403),
++            (
++                &quot;/api/file/download&quot;,
++                [(&quot;path&quot;, str(workspace)), (&quot;path&quot;, str(root))],
++                403,
++            ),
++            (&quot;/api/bash/execute_bash_command&quot;, {}, 403),
++            (&quot;/api/acp/models&quot;, {}, 403),
++        ):
++            messages = []
++
++            async def send(value):
++                messages.append(value)
++
++            await wrapped(
++                {
++                    &quot;type&quot;: &quot;http&quot;,
++                    &quot;method&quot;: &quot;GET&quot;,
++                    &quot;path&quot;: path,
++                    &quot;headers&quot;: [],
++                    &quot;query_string&quot;: urlencode(values).encode(),
++                },
++                receive,
++                send,
++            )
++            assert messages[0][&quot;status&quot;] == expected, (path, values, messages)
++        messages = []
++
++        async def send(value):
++            messages.append(value)
++
++        await wrapped(
++            {&quot;type&quot;: &quot;websocket&quot;, &quot;path&quot;: &quot;/sockets/bash&quot;, &quot;headers&quot;: []}, receive, send
++        )
++        assert messages == [{&quot;type&quot;: &quot;websocket.close&quot;, &quot;code&quot;: 1008}]
++        assert &quot;operator-&quot; not in policy.model_dump_json()
++
++    with tempfile.TemporaryDirectory() as directory:
++        asyncio.run(scenario(Path(directory)))
++
++
++def test_client_api_scope_requires_separate_authenticated_operator():
++    from openhands.agent_server.config import Config
++
++    for keys, operator in (([], &quot;a&quot; * 40), ([&quot;a&quot; * 40], &quot;a&quot; * 40)):
++        try:
++            Config.model_validate(
++                {
++                    &quot;session_api_keys&quot;: keys,
++                    &quot;client_api_policy&quot;: {&quot;operator_api_key&quot;: operator},
++                }
++            )
++        except ValueError:
++            pass
++        else:
++            raise AssertionError(&quot;Anonymous or shared operator credential accepted&quot;)</pre></details></article>
+<article class="card" id="file-20"><span class="badge">added · config/type/transport/test propagation</span><h3>tests/sdk/agent/acp_permission_peer.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/agent/acp_permission_peer.py#L1">tests/sdk/agent/acp_permission_peer.py:1</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/agent/acp_permission_peer.py#L1">tests/sdk/agent/acp_permission_peer.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/tests/sdk/agent/acp_permission_peer.py b/tests/sdk/agent/acp_permission_peer.py
+new file mode 100644
+index 0000000..e858e34
+--- /dev/null
++++ b/tests/sdk/agent/acp_permission_peer.py
+@@ -0,0 +1,122 @@
++&quot;&quot;&quot;Deterministic ACP permission peer; never executes the proposed operation.&quot;&quot;&quot;
++
++import json
++import os
++import sys
++import uuid
++from pathlib import Path
++
++
++output = Path(sys.argv[1])
++session_id = &quot;permission-test-&quot; + uuid.uuid4().hex
++record = {
++    &quot;session_id&quot;: session_id,
++    &quot;mode_requests&quot;: [],
++    &quot;calls&quot;: [],
++    &quot;environment_observation&quot;: {
++        &quot;allowed_env&quot;: os.environ.get(&quot;PROOF_ALLOWED_ENV&quot;) == &quot;selected&quot;,
++        &quot;control_env&quot;: &quot;PROOF_CONTROL_KEY&quot; in os.environ,
++        &quot;allowed_secret&quot;: os.environ.get(&quot;PROOF_ALLOWED_SECRET&quot;) == &quot;approved&quot;,
++        &quot;forbidden_secret&quot;: &quot;PROOF_FORBIDDEN_SECRET&quot; in os.environ,
++        &quot;file_path&quot;: bool(os.environ.get(&quot;PROOF_FILE_PATH&quot;))
++        and Path(os.environ[&quot;PROOF_FILE_PATH&quot;]).is_file(),
++    },
++}
++
++
++def save():
++    output.write_text(json.dumps(record), encoding=&quot;utf-8&quot;)
++
++
++def send(message):
++    print(json.dumps({&quot;jsonrpc&quot;: &quot;2.0&quot;, **message}), flush=True)
++
++
++prompt_id = None
++for line in sys.stdin:
++    message = json.loads(line)
++    method, request_id = message.get(&quot;method&quot;), message.get(&quot;id&quot;)
++    record[&quot;calls&quot;].append(method)
++    save()
++    if method == &quot;initialize&quot;:
++        send(
++            {
++                &quot;id&quot;: request_id,
++                &quot;result&quot;: {
++                    &quot;protocolVersion&quot;: 1,
++                    &quot;agentCapabilities&quot;: {
++                        &quot;loadSession&quot;: &quot;--load-supported&quot; in sys.argv
++                    },
++                    &quot;authMethods&quot;: [],
++                    &quot;agentInfo&quot;: {&quot;name&quot;: &quot;codex-acp&quot;, &quot;version&quot;: &quot;fixture&quot;},
++                },
++            }
++        )
++    elif method == &quot;session/new&quot;:
++        save()
++        send({&quot;id&quot;: request_id, &quot;result&quot;: {&quot;sessionId&quot;: session_id}})
++    elif method == &quot;session/set_mode&quot;:
++        record[&quot;mode_requests&quot;].append(message[&quot;params&quot;][&quot;modeId&quot;])
++        save()
++        send({&quot;id&quot;: request_id, &quot;result&quot;: {}})
++    elif method == &quot;session/prompt&quot;:
++        prompt_id = request_id
++        partial = &quot;--partial-permission&quot; in sys.argv
++        if partial:
++            send(
++                {
++                    &quot;method&quot;: &quot;session/update&quot;,
++                    &quot;params&quot;: {
++                        &quot;sessionId&quot;: &quot;unrelated-session&quot;
++                        if &quot;--cross-session-update&quot; in sys.argv
++                        else session_id,
++                        &quot;update&quot;: {
++                            &quot;sessionUpdate&quot;: &quot;tool_call&quot;,
++                            &quot;toolCallId&quot;: &quot;simulated&quot;,
++                            &quot;title&quot;: &quot;Simulated operation&quot;,
++                            &quot;status&quot;: &quot;pending&quot;,
++                            &quot;kind&quot;: &quot;execute&quot;,
++                            &quot;rawInput&quot;: {&quot;command&quot;: &quot;simulated-approved&quot;},
++                        },
++                    },
++                }
++            )
++        send(
++            {
++                &quot;id&quot;: &quot;permission-request&quot;,
++                &quot;method&quot;: &quot;session/request_permission&quot;,
++                &quot;params&quot;: {
++                    &quot;sessionId&quot;: session_id,
++                    &quot;toolCall&quot;: {
++                        &quot;toolCallId&quot;: &quot;simulated&quot;,
++                        **({} if partial else {&quot;title&quot;: &quot;Simulated operation&quot;}),
++                        &quot;status&quot;: &quot;pending&quot;,
++                        &quot;kind&quot;: &quot;execute&quot;,
++                    },
++                    &quot;options&quot;: [
++                        {
++                            &quot;optionId&quot;: &quot;allow-id&quot;,
++                            &quot;name&quot;: &quot;Allow once&quot;,
++                            &quot;kind&quot;: &quot;allow_once&quot;,
++                        },
++                        {
++                            &quot;optionId&quot;: &quot;deny-id&quot;,
++                            &quot;name&quot;: &quot;Deny once&quot;,
++                            &quot;kind&quot;: &quot;reject_once&quot;,
++                        },
++                    ],
++                },
++            }
++        )
++    elif request_id == &quot;permission-request&quot; and method is None:
++        assert prompt_id is not None
++        record[&quot;response&quot;] = message.get(&quot;result&quot;)
++        save()
++        send({&quot;id&quot;: prompt_id, &quot;result&quot;: {&quot;stopReason&quot;: &quot;end_turn&quot;}})
++    elif method and request_id is not None:
++        send(
++            {
++                &quot;id&quot;: request_id,
++                &quot;error&quot;: {&quot;code&quot;: -32601, &quot;message&quot;: &quot;Unsupported fixture method&quot;},
++            }
++        )</pre></details></article>
+<article class="card" id="file-21"><span class="badge">added · config/type/transport/test propagation</span><h3>tests/sdk/agent/test_acp_environment.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/agent/test_acp_environment.py#L1">tests/sdk/agent/test_acp_environment.py:1</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/agent/test_acp_environment.py#L1">tests/sdk/agent/test_acp_environment.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/tests/sdk/agent/test_acp_environment.py b/tests/sdk/agent/test_acp_environment.py
+new file mode 100644
+index 0000000..693fae7
+--- /dev/null
++++ b/tests/sdk/agent/test_acp_environment.py
+@@ -0,0 +1,226 @@
++&quot;&quot;&quot;Public ACP credential/environment scoping against a real child process.&quot;&quot;&quot;
++
++import json
++import os
++import sys
++import tempfile
++from pathlib import Path
++from unittest.mock import patch
++from uuid import uuid4
++
++from openhands.sdk import LLMProfileStore
++from openhands.sdk.agent.acp_agent import ACPAgent
++from openhands.sdk.conversation import Conversation
++from openhands.sdk.launch import LaunchStores, resolve
++from openhands.sdk.profiles.agent_profile import ACPAgentProfile
++from openhands.sdk.profiles.seed import build_seed_profile
++from openhands.sdk.settings import ACPAgentSettings
++from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
++
++
++def run_case(inherit, secrets):
++    with tempfile.TemporaryDirectory(prefix=&quot;acp-env-&quot;) as directory:
++        root = Path(directory)
++        transcript = root / &quot;peer.json&quot;
++        settings = ACPAgentSettings(
++            acp_server=&quot;custom&quot;,
++            acp_command=[
++                sys.executable,
++                str(Path(__file__).with_name(&quot;acp_permission_peer.py&quot;)),
++                str(transcript),
++            ],
++            acp_permission_mode=&quot;deny&quot;,
++            acp_env_allowlist=inherit,
++            acp_secret_allowlist=secrets,
++            acp_file_secrets=[
++                ACPFileSecretSpec(
++                    secret_name=&quot;PROOF_FILE_SECRET&quot;,
++                    filename=&quot;fake.credential&quot;,
++                    env_var=&quot;PROOF_FILE_PATH&quot;,
++                    subdir=&quot;fixture&quot;,
++                )
++            ],
++        )
++        settings = ACPAgentSettings.model_validate_json(settings.model_dump_json())
++        agent = settings.create_agent()
++        assert agent.acp_env_allowlist == inherit
++        assert agent.acp_secret_allowlist == secrets
++        conversation = Conversation(
++            agent=agent,
++            workspace=str(root),
++            persistence_dir=str(root / &quot;conversation&quot;),
++            visualizer=None,
++        )
++        try:
++            conversation.update_secrets(
++                {
++                    &quot;PROOF_ALLOWED_SECRET&quot;: &quot;approved&quot;,
++                    &quot;PROOF_FORBIDDEN_SECRET&quot;: &quot;forbidden&quot;,
++                    &quot;PROOF_FILE_SECRET&quot;: &quot;fake-file-sentinel&quot;,
++                }
++            )
++            with patch.dict(
++                os.environ,
++                {
++                    &quot;PROOF_ALLOWED_ENV&quot;: &quot;selected&quot;,
++                    &quot;PROOF_CONTROL_KEY&quot;: &quot;must-not-inherit&quot;,
++                },
++            ):
++                conversation.send_message(&quot;Request a simulated permission and finish.&quot;)
++                conversation.run()
++            return json.loads(transcript.read_text(encoding=&quot;utf-8&quot;))[
++                &quot;environment_observation&quot;
++            ]
++        finally:
++            conversation.close()
++            agent.close()
++
++
++def test_explicit_scope_excludes_control_env_and_unselected_credentials():
++    observed = run_case([&quot;PATH&quot;, &quot;HOME&quot;, &quot;PROOF_ALLOWED_ENV&quot;], [&quot;PROOF_ALLOWED_SECRET&quot;])
++    assert observed == {
++        &quot;allowed_env&quot;: True,
++        &quot;control_env&quot;: False,
++        &quot;allowed_secret&quot;: True,
++        &quot;forbidden_secret&quot;: False,
++        &quot;file_path&quot;: False,
++    }
++
++
++def test_empty_scopes_are_empty_and_selected_file_credentials_remain_supported():
++    empty = run_case([], [])
++    assert not any(empty.values())
++    selected = run_case([&quot;PATH&quot;, &quot;HOME&quot;], [&quot;PROOF_ALLOWED_SECRET&quot;, &quot;PROOF_FILE_SECRET&quot;])
++    assert selected[&quot;file_path&quot;] and selected[&quot;allowed_secret&quot;]
++    assert not selected[&quot;control_env&quot;] and not selected[&quot;forbidden_secret&quot;]
++
++
++def test_unspecified_scopes_preserve_legacy_environment_behavior():
++    observed = run_case(None, None)
++    assert all(observed.values())
++
++
++def test_profile_seed_persistence_and_resolution_retain_host_controls():
++    settings = ACPAgentSettings(
++        acp_server=&quot;custom&quot;,
++        acp_command=[sys.executable, &quot;fixture.py&quot;],
++        acp_permission_mode=&quot;callback&quot;,
++        acp_permission_timeout=7,
++        acp_env_allowlist=[&quot;PATH&quot;],
++        acp_secret_allowlist=[],
++        acp_allow_model_switch=False,
++        acp_resume_policy=&quot;strict&quot;,
++    )
++    profile = build_seed_profile(settings, None)
++    profile = ACPAgentProfile.model_validate_json(profile.model_dump_json())
++    resolved = resolve(
++        profile,
++        LaunchStores(llm_profiles=LLMProfileStore(), mcp_config={}, skills=lambda: []),
++    )
++    assert isinstance(resolved.settings, ACPAgentSettings)
++    agent = resolved.settings.create_agent()
++    assert agent.acp_permission_mode == &quot;callback&quot;
++    assert agent.acp_permission_timeout == 7
++    assert agent.acp_env_allowlist == [&quot;PATH&quot;]
++    assert agent.acp_secret_allowlist == []
++    assert agent.acp_allow_model_switch is False
++    assert agent.acp_resume_policy == &quot;strict&quot;
++
++
++def test_fixed_model_rejects_change_before_first_turn():
++    with tempfile.TemporaryDirectory(prefix=&quot;acp-fixed-&quot;) as directory:
++        settings = ACPAgentSettings(
++            acp_server=&quot;custom&quot;,
++            acp_command=[sys.executable, &quot;unused-fixture.py&quot;],
++            acp_model=&quot;selected-model&quot;,
++            acp_allow_model_switch=False,
++        )
++        conversation = Conversation(
++            agent=settings.create_agent(), workspace=directory, visualizer=None
++        )
++        try:
++            try:
++                conversation.switch_acp_model(&quot;another-model&quot;)
++            except ValueError as error:
++                assert &quot;fixed&quot; in str(error)
++            else:
++                raise AssertionError(&quot;Fixed model changed before its first turn&quot;)
++            assert isinstance(conversation.agent, ACPAgent)
++            assert conversation.agent.acp_model == &quot;selected-model&quot;
++            assert not conversation.agent.supports_runtime_model_switch
++        finally:
++            conversation.close()
++
++
++def _strict_resume_case(*, supported=True, changed_cwd=False):
++    with tempfile.TemporaryDirectory(prefix=&quot;acp-resume-&quot;) as directory:
++        root = Path(directory)
++        transcript = root / &quot;peer.json&quot;
++        settings = ACPAgentSettings(
++            acp_server=&quot;custom&quot;,
++            acp_command=[
++                sys.executable,
++                str(Path(__file__).with_name(&quot;acp_permission_peer.py&quot;)),
++                str(transcript),
++                *([&quot;--load-supported&quot;] if supported else []),
++            ],
++            acp_permission_mode=&quot;deny&quot;,
++            acp_resume_policy=&quot;strict&quot;,
++            acp_allow_model_switch=False,
++        )
++        identifier = uuid4()
++        first = Conversation(
++            agent=settings.create_agent(),
++            workspace=str(root),
++            persistence_dir=str(root / &quot;saved&quot;),
++            conversation_id=identifier,
++            delete_on_close=False,
++            visualizer=None,
++        )
++        first.send_message(&quot;Finish a simulated turn.&quot;)
++        first.run()
++        original = json.loads(transcript.read_text())
++        assert &quot;session/new&quot; in original[&quot;calls&quot;]
++        first.close()
++        first.agent.close()
++        second = Conversation(
++            agent=settings.create_agent(),
++            workspace=str(root),
++            persistence_dir=str(root / &quot;saved&quot;),
++            conversation_id=identifier,
++            delete_on_close=False,
++            visualizer=None,
++        )
++        try:
++            original_id = second.state.agent_state[&quot;acp_session_id&quot;]
++            if changed_cwd:
++                second.state.agent_state[&quot;acp_session_cwd&quot;] = str(root / &quot;different&quot;)
++                transcript.unlink()
++            second.send_message(&quot;Resume the original simulated session.&quot;)
++            try:
++                second.run()
++            except RuntimeError as error:
++                assert &quot;explicit restart&quot; in str(error)
++            assert second.state.agent_state[&quot;acp_session_id&quot;] == original_id
++            if changed_cwd:
++                assert not transcript.exists()
++                return
++            observed = json.loads(transcript.read_text())
++            assert (&quot;session/load&quot; in observed[&quot;calls&quot;]) is supported
++            assert &quot;session/new&quot; not in observed[&quot;calls&quot;]
++            assert &quot;session/prompt&quot; not in observed[&quot;calls&quot;]
++        finally:
++            second.close()
++            second.agent.close()
++
++
++def test_strict_resume_never_replaces_a_rejected_native_session():
++    _strict_resume_case()
++
++
++def test_strict_resume_requires_advertised_load_capability():
++    _strict_resume_case(supported=False)
++
++
++def test_strict_resume_rejects_changed_workspace_before_process_start():
++    _strict_resume_case(changed_cwd=True)</pre></details></article>
+<article class="card" id="file-22"><span class="badge">added · config/type/transport/test propagation</span><h3>tests/sdk/agent/test_acp_permissions.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/agent/test_acp_permissions.py#L1">tests/sdk/agent/test_acp_permissions.py:1</a></p><p>New file/symbol: no before implementation.</p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Not present</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/agent/test_acp_permissions.py#L1">tests/sdk/agent/test_acp_permissions.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/tests/sdk/agent/test_acp_permissions.py b/tests/sdk/agent/test_acp_permissions.py
+new file mode 100644
+index 0000000..69182b5
+--- /dev/null
++++ b/tests/sdk/agent/test_acp_permissions.py
+@@ -0,0 +1,250 @@
++&quot;&quot;&quot;Behavioral coverage for the public ACP permission extension.
++
++The peer only requests permission: no LLM, auth or proposed command is used.
++&quot;&quot;&quot;
++
++import asyncio
++import json
++import sys
++import tempfile
++from pathlib import Path
++
++from acp.schema import PermissionOption, ToolCallUpdate
++
++from openhands.sdk.agent import ACPAgent
++from openhands.sdk.agent.acp_permissions import resolve_acp_permission
++from openhands.sdk.conversation import Conversation
++from openhands.sdk.security.confirmation_policy import AlwaysConfirm
++from openhands.sdk.settings import ACPAgentSettings
++
++
++PEER = Path(__file__).with_name(&quot;acp_permission_peer.py&quot;)
++
++
++def run_permission_case(
++    mode,
++    handler=None,
++    *,
++    restore=False,
++    settings=False,
++    timeout=1.0,
++    reinstall=False,
++    partial=False,
++    cross_session=False,
++):
++    with tempfile.TemporaryDirectory(prefix=&quot;acp-permission-&quot;) as directory:
++        workspace = Path(directory)
++        transcript = workspace / &quot;peer.json&quot;
++        command = [sys.executable, str(PEER), str(transcript)]
++        if partial:
++            command.append(&quot;--partial-permission&quot;)
++        if cross_session:
++            command.append(&quot;--cross-session-update&quot;)
++        if settings:
++            config = ACPAgentSettings(
++                acp_server=&quot;custom&quot;,
++                acp_command=command,
++                acp_permission_mode=mode,
++                acp_permission_timeout=timeout,
++            )
++            # Exercise the real persisted settings -&gt; factory path.
++            config = ACPAgentSettings.model_validate_json(config.model_dump_json())
++            agent = config.create_agent(acp_permission_handler=handler)
++        else:
++            agent = ACPAgent(
++                acp_command=command,
++                acp_permission_mode=mode,
++                acp_permission_handler=handler,
++                acp_permission_timeout=timeout,
++            )
++        if restore:
++            agent = ACPAgent.model_validate_json(agent.model_dump_json())
++        if reinstall:
++            agent.set_acp_permission_handler(handler)
++        conversation = None
++        try:
++            conversation = Conversation(
++                agent=agent,
++                workspace=str(workspace),
++                persistence_dir=str(workspace / &quot;conversation&quot;),
++                visualizer=None,
++            )
++            conversation.set_confirmation_policy(AlwaysConfirm())
++            conversation.send_message(&quot;Request simulated permission and finish.&quot;)
++            conversation.run()
++            record = json.loads(transcript.read_text(encoding=&quot;utf-8&quot;))
++            assert record[&quot;mode_requests&quot;] == (
++                [&quot;agent-full-access&quot;] if mode == &quot;legacy-auto-approve&quot; else []
++            )
++            return record[&quot;response&quot;][&quot;outcome&quot;]
++        finally:
++            if conversation is not None:
++                conversation.close()
++            agent.close()
++
++
++def test_deny_and_missing_handler_cancel_without_approval():
++    assert run_permission_case(&quot;deny&quot;) == {&quot;outcome&quot;: &quot;cancelled&quot;}
++    assert run_permission_case(&quot;callback&quot;) == {&quot;outcome&quot;: &quot;cancelled&quot;}
++
++
++def test_callback_selects_deny_instead_of_first_option_through_settings():
++    async def reject(request):
++        assert request.session_id.startswith(&quot;permission-test-&quot;)
++        assert request.tool_call.tool_call_id == &quot;simulated&quot;
++        return next(
++            option.option_id
++            for option in request.options
++            if option.kind == &quot;reject_once&quot;
++        )
++
++    assert run_permission_case(&quot;callback&quot;, reject, settings=True) == {
++        &quot;outcome&quot;: &quot;selected&quot;,
++        &quot;optionId&quot;: &quot;deny-id&quot;,
++    }
++
++
++def test_callback_explicitly_selects_offered_approval():
++    async def approve(request):
++        return request.options[0].option_id
++
++    assert run_permission_case(&quot;callback&quot;, approve) == {
++        &quot;outcome&quot;: &quot;selected&quot;,
++        &quot;optionId&quot;: &quot;allow-id&quot;,
++    }
++
++
++def test_invalid_choice_and_callback_failure_fail_closed():
++    async def invalid(request):
++        return &quot;not-offered&quot;
++
++    async def failed(request):
++        raise RuntimeError(&quot;PERMISSION_EXCEPTION_SENTINEL_DO_NOT_LOG&quot;)
++
++    assert run_permission_case(&quot;callback&quot;, invalid) == {&quot;outcome&quot;: &quot;cancelled&quot;}
++    assert run_permission_case(&quot;callback&quot;, failed) == {&quot;outcome&quot;: &quot;cancelled&quot;}
++
++
++def test_timed_out_handler_is_cancelled_before_response():
++    stopped = []
++
++    async def delayed(request):
++        try:
++            await asyncio.sleep(20)
++        finally:
++            stopped.append(True)
++
++    assert run_permission_case(&quot;callback&quot;, delayed, timeout=0.01) == {
++        &quot;outcome&quot;: &quot;cancelled&quot;
++    }
++    assert stopped == [True]
++
++
++def test_serialized_callback_mode_does_not_restore_automatic_approval():
++    async def approve(request):
++        return request.options[0].option_id
++
++    assert run_permission_case(&quot;callback&quot;, approve, restore=True) == {
++        &quot;outcome&quot;: &quot;cancelled&quot;
++    }
++
++
++def test_explicit_legacy_mode_retains_existing_behavior():
++    assert run_permission_case(&quot;legacy-auto-approve&quot;) == {
++        &quot;outcome&quot;: &quot;selected&quot;,
++        &quot;optionId&quot;: &quot;allow-id&quot;,
++    }
++
++
++def test_public_handler_installation_restores_control_after_serialization():
++    async def reject(request):
++        return request.options[1].option_id
++
++    assert run_permission_case(&quot;callback&quot;, reject, restore=True, reinstall=True) == {
++        &quot;outcome&quot;: &quot;selected&quot;,
++        &quot;optionId&quot;: &quot;deny-id&quot;,
++    }
++
++
++def test_controlled_mode_rejects_bypass_and_invalid_handler_configuration():
++    cases = [
++        {&quot;acp_permission_mode&quot;: &quot;callback&quot;, &quot;acp_session_mode&quot;: &quot;agent-full-access&quot;},
++        {&quot;acp_permission_mode&quot;: &quot;deny&quot;, &quot;acp_session_mode&quot;: &quot;bypassPermissions&quot;},
++        {
++            &quot;acp_permission_mode&quot;: &quot;callback&quot;,
++            &quot;acp_permission_handler&quot;: lambda request: None,
++        },
++        {&quot;acp_permission_mode&quot;: &quot;callback&quot;, &quot;acp_permission_timeout&quot;: float(&quot;inf&quot;)},
++        {&quot;acp_permission_mode&quot;: &quot;callback&quot;, &quot;acp_permission_timeout&quot;: 0},
++    ]
++    for values in cases:
++        try:
++            ACPAgent(acp_command=[&quot;fixture&quot;], **values)
++        except ValueError:
++            pass
++        else:
++            raise AssertionError(&quot;Unsafe permission configuration accepted&quot;)
++
++
++def test_cancelled_handler_propagates_without_permission_grant():
++    async def cancelled(request):
++        raise asyncio.CancelledError
++
++    async def exercise():
++        try:
++            await resolve_acp_permission(
++                mode=&quot;callback&quot;,
++                handler=cancelled,
++                timeout=1,
++                session_id=&quot;session&quot;,
++                tool_call=ToolCallUpdate(tool_call_id=&quot;simulated&quot;),
++                options=[
++                    PermissionOption(option_id=&quot;allow&quot;, name=&quot;Allow&quot;, kind=&quot;allow_once&quot;)
++                ],
++            )
++        except asyncio.CancelledError:
++            return
++        raise AssertionError(&quot;Handler cancellation was swallowed&quot;)
++
++    asyncio.run(exercise())
++
++
++def test_ambiguous_options_do_not_invoke_handler():
++    async def unexpected(request):
++        raise AssertionError(&quot;Ambiguous request reached handler&quot;)
++
++    async def exercise():
++        option = PermissionOption(option_id=&quot;same&quot;, name=&quot;Allow&quot;, kind=&quot;allow_once&quot;)
++        result = await resolve_acp_permission(
++            mode=&quot;callback&quot;,
++            handler=unexpected,
++            timeout=1,
++            session_id=&quot;session&quot;,
++            tool_call=ToolCallUpdate(tool_call_id=&quot;simulated&quot;),
++            options=[option, option],
++        )
++        assert result.outcome.outcome == &quot;cancelled&quot;
++
++    asyncio.run(exercise())
++
++
++def test_partial_permission_uses_same_session_tool_notification():
++    async def approve(request):
++        assert request.tool_call.title == &quot;Simulated operation&quot;
++        assert request.tool_call.raw_input == {&quot;command&quot;: &quot;simulated-approved&quot;}
++        return &quot;allow-id&quot;
++
++    assert run_permission_case(&quot;callback&quot;, approve, partial=True) == {
++        &quot;outcome&quot;: &quot;selected&quot;,
++        &quot;optionId&quot;: &quot;allow-id&quot;,
++    }
++
++
++def test_partial_permission_does_not_borrow_other_session_metadata():
++    async def approve_complete_only(request):
++        assert request.tool_call.title is None and request.tool_call.raw_input is None
++        return None
++
++    assert run_permission_case(
++        &quot;callback&quot;, approve_complete_only, partial=True, cross_session=True
++    ) == {&quot;outcome&quot;: &quot;cancelled&quot;}</pre></details></article>
+<article class="card" id="file-23"><span class="badge">changed · config/type/transport/test propagation</span><h3>tests/sdk/launch/test_field_ownership.py</h3><details><summary>Source manifest</summary><p><a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/launch/test_field_ownership.py#L1">tests/sdk/launch/test_field_ownership.py:1</a></p><p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/64dd33f4b60b15b63402c6fd5da9352aa101f729/tests/sdk/launch/test_field_ownership.py#L1">Before: tests/sdk/launch/test_field_ownership.py:1</a></p></details>
+<table><tr><th>Before</th><th>After / role</th></tr><tr><td>Existing configuration/transport/test surface</td><td>Propagate the explicit permission/scope API or exercise its regression contract; see the exact diff. <a class="src" href="https://github.com/VingGit/openhands-software-agent-sdk/blob/7ef4598673eee56d04285b96294a81a70c5529a7/tests/sdk/launch/test_field_ownership.py#L1">tests/sdk/launch/test_field_ownership.py:1</a></td></tr></table>
+<details><summary>Exact source diff</summary><pre>diff --git a/tests/sdk/launch/test_field_ownership.py b/tests/sdk/launch/test_field_ownership.py
+index 9c557c8..e480ed7 100644
+--- a/tests/sdk/launch/test_field_ownership.py
++++ b/tests/sdk/launch/test_field_ownership.py
+@@ -142,8 +142,14 @@ ACP_FIELDS: dict[str, Any] = {
+     &quot;acp_server&quot;: PROFILE,
+     &quot;acp_command&quot;: PROFILE,
+     &quot;acp_args&quot;: PROFILE,
+     &quot;acp_model&quot;: PROFILE,
++    &quot;acp_permission_mode&quot;: PROFILE,
++    &quot;acp_permission_timeout&quot;: PROFILE,
++    &quot;acp_env_allowlist&quot;: PROFILE,
++    &quot;acp_secret_allowlist&quot;: PROFILE,
++    &quot;acp_allow_model_switch&quot;: PROFILE,
++    &quot;acp_resume_policy&quot;: PROFILE,
+     &quot;acp_session_mode&quot;: PROFILE,
+     &quot;acp_prompt_timeout&quot;: PROFILE,
+     &quot;acp_startup_timeout&quot;: PROFILE,
+     &quot;mcp_config&quot;: Reference(&quot;mcp_server_refs&quot;),
+@@ -261,9 +267,15 @@ def _non_default_acp_profile() -&gt; ACPAgentProfile:
+     return ACPAgentProfile(
+         name=&quot;a&quot;,
+         acp_server=&quot;codex&quot;,
+         acp_model=&quot;gpt-5.5&quot;,
+-        acp_session_mode=&quot;full-access&quot;,
++        acp_session_mode=&quot;default&quot;,
++        acp_permission_mode=&quot;deny&quot;,
++        acp_permission_timeout=7.0,
++        acp_env_allowlist=[&quot;PATH&quot;],
++        acp_secret_allowlist=[],
++        acp_allow_model_switch=False,
++        acp_resume_policy=&quot;strict&quot;,
+         acp_prompt_timeout=12.0,
+         acp_startup_timeout=34.0,
+         acp_command=&quot;codex-acp --flag&quot;,
+         acp_args=[&quot;--x&quot;],</pre></details></article>
+</section><section><h2>4. Review and release decisions remain visible</h2><p>Do not read this page as a release, a full current-main browser/Cloud result, a completed issue-5480 implementation, or permission to change a human-only PR field. The legacy by-position automatic answer is preserved; this proposal supplies an explicit callback/broker path. The PR description contains current dependencies and missing evidence.</p><p>Source head: <code>7ef4598673eee56d04285b96294a81a70c5529a7</code>; merge base: <code>64dd33f4b60b15b63402c6fd5da9352aa101f729</code>. Source content is unchanged by this review artifact. Links pin exact public revisions; the page has no external scripts, fonts or images.</p></section></main></div></body></html>

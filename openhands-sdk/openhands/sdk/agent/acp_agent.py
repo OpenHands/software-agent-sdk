@@ -48,7 +48,6 @@ from acp.schema import (
     AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
-    AllowedOutcome,
     CreateElicitationResponse,
     CreateTerminalResponse,
     DeclineElicitationResponse,
@@ -87,6 +86,7 @@ from pydantic import (
     field_serializer,
     field_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.agent.acp_contracts import (
     ACPLegacySessionModels,
@@ -108,6 +108,11 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_permissions import (
+    ACPPermissionHandler,
+    ACPPermissionMode,
+    resolve_acp_permission,
+)
 from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
@@ -1356,10 +1361,20 @@ class _OpenHandsACPBridge:
       treat the post-message event as authoritative.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        permission_mode: ACPPermissionMode = "legacy-auto-approve",
+        permission_handler: ACPPermissionHandler | None = None,
+        permission_timeout: float = 60.0,
+    ) -> None:
+        self.permission_mode: ACPPermissionMode = permission_mode
+        self.permission_handler = permission_handler
+        self.permission_timeout = permission_timeout
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
+        self._permission_tool_context: dict[tuple[str, str], dict[str, Any]] = {}
         # Text and thoughts said before a tool call are emitted as their own
         # message ahead of that call (``on_text_segment``), so the transcript
         # keeps the agent's narration where it was said. These mark where the
@@ -1413,6 +1428,7 @@ class _OpenHandsACPBridge:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
+        self._permission_tool_context.clear()
         self._segment_text_start = 0
         self._segment_thought_start = 0
         self.text_segments_emitted = 0
@@ -1513,6 +1529,23 @@ class _OpenHandsACPBridge:
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
         logger.debug("ACP session_update: type=%s", type(update).__name__)
+        if self.permission_mode == "callback" and isinstance(
+            update, (ToolCallStart, ToolCallProgress)
+        ):
+            key = (session_id, update.tool_call_id)
+            known = self._permission_tool_context.setdefault(key, {})
+            snapshot = update.model_copy(deep=True)
+            for field, value in {
+                "title": snapshot.title,
+                "kind": snapshot.kind,
+                "raw_input": snapshot.raw_input,
+            }.items():
+                if value is not None and len(json.dumps(value, default=str)) <= 65536:
+                    known[field] = value
+            while len(self._permission_tool_context) > 128:
+                self._permission_tool_context.pop(
+                    next(iter(self._permission_tool_context))
+                )
 
         # Any update — token, thought, tool-call start/progress, usage — is
         # progress: reset the idle clock so the prompt's inactivity watchdog
@@ -1719,21 +1752,31 @@ class _OpenHandsACPBridge:
 
     async def request_permission(
         self,
-        session_id: str,  # noqa: ARG002
+        session_id: str,
         tool_call: ToolCallUpdate,
         options: list[PermissionOption],
         **kwargs: Any,  # noqa: ARG002
     ) -> RequestPermissionResponse:
-        """Auto-approve all permission requests from the ACP server."""
-        # Pick the first option (usually "allow once")
-        option_id = options[0].option_id if options else "allow_once"
-        logger.info(
-            "ACP auto-approving permission: %s (option: %s)",
-            tool_call,
-            option_id,
+        known = self._permission_tool_context.get(
+            (session_id, tool_call.tool_call_id), {}
         )
-        return RequestPermissionResponse(
-            outcome=AllowedOutcome(outcome="selected", option_id=option_id),
+        provided = {
+            "title": tool_call.title,
+            "kind": tool_call.kind,
+            "raw_input": tool_call.raw_input,
+        }
+        missing = {
+            field: value for field, value in known.items() if provided[field] is None
+        }
+        if missing:
+            tool_call = tool_call.model_copy(update=missing, deep=True)
+        return await resolve_acp_permission(
+            mode=self.permission_mode,
+            handler=self.permission_handler,
+            timeout=self.permission_timeout,
+            session_id=session_id,
+            tool_call=tool_call,
+            options=options,
         )
 
     async def create_elicitation(
@@ -1863,14 +1906,74 @@ class ACPAgent(AgentBase):
         default_factory=list,
         description="Additional arguments for the ACP server command",
     )
+    acp_env_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Ambient environment names inherited by the ACP child. None preserves "
+            "legacy inheritance; an empty list inherits none. Registry credentials "
+            "are controlled separately by acp_secret_allowlist. SDK-generated "
+            "credential paths may still be added for selected file secrets."
+        ),
+    )
+    acp_allow_model_switch: bool = Field(
+        default=True,
+        frozen=True,
+        description="Allow changing the selected model after conversation creation.",
+    )
+    acp_resume_policy: Literal["restart", "strict"] = Field(
+        default="restart",
+        frozen=True,
+        description="Restart rejected session loads, or require explicit recovery.",
+    )
+    acp_secret_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Registry secret names delivered to the ACP child, including file "
+            "credentials. None preserves legacy delivery; an empty list delivers "
+            "none. Unselected secrets are not resolved or materialised."
+        ),
+    )
+    acp_permission_mode: ACPPermissionMode = Field(
+        default="legacy-auto-approve",
+        description=(
+            "ACP permission handling: preserve legacy automatic approval, "
+            "deny requests, or delegate to an async host callback. "
+            "Conversation confirmation_policy does not intercept ACP requests."
+        ),
+    )
+    acp_permission_handler: SkipJsonSchema[ACPPermissionHandler | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description="Runtime-only async handler; return an offered option ID or None.",
+    )
+    acp_permission_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Deadline in seconds for an async ACP permission decision.",
+    )
+
+    @field_validator("acp_permission_handler")
+    @classmethod
+    def _validate_permission_handler(
+        cls, value: ACPPermissionHandler | None
+    ) -> ACPPermissionHandler | None:
+        if value is not None and not (
+            inspect.iscoroutinefunction(value)
+            or inspect.iscoroutinefunction(value.__call__)
+        ):
+            raise ValueError("acp_permission_handler must be an async callable")
+        return value
+
     acp_session_mode: str | None = Field(
         default=None,
         description=(
             "Session mode ID to set after creating a session. "
-            "If None (default), auto-detected from the ACP server type: "
+            "In legacy-auto-approve mode, None is auto-detected from the server: "
             "'bypassPermissions' for claude-agent-acp, "
             "'agent-full-access' for codex-acp; a provider with no such mode "
-            "(pi-acp) skips the call."
+            "(pi-acp) skips the call. Controlled modes retain the server default."
         ),
     )
     acp_prompt_timeout: float = Field(
@@ -2015,6 +2118,22 @@ class ACPAgent(AgentBase):
         return value.model_copy(update={"load_project_skills": False})
 
     def model_post_init(self, __context: object) -> None:
+        if (
+            self.acp_permission_handler is not None
+            and self.acp_permission_mode != "callback"
+        ):
+            raise ValueError("An ACP permission handler requires callback mode")
+        if (
+            self.acp_permission_mode != "legacy-auto-approve"
+            and self.acp_session_mode
+            in {
+                "bypassPermissions",
+                "agent-full-access",
+            }
+        ):
+            raise ValueError(
+                "Controlled ACP permissions cannot use a bypass session mode"
+            )
         super().model_post_init(__context)
         # Propagate the actual model name to the sentinel LLM and its
         # metrics so that logs, serialized state, and cost/token entries
@@ -2026,6 +2145,19 @@ class ACPAgent(AgentBase):
             self.llm.metrics.model_name = self.acp_model
             if self.llm.metrics.accumulated_token_usage is not None:
                 self.llm.metrics.accumulated_token_usage.model = self.acp_model
+
+    def set_acp_permission_handler(self, handler: ACPPermissionHandler | None) -> None:
+        """Install a trusted runtime handler for future permission requests.
+
+        Pending decisions retain their original handler. The callable is never
+        serialized; a resumed host must install it again.
+        """
+        if self.acp_permission_mode != "callback":
+            raise ValueError("A permission handler requires callback mode")
+        handler = self._validate_permission_handler(handler)
+        object.__setattr__(self, "acp_permission_handler", handler)
+        if self._client is not None:
+            self._client.permission_handler = handler
 
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
@@ -2339,7 +2471,7 @@ class ACPAgent(AgentBase):
         See
         :meth:`~openhands.sdk.conversation.impl.local_conversation.LocalConversation.switch_acp_model`.
         """
-        if self._session_id is None:
+        if not self.acp_allow_model_switch or self._session_id is None:
             return False
         provider = detect_acp_provider_by_agent_name(self._agent_name)
         return provider is not None and provider.supports_runtime_model_switch
@@ -2811,9 +2943,16 @@ class ACPAgent(AgentBase):
         :meth:`_strip_conflicting_env`: without an identity we cannot tell whose
         credential a reserved name belongs to.
         """
+        selected = self.acp_file_secrets
+        if self.acp_secret_allowlist is not None:
+            selected = [
+                spec
+                for spec in selected
+                if spec.secret_name in self.acp_secret_allowlist
+            ]
         provider = self._resolved_provider()
         if provider is None:
-            return list(self.acp_file_secrets)
+            return list(selected)
         own = {spec.secret_name for spec in provider.file_secrets}
         owned_elsewhere = {
             spec.secret_name
@@ -2821,11 +2960,7 @@ class ACPAgent(AgentBase):
             if key != provider.key
             for spec in info.file_secrets
         } - own
-        return [
-            spec
-            for spec in self.acp_file_secrets
-            if spec.secret_name not in owned_elsewhere
-        ]
+        return [spec for spec in selected if spec.secret_name not in owned_elsewhere]
 
     def _strip_conflicting_env(self, env: dict[str, str]) -> None:
         """Remove env vars that would defeat this provider's own credential.
@@ -3069,7 +3204,16 @@ class ACPAgent(AgentBase):
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
-        client = _OpenHandsACPBridge()
+        client = _OpenHandsACPBridge(
+            permission_mode=self.acp_permission_mode,
+            permission_handler=self.acp_permission_handler,
+            permission_timeout=self.acp_permission_timeout,
+        )
+        if self.acp_permission_mode == "legacy-auto-approve":
+            logger.warning(
+                "ACP permissions use legacy automatic approval; "
+                "select deny or callback mode for host-controlled decisions"
+            )
         self._client = client
         # Bind the secret masker for the conversation's lifetime. It's derived
         # from state.secret_registry (stable for the conversation) and touches
@@ -3094,18 +3238,30 @@ class ACPAgent(AgentBase):
         # provider credentials (keyed by the provider's env var name).
         env = default_environment()
         env.update(os.environ)
+        if self.acp_env_allowlist is not None:
+            env = {
+                key: value
+                for key, value in env.items()
+                if key in self.acp_env_allowlist
+            }
         _strip_inherited_npm_env(env)
         # Reserved file-content credential secrets (Codex auth.json, Gemini
         # Vertex SA — see _materialise_file_secrets) are written to disk, not
         # injected as env vars, so exclude their (large blob) names from the
         # plain env-injection below; materialisation sets only the path env var.
         file_secret_names = self._present_file_secret_names(state)
+        excluded_secrets = set(file_secret_names)
+        if self.acp_secret_allowlist is not None:
+            excluded_secrets.update(
+                set(state.secret_registry.secret_sources)
+                - set(self.acp_secret_allowlist)
+            )
         # Inject the whole registry: an ACP CLI is a black box we can't
         # name-scan per command (unlike the regular agent's bash tool), so
         # credentials must be delivered upfront. Registry values override
         # ambient os.environ. Skip file secrets (materialised to disk below).
         env.update(
-            state.secret_registry.get_all_secrets_as_env_vars(exclude=file_secret_names)
+            state.secret_registry.get_all_secrets_as_env_vars(exclude=excluded_secrets)
         )
         if self.acp_isolate_data_dir:
             self._isolate_acp_data_dir(state, env)
@@ -3186,6 +3342,10 @@ class ACPAgent(AgentBase):
             None,
             working_dir,
         ):
+            if self.acp_resume_policy == "strict":
+                raise RuntimeError(
+                    "ACP session workspace changed; explicit restart is required"
+                )
             logger.warning(
                 "ACP session %s was created with cwd=%s; current cwd=%s differs, "
                 "starting a fresh session instead of resuming",
@@ -3369,6 +3529,14 @@ class ACPAgent(AgentBase):
             reported_model_id: str | None = None
             available_models: list[ACPModelInfo] | None = None
             if prior_session_id is not None:
+                if self.acp_resume_policy == "strict" and not (
+                    init_response.agent_capabilities
+                    and init_response.agent_capabilities.load_session
+                ):
+                    raise RuntimeError(
+                        "ACP server cannot load the original session; "
+                        "explicit restart is required"
+                    )
                 try:
                     load_response = await conn.load_session(
                         cwd=working_dir,
@@ -3399,6 +3567,11 @@ class ACPAgent(AgentBase):
                         working_dir,
                     )
                 except ACPRequestError as e:
+                    if self.acp_resume_policy == "strict":
+                        raise RuntimeError(
+                            "ACP session could not be resumed; "
+                            "explicit restart is required"
+                        ) from None
                     logger.warning(
                         "ACP load_session(%s) failed (%s); starting a fresh session",
                         _fingerprint_session_id(prior_session_id),
@@ -3472,9 +3645,9 @@ class ACPAgent(AgentBase):
             # mode ID; unknown/custom servers get None — skip the call rather
             # than sending a provider-specific string they won't recognise.
             provider = detect_acp_provider_by_agent_name(agent_name)
-            mode_id = self.acp_session_mode or (
-                provider.default_session_mode if provider else None
-            )
+            mode_id = self.acp_session_mode
+            if mode_id is None and self.acp_permission_mode == "legacy-auto-approve":
+                mode_id = provider.default_session_mode if provider else None
             if mode_id is not None:
                 logger.info("Setting ACP session mode: %s", mode_id)
                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
@@ -4665,6 +4838,8 @@ class ACPAgent(AgentBase):
             after switching to sonnet) until a new session. The switch itself
             is applied; only the model's self-description is stale.
         """
+        if not self.acp_allow_model_switch:
+            raise ValueError("ACP model is fixed for this conversation")
         if not model or not model.strip():
             raise ValueError("model must be a non-empty string")
         if not self.has_live_acp_session:

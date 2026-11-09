@@ -34,6 +34,7 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 
+from openhands.sdk.agent.acp_permissions import ACPPermissionMode
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.message_request import SendMessageRequest
@@ -88,6 +89,7 @@ from .metadata import (
 
 if TYPE_CHECKING:
     from openhands.sdk.agent import ACPAgent, Agent
+    from openhands.sdk.agent.acp_permissions import ACPPermissionHandler
     from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
 
@@ -1904,6 +1906,20 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
+    acp_permission_mode: ACPPermissionMode = Field(
+        default="legacy-auto-approve",
+        description=(
+            "ACP permission mode. deny cancels requests; callback requires a "
+            "trusted host handler. Legacy automatic approval is retained "
+            "for compatibility."
+        ),
+    )
+    acp_permission_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Deadline in seconds for an async ACP permission decision.",
+    )
     acp_session_mode: str | None = Field(
         default=None,
         description=(
@@ -1996,6 +2012,22 @@ class ACPAgentSettings(AgentSettingsBase):
             ":attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`; off by "
             "default. Enable from the deploying application when several "
             "conversations share one sandbox (see #1019)."
+        ),
+    )
+    acp_env_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Ambient environment names inherited by the ACP child; None "
+            "preserves legacy inheritance and [] inherits none."
+        ),
+    )
+    acp_allow_model_switch: bool = Field(default=True)
+    acp_resume_policy: Literal["restart", "strict"] = Field(default="restart")
+    acp_secret_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Registry secret names delivered to the ACP child, including file "
+            "credentials; None preserves legacy delivery and [] delivers none."
         ),
     )
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
@@ -2160,7 +2192,9 @@ class ACPAgentSettings(AgentSettingsBase):
 
         return [info.binary_name, *extra]
 
-    def create_agent(self) -> ACPAgent:
+    def create_agent(
+        self, *, acp_permission_handler: ACPPermissionHandler | None = None
+    ) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
 
         The subprocess command is resolved via :meth:`resolve_acp_command`
@@ -2187,9 +2221,16 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_args=list(self.acp_args),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
+            acp_permission_mode=self.acp_permission_mode,
+            acp_permission_handler=acp_permission_handler,
+            acp_permission_timeout=self.acp_permission_timeout,
             acp_prompt_timeout=self.acp_prompt_timeout,
             acp_startup_timeout=self.acp_startup_timeout,
             acp_isolate_data_dir=self.acp_isolate_data_dir,
+            acp_env_allowlist=self.acp_env_allowlist,
+            acp_allow_model_switch=self.acp_allow_model_switch,
+            acp_resume_policy=self.acp_resume_policy,
+            acp_secret_allowlist=self.acp_secret_allowlist,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=self.agent_context,
             mcp_config=self.mcp_config,
