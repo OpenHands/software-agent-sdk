@@ -4686,7 +4686,11 @@ export type CriticResult = {
 /**
  * DelegateAction
  *
- * Schema for delegation operations.
+ * Legacy delegation action, deprecated since v1.60.0.
+ *
+ * Use TaskAction for new tasks. Retained to read stored events.
+ *
+ * @deprecated
  */
 export type DelegateAction = {
   /**
@@ -4724,7 +4728,11 @@ export type DelegateAction = {
 /**
  * DelegateObservation
  *
- * Observation from delegation operations.
+ * Legacy delegation observation, deprecated since v1.60.0.
+ *
+ * Use TaskObservation for new tasks. Retained to read stored events.
+ *
+ * @deprecated
  */
 export type DelegateObservation = {
   /**
@@ -6485,7 +6493,7 @@ export type HooksResponse = {
 /**
  * Icon
  *
- * An icon for display in user interfaces.
+ * An optionally-sized icon for display in a user interface (2025-11-25+).
  */
 export type Icon = {
   /**
@@ -6500,7 +6508,10 @@ export type Icon = {
    * Src
    */
   src: string;
-  [key: string]: unknown;
+  /**
+   * Theme
+   */
+  theme?: 'light' | 'dark' | null;
 };
 
 /**
@@ -8319,6 +8330,18 @@ export type LookupSecretInput = {
    */
   kind?: 'LookupSecret';
   /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
+  /**
    * Url
    */
   url: string;
@@ -8346,6 +8369,18 @@ export type LookupSecretOutput = {
    * Kind
    */
   kind: 'LookupSecret';
+  /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
   /**
    * Url
    */
@@ -8831,6 +8866,8 @@ export type McpoAuthTokenStateOutput = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServer = {
   /**
@@ -8909,7 +8946,7 @@ export type McpServer = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -8920,6 +8957,8 @@ export type McpServer = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServerInput = {
   /**
@@ -8994,7 +9033,7 @@ export type McpServerInput = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -9005,6 +9044,8 @@ export type McpServerInput = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServerOutput = {
   /**
@@ -9083,7 +9124,7 @@ export type McpServerOutput = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -9172,7 +9213,7 @@ export type McpServerPatch = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -9390,7 +9431,7 @@ export type McpToolDefinition = {
   /**
    * The MCP tool definition.
    */
-  mcp_tool: McpTypesTool;
+  mcp_tool: McpTypesTypesTool;
   /**
    * Meta
    */
@@ -11485,6 +11526,14 @@ export type SecretItemResponse = {
    * Name
    */
   name: string;
+  /**
+   * Scope
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   */
+  scope_description?: string | null;
 };
 
 /**
@@ -12907,6 +12956,18 @@ export type StaticSecretInput = {
    */
   kind?: 'StaticSecret';
   /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
+  /**
    * Value
    */
   value?: null;
@@ -12928,6 +12989,18 @@ export type StaticSecretOutput = {
    * Kind
    */
   kind: 'StaticSecret';
+  /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
   /**
    * Value
    */
@@ -14420,14 +14493,13 @@ export type ToolDefinition =
 /**
  * ToolExecution
  *
- * Execution-related properties for a tool.
+ * Execution-related properties for a tool (2025-11-25 only).
  */
 export type ToolExecution = {
   /**
    * Tasksupport
    */
   taskSupport?: 'forbidden' | 'optional' | 'required' | null;
-  [key: string]: unknown;
 };
 
 /**
@@ -15545,14 +15617,14 @@ export type StdioMcpServerSpec = {
  *
  * Definition for a tool the client can call.
  */
-export type McpTypesTool = {
+export type McpTypesTypesTool = {
   /**
    * Meta
    */
   _meta?: {
     [key: string]: unknown;
   } | null;
-  annotations?: McpTypesToolAnnotations | null;
+  annotations?: McpTypesTypesToolAnnotations | null;
   /**
    * Description
    */
@@ -15582,7 +15654,6 @@ export type McpTypesTool = {
    * Title
    */
   title?: string | null;
-  [key: string]: unknown;
 };
 
 /**
@@ -15597,7 +15668,7 @@ export type McpTypesTool = {
  * Clients should never make tool use decisions based on ToolAnnotations
  * received from untrusted servers.
  */
-export type McpTypesToolAnnotations = {
+export type McpTypesTypesToolAnnotations = {
   /**
    * Destructivehint
    */
@@ -15618,7 +15689,6 @@ export type McpTypesToolAnnotations = {
    * Title
    */
   title?: string | null;
-  [key: string]: unknown;
 };
 
 /**
@@ -19340,6 +19410,8 @@ export type McpoAuthTokenStateInputWritable = {
  * MCPServer
  *
  * One MCP server in the settings DataModel.
+ *
+ * A server needs ``command`` (stdio) or ``url`` (remote).
  */
 export type McpServerInputWritable = {
   /**
@@ -19418,7 +19490,7 @@ export type McpServerInputWritable = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -19507,7 +19579,7 @@ export type McpServerPatchWritable = {
   /**
    * Transport
    */
-  transport?: 'stdio' | 'http' | 'sse' | 'streamable-http' | null;
+  transport?: 'stdio' | 'http' | 'streamable-http' | 'sse' | null;
   /**
    * Url
    */
@@ -19570,7 +19642,7 @@ export type McpToolDefinitionWritable = {
   /**
    * The MCP tool definition.
    */
-  mcp_tool: McpTypesTool;
+  mcp_tool: McpTypesTypesTool;
   /**
    * Meta
    */
@@ -20398,6 +20470,18 @@ export type StaticSecretInputWritable = {
    */
   kind?: 'StaticSecret';
   /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
+  /**
    * Value
    */
   value?: string | null;
@@ -20419,6 +20503,18 @@ export type StaticSecretOutputWritable = {
    * Kind
    */
   kind: 'StaticSecret';
+  /**
+   * Scope
+   *
+   * Optional grouping name shown to the agent when rendering the available secrets (e.g. 'personal', 'organization'). The SDK attaches no meaning to the value; it only groups by it.
+   */
+  scope?: string | null;
+  /**
+   * Scope Description
+   *
+   * Optional guidance shown once above the secret's scope group when rendering secrets, e.g. who actions are attributed to. Only the first non-empty value within a scope is used; conflicts log a warning.
+   */
+  scope_description?: string | null;
   /**
    * Value
    */
@@ -23773,6 +23869,10 @@ export type SwitchConversationLlmApiConversationsConversationIdSwitchLlmPostData
 
 export type SwitchConversationLlmApiConversationsConversationIdSwitchLlmPostErrors = {
   /**
+   * Agent is ACP (use switch_acp_model)
+   */
+  400: unknown;
+  /**
    * Conversation not found
    */
   404: unknown;
@@ -23809,7 +23909,7 @@ export type SwitchConversationProfileApiConversationsConversationIdSwitchProfile
 
 export type SwitchConversationProfileApiConversationsConversationIdSwitchProfilePostErrors = {
   /**
-   * Invalid or corrupted profile
+   * Invalid or corrupted profile, or an ACP agent
    */
   400: unknown;
   /**
