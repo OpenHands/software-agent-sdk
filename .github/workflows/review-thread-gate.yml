@@ -19,7 +19,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Fail when unresolved review threads remain (unless waived)
-              uses: actions/github-script@v9
+              uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
               with:
                   script: |
                       const pr = context.payload.pull_request;
@@ -111,4 +111,5 @@ jobs:
                         `Found ${unresolved.length} unresolved review thread(s). Resolve all threads or add ` +
                         '`review-thread-waiver: <reason>` to the PR body for an intentional waiver.',
                       );
+
 
