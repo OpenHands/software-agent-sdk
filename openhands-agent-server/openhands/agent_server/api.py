@@ -3,9 +3,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import traceback
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
 from importlib.metadata import version
 from pathlib import Path
@@ -17,6 +19,8 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 from starlette.requests import Request
 from starlette.types import ASGIApp
 
@@ -263,6 +267,38 @@ def _cleanup_stale_tmux_sessions() -> None:
         _reclaim_stale_tmux_sockets(socket_dir)
 
 
+TRACE_FLUSH_TIMEOUT_MILLIS = 5000
+
+
+async def _flush_trace_export() -> None:
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        return
+    outcome: Future[bool] = Future()
+    outcome.set_running_or_notify_cancel()
+
+    def flush() -> None:
+        try:
+            outcome.set_result(provider.force_flush(TRACE_FLUSH_TIMEOUT_MILLIS))
+        except Exception as exc:
+            outcome.set_exception(exc)
+
+    threading.Thread(target=flush, name="shutdown-trace-flush", daemon=True).start()
+    try:
+        flushed = await asyncio.wait_for(
+            asyncio.wrap_future(outcome), TRACE_FLUSH_TIMEOUT_MILLIS / 1000
+        )
+    except TimeoutError:
+        flushed = False
+    except Exception:
+        logger.warning("Shutdown trace flush failed", exc_info=True)
+        return
+    if not flushed:
+        logger.warning(
+            "Shutdown trace flush timed out after %d ms", TRACE_FLUSH_TIMEOUT_MILLIS
+        )
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
@@ -439,6 +475,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             await backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
+        await _flush_trace_export()
 
         if tmux_tmpdir_was_defaulted:
             if os.environ.get("TMUX_TMPDIR") == str(tmux_tmpdir):
