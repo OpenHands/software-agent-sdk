@@ -93,7 +93,7 @@ ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::ht
 # CVE-2026-109518, root code execution through a download-verification
 # bypass), first published in snapshot 20261104T120337Z. debian:trixie-slim
 # already ships apt 3.0.4, so older snapshots fail to install apt-utils.
-ARG DEBIAN_SNAPSHOT=20261105T000000Z
+ARG DEBIAN_SNAPSHOT=20261106T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
