@@ -1549,12 +1549,13 @@ def test_openai_gateway_completion_store_failure_preserves_conversation_id(
         url = f"{env['host']}/v1/chat/completions"
         headers = {"Idempotency-Key": "store-failure"}
         first = client.post(url, json=body, headers=headers, timeout=10)
-        assert first.status_code == 503
-        assert first.headers["X-Should-Retry"] == "false"
+        assert first.status_code == 200, first.text
+        assert first.json()["choices"][0]["message"]["content"]
         conversation_id = first.headers["X-OpenHands-ServerConversation-ID"]
         UUID(conversation_id)
         retry = client.post(url, json=body, headers=headers, timeout=10)
         assert retry.status_code == 409
+        assert retry.headers["X-Should-Retry"] == "false"
         assert retry.headers["X-OpenHands-ServerConversation-ID"] == conversation_id
         assert len(patched_llm) == 1
 
