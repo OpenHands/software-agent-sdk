@@ -5,12 +5,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from openhands.sdk.conversation.event_store import LOCK_FILE_NAME, EventLog
+from openhands.sdk.conversation.event_store import (
+    LOCK_FILE_NAME,
+    UNREADABLE_EVENT_FILE_CODE,
+    EventLog,
+)
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
     EVENT_NAME_RE,
     EVENTS_DIR,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
@@ -205,10 +210,13 @@ def test_event_log_missing_event_file():
     # Cached access still works — the event was cached on append
     assert log[0].id == "test-event"
 
-    # Clear cache to test the disk-access path
+    # On the disk-access path the lost file reads as a stand-in that keeps
+    # the event's id and place.
     log._event_cache.clear()
-    with pytest.raises(FileNotFoundError):
-        log[0]
+    stand_in = log[0]
+    assert isinstance(stand_in, ConversationErrorEvent)
+    assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+    assert stand_in.id == "test-event"
 
 
 def test_event_log_corrupted_json_in_file():
@@ -310,10 +318,11 @@ def test_event_log_iteration_with_missing_files():
     # Cached iteration still works — all 3 events were cached on append
     assert [e.id for e in log] == ["event-1", "event-2", "event-3"]
 
-    # Clear cache to test the disk-access path
+    # On the disk-access path the lost file reads as a stand-in.
     log._event_cache.clear()
-    with pytest.raises(FileNotFoundError):
-        list(log)
+    read = list(log)
+    assert [e.id for e in read] == ["event-1", "event-2", "event-3"]
+    assert isinstance(read[1], ConversationErrorEvent)
 
 
 def test_event_log_iteration_backfills_missing_mappings():
@@ -822,3 +831,39 @@ def test_path_to_root_legacy_chain_spans_a_gap():
         "aaaaaaaa-0000",
         "cccccccc-0000",
     ]
+
+
+@pytest.mark.parametrize(
+    ("damage", "reason"), [("{not json", "unreadable"), ("", "empty")]
+)
+def test_damaged_event_file_reads_as_stand_in(caplog, damage, reason):
+    """An empty or corrupt event file (a crash, a bad copy) reads as a stand-in
+    error event with the same id and place; the other events stay readable,
+    appends keep working, and the damage is reported once."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    for c in "abc":
+        log.append(create_test_event(f"{c * 8}-0000", c))
+    fs.write(log._path(1), damage)
+
+    reloaded = EventLog(fs)
+    with caplog.at_level("WARNING"):
+        events = list(reloaded)
+        reloaded._event_cache.clear()
+        assert reloaded[1].id == "bbbbbbbb-0000"
+    assert [e.id for e in events] == ["aaaaaaaa-0000", "bbbbbbbb-0000", "cccccccc-0000"]
+    stand_in = events[1]
+    assert isinstance(stand_in, ConversationErrorEvent)
+    assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+    assert reason in stand_in.detail
+    assert stand_in.timestamp == events[0].timestamp
+    assert caplog.text.count("using a stand-in") == 1
+    # The tree bridges over it: the leaf's branch still reaches the root.
+    assert [e.id for e in reloaded.path_to_root("cccccccc-0000")] == [
+        "aaaaaaaa-0000",
+        "bbbbbbbb-0000",
+        "cccccccc-0000",
+    ]
+
+    assert reloaded.append(create_test_event("dddddddd-0000", "d")) == 3
+    assert fs.read(reloaded._path(1)) == damage  # the file is left as it was
