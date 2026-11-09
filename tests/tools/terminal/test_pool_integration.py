@@ -162,3 +162,60 @@ class TestPoolClose:
         (obs,) = observations
         assert obs.is_error
         assert "terminal was closed" in obs.text
+
+
+class TestFollowUpsReachTheRunningCommand:
+    """Follow-ups to a command that is still running must reach it (#6651).
+
+    The observation for a no-change timeout tells the agent to answer with
+    ``is_input``, wait with an empty command, or send ``C-c``. Checking out a
+    pane for that follow-up must not interrupt the command first.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            executor = TerminalExecutor(
+                working_dir=work_dir,
+                terminal_type="tmux",
+                max_panes=3,
+                no_change_timeout_seconds=2,
+            )
+            yield executor
+            executor.close()
+
+    def test_input_answers_a_waiting_prompt(self, executor):
+        prompt = executor(
+            TerminalAction(command="python3 -c \"print('hello ' + input('Name? '))\"")
+        )
+        assert prompt.exit_code == -1  # still waiting for input
+
+        answer = executor(TerminalAction(command="bob", is_input=True))
+
+        assert not answer.is_error, answer.text
+        assert "hello bob" in answer.text
+
+    def test_empty_command_and_ctrl_c_reach_a_long_command(self, executor):
+        started = executor(
+            TerminalAction(
+                command="for i in 1 2 3; do echo tick$i; sleep 1; done; sleep 60"
+            )
+        )
+        assert started.exit_code == -1
+
+        more = executor(TerminalAction(command=""))
+        assert not more.is_error, more.text
+
+        stopped = executor(TerminalAction(command="C-c", is_input=True))
+        assert not stopped.is_error, stopped.text
+        assert stopped.exit_code == 130
+
+    def test_new_command_after_a_finished_follow_up_runs_normally(self, executor):
+        executor(TerminalAction(command="python3 -c \"input('x? ')\""))
+        executor(TerminalAction(command="done", is_input=True))
+
+        result = executor(TerminalAction(command="echo after"))
+
+        assert not result.is_error, result.text
+        assert "after" in result.text
+        assert result.exit_code == 0

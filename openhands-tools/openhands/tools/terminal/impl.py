@@ -106,6 +106,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
         self._pool_recovery_lock = threading.Lock()
+        # Pool mode: the pane whose last command is still running, which
+        # follow-up calls (input, an empty command, a key like C-c) target.
+        self._unfinished_pane: PooledTmuxTerminal | None = None
 
         use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
 
@@ -165,6 +168,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 failed_pool.close()
             with self._sessions_lock:
                 self._sessions.clear()
+            self._unfinished_pane = None
             self._initialize_pool()
 
     @staticmethod
@@ -233,6 +237,16 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 session._closed = True
                 # Also mark the terminal so the pooled close() is a no-op
                 terminal._closed = True
+
+    @staticmethod
+    def _is_follow_up(action: TerminalAction) -> bool:
+        """Whether *action* addresses the previous, still-running command."""
+        command = action.command.strip()
+        return (
+            action.is_input
+            or command == ""
+            or (command.startswith("C-") and len(command) == 3)
+        )
 
     @staticmethod
     def _prepare_pooled_session(session: TerminalSession) -> None:
@@ -482,8 +496,11 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """
         pool = self._pool
         assert pool is not None
+        follow_up = self._is_follow_up(action)
         try:
-            with pool.pane() as handle:
+            with pool.pane(
+                prefer=self._unfinished_pane if follow_up else None
+            ) as handle:
                 reset_text: str | None = None
 
                 if action.reset or handle.terminal._closed:
@@ -503,7 +520,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                         )
 
                 session = self._wrap_session(handle.terminal)
-                self._prepare_pooled_session(session)
+                if not (
+                    follow_up
+                    and handle.terminal is self._unfinished_pane
+                    and session.is_running()
+                ):
+                    # An independent command: don't let a previous command's
+                    # state leak into it. A follow-up keeps the running command
+                    # it is meant for.
+                    self._prepare_pooled_session(session)
 
                 cmd_action = (
                     action
@@ -516,6 +541,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 )
                 self._export_envs(cmd_action, conversation, session=session)
                 observation = session.execute(cmd_action)
+                if session.is_running():
+                    self._unfinished_pane = handle.terminal
+                elif self._unfinished_pane is handle.terminal:
+                    self._unfinished_pane = None
 
                 if reset_text is not None:
                     observation = observation.model_copy(
