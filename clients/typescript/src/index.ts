@@ -275,6 +275,8 @@ export type {
   CreateACPConversationRequest,
   UpdateConversationRequest,
   UpdateSecretsRequest,
+  ConversationSecretCreateRequest,
+  ConversationSecretResponse,
   StaticSecret,
   LookupSecret,
   SecretObject,

@@ -10,6 +10,8 @@ import type {
   ConversationEventPage,
   ConversationEventSearchOptions,
   ConversationInfo,
+  ConversationSecretCreateRequest,
+  ConversationSecretResponse,
   ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
@@ -343,6 +345,17 @@ export class ConversationClient {
       : { security_analyzer: securityAnalyzerOrRequest };
     const response = await this.client.post<Success>(
       `/api/conversations/${conversationId}/security_analyzer`,
+      request
+    );
+    return response.data;
+  }
+
+  async addConversationSecret(
+    conversationId: string,
+    request: ConversationSecretCreateRequest
+  ): Promise<ConversationSecretResponse> {
+    const response = await this.client.post<ConversationSecretResponse>(
+      `/api/conversations/${conversationId}/conversation-secrets`,
       request
     );
     return response.data;

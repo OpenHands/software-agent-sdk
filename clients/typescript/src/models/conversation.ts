@@ -178,6 +178,16 @@ export interface UpdateSecretsRequest {
   secrets: Record<string, SecretObject>;
 }
 
+/** Value is sent only to the target agent server and never returned. */
+export interface ConversationSecretCreateRequest {
+  name: string;
+  value: string;
+}
+
+export interface ConversationSecretResponse {
+  name: string;
+}
+
 export interface ConversationSearchRequest {
   page_id?: string;
   limit?: number;

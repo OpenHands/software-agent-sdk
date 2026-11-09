@@ -2172,6 +2172,19 @@ class EventService:
                     self._run_task = None
             await self._publish_state_update()
 
+    async def add_conversation_secret(self, name: str, value: str) -> None:
+        """Attach a recoverable secret only to this conversation."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        if self.cipher is None:
+            raise RuntimeError("Conversation secrets require an encryption key")
+        profile = self.stored.launched_agent_profile
+        if profile is not None and not profile.allows_secret(name):
+            raise PermissionError("Secret is not allowed by the launched agent profile")
+        if name == CODEX_AUTH_SECRET_NAME and name in self.credential_bindings:
+            raise ValueError("Secret name is reserved for a credential binding")
+        await asyncio.to_thread(self._conversation.add_conversation_secret, name, value)
+
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""
         if not self._conversation:

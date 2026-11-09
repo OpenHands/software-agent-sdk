@@ -6,7 +6,7 @@ from enum import Enum, StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -461,6 +461,19 @@ class FileUploadResult(Success):
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
+
+
+class ConversationSecretCreateRequest(BaseModel):
+    """Add a secret to one conversation without changing saved user settings."""
+
+    name: str
+    value: SecretStr
+
+
+class ConversationSecretResponse(BaseModel):
+    """Acknowledge a secret without returning its value."""
+
+    name: str
 
 
 class UpdateSecretsRequest(BaseModel):

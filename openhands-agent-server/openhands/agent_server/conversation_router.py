@@ -40,6 +40,8 @@ from openhands.agent_server.models import (
     ConversationPage,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
+    ConversationSecretCreateRequest,
+    ConversationSecretResponse,
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
@@ -54,7 +56,10 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
-from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.agent_server.persistence import (
+    SECRET_NAME_PATTERN,
+    get_llm_profile_store,
+)
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -71,6 +76,7 @@ from openhands.sdk.marketplace.registry import (
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -531,6 +537,37 @@ async def resume_goal_in_conversation(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/conversation-secrets",
+    response_model=ConversationSecretResponse,
+    responses={404: {"description": "Conversation not found"}},
+)
+async def create_conversation_secret(
+    conversation_id: UUID,
+    secret: ConversationSecretCreateRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationSecretResponse:
+    """Add a recoverable secret to one conversation, never to shared settings."""
+    if not SECRET_NAME_PATTERN.fullmatch(secret.name):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret name")
+    value = secret.value.get_secret_value()
+    if not value.strip() or is_redacted_secret(value):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret value"
+        )
+
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    try:
+        await event_service.add_conversation_secret(secret.name, value)
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return ConversationSecretResponse(name=secret.name)
 
 
 @conversation_router.post(

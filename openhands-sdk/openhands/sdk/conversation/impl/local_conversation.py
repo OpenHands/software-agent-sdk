@@ -2978,6 +2978,19 @@ class LocalConversation(BaseConversation):
         else:
             self.pause()
 
+    def add_conversation_secret(self, name: str, value: str) -> None:
+        """Persist a new secret here without changing saved user settings."""
+        with self._state:
+            if name in self._state.secret_registry.secret_sources:
+                raise ValueError("Secret name is already in use in this conversation")
+            registry = self._state.secret_registry.model_copy(
+                update={
+                    "secret_sources": dict(self._state.secret_registry.secret_sources)
+                }
+            )
+            registry.update_secrets({name: value})
+            self._state.secret_registry = registry
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.
 

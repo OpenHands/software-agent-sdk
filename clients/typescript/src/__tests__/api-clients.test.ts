@@ -144,6 +144,31 @@ describe('Auxiliary API clients', () => {
       );
     });
 
+    it('ConversationClient sends a scoped secret only to its conversation', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ name: 'TOKEN' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new ConversationClient({ host: 'http://example.com', apiKey: 'session' });
+      const result = await client.addConversationSecret('conversation-1', {
+        name: 'TOKEN',
+        value: 'private-value',
+      });
+
+      expect(result).toEqual({ name: 'TOKEN' });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://example.com/api/conversations/conversation-1/conversation-secrets',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ name: 'TOKEN', value: 'private-value' }),
+          headers: expect.objectContaining({ 'X-Session-API-Key': 'session' }),
+        })
+      );
+    });
+
     it('CloudClient sends bearer auth and X-Org-Id for cloud app-host requests', async () => {
       global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ items: [], current_org_id: 'org-1' }), {
