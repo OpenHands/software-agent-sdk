@@ -542,3 +542,54 @@ async def test_pull_request_provider_errors_are_mapped(
         await _get_pr()
     assert excinfo.value.status_code == expected_status
     assert excinfo.value.retry_after == retry_after
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_stops_its_sibling_before_the_client_closes(monkeypatch):
+    """A 404 on the status read cancels the check-runs read still paging."""
+    import asyncio
+
+    from openhands.agent_server.git_provider_service import get_provider_pull_request
+
+    events: list[str] = []
+    green = {"status": "completed", "conclusion": "success"}
+
+    class _ClosingClient:
+        closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.closed = True
+            events.append("closed")
+            return False
+
+        async def get(self, path, params=None):
+            if self.closed:
+                events.append(f"after close: {path}")
+                raise RuntimeError("client closed")
+            if path == "/repos/o/r/pulls/7":
+                return _JSONResponse(_OPEN_PR)
+            if path.endswith("/status"):
+                await asyncio.sleep(0)
+                return _JSONResponse({}, status_code=404)
+            events.append(f"check-runs page {(params or {})['page']}")
+            await asyncio.sleep(0.05)
+            return _JSONResponse({"total_count": 300, "check_runs": [green] * 100})
+
+    monkeypatch.setattr(
+        "openhands.agent_server.git_provider_service._resolve_provider_token",
+        lambda config, provider: "tok",
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.git_provider_service.httpx.AsyncClient",
+        lambda **kwargs: _ClosingClient(),
+    )
+
+    with pytest.raises(GitProviderAPIError) as excinfo:
+        await get_provider_pull_request(Config(), GitProvider.GITHUB, "o", "r", 7)
+    await asyncio.sleep(0.2)
+
+    assert excinfo.value.status_code == 404
+    assert events == ["check-runs page 1", "closed"]

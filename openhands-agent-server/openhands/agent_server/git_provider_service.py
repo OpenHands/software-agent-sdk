@@ -2,7 +2,8 @@
 
 import asyncio
 import re
-from typing import Final
+from collections.abc import Coroutine
+from typing import Any, Final
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -133,7 +134,7 @@ async def get_provider_pull_request(
         head_sha = _optional_str((pr.get("head") or {}).get("sha"))
         checks = GitPullRequestChecks.NONE
         if head_sha:
-            check_runs, statuses = await asyncio.gather(
+            check_runs, statuses = await _both(
                 _read_check_runs(client, f"{base}/commits/{head_sha}/check-runs"),
                 _github_get(
                     client, f"{base}/commits/{head_sha}/status", for_badge=True
@@ -158,6 +159,26 @@ async def get_provider_pull_request(
         head_sha=head_sha,
         checks=checks,
     )
+
+
+async def _both[A, B](
+    first: Coroutine[Any, Any, A], second: Coroutine[Any, Any, B]
+) -> tuple[A, B]:
+    """Run two reads concurrently; if one fails, cancel the other before raising.
+
+    The reads share a client that closes when the caller's ``async with``
+    ends, so neither may outlive a failure. Unlike a TaskGroup, the first
+    error is raised as itself, not inside an ExceptionGroup.
+    """
+    first_task = asyncio.ensure_future(first)
+    second_task = asyncio.ensure_future(second)
+    try:
+        return await asyncio.gather(first_task, second_task)
+    except BaseException:
+        for task in (first_task, second_task):
+            task.cancel()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+        raise
 
 
 async def _read_check_runs(
