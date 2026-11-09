@@ -464,6 +464,10 @@ async def test_start_vscode_process(vscode_service, tmp_path):
         await vscode_service._start_vscode_process()
 
         mock_create.assert_called_once()
+        assert all("test-token" not in arg for arg in mock_create.call_args.args)
+        assert json.loads(mock_process.stdin.write.call_args.args[0])["token"] == (
+            "test-token"
+        )
         # Its own process group, so stop() can signal node with the launcher.
         assert mock_create.call_args.kwargs["start_new_session"] is True
         mock_wait.assert_called_once()
