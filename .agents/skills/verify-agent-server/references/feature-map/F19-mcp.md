@@ -39,7 +39,7 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.test-timeout`: a stdio server that never completes the handshake yields `ok: false`, `error_kind: timeout` close to the requested `timeout`, and its process is killed.
 - `F19.test-validation`: a missing server, an empty command, an unknown transport, a `timeout` outside (0, 120], top-level `authentication` and `auth` next to an `Authorization` header are 422.
 - `F19.test-encrypted-env`: `env` values encrypted by the settings API are decrypted before the stdio server starts, and the child does not inherit the agent server's own keys.
-- `F19.test-remote-bearer`: a streamable-HTTP server behind a bearer token connects with `auth.strategy: bearer`, an `Authorization` header (also as `type: shttp`) or `auth.strategy: header`, and a wrong token answers `ok: false`.
+- `F19.test-remote-bearer`: a streamable-HTTP server behind a bearer token connects with `auth.strategy: bearer`, an `Authorization` header (also as `type: shttp`) or `auth.strategy: header`, and a wrong token answers `ok: false` naming the 401 (known bug #6687: the status is lost).
 - `F19.oauth-start-errors`: OAuth start is 400 for a stdio or non-oauth2 server, reports `ok: false` with a failed job for an unreachable server (whose callback is then 409), and finishes without consent for a server that needs no OAuth.
 - `F19.oauth-unknown-job`: status and callback for an unknown job id are 404, and a callback without `callback_url` is 422.
 - `F19.oauth-flow`: against a local OAuth-protected MCP server, start returns an `authorization_url`, status reports `authorizing` and `callback_ready`, and submitting the browser's redirect URL completes the job with tools, the tool result and an encrypted `oauth_state`.
@@ -438,7 +438,7 @@ Preconditions:
   ```
   The child sees the decrypted value, not the ciphertext, and does not see the
   server's `OH_SECRET_KEY`. `qa-env` stays stored for `F19.disabled-server`.
-- **Remote server behind a bearer token (`F19.test-remote-bearer`).**
+- **Remote server behind a bearer token (`F19.test-remote-bearer`), known bug #6687.**
   ```sh
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-remote-bearer/auth-bearer \
     --json "{\"name\":\"qa-http\",\"server\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:$BEARER_PORT/mcp\",\"auth\":{\"strategy\":\"bearer\",\"value\":\"qa-f19-bearer\"}},\"timeout\":20,\"tool_call\":{\"name\":\"read_subject\",\"arguments\":{\"subject\":\"hi\"}}}" \
@@ -451,12 +451,15 @@ Preconditions:
     --check ok eq true --check tools contains read_subject
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-remote-bearer/wrong-token \
     --json "{\"server\":{\"transport\":\"http\",\"url\":\"http://127.0.0.1:$BEARER_PORT/mcp\",\"auth\":{\"strategy\":\"bearer\",\"value\":\"qa-f19-wrong\"}},\"timeout\":20}" \
-    --check ok eq false --check error contains 'error response'
+    --check ok eq false --check error contains 401  # bug: status eq 200 && response.body.error contains 'error response'
   ```
   The right token works through `auth.strategy: bearer`, through a plain
   header (with the legacy `shttp` alias) and through `auth.strategy: header`
   (the form the 422 for `auth` plus an `Authorization` header recommends);
-  the wrong one answers `ok: false` naming the 401.
+  the wrong one should answer `ok: false` naming the 401, but today the error
+  is `MCPError: Server returned an error response` (`error_kind: unknown`) and
+  the status is lost since the mcp 2 migration
+  ([OpenHands/software-agent-sdk#6687](https://github.com/OpenHands/software-agent-sdk/issues/6687)).
 - **OAuth start refusals and early outcomes (`F19.oauth-start-errors`).**
   ```sh
   control-agent-server api POST /api/mcp/oauth/start --json "$(jq -nc --argjson s "$MCP" '{server: $s}')" --expect 400 \
@@ -802,7 +805,7 @@ Preconditions:
 
 - `POST /api/mcp/test` and OAuth start answer HTTP 200 for every connection
   problem: assert `ok` and `error_kind`, never the status code alone. A
-  wrong bearer token (`MCPError: Server returned an error response`; the HTTP status is not reported) and a command that exits at
+  wrong bearer token (known bug #6687: `MCPError: Server returned an error response`, no HTTP status) and a command that exits at
   once (`McpError: Connection closed`) are classified `unknown`, not
   `connection`.
 - `tool_call` runs the tool for real and shares the request `timeout`; pick a
