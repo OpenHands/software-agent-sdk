@@ -145,31 +145,26 @@ async def test_direct_event_cannot_change_gateway_reply_and_usage(
         gateway_result = await asyncio.wait_for(gateway_task, timeout=5)
         direct_response = await asyncio.wait_for(direct_task, timeout=5)
 
+        assert direct_finished_during_gateway
+        assert direct_response.status_code == 409, direct_response.text
+        assert fake.sent == ["gateway"]
         if gateway_path == "local":
             local_result = cast(OpenAIAgentRunResult, gateway_result)
-            assert direct_response.status_code == 409, direct_response.text
             assert local_result.final_response == "gateway"
             assert local_result.usage is not None
             assert local_result.usage.prompt_tokens == 11
             assert local_result.usage.completion_tokens == 2
-            assert fake.sent == ["gateway"]
         else:
             docker_result = cast(dict[str, Any], gateway_result)
-            assert not direct_finished_during_gateway
-            assert direct_response.status_code == 200, direct_response.text
             assert docker_result["final_response"] == "gateway"
             assert docker_result["usage"]["prompt_tokens"] == 11
             assert docker_result["usage"]["completion_tokens"] == 2
-            assert fake.sent == ["gateway", "direct"]
 
-    if gateway_path == "local":
-        await send_message(
-            SendMessageRequest(
-                role="user", content=[TextContent(text="direct")], run=True
-            ),
-            event_service,
-        )
-        assert fake.sent == ["gateway", "direct"]
+    await send_message(
+        SendMessageRequest(role="user", content=[TextContent(text="direct")], run=True),
+        event_service,
+    )
+    assert fake.sent == ["gateway", "direct"]
 
 
 async def test_cancelled_local_gateway_allows_next_direct_event() -> None:
@@ -230,6 +225,7 @@ async def test_local_gateway_rejects_active_direct_run_before_saving() -> None:
     with pytest.raises(HTTPException) as exc:
         await run_gateway()
     assert exc.value.status_code == 409
+    assert exc.value.headers == {"x-should-retry": "true"}
     assert fake.sent == []
 
     direct_run.cancel()

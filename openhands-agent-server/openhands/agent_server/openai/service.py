@@ -561,7 +561,13 @@ async def _run_reused_local_agent(
             and run_task is not None
             and not run_task.done()
         ):
-            raise HTTPException(409, "Conversation run in progress; message not saved")
+            # Nothing was saved; the retry marker lets a keyed resend release
+            # its Idempotency-Key claim.
+            raise HTTPException(
+                409,
+                "Conversation run in progress; message not saved",
+                headers={"x-should-retry": "true"},
+            )
         event_service._active_gateway_runs += 1
     try:
         state_before = await event_service.get_state()

@@ -1316,7 +1316,6 @@ def test_openai_gateway_rejects_direct_event_during_turn(
         config as config_module,
         conversation_service as service_module,
     )
-    from openhands.agent_server.conversation_service import ConversationService
     from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 
     monkeypatch.setattr(config_module, "_default_config", None)
@@ -1338,20 +1337,6 @@ def test_openai_gateway_rejects_direct_event_during_turn(
     gateway_started = threading.Event()
     release_gateway = threading.Event()
     hold_gateway = {"enabled": False}
-    watch_direct_lookup = {"enabled": False}
-    direct_lookup = threading.Event()
-
-    original_get_event_service = ConversationService.get_event_service
-
-    async def observed_get_event_service(self, conversation_id):  # type: ignore[no-untyped-def]
-        event_service = await original_get_event_service(self, conversation_id)
-        if watch_direct_lookup["enabled"]:
-            direct_lookup.set()
-        return event_service
-
-    monkeypatch.setattr(
-        ConversationService, "get_event_service", observed_get_event_service
-    )
 
     async def gated_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
         user_text = "\n".join(
@@ -1400,7 +1385,6 @@ def test_openai_gateway_rejects_direct_event_during_turn(
 
         hold_gateway["enabled"] = True
         with ThreadPoolExecutor(max_workers=2) as pool:
-            direct: httpx.Response | None = None
             gateway_endpoint = (
                 f"{event_url}/_gateway/run" if mode == "docker-inner" else gateway_url
             )
@@ -1425,8 +1409,7 @@ def test_openai_gateway_rejects_direct_event_during_turn(
             )
             try:
                 assert gateway_started.wait(5)
-                watch_direct_lookup["enabled"] = mode == "docker-inner"
-                direct_future = pool.submit(
+                direct = pool.submit(
                     client.post,
                     event_url,
                     json={
@@ -1434,39 +1417,27 @@ def test_openai_gateway_rejects_direct_event_during_turn(
                         "run": True,
                     },
                     timeout=5,
-                )
-                if mode != "docker-inner":
-                    direct = direct_future.result(timeout=5)
-                else:
-                    assert direct_lookup.wait(5)
-                    with pytest.raises(TimeoutError):
-                        direct_future.result(timeout=1)
+                ).result(timeout=5)
             finally:
                 release_gateway.set()
             gateway = gateway_future.result(timeout=10)
-            if direct is None:
-                direct = direct_future.result(timeout=5)
 
         assert gateway.status_code == 200, gateway.text
+        assert direct.status_code == 409, direct.text
+        assert direct.json()["detail"] == "Gateway run in progress; message not saved"
         if mode == "docker-inner":
-            assert direct.status_code == 200, direct.text
             assert gateway.json()["final_response"] == "Gateway reply"
             assert gateway.json()["usage"]["prompt_tokens"] == 7
             assert gateway.json()["usage"]["completion_tokens"] == 5
         else:
-            assert direct.status_code == 409, direct.text
-            assert direct.json()["detail"] == (
-                "Gateway run in progress; message not saved"
-            )
             assert gateway.json()["choices"][0]["message"]["content"] == (
                 "Gateway reply"
             )
         user_events = client.get(event_url + "/count", params={"source": "user"})
         assert user_events.status_code == 200
-        expected_count = 1 + (mode != "new") + (mode == "docker-inner")
+        expected_count = 1 + (mode != "new")
         assert user_events.json() == expected_count
-        if mode != "docker-inner":
-            assert len(patched_llm) == expected_count
+        assert len(patched_llm) == expected_count
 
         later = client.post(
             event_url,

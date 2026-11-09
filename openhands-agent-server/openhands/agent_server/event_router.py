@@ -236,13 +236,23 @@ async def send_message(
 
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
+
+    While a gateway turn is in progress on this conversation the request
+    returns 409 and nothing is saved.
     """
     message = Message(role=request.role, content=request.content)
+    # The inner gateway route holds the lock for its whole turn; refuse before
+    # waiting on it so a direct event fails fast instead of queuing behind it.
+    _refuse_during_gateway_run(event_service)
     async with event_service._gateway_run_lock:
-        if event_service._active_gateway_runs:
-            raise HTTPException(409, "Gateway run in progress; message not saved")
+        _refuse_during_gateway_run(event_service)
         await event_service.send_message(message, request.run)
     return Success()
+
+
+def _refuse_during_gateway_run(event_service: EventService) -> None:
+    if event_service._active_gateway_runs:
+        raise HTTPException(409, "Gateway run in progress; message not saved")
 
 
 async def _gateway_context(
@@ -275,17 +285,21 @@ async def run_gateway_message(
     """Run one gateway turn at a time for this conversation."""
     if deadline is None:
         deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    event_service._active_gateway_runs += 1
     try:
-        await asyncio.wait_for(
-            event_service._gateway_run_lock.acquire(),
-            timeout=deadline - time.monotonic(),
-        )
-    except TimeoutError as exc:
-        raise HTTPException(504, "Agent run timed out") from exc
-    try:
-        return await _run_gateway_message(request, event_service, deadline)
+        try:
+            await asyncio.wait_for(
+                event_service._gateway_run_lock.acquire(),
+                timeout=deadline - time.monotonic(),
+            )
+        except TimeoutError as exc:
+            raise HTTPException(504, "Agent run timed out") from exc
+        try:
+            return await _run_gateway_message(request, event_service, deadline)
+        finally:
+            event_service._gateway_run_lock.release()
     finally:
-        event_service._gateway_run_lock.release()
+        event_service._active_gateway_runs -= 1
 
 
 async def _run_gateway_message(
