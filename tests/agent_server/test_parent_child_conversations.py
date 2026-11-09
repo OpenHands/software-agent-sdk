@@ -879,3 +879,67 @@ async def test_with_projects_off_a_new_conversation_gets_no_project_tools(
 
     agent = services[info.id].get_conversation().agent
     assert [tool.name for tool in agent.tools] == ["terminal"]
+
+
+# A coordinator the server starts with a new project
+
+
+@pytest.mark.asyncio
+async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
+    tmp_path, workspace_dir, monkeypatch
+):
+    from openhands.agent_server import conversation_service as module
+    from openhands.agent_server.conversation_service import (
+        PROJECT_COORDINATOR_TOOLS,
+    )
+
+    profile_id = uuid4()
+    sources: list = []
+
+    def fake_launch_source(request, stores, cipher):
+        sources.append(request.agent_profile_id)
+        return Agent(
+            llm=LLM(model="gpt-4o", usage_id="cat-profile"),
+            tools=[Tool(name="terminal")],
+        )
+
+    monkeypatch.setattr(module, "launch_source", fake_launch_source)
+    services: dict[UUID, Any] = {}
+    project_hex = uuid4().hex
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=tmp_path / "worktrees",
+        ) as service:
+            info = await service.start_project_coordinator(
+                project_hex,
+                str(workspace_dir),
+                agent_profile_id=profile_id,
+                title="Cat",
+            )
+
+    assert sources == [profile_id]
+    agent = services[info.id].get_conversation().agent
+    assert [tool.name for tool in agent.tools] == [
+        "terminal",
+        *PROJECT_COORDINATOR_TOOLS,
+    ]
+    assert info.tags == {"project": project_hex}
+    assert info.title == "Cat"
+    # Idle: it waits for the person, with no first message.
+    services[info.id].send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_new_coordinator_needs_a_profile(tmp_path, workspace_dir, monkeypatch):
+    from openhands.agent_server import conversation_service as module
+
+    monkeypatch.setattr(module, "_active_agent_profile_id", lambda: None)
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+    ) as service:
+        with pytest.raises(ValueError, match="No agent profile"):
+            await service.start_project_coordinator(uuid4().hex, str(workspace_dir))

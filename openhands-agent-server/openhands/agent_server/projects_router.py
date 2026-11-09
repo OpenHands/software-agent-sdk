@@ -137,6 +137,23 @@ _ATTENTION_ORDER = {
 }
 
 
+class NewProjectCoordinator(BaseModel):
+    """A coordinator conversation the server starts with the project."""
+
+    working_dir: str = Field(
+        ..., min_length=1, description="Workspace directory of the coordinator."
+    )
+    agent_profile_id: UUID | None = Field(
+        default=None,
+        description="Agent profile to run. Unset, the person's active profile.",
+    )
+    title: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Conversation title. Unset, it is titled automatically.",
+    )
+
+
 class CreateProjectRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=256)
     description: str = Field(default="", max_length=4096)
@@ -145,6 +162,14 @@ class CreateProjectRequest(BaseModel):
         description=(
             "An existing conversation to make the coordinator. It is tagged "
             "as a member of the new project."
+        ),
+    )
+    coordinator: NewProjectCoordinator | None = Field(
+        default=None,
+        description=(
+            "Start a new, idle coordinator conversation with the project, with "
+            "the coordinator's project tools. Not with "
+            "coordinator_conversation_id."
         ),
     )
     worker_agent_profile_id: UUID | None = Field(
@@ -435,7 +460,17 @@ async def create_project(
     payload: CreateProjectRequest,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectItem:
-    """Create a project, optionally with an existing conversation as coordinator."""
+    """Create a project, with an existing or a new coordinator conversation, or none."""
+    if payload.coordinator is not None and payload.coordinator_conversation_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Pass coordinator or coordinator_conversation_id, not both",
+        )
+    if (
+        payload.coordinator is not None
+        and payload.coordinator.agent_profile_id is not None
+    ):
+        await _require_agent_profile(payload.coordinator.agent_profile_id)
     store = _store(request)
     project = ProjectItem(
         id=uuid4(),
@@ -466,7 +501,48 @@ async def create_project(
             coordinator_id,
             lambda current: _without(current, project.id),
         )
+    if payload.coordinator is not None:
+        project = await _start_new_coordinator(
+            service, store, project, payload.coordinator
+        )
     return project
+
+
+async def _start_new_coordinator(
+    service: ConversationService,
+    store: FileProjectsStore,
+    project: ProjectItem,
+    new: NewProjectCoordinator,
+) -> ProjectItem:
+    """Start the coordinator after the record exists; drop the record if it fails."""
+    try:
+        info = await service.start_project_coordinator(
+            project.id.hex,
+            new.working_dir,
+            agent_profile_id=new.agent_profile_id,
+            title=new.title,
+        )
+    except ValueError as exc:
+        await _update(store, lambda current: _without(current, project.id))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BaseException:
+        await _update(store, lambda current: _without(current, project.id))
+        raise
+    updated = project.model_copy(
+        update={"coordinator_conversation_id": info.id, "updated_at": utc_now()}
+    )
+
+    def apply(current: PersistedProjects) -> PersistedProjects:
+        return current.model_copy(
+            update={
+                "projects": [
+                    updated if p.id == project.id else p for p in current.projects
+                ]
+            }
+        )
+
+    await _update(store, apply)
+    return updated
 
 
 async def _require_agent_profile(profile_id: UUID) -> None:

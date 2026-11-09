@@ -4670,6 +4670,10 @@ export type ConversationWorktreeOptions = {
  */
 export type CreateProjectRequest = {
   /**
+   * Start a new, idle coordinator conversation with the project, with the coordinator's project tools. Not with coordinator_conversation_id.
+   */
+  coordinator?: NewProjectCoordinator | null;
+  /**
    * Coordinator Conversation Id
    *
    * An existing conversation to make the coordinator. It is tagged as a member of the new project.
@@ -10315,6 +10319,32 @@ export type NeverConfirmOutput = {
    * Kind
    */
   kind: 'NeverConfirm';
+};
+
+/**
+ * NewProjectCoordinator
+ *
+ * A coordinator conversation the server starts with the project.
+ */
+export type NewProjectCoordinator = {
+  /**
+   * Agent Profile Id
+   *
+   * Agent profile to run. Unset, the person's active profile.
+   */
+  agent_profile_id?: string | null;
+  /**
+   * Title
+   *
+   * Conversation title. Unset, it is titled automatically.
+   */
+  title?: string | null;
+  /**
+   * Working Dir
+   *
+   * Workspace directory of the coordinator.
+   */
+  working_dir: string;
 };
 
 /**

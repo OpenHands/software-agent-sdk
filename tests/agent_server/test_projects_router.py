@@ -1371,3 +1371,72 @@ async def test_a_project_names_its_workers_agent_profile(client, monkeypatch):
     assert project["worker_agent_profile_id"] == known.hex
     assert renamed["worker_agent_profile_id"] == known.hex
     assert cleared["worker_agent_profile_id"] is None
+
+
+# A new coordinator started with the project
+
+
+@pytest.mark.asyncio
+async def test_creating_a_project_can_start_its_coordinator(
+    client, service, tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    started: list[tuple] = []
+
+    async def start_project_coordinator(project_hex, working_dir, **kwargs):
+        started.append((project_hex, working_dir, kwargs))
+        coordinator = await _start(
+            service, tmp_path, title="Cat", tags={"project": project_hex}
+        )
+        return SimpleNamespace(id=coordinator)
+
+    monkeypatch.setattr(service, "start_project_coordinator", start_project_coordinator)
+
+    response = await client.post(
+        "/api/projects",
+        json={
+            "name": "P",
+            "coordinator": {"working_dir": str(workspace), "title": "Cat"},
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    project = response.json()
+    assert project["coordinator_conversation_id"] is not None
+    ((project_hex, working_dir, kwargs),) = started
+    assert project_hex == project["id"]
+    assert working_dir == str(workspace)
+    assert kwargs == {"agent_profile_id": None, "title": "Cat"}
+    listed = (await client.get(f"/api/projects/{project['id']}")).json()
+    assert (
+        listed["coordinator_conversation_id"] == project["coordinator_conversation_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_that_cannot_start_leaves_no_project(
+    client, service, tmp_path, monkeypatch
+):
+    async def start_project_coordinator(project_hex, working_dir, **kwargs):
+        raise ValueError("No agent profile to start the coordinator from")
+
+    monkeypatch.setattr(service, "start_project_coordinator", start_project_coordinator)
+
+    response = await client.post(
+        "/api/projects",
+        json={"name": "P", "coordinator": {"working_dir": str(tmp_path)}},
+    )
+    both = await client.post(
+        "/api/projects",
+        json={
+            "name": "P",
+            "coordinator": {"working_dir": str(tmp_path)},
+            "coordinator_conversation_id": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "No agent profile" in response.json()["detail"]
+    assert both.status_code == 422
+    assert (await client.get("/api/projects")).json()["projects"] == []

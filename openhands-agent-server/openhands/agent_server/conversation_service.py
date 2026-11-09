@@ -592,6 +592,27 @@ PROJECT_WORKER_TOOLS = (
 save their deliverables and keep the project's memory."""
 
 
+PROJECT_COORDINATOR_TOOLS = (
+    "list_project_conversations",
+    "message_project_conversation",
+    "read_project_conversation",
+    "start_child_conversation",
+    *PROJECT_WORKER_TOOLS,
+)
+"""Tools the server adds to a coordinator it starts with a new project."""
+
+
+def _active_agent_profile_id() -> UUID | None:
+    from openhands.agent_server.persistence import (
+        PersistedSettings,
+        get_settings_store,
+    )
+
+    settings = get_settings_store().load() or PersistedSettings()
+    active = settings.active_agent_profile_id
+    return UUID(str(active)) if active else None
+
+
 async def _project_memory_content(tags: dict[str, str]) -> list[TextContent]:
     """``MEMORY.md`` of the project in ``tags``, for a child's first message."""
     project_hex = tags.get(PROJECT_TAG_KEY)
@@ -2414,6 +2435,60 @@ class ConversationService:
             workspace=str(stored.workspace.working_dir),
             isolation="worktree" if stored.worktree else "shared",
         )
+
+    async def start_project_coordinator(
+        self,
+        project_hex: str,
+        working_dir: str,
+        *,
+        agent_profile_id: UUID | None = None,
+        title: str | None = None,
+    ) -> ConversationInfo:
+        """Start an idle coordinator conversation for a new project.
+
+        It runs ``agent_profile_id``, or else the person's active agent
+        profile, with the coordinator's project tools added by the server,
+        and joins the project through its ``project`` tag. It gets no first
+        message: it waits for the person.
+
+        Raises ValueError when there is no profile to run or it cannot start.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        profile_id = agent_profile_id or await asyncio.to_thread(
+            _active_agent_profile_id
+        )
+        if profile_id is None:
+            raise ValueError(
+                "No agent profile to start the coordinator from: pass "
+                "agent_profile_id or set an active agent profile"
+            )
+        start = StartConversationRequest(
+            workspace=LocalWorkspace(working_dir=working_dir),
+            agent_profile_id=profile_id,
+            tags={PROJECT_TAG_KEY: project_hex},
+            autotitle=title is None,
+        )
+        conversation_id = uuid4()
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            try:
+                info, _ = await self._create_conversation(
+                    start,
+                    conversation_id,
+                    run_slot,
+                    title=title,
+                    server_tools=[
+                        Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS
+                    ],
+                )
+            except Exception as exc:
+                if not isinstance(exc, LaunchFailure):
+                    raise
+                raise ValueError(
+                    f"Cannot start the coordinator from agent profile "
+                    f"{profile_id}: {exc}"
+                ) from exc
+        return info
 
     async def start_child_conversation(
         self,
