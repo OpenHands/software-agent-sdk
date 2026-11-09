@@ -73,6 +73,8 @@ select = [
 # - B039: mutable-contextvar-default
 # - RUF012: mutable-class-default
 extend-select = ["B006", "B008", "B039", "RUF012"]
+# Keep existing string-backed enums: StrEnum can change their string representation.
+ignore = ["UP042"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)

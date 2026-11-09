@@ -686,8 +686,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
@@ -717,8 +717,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
