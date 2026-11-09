@@ -1,7 +1,6 @@
 """Tests for skill validation improvements."""
 
 from openhands.sdk.skills import Skill
-from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE
 
 
 MAX_DESCRIPTION_LENGTH = 1024
@@ -21,15 +20,18 @@ def test_description_exceeds_limit_is_truncated() -> None:
     skill = Skill(name="test", content="# Test", description=desc)
     assert skill.description is not None
     assert len(skill.description) == MAX_DESCRIPTION_LENGTH
-    # Without source, falls back to the default truncation notice
-    assert DEFAULT_TRUNCATE_NOTICE in skill.description
+    assert 'Call invoke_skill(name="test") to load the full skill.' in (
+        skill.description
+    )
 
 
-def test_description_truncation_includes_source_path() -> None:
-    """When source is set, truncation notice should reference the skill path."""
+def test_description_truncation_points_at_invoke_skill_not_source() -> None:
+    """The truncation notice names the skill for invoke_skill and never the
+    file: to_prompt() leaves the location out on purpose (#6644)."""
     desc = "x" * (MAX_DESCRIPTION_LENGTH + 500)
     source = "/path/to/my-skill/SKILL.md"
     skill = Skill(name="test", content="# Test", description=desc, source=source)
     assert skill.description is not None
     assert len(skill.description) == MAX_DESCRIPTION_LENGTH
-    assert source in skill.description
+    assert source not in skill.description
+    assert 'invoke_skill(name="test")' in skill.description
