@@ -4,7 +4,12 @@ import pytest
 
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ActionEvent, MessageEvent, SecurityAnalysisEvent
+from openhands.sdk.event import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+    SecurityAnalysisEvent,
+)
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.message import MessageToolCall
 from openhands.sdk.secret import LookupSecret
@@ -204,6 +209,82 @@ async def test_async_response_masks_secrets_registered_during_lookup(tmp_path):
         assert messages[-1].llm_message.content == [
             TextContent(text="<secret-hidden> <secret-hidden> <secret-hidden>")
         ]
+    finally:
+        await asyncio.to_thread(conversation.close)
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_async_tool_observation_lookup_does_not_wait_on_state_lock(tmp_path):
+    """A lookup first triggered by a tool's output must not run under the lock.
+
+    The loopback server registers a secret while answering, which takes the
+    state lock. If the tool masked its observation (and so made the lookup)
+    while arun() held that lock, the request would block until httpx's 30 s
+    timeout and the value would stay unmasked (#6642).
+    """
+    requested = asyncio.Event()
+
+    async def serve_secret(reader, writer):
+        await reader.readuntil(b"\r\n\r\n")
+        requested.set()
+        await asyncio.to_thread(
+            conversation.update_secrets, {"NESTED": "nested-secret-value"}
+        )
+        body = b"loopback-secret-value"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(serve_secret, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[],
+                tool_calls=[
+                    MessageToolCall(
+                        id="think-0",
+                        origin="completion",
+                        name="think",
+                        arguments='{"thought":"test"}',
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="done")]),
+        ]
+    )
+    conversation = Conversation(
+        agent=Agent(
+            llm=llm,
+            tools=[],
+            include_default_tools=["FinishTool", "ThinkTool"],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        secrets={"TEST_TOKEN": LookupSecret(url=f"http://127.0.0.1:{port}/secret")},
+    )
+    try:
+        conversation.send_message("hello")
+        await asyncio.wait_for(conversation.arun(), timeout=10)
+        assert requested.is_set()
+        assert any(
+            isinstance(event, ObservationEvent) and event.tool_name == "think"
+            for event in conversation.state.events
+        )
+        registry = conversation.state.secret_registry
+        assert (
+            registry.mask_secrets_in_output("loopback-secret-value")
+            == "<secret-hidden>"
+        )
     finally:
         await asyncio.to_thread(conversation.close)
         server.close()
