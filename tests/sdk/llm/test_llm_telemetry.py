@@ -6,6 +6,9 @@ import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
+from litellm.responses.litellm_completion_transformation.transformation import (
+    LiteLLMCompletionResponsesConfig as ChatToResponses,
+)
 from litellm.types.llms.openai import (
     InputTokensDetails,
     OutputTokensDetails,
@@ -269,6 +272,62 @@ class TestUsageNormalization:
             cache_read_tokens=25,
             cache_write_tokens=0,
         )
+
+    def test_responses_api_cache_write_tokens_are_recorded(self):
+        usage = ResponseAPIUsage.model_validate(
+            {
+                "input_tokens": 1000,
+                "output_tokens": 20,
+                "total_tokens": 1020,
+                "input_tokens_details": {
+                    "cached_tokens": 200,
+                    "cache_write_tokens": 600,
+                },
+            }
+        )
+
+        snapshot = normalize_usage(usage)
+
+        assert snapshot is not None
+        assert snapshot.cache_read_tokens == 200
+        assert snapshot.cache_write_tokens == 600
+
+    def test_litellm_chat_to_responses_bridge_cache_writes_are_recorded(self):
+        usage = ChatToResponses._transform_chat_completion_usage_to_responses_usage(
+            Usage(
+                prompt_tokens=1000,
+                completion_tokens=20,
+                total_tokens=1020,
+                prompt_tokens_details={
+                    "cached_tokens": 200,
+                    "cache_creation_tokens": 600,
+                },
+            )
+        )
+
+        snapshot = normalize_usage(usage)
+
+        assert snapshot is not None
+        assert snapshot.cache_read_tokens == 200
+        assert snapshot.cache_write_tokens == 600
+
+    def test_responses_api_null_cache_write_tokens_count_as_zero(self):
+        usage = ResponseAPIUsage.model_validate(
+            {
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "total_tokens": 105,
+                "input_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": None,
+                },
+            }
+        )
+
+        snapshot = normalize_usage(usage)
+
+        assert snapshot is not None
+        assert snapshot.cache_write_tokens == 0
 
     def test_absent_usage_normalizes_to_none(self):
         assert normalize_usage(None) is None
