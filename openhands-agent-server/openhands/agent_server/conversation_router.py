@@ -869,8 +869,8 @@ async def start_child_conversation(
     isolated in a git worktree), is linked via ``parent_conversation_id`` and
     receives ``task`` as its first user message. When the parent belongs to a
     project, the child runs the project's worker agent profile, or the
-    person's active one, instead of a copy of the parent's agent. This is the default launcher
-    behind the ``start_child_conversation`` tool.
+    person's active one, instead of a copy of the parent's agent. This is the
+    default launcher behind the ``start_child_conversation`` tool.
     """
     try:
         result = await conversation_service.start_child_conversation(
