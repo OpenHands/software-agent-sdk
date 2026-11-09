@@ -1,0 +1,6 @@
+[
+  {"tool": "terminal", "args": {"command": "echo one"}},
+  {"tool": "terminal", "args": {"command": "echo two"}},
+  {"tool": "terminal", "args": {"command": "echo three"}},
+  {"finish": "too late"}
+]
