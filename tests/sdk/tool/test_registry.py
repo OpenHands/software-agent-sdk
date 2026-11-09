@@ -7,11 +7,20 @@ import pytest
 from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolDefinition, registry as registry_module
-from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
+from openhands.sdk.tool import (
+    ToolDefinition,
+    registry as registry_module,
+    unregister_tool,
+)
+from openhands.sdk.tool.client_tool import (
+    ClientToolRegistrationError,
+    ClientToolSpec,
+    register_client_tools,
+)
 from openhands.sdk.tool.registry import (
     _is_abstract_method,
     _resolver_from_subclass,
+    get_tool_module_qualnames,
     list_registered_tools,
     list_tool_catalog,
     list_usable_tools,
@@ -406,3 +415,49 @@ def test_unsealed_catalog_tracks_registrations_again():
     register_tool("catalog_after_unseal", _SimpleHelloTool)
 
     assert "catalog_after_unseal" in _catalog()
+
+
+def test_unregister_tool_removes_a_registered_instance():
+    (instance,) = _SimpleHelloTool.create()
+    register_tool("conversation-1.hello", instance)
+
+    assert unregister_tool("conversation-1.hello") is True
+
+    assert "conversation-1.hello" not in list_registered_tools()
+    assert "conversation-1.hello" not in list_usable_tools()
+    assert "conversation-1.hello" not in get_tool_module_qualnames()
+    with pytest.raises(KeyError):
+        resolve_tool(Tool(name="conversation-1.hello"), _create_mock_conv_state())
+
+
+def test_unregister_tool_returns_false_for_unknown_name():
+    assert unregister_tool("never-registered") is False
+
+
+def test_unregister_tool_allows_clean_reregistration(caplog):
+    register_tool("hello", _SimpleHelloTool)
+    unregister_tool("hello")
+
+    with caplog.at_level("WARNING"):
+        register_tool("hello", _ConfigurableHelloTool)
+
+    assert "Duplicate tool name registered" not in caplog.text
+    (tool,) = resolve_tool(
+        Tool(name="hello", params={"greeting": "Hi"}), _create_mock_conv_state()
+    )
+    assert tool.description == "Hi!"
+
+
+def test_unregistered_client_tool_name_can_be_claimed_by_a_regular_tool():
+    spec = ClientToolSpec(
+        name="client_hello",
+        description="hello",
+        parameters={"type": "object", "properties": {"name": {"type": "string"}}},
+    )
+    register_client_tools([spec])
+
+    assert unregister_tool("client_hello") is True
+    register_tool("client_hello", _SimpleHelloTool)
+
+    with pytest.raises(ClientToolRegistrationError, match="collides"):
+        register_client_tools([spec])

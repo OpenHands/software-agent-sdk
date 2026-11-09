@@ -354,6 +354,16 @@ def extract_client_tool_specs(tools: "Sequence[Tool]") -> list[ClientToolSpec]:
     return specs
 
 
+def _forget_client_tool_name(name: str) -> None:
+    """Stop treating ``name`` as a client tool once it leaves the registry.
+
+    The cached action type is kept: its ``kind`` is process-global and may
+    still be needed to load persisted events.
+    """
+    with _client_action_lock:
+        _client_tool_names.discard(name)
+
+
 def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
     """Register client-defined tools and return per-conversation tool specs.
 

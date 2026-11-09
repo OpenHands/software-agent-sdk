@@ -27,6 +27,7 @@ from openhands.sdk.tool.registry import (
     list_tool_catalog,
     register_tool,
     resolve_tool,
+    unregister_tool,
 )
 from openhands.sdk.tool.schema import (
     Action,
@@ -69,6 +70,7 @@ __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
     "register_tool",
+    "unregister_tool",
     "resolve_tool",
     "list_registered_tools",
     "list_tool_catalog",
