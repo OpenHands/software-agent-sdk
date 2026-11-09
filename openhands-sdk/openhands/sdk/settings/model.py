@@ -2570,14 +2570,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     return SettingsSchema(model_name=model.__name__, sections=sections)
 
 
-def _nested_model_type(annotation: Any) -> type[BaseModel] | None:
-    candidates = _nested_model_types(annotation)
-    if len(candidates) != 1:
-        return None
-
-    return candidates[0]
-
-
 def _nested_model_types(annotation: Any) -> tuple[type[BaseModel], ...]:
     seen: set[type[BaseModel]] = set()
     models: list[type[BaseModel]] = []

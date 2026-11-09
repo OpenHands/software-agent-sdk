@@ -87,17 +87,6 @@ def kind_of(obj) -> str:
     return obj.__name__
 
 
-def _get_all_subclasses(cls) -> set[type]:
-    """
-    Recursively finds and returns all (loaded) subclasses of a given class.
-    """
-    result = set()
-    for subclass in cls.__subclasses__():
-        result.add(subclass)
-        result.update(_get_all_subclasses(subclass))
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Subclass-hierarchy caching
 #
