@@ -11955,7 +11955,12 @@ export type ReactTool = {
  * The agent reacts with the ``react``/``unreact`` tools, and a person
  * through ``POST /api/conversations/{id}/reactions``. Clients fold these
  * events into each message's current set of reactions: the latest event for
- * a (message, emoji, source) wins. Reactions never reach the LLM.
+ * a (message, emoji, source) wins.
+ *
+ * The agent sees the person's reactions on its next turn, as one line naming
+ * the emoji and the end of the message (``target_text_ending``); a reaction
+ * does not start a run. Its own reactions stay out of what it sees
+ * (``View`` skips them): its ``react`` call is already there.
  */
 export type ReactionEvent = {
   /**
@@ -11996,6 +12001,18 @@ export type ReactionEvent = {
    * The message reacted to: a `MessageEvent`, or the agent's `finish` `ActionEvent`.
    */
   target_event_id: string;
+  /**
+   * Target Text Clipped
+   *
+   * True when the message is longer than `target_text_ending`.
+   */
+  target_text_clipped?: boolean;
+  /**
+   * Target Text Ending
+   *
+   * The end of the reacted message's text, at most 500 characters, saved with the person's reaction so the agent can tell which message it is about.
+   */
+  target_text_ending?: string | null;
   /**
    * Timestamp
    *
