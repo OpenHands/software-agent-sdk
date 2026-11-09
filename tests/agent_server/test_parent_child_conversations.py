@@ -37,6 +37,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -830,3 +831,51 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
     assert await pick(stored({"project": with_profile.id.hex})) == named
     assert await pick(stored({"project": without.id.hex})) == active
     assert await pick(stored({})) is None
+
+
+@pytest.mark.projects_off
+@pytest.mark.asyncio
+async def test_with_projects_off_a_members_child_is_an_ordinary_child(
+    tmp_path, workspace_dir
+):
+    request = StartChildConversationRequest(task="Write the docs")
+
+    launch = await _launch_child(
+        tmp_path, workspace_dir, request, parent_tags={"project": "p1"}
+    )
+
+    assert launch.child is not None
+    assert "project" not in launch.child.tags
+    assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
+
+
+@pytest.mark.projects_off
+@pytest.mark.asyncio
+async def test_with_projects_off_a_new_conversation_gets_no_project_tools(
+    tmp_path, workspace_dir
+):
+    services: dict[UUID, Any] = {}
+    start = _start_request(workspace_dir).model_copy(
+        update={
+            "agent": Agent(
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
+                tools=[
+                    Tool(name="terminal"),
+                    Tool(name="list_project_conversations"),
+                    Tool(name="message_project_conversation"),
+                ],
+            )
+        }
+    )
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=tmp_path / "worktrees",
+        ) as service:
+            info, _ = await service.start_conversation(start)
+
+    agent = services[info.id].get_conversation().agent
+    assert [tool.name for tool in agent.tools] == ["terminal"]

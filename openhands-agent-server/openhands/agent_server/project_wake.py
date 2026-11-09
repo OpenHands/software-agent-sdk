@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.persistence import get_projects_store
 from openhands.agent_server.project_board import TurnOutcome
 from openhands.agent_server.project_prompts import (
@@ -91,7 +92,12 @@ async def sender_message_header(
 async def _coordinator(
     service: "ConversationService", member_id: UUID, project_hex: str
 ) -> tuple[UUID, "EventService"] | None:
-    """The coordinator a member's news goes to, when there is one to tell."""
+    """The coordinator a member's news goes to, when there is one to tell.
+
+    None while Projects is off: members' news and the person's copies wait.
+    """
+    if not await feature_enabled_now("projects"):
+        return None
     persisted = await asyncio.to_thread(get_projects_store().load)
     if persisted is None:
         return None

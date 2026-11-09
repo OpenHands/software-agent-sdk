@@ -38,6 +38,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.projects_off
 async def test_features_are_listed_off_by_default(client):
     response = await client.get("/api/settings/experimental")
 
@@ -49,7 +50,14 @@ async def test_features_are_listed_off_by_default(client):
             "description": response.json()[0]["description"],
             "default": False,
             "enabled": False,
-        }
+        },
+        {
+            "key": "projects",
+            "label": "Projects",
+            "description": response.json()[1]["description"],
+            "default": False,
+            "enabled": False,
+        },
     ]
 
 

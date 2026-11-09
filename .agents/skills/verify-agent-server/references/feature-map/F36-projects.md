@@ -21,6 +21,14 @@ the sending conversation, which must be in the same project when it is in one. D
 changes or deletes conversations. A file the server cannot parse, or one
 written by a newer schema, is never overwritten: every route answers 409.
 
+Projects is an experimental feature, `projects`, off by default. Turn it on
+first with `PATCH /api/settings/experimental/projects {"enabled": true}`. While
+it is off, every `/api/projects` route answers 404, new conversations get no
+project tools (they are withheld even when the agent spec lists them) and no
+worker guidance, a member's child is an ordinary child without the `project`
+tag, and no update or person copy reaches a coordinator. Projects on disk are
+kept, and conversations started while it was on keep their tools.
+
 Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
 
 Needs: `llm`
@@ -138,6 +146,9 @@ Preconditions:
   (`$DEEPSEEK_API_KEY`): the `F36.tool-*` bullets and `F36.attention` run a
   model, and the coordinator is started with the active profile. The other
   REST bullets use placeholder agents.
+- The `projects` experimental feature is on:
+  `control-agent-server api PATCH /api/settings/experimental/projects --json '{"enabled": true}' --expect 200`.
+  Off, every `/api/projects` route answers 404.
   `F36.attention` and `F36.tool-message-refuses-confirmation` need `tmux`
   for the terminal tool.
 - Bullets run in order and build on each other's projects and

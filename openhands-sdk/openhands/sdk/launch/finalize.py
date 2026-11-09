@@ -69,6 +69,7 @@ def finalize(
     extra_suffixes: Sequence[str] = (),
     client_tools: Sequence[Tool] = (),
     experimental_feature_tools: Sequence[Tool] = (),
+    withheld_tools: Collection[str] = (),
     load_memory: bool = False,
     managed_secrets: Collection[str] = (),
     launched_at: datetime | None = None,
@@ -82,7 +83,9 @@ def finalize(
 
     ``experimental_feature_tools`` are tools the user turned on through a feature flag.
     Only an OpenHands :class:`~openhands.sdk.agent.Agent` gets them: an ACP
-    agent runs its own tools, so it is left as it is.
+    agent runs its own tools, so it is left as it is. ``withheld_tools`` names
+    tools the agent does not get even when its spec lists them, such as those
+    of a feature the user turned off.
     """
     if isinstance(source, ResolvedLaunch):
         settings = _settings_for_runtime(source.settings, runtime)
@@ -111,6 +114,8 @@ def finalize(
         agent = _with_client_tools(agent, client_tools)
     if experimental_feature_tools and not isinstance(agent, ACPAgent):
         agent = _with_client_tools(agent, experimental_feature_tools)
+    if withheld_tools:
+        agent = _without_tools(agent, withheld_tools)
     return LaunchedAgent(agent=agent, profile=profile, _token=_FINALIZE_TOKEN)
 
 
@@ -236,6 +241,13 @@ def _without_context_secrets(agent: AgentBase, names: Collection[str]) -> AgentB
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"secrets": secrets})}
     )
+
+
+def _without_tools(agent: AgentBase, names: Collection[str]) -> AgentBase:
+    kept = [tool for tool in agent.tools if tool.name not in names]
+    if len(kept) == len(agent.tools):
+        return agent
+    return agent.model_copy(update={"tools": kept})
 
 
 def _with_client_tools(agent: AgentBase, client_tools: Sequence[Tool]) -> AgentBase:

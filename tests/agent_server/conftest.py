@@ -115,3 +115,15 @@ def isolate_persistence_dir(tmp_path, monkeypatch):
         yield
     finally:
         reset_stores()
+
+
+@pytest.fixture(autouse=True)
+def _projects_feature_on(request, monkeypatch):
+    """Projects is an experimental feature, off by default; most tests here
+    exercise it, so they run with it on. Mark a test ``projects_off`` to keep
+    the shipped default."""
+    if request.node.get_closest_marker("projects_off"):
+        return
+    from openhands.agent_server.experimental_features import PROJECTS
+
+    monkeypatch.setattr(PROJECTS, "default", True)

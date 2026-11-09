@@ -5284,7 +5284,7 @@ export type ExperimentalFeature = {
   /**
    * Key
    */
-  key: 'conversation_reactions';
+  key: 'conversation_reactions' | 'projects';
   /**
    * Label
    */

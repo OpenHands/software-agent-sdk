@@ -17,17 +17,22 @@ person's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
 ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 
+import asyncio
 import json
 import os
 from collections.abc import Mapping
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
 from openhands.sdk.tool.spec import Tool
 
 
-ExperimentalFeatureKey = Literal["conversation_reactions"]
+if TYPE_CHECKING:
+    from openhands.agent_server.config import Config
+
+
+ExperimentalFeatureKey = Literal["conversation_reactions", "projects"]
 
 
 class ExperimentalFeatureDefinition(BaseModel):
@@ -67,8 +72,32 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     tools=("react", "unreact"),
 )
 
+PROJECTS = ExperimentalFeatureDefinition(
+    key="projects",
+    label="Projects",
+    description=(
+        "Group conversations into projects: a coordinator conversation hands "
+        "work to other conversations, hears back from them, and keeps project "
+        "files and memory. Turned off, the projects API is unavailable and new "
+        "conversations get no project tools; existing projects are kept."
+    ),
+)
+
+PROJECT_TOOL_NAMES: tuple[str, ...] = (
+    "list_project_conversations",
+    "message_project_conversation",
+    "read_project_conversation",
+    "save_project_artifact",
+    "read_project_memory",
+    "update_project_memory",
+)
+"""Tools registered by openhands.tools.project. A client lists the coordinator's
+in its agent spec and the server adds the workers', so they are withheld from
+new conversations while Projects is off rather than added while it is on."""
+
 EXPERIMENTAL_FEATURES: tuple[ExperimentalFeatureDefinition, ...] = (
     CONVERSATION_REACTIONS,
+    PROJECTS,
 )
 EXPERIMENTAL_FEATURES_BY_KEY: dict[str, ExperimentalFeatureDefinition] = {
     f.key: f for f in EXPERIMENTAL_FEATURES
@@ -103,6 +132,36 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
         if is_enabled(features, f.key)
         for name in f.tools
     ]
+
+
+def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[str]:
+    """Tools a new conversation does not get, even if its spec lists them."""
+    return [] if is_enabled(features, "projects") else list(PROJECT_TOOL_NAMES)
+
+
+async def feature_enabled_now(
+    key: ExperimentalFeatureKey, config: "Config | None" = None
+) -> bool:
+    """Whether the person has ``key`` on right now (host switches in a runtime).
+
+    For server behavior that follows the switch at once, such as a route or a
+    wake-up. An unreadable settings file counts as the feature's default.
+    """
+    host_features = host_experimental_features()
+    if host_features is not None:
+        return is_enabled(host_features, key)
+    from openhands.agent_server.persistence import (
+        PersistedSettings,
+        get_settings_store,
+    )
+
+    try:
+        settings = await asyncio.to_thread(
+            lambda: get_settings_store(config).load() or PersistedSettings()
+        )
+    except (PermissionError, OSError):
+        return EXPERIMENTAL_FEATURES_BY_KEY[key].default
+    return is_enabled(settings.experimental_features, key)
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"

@@ -27,7 +27,10 @@ from openhands.agent_server.event_service import (
     RunSlot,
 )
 from openhands.agent_server.experimental_features import (
+    PROJECT_TOOL_NAMES,
     experimental_feature_tools,
+    experimental_feature_withheld_tools,
+    feature_enabled_now,
     host_experimental_features,
 )
 from openhands.agent_server.launch import (
@@ -1716,6 +1719,9 @@ class ConversationService:
                 experimental_feature_tools=experimental_feature_tools(
                     experimental_features
                 ),
+                withheld_tools=experimental_feature_withheld_tools(
+                    experimental_features
+                ),
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
@@ -2447,7 +2453,16 @@ class ConversationService:
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
-            worker_profile = await self._project_worker_profile(parent_stored)
+            # With Projects off, a member's child is an ordinary child: no
+            # project tag, tools, guidance or memory (the parent keeps its own).
+            projects_on = PROJECT_TAG_KEY in parent_stored.tags and (
+                await feature_enabled_now("projects")
+            )
+            worker_profile = (
+                await self._project_worker_profile(parent_stored)
+                if projects_on
+                else None
+            )
             if worker_profile is not None:
                 return await self._start_project_worker(
                     parent_service, request, worker_profile, run_slot
@@ -2476,7 +2491,7 @@ class ConversationService:
             # naming the conversation that started the parent; it gets its
             # own instead, naming its parent, while that parent is in a project.
             child_agent = without_worker_guidance(parent_agent)
-            if PROJECT_TAG_KEY in parent_stored.tags:
+            if projects_on:
                 suffixes.append(worker_guidance(parent_stored.title, parent_id))
             launched = await asyncio.to_thread(
                 lambda: finalize(
@@ -2485,6 +2500,7 @@ class ConversationService:
                         self.acp_skill_sourcing, enable_browser=self.enable_browser
                     ),
                     extra_suffixes=suffixes,
+                    withheld_tools=() if projects_on else PROJECT_TOOL_NAMES,
                 )
             )
             workspace = (
@@ -2511,6 +2527,7 @@ class ConversationService:
                         key: value
                         for key, value in parent_stored.tags.items()
                         if key not in BOARD_TAG_KEYS
+                        and (projects_on or key != PROJECT_TAG_KEY)
                     },
                 }
             )
@@ -2523,7 +2540,11 @@ class ConversationService:
                     role="user",
                     content=[
                         TextContent(text=request.task),
-                        *await _project_memory_content(parent_stored.tags),
+                        *(
+                            await _project_memory_content(parent_stored.tags)
+                            if projects_on
+                            else []
+                        ),
                     ],
                 ),
                 initial_sender=conversation_sender(parent_id),

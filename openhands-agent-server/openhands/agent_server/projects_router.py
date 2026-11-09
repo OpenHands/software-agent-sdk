@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.persistence import (
     FileProjectsStore,
@@ -84,7 +85,22 @@ from openhands.sdk.utils.datetime import OpenHandsUUID
 
 logger = get_logger(__name__)
 
-projects_router = APIRouter(prefix="/projects", tags=["Projects"])
+
+async def _require_projects(request: Request) -> None:
+    """Answer 404 while the person has the Projects feature off.
+
+    404 reads as "this server has no projects", which clients already handle;
+    the projects on disk are kept and come back when it is turned on again.
+    """
+    if not await feature_enabled_now("projects", get_config(request)):
+        raise HTTPException(status_code=404, detail="Projects are turned off")
+
+
+projects_router = APIRouter(
+    prefix="/projects",
+    tags=["Projects"],
+    dependencies=[Depends(_require_projects)],
+)
 
 PROJECT_TAG = PROJECT_TAG_KEY
 # Set by OpenHands automations on the conversations they start.
