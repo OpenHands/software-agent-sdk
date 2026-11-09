@@ -705,6 +705,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
+        # Each tool masks its observation in a worker thread while arun() holds
+        # the state lock. A lookup made there may call a server on this event
+        # loop that registers secrets on the conversation, which needs that lock
+        # (#6642). Resolve lookups first with the lock released, as astep does
+        # for agent messages, so masking under the lock finds them cached.
+        while True:
+            sources = dict(state.secret_registry.secret_sources)
+            async with conversation._released_state_lock_during_io():
+                await asyncio.to_thread(state.secret_registry.resolve_uncached_values)
+            if sources == state.secret_registry.secret_sources:
+                break
         batch = await _ActionBatch.aprepare(
             action_events,
             state=state,
