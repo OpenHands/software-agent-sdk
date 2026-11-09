@@ -41,6 +41,17 @@
       "reason": "Client-ahead API stacked on the pending Agent Server pre-flight LLM validation endpoint.",
       "owner": "OpenHands TypeScript client maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/4422"
+    },
+    {
+      "endpoints": [
+        "GET /api/conversations/{}/voice",
+        "POST /api/conversations/{}/voice/realtime",
+        "GET /api/conversations/{}/voice/realtime/{}",
+        "DELETE /api/conversations/{}/voice/realtime/{}"
+      ],
+      "reason": "Voice broker endpoints are implemented in this PR but not in the pinned server release.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/5180"
     }
   ],
 
