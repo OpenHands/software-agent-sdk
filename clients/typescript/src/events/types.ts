@@ -172,7 +172,9 @@ export type ReactionEmoji = 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'think
  * Reaction event - an emoji put on (or taken off) a message.
  *
  * The latest event for a (target, emoji, source) triple is the current state.
- * Reactions never reach the LLM. Needs the `conversation_reactions` feature.
+ * The agent sees the person's reactions on its next turn, as one line with the
+ * end of the message (`target_text_ending`); its own stay out of what it sees.
+ * Needs the `conversation_reactions` feature.
  */
 export interface ReactionEvent extends BaseEvent {
   kind: 'ReactionEvent';
@@ -183,6 +185,10 @@ export interface ReactionEvent extends BaseEvent {
   removed: boolean;
   /** Who reacted: the agent or the person */
   source: 'agent' | 'user';
+  /** The end of the reacted message's text (at most 500 characters), on the person's reactions */
+  target_text_ending?: string | null;
+  /** True when the message is longer than `target_text_ending` */
+  target_text_clipped?: boolean;
 }
 
 /**

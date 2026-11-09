@@ -25,6 +25,8 @@ from openhands.sdk.event import (
     ReactionEvent,
 )
 from openhands.sdk.event.reaction import (
+    CLIPPED_MESSAGE_START,
+    REACTION_TEXT_ENDING_MAX,
     ReactionEmoji,
     check_reaction_emoji,
     find_reaction_target,
@@ -359,3 +361,90 @@ def test_execute_tool_racing_the_end_of_a_step_keeps_its_reaction(conversation):
     assert not conversation._deferred_events
     saved = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
     assert [e.emoji for e in saved] == ["eyes"]
+
+
+# What the agent sees of reactions
+
+
+def _messages_on_next_step(conversation) -> list[dict]:
+    """The messages the agent sends the LLM on its next step."""
+    seen: list[list[dict]] = []
+
+    def complete(messages, **kw):
+        seen.append(messages)
+        return _react_call()
+
+    with patch("openhands.sdk.llm.llm.litellm_completion", side_effect=complete):
+        conversation.agent.step(conversation, on_event=lambda e: None)
+    return seen[0]
+
+
+def _texts(messages: list[dict]) -> list[str]:
+    texts = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.extend(c.get("text", "") for c in content if isinstance(c, dict))
+    return texts
+
+
+def test_the_agent_sees_the_persons_reaction_on_its_next_turn(conversation):
+    question = "Shall I delete the generated fixtures?"
+    conversation.state.append_event(_message("agent", question))
+    status = conversation.state.execution_status
+
+    conversation.react("+1")
+
+    # Reacting saves the event and starts nothing.
+    assert conversation.state.execution_status == status
+    texts = _texts(_messages_on_next_step(conversation))
+    assert f"[The person reacted 👍 to this message:]\n{question}" in texts
+
+
+def test_a_long_message_is_clipped_to_its_ending(conversation):
+    long_answer = "Start of a long plan. " + "step " * 200 + "Shall I go ahead?"
+    conversation.state.append_event(_message("agent", long_answer))
+
+    event = conversation.react("+1")
+
+    assert event.target_text_clipped
+    assert event.target_text_ending == long_answer[-REACTION_TEXT_ENDING_MAX:]
+    (content,) = event.to_llm_message().content
+    assert isinstance(content, TextContent)
+    assert content.text == (
+        "[The person reacted 👍 to this message:]\n"
+        f"{CLIPPED_MESSAGE_START}\n{long_answer[-REACTION_TEXT_ENDING_MAX:]}"
+    )
+
+
+def test_removal_and_older_reactions_read_as_one_line():
+    removal = ReactionEvent(
+        target_event_id="m1",
+        emoji="heart",
+        removed=True,
+        target_text_ending="Done.",
+    )
+    older = ReactionEvent(target_event_id="m1", emoji="tada")
+
+    assert removal.to_llm_message().content[0].text == (  # type: ignore[union-attr]
+        "[The person took back the ❤️ reaction on this message:]\nDone."
+    )
+    assert older.to_llm_message().content[0].text == (  # type: ignore[union-attr]
+        "[The person reacted 🎉 to a message.]"
+    )
+
+
+def test_the_agents_own_reaction_is_not_repeated_to_it(conversation):
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        side_effect=lambda messages, **kw: _react_call(),
+    ):
+        conversation.agent.step(conversation, on_event=conversation._on_event)
+    assert any(isinstance(e, ReactionEvent) for e in conversation.state.events)
+
+    texts = _texts(_messages_on_next_step(conversation))
+
+    assert not any("You reacted" in text for text in texts)
+    assert any("Reacted :eyes:" in text for text in texts)
