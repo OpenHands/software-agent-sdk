@@ -37,7 +37,9 @@ logger = get_logger(__name__)
 # alias (`acp-llm-api-key`) is in the proxy's `ignored_key_aliases`.
 llm_base_url = os.getenv("LLM_BASE_URL")
 llm_api_key = os.getenv("ACP_LLM_API_KEY") or os.getenv("LLM_API_KEY")
-assert llm_base_url and llm_api_key, "LLM_BASE_URL and ACP_LLM_API_KEY (or LLM_API_KEY) required"
+assert llm_base_url and llm_api_key, (
+    "LLM_BASE_URL and ACP_LLM_API_KEY (or LLM_API_KEY) required"
+)
 
 # Set ANTHROPIC_* vars so Claude Code routes through LiteLLM
 os.environ["ANTHROPIC_BASE_URL"] = llm_base_url
