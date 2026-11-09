@@ -277,6 +277,128 @@ async def test_docker_gateway_keyed_request_retries_after_pre_dispatch_rejection
 
 
 @pytest.mark.asyncio
+async def test_gateway_keyed_request_retries_after_retry_safe_rejection(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+
+    from openhands.agent_server.dependencies import get_conversation_service
+    from openhands.agent_server.openai.router import openai_router
+
+    config, registry, outer_service, start_request = _setup(tmp_path)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    monkeypatch.setattr(
+        gateway,
+        "_conversation_request",
+        lambda *, request, config, conversation_id: start_request.model_copy(
+            update={"conversation_id": conversation_id}
+        ),
+    )
+    calls = []
+
+    async def run_agent(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise HTTPException(
+                409,
+                "Conversation run in progress; message not saved",
+                headers={"x-should-retry": "true"},
+            )
+        return gateway.OpenAIAgentRunResult(
+            conversation_id=kwargs["reusable_conversation_id"],
+            final_response="Second try",
+            usage=None,
+        )
+
+    monkeypatch.setattr(gateway, "_run_agent", run_agent)
+
+    app = FastAPI()
+    app.state.config = config
+    app.state.conversation_registry = registry
+    app.dependency_overrides[get_conversation_service] = lambda: outer_service
+    app.include_router(openai_router)
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run once."}],
+    }
+    headers = {"Idempotency-Key": "busy-conversation"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        rejected = await client.post("/v1/chat/completions", headers=headers, json=body)
+        retried = await client.post("/v1/chat/completions", headers=headers, json=body)
+        replayed = await client.post("/v1/chat/completions", headers=headers, json=body)
+
+    assert rejected.status_code == 409
+    assert retried.status_code == 200, retried.text
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["choices"][0]["message"]["content"] == "Second try"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_docker_gateway_keyed_result_returns_when_claim_store_write_fails(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+
+    from openhands.agent_server.dependencies import get_conversation_service
+    from openhands.agent_server.openai.idempotency import GatewayIdempotencyStore
+    from openhands.agent_server.openai.router import openai_router
+
+    config, registry, outer_service, start_request = _setup(tmp_path)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    requests = []
+
+    async def start(body, *args, **kwargs):
+        return 200, {}, UUID(body["conversation_id"])
+
+    monkeypatch.setattr(gateway, "start_docker_conversation", start)
+    monkeypatch.setattr(
+        gateway,
+        "_conversation_request",
+        lambda *, request, config, conversation_id: start_request.model_copy(
+            update={"conversation_id": conversation_id}
+        ),
+    )
+    _mock_container(monkeypatch)
+    _inner_client(monkeypatch, requests)
+
+    async def failing_complete(self, *, claim_id, response):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(GatewayIdempotencyStore, "complete", failing_complete)
+
+    app = FastAPI()
+    app.state.config = config
+    app.state.conversation_registry = registry
+    app.dependency_overrides[get_conversation_service] = lambda: outer_service
+    app.include_router(openai_router)
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run once."}],
+    }
+    headers = {"Idempotency-Key": "unsaved-result"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        first = await client.post("/v1/chat/completions", headers=headers, json=body)
+        resend = await client.post("/v1/chat/completions", headers=headers, json=body)
+
+    assert first.status_code == 200, first.text
+    assert (
+        first.json()["choices"][0]["message"]["content"] == "Reply from the container"
+    )
+    assert resend.status_code == 409
+    assert resend.headers["x-should-retry"] == "false"
+    assert (
+        resend.headers["X-OpenHands-ServerConversation-ID"]
+        == (first.headers["X-OpenHands-ServerConversation-ID"])
+    )
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("hybrid", [False, True], ids=["docker", "hybrid"])
 async def test_f55r_resume_gateway_run_stays_in_existing_docker_container(
     tmp_path, monkeypatch, hybrid

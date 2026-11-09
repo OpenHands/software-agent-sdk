@@ -35,7 +35,10 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
 )
+from openhands.sdk.logger import get_logger
 
+
+logger = get_logger(__name__)
 
 openai_router = APIRouter(tags=["OpenAI Compatibility"])
 
@@ -301,7 +304,12 @@ async def create_chat_completion(
                 response=result.response.model_dump(mode="json", exclude_none=True),
             )
         except Exception:
-            return _claim_store_error(result.conversation_id)
+            logger.warning(
+                "Gateway idempotency claim %s could not store its result; "
+                "a resend will report an unknown outcome",
+                keyed[1].claim_id,
+                exc_info=True,
+            )
     conversation_id = str(result.conversation_id)
     if body.stream:
         include_usage = (
@@ -391,6 +399,11 @@ async def create_response(
                 response=result.response.model_dump(mode="json", exclude_none=True),
             )
         except Exception:
-            return _claim_store_error(result.conversation_id)
+            logger.warning(
+                "Gateway idempotency claim %s could not store its result; "
+                "a resend will report an unknown outcome",
+                keyed[1].claim_id,
+                exc_info=True,
+            )
     response.headers["X-OpenHands-ServerConversation-ID"] = str(result.conversation_id)
     return result.response

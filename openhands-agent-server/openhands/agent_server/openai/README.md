@@ -27,8 +27,8 @@ request returns `409`, `X-Should-Retry: false`, and
 `X-OpenHands-ServerConversation-ID`. Inspect that conversation before you send
 a new turn. This includes a run that continues after a gateway `504`. The
 gateway cannot rebuild its exact OpenAI response after that timeout.
-If the gateway cannot save a completed result, it returns `503` with the
-conversation ID and `X-Should-Retry: false`.
+If the gateway cannot save a completed result, it still returns the response.
+A later resend with that key returns `409` because the outcome is not stored.
 
 Claims remain for seven days. After that time, the same key can start a new
 turn. The store accepts at most 10,000 claims during that period. It does not
