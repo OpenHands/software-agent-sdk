@@ -163,6 +163,12 @@ describe('deriveSwitchPlan', () => {
       });
     });
 
+    it('starts a new session to restore the default effort', () => {
+      const snapshot: WithEffort = { ...acpBase, acp_effort: 'high' };
+      const target: WithEffort = { ...acpBase, revision: 1, acp_effort: null };
+      expect(deriveSwitchPlan(snapshot, target, claudeProvider).action).toBe('start-new');
+    });
+
     it('treats a missing acp_effort like null', () => {
       const target: WithEffort = { ...acpBase, revision: 1, acp_effort: null };
       expect(deriveSwitchPlan(acpBase, target, claudeProvider).action).toBe('current');

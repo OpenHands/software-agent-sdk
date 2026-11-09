@@ -145,6 +145,10 @@ export function deriveSwitchPlan(
       return { action: 'current' };
     }
 
+    if (changed.includes('acp_effort') && !targetRaw.acp_effort) {
+      return { action: 'start-new', reason: 'restoring the default effort requires a new session' };
+    }
+
     if (!providerInfo?.supports_runtime_model_switch) {
       return {
         action: 'start-new',
