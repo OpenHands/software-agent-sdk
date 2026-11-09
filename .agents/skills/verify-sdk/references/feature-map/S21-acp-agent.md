@@ -156,7 +156,7 @@ Preconditions:
     --check cases.hang.prompts_sent eq 1 --check cases.hang.cancel_sent eq 1 --check cases.hang.status eq error \
     --check cases.hang.seconds lt 5
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
+  Expected: one prompt, one cancel, status `error`. Before #6645, `run()` kept looping after `ACPAgent._step` set ERROR without raising, so the same prompt was sent again until stuck detection or `max_iteration_per_run`; `run()` now stops on ERROR, as `arun()` already did.
 - **Cancel a running turn (`S21.cancel-pause`).** `arun()` runs as a task. The server starts a long tool call and waits, and the program cancels the task. Then it runs another turn.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

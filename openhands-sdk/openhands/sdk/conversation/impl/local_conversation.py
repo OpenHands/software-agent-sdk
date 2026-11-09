@@ -2201,6 +2201,16 @@ class LocalConversation(BaseConversation):
                         self._step_holds_state_lock = False
                     iteration += 1
 
+                    # A step that ends in ERROR without raising (an ACP prompt
+                    # that went idle past acp_prompt_timeout) ends the run, as
+                    # in arun(). Looping would send the same prompt again until
+                    # stuck detection or max_iteration_per_run (#6645).
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.ERROR
+                    ):
+                        break
+
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
                     # This allows concurrent user messages to be processed:
