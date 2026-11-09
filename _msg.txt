@@ -1,0 +1,6 @@
+fix(tools): expand brace patterns in the grep include filter
+
+The include examples are brace patterns ("*.{ts,tsx}"), which ripgrep expands
+and fnmatch does not, so the Python fallback returned an empty result for a
+search ripgrep answers correctly. The expansion helper moves to the shared
+tools utils so glob and grep use one implementation.

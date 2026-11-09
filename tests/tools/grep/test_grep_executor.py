@@ -346,3 +346,28 @@ def test_grep_executor_concurrent():
         assert all(
             all("beta_" in Path(f).name for f in matches) for matches in results_b
         )
+
+
+def test_python_backend_expands_brace_include_patterns(tmp_path, monkeypatch):
+    """The include examples are brace patterns, which the Python backend must expand.
+
+    fnmatch has no brace support and ripgrep does, so without expansion the same
+    search returned files through ripgrep and nothing through the fallback.
+    """
+    import openhands.tools.grep.impl as grep_impl
+
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: False)
+
+    for name in ("a.ts", "b.tsx", "c.js"):
+        (tmp_path / name).write_text("needle here\n", encoding="utf-8")
+
+    executor = grep_impl.GrepExecutor(working_dir=str(tmp_path))
+    assert executor._select_search_backend() == "python"
+
+    observation = executor(
+        grep_impl.GrepAction(pattern="needle", path=str(tmp_path), include="*.{ts,tsx}")
+    )
+
+    found = sorted(Path(match).name for match in observation.matches)
+    assert found == ["a.ts", "b.tsx"]

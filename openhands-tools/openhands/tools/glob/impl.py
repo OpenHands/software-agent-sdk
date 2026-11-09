@@ -17,36 +17,13 @@ from openhands.tools.glob.definition import GlobAction, GlobObservation
 from openhands.tools.utils import (
     _check_ripgrep_available,
     _log_ripgrep_fallback_warning,
+    expand_braces,
 )
 
 
-def _expand_braces(pattern: str) -> list[str]:
-    """Expand ``{a,b}`` groups, which ripgrep's -g supports and glob does not."""
-    start = pattern.find("{")
-    if start == -1:
-        return [pattern]
-    # Split the first group on its top-level commas; nested groups are
-    # expanded by the recursion.
-    depth, options, option_start = 0, [], start + 1
-    for end in range(start, len(pattern)):
-        if pattern[end] == "{":
-            depth += 1
-        elif pattern[end] == "}":
-            depth -= 1
-            if depth == 0:
-                break
-        elif pattern[end] == "," and depth == 1:
-            options.append(pattern[option_start:end])
-            option_start = end + 1
-    else:
-        return [pattern]  # unbalanced: leave it to glob as-is
-    options.append(pattern[option_start:end])
-    head, tail = pattern[:start], pattern[end + 1 :]
-    return [
-        expanded
-        for option in options
-        for expanded in _expand_braces(head + option + tail)
-    ]
+# ripgrep supports {a,b} groups in -g; the glob module does not, so patterns are
+# expanded before they reach it.
+_expand_braces = expand_braces
 
 
 class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):

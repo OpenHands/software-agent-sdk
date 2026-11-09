@@ -19,6 +19,7 @@ from openhands.tools.utils import (
     _check_grep_available,
     _check_ripgrep_available,
     _log_ripgrep_fallback_warning,
+    expand_braces,
 )
 
 
@@ -161,7 +162,13 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
-            return fnmatch.fnmatch(filename, include_pattern)
+            # The documented examples are brace patterns ("*.{ts,tsx}"), which
+            # fnmatch matches literally; ripgrep expands them, so this backend
+            # has to expand them too or the same search returns nothing.
+            return any(
+                fnmatch.fnmatch(filename, expanded)
+                for expanded in expand_braces(include_pattern)
+            )
         return not filename.startswith(".")
 
     def _match_mtime(self, path: Path) -> float:

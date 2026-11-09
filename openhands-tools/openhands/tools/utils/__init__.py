@@ -58,3 +58,32 @@ def _log_ripgrep_fallback_warning(tool_name: str, fallback_method: str) -> None:
         f"For better performance, consider installing ripgrep: "
         f"https://github.com/BurntSushi/ripgrep#installation"
     )
+
+
+def expand_braces(pattern: str) -> list[str]:
+    """Expand ``{a,b}`` groups, which ripgrep supports and fnmatch and glob do not."""
+    start = pattern.find("{")
+    if start == -1:
+        return [pattern]
+    # Split the first group on its top-level commas; nested groups are
+    # expanded by the recursion.
+    depth, options, option_start = 0, [], start + 1
+    for end in range(start, len(pattern)):
+        if pattern[end] == "{":
+            depth += 1
+        elif pattern[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        elif pattern[end] == "," and depth == 1:
+            options.append(pattern[option_start:end])
+            option_start = end + 1
+    else:
+        return [pattern]  # unbalanced: leave it to the caller as-is
+    options.append(pattern[option_start:end])
+    head, tail = pattern[:start], pattern[end + 1 :]
+    return [
+        expanded
+        for option in options
+        for expanded in expand_braces(head + option + tail)
+    ]
