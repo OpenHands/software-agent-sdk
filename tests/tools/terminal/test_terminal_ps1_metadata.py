@@ -408,3 +408,28 @@ def test_echoed_metadata_suffix_is_not_command_output():
     assert "$oh1 = $?" not in cleaned
     assert "Write-Host" not in cleaned
     assert cleaned.strip() == "hi"
+
+
+def test_command_output_that_mentions_the_marker_is_kept():
+    """Only the generated suffix echo goes; a command may print its text."""
+    from openhands.tools.terminal.terminal.terminal_session import (
+        _remove_powershell_echo,
+    )
+
+    suffix = (
+        "$oh1 = $?; $oh2 = $LASTEXITCODE;"
+        " Write-Host '<PS1_BEGIN>'"
+        "; $exit_code = 0; Write-Host (ConvertTo-Json $meta -Compress)"
+    )
+    output = (
+        "Write-Output 'before'; Write-Output '$oh1 = $?'; Write-Output 'after'\n"
+        f"{suffix}\n"
+        "before\n$oh1 = $?\nafter\n"
+    )
+
+    cleaned = _remove_powershell_echo(
+        output, "Write-Output 'before'; Write-Output '$oh1 = $?'; Write-Output 'after'"
+    )
+
+    assert "ConvertTo-Json" not in cleaned, "the echoed suffix line must be removed"
+    assert cleaned.splitlines() == ["before", "$oh1 = $?", "after"]
