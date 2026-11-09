@@ -117,6 +117,16 @@ async def _claim_request(
     return store, claim
 
 
+_REJECTED_BEFORE_DISPATCH = frozenset({404, 422, 429, 503})
+
+
+def _rejected_before_dispatch(exc: HTTPException) -> bool:
+    """Whether the gateway refused the request without saving its turn."""
+    if exc.status_code in _REJECTED_BEFORE_DISPATCH:
+        return True
+    return bool(exc.headers) and exc.headers.get("x-should-retry") == "true"
+
+
 def _claim_store_error(conversation_id: UUID) -> JSONResponse:
     return JSONResponse(
         status_code=503,
@@ -276,7 +286,7 @@ async def create_chat_completion(
             prepared=prepared,
         )
     except HTTPException as exc:
-        if keyed is not None and exc.status_code == 429:
+        if keyed is not None and _rejected_before_dispatch(exc):
             assert keyed[1].claim_id is not None
             try:
                 await keyed[0].release(claim_id=keyed[1].claim_id)
@@ -366,7 +376,7 @@ async def create_response(
             prepared=prepared,
         )
     except HTTPException as exc:
-        if keyed is not None and exc.status_code == 429:
+        if keyed is not None and _rejected_before_dispatch(exc):
             assert keyed[1].claim_id is not None
             try:
                 await keyed[0].release(claim_id=keyed[1].claim_id)

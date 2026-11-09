@@ -222,6 +222,61 @@ async def test_docker_gateway_keyed_resend_does_not_repeat_inner_turn(
 
 
 @pytest.mark.asyncio
+async def test_docker_gateway_keyed_request_retries_after_pre_dispatch_rejection(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+
+    from openhands.agent_server.dependencies import get_conversation_service
+    from openhands.agent_server.openai.router import openai_router
+
+    config, registry, outer_service, start_request = _setup(tmp_path)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    requests = []
+
+    async def start(body, *args, **kwargs):
+        return 200, {}, UUID(body["conversation_id"])
+
+    monkeypatch.setattr(gateway, "start_docker_conversation", start)
+    monkeypatch.setattr(
+        gateway,
+        "_conversation_request",
+        lambda *, request, config, conversation_id: start_request.model_copy(
+            update={"conversation_id": conversation_id}
+        ),
+    )
+    _mock_container(monkeypatch)
+    _inner_client(monkeypatch, requests)
+
+    app = FastAPI()
+    app.state.config = config
+    app.state.conversation_registry = None
+    app.dependency_overrides[get_conversation_service] = lambda: outer_service
+    app.include_router(openai_router)
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run once."}],
+    }
+    headers = {"Idempotency-Key": "docker-turn"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        rejected = await client.post("/v1/chat/completions", headers=headers, json=body)
+        app.state.conversation_registry = registry
+        retried = await client.post("/v1/chat/completions", headers=headers, json=body)
+        replayed = await client.post("/v1/chat/completions", headers=headers, json=body)
+
+    assert rejected.status_code == 503
+    assert retried.status_code == 200, retried.text
+    assert replayed.status_code == 200, replayed.text
+    assert (
+        replayed.json()["choices"][0]["message"]["content"]
+        == "Reply from the container"
+    )
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("hybrid", [False, True], ids=["docker", "hybrid"])
 async def test_f55r_resume_gateway_run_stays_in_existing_docker_container(
     tmp_path, monkeypatch, hybrid
