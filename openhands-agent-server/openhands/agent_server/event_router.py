@@ -236,9 +236,6 @@ async def send_message(
 
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
-
-    While a gateway turn is in progress on this conversation the request
-    returns 409 and nothing is saved.
     """
     message = Message(role=request.role, content=request.content)
     # The inner gateway route holds the lock for its whole turn; refuse before
