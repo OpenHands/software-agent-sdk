@@ -1046,6 +1046,12 @@ export type Action =
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorAction-Output__1';
     } & PlanningFileEditorAction)
   | ({
+      kind: 'openhands__tools__reaction__definition__ReactAction-Output__1';
+    } & ReactAction)
+  | ({
+      kind: 'openhands__tools__reaction__definition__UnreactAction-Output__1';
+    } & UnreactAction)
+  | ({
       kind: 'openhands__tools__task__definition__TaskAction-Output__1';
     } & TaskAction)
   | ({
@@ -5150,6 +5156,9 @@ export type Event =
       kind: 'openhands__sdk__event__llm_convertible__system__SystemPromptEvent-Output__1';
     } & SystemPromptEvent)
   | ({
+      kind: 'openhands__sdk__event__reaction__ReactionEvent-Output__1';
+    } & ReactionEvent)
+  | ({
       kind: 'openhands__sdk__event__security__SecurityAnalysisEvent-Output__1';
     } & SecurityAnalysisEvent)
   | ({
@@ -5194,6 +5203,44 @@ export type ExecuteBashRequest = {
    * The max number of seconds a command may be permitted to run.
    */
   timeout?: number;
+};
+
+/**
+ * ExperimentalFeature
+ *
+ * A feature and whether it is on for this user.
+ */
+export type ExperimentalFeature = {
+  /**
+   * Default
+   */
+  default: boolean;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Enabled
+   */
+  enabled: boolean;
+  /**
+   * Key
+   */
+  key: 'conversation_reactions';
+  /**
+   * Label
+   */
+  label: string;
+};
+
+/**
+ * ExperimentalFeatureUpdate
+ */
+export type ExperimentalFeatureUpdate = {
+  /**
+   * Enabled
+   */
+  enabled: boolean;
 };
 
 /**
@@ -10044,6 +10091,9 @@ export type Observation =
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorObservation-Output__1';
     } & PlanningFileEditorObservation)
   | ({
+      kind: 'openhands__tools__reaction__definition__ReactionObservation-Output__1';
+    } & ReactionObservation)
+  | ({
       kind: 'openhands__tools__task__definition__TaskObservation-Output__1';
     } & TaskObservation)
   | ({
@@ -11150,6 +11200,204 @@ export type ProvidersResponse = {
    * Providers
    */
   providers: Array<string>;
+};
+
+/**
+ * ReactAction
+ *
+ * Put an emoji reaction on a message.
+ */
+export type ReactAction = {
+  /**
+   * Emoji
+   *
+   * The emoji, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Kind
+   */
+  kind: 'ReactAction';
+  /**
+   * Message Id
+   *
+   * Id of the message to react to. Leave it out to use the person's latest message, which is almost always the one you mean.
+   */
+  message_id?: string | null;
+};
+
+/**
+ * ReactTool
+ *
+ * Tool that puts an emoji reaction on a message.
+ */
+export type ReactTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
+};
+
+/**
+ * ReactionEvent
+ *
+ * An emoji reaction added to, or removed from, a message.
+ *
+ * The agent reacts with the ``react``/``unreact`` tools, and a person
+ * through ``POST /api/conversations/{id}/reactions``. Clients fold these
+ * events into each message's current set of reactions: the latest event for
+ * a (message, emoji, source) wins.
+ *
+ * The agent sees the person's reactions on its next turn, as one line naming
+ * the emoji and the end of the message (``target_text_ending``); a reaction
+ * does not start a run. Its own reactions stay out of what it sees
+ * (``View`` skips them): its ``react`` call is already there.
+ */
+export type ReactionEvent = {
+  /**
+   * Emoji
+   *
+   * The emoji, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Id
+   *
+   * Unique event id (ULID/UUID)
+   */
+  id?: string;
+  /**
+   * Kind
+   */
+  kind: 'ReactionEvent';
+  /**
+   * Parent Id
+   *
+   * Parent event id in the conversation tree. None for the root, or for legacy events predating the tree (see EventLog's effective-parent rule). Events sharing a parent_id are sibling branches.
+   */
+  parent_id?: string | null;
+  /**
+   * Removed
+   *
+   * True when this removes the reaction.
+   */
+  removed?: boolean;
+  /**
+   * Source
+   */
+  source?: 'agent' | 'user' | 'environment' | 'hook';
+  /**
+   * Target Event Id
+   *
+   * The message reacted to: a `MessageEvent`, or the agent's `finish` `ActionEvent`.
+   */
+  target_event_id: string;
+  /**
+   * Target Text Clipped
+   *
+   * True when the message is longer than `target_text_ending`.
+   */
+  target_text_clipped?: boolean;
+  /**
+   * Target Text Ending
+   *
+   * The end of the reacted message's text, at most 500 characters, saved with the person's reaction so the agent can tell which message it is about.
+   */
+  target_text_ending?: string | null;
+  /**
+   * Timestamp
+   *
+   * Event timestamp
+   */
+  timestamp?: string;
+};
+
+/**
+ * ReactionObservation
+ *
+ * The result of ``react`` or ``unreact``.
+ *
+ * On success it carries the reaction, which the agent records as a
+ * :class:`ReactionEvent` right after this observation.
+ */
+export type ReactionObservation = {
+  /**
+   * Content
+   *
+   * Content returned from the tool as a list of TextContent/ImageContent objects. When there is an error, it should be written in this field.
+   */
+  content?: Array<TextContent | ImageContent>;
+  /**
+   * Emoji
+   */
+  emoji?: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart' | null;
+  /**
+   * Is Error
+   *
+   * Whether the observation indicates an error
+   */
+  is_error?: boolean;
+  /**
+   * Kind
+   */
+  kind: 'ReactionObservation';
+  /**
+   * Removed
+   */
+  removed?: boolean;
+  /**
+   * Target Event Id
+   */
+  target_event_id?: string | null;
+};
+
+/**
+ * ReactionRequest
+ *
+ * Payload to add or remove the person's emoji reaction on a message.
+ */
+export type ReactionRequest = {
+  /**
+   * Emoji
+   *
+   * The emoji, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Removed
+   *
+   * True to remove the reaction.
+   */
+  removed?: boolean;
+  /**
+   * Target Event Id
+   *
+   * The message to react to; the agent's latest when left out.
+   */
+  target_event_id?: string | null;
 };
 
 /**
@@ -14472,6 +14720,12 @@ export type ToolDefinition =
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorTool-Output__1';
     } & PlanningFileEditorTool)
   | ({
+      kind: 'openhands__tools__reaction__definition__ReactTool-Output__1';
+    } & ReactTool)
+  | ({
+      kind: 'openhands__tools__reaction__definition__UnreactTool-Output__1';
+    } & UnreactTool)
+  | ({
       kind: 'openhands__tools__task__definition__TaskTool-Output__1';
     } & TaskTool)
   | ({
@@ -14708,6 +14962,65 @@ export type UninstallSkillResponse = {
    * Message
    */
   message: string;
+};
+
+/**
+ * UnreactAction
+ *
+ * Take an emoji reaction off a message.
+ */
+export type UnreactAction = {
+  /**
+   * Emoji
+   *
+   * The emoji to remove, as a shortcode.
+   */
+  emoji: 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+  /**
+   * Kind
+   */
+  kind: 'UnreactAction';
+  /**
+   * Message Id
+   *
+   * Id of the message to react to. Leave it out to use the person's latest message, which is almost always the one you mean.
+   */
+  message_id?: string | null;
+};
+
+/**
+ * UnreactTool
+ *
+ * Tool that takes an emoji reaction off a message.
+ */
+export type UnreactTool = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'UnreactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+  /**
+   * Title
+   */
+  readonly title: string;
 };
 
 /**
@@ -17994,6 +18307,9 @@ export type EventWritable =
       kind: 'openhands__sdk__event__llm_convertible__system__SystemPromptEvent-Output__1';
     } & SystemPromptEventWritable)
   | ({
+      kind: 'openhands__sdk__event__reaction__ReactionEvent-Output__1';
+    } & ReactionEvent)
+  | ({
       kind: 'openhands__sdk__event__security__SecurityAnalysisEvent-Output__1';
     } & SecurityAnalysisEvent)
   | ({
@@ -19825,6 +20141,37 @@ export type ProviderConnectionUpdateRequestWritable = {
 };
 
 /**
+ * ReactTool
+ *
+ * Tool that puts an emoji reaction on a message.
+ */
+export type ReactToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'ReactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
+};
+
+/**
  * ReadFileTool
  *
  * Tool for reading file contents with pagination support.
@@ -21078,6 +21425,12 @@ export type ToolDefinitionWritable =
       kind: 'openhands__tools__planning_file_editor__definition__PlanningFileEditorTool-Output__1';
     } & PlanningFileEditorToolWritable)
   | ({
+      kind: 'openhands__tools__reaction__definition__ReactTool-Output__1';
+    } & ReactToolWritable)
+  | ({
+      kind: 'openhands__tools__reaction__definition__UnreactTool-Output__1';
+    } & UnreactToolWritable)
+  | ({
       kind: 'openhands__tools__task__definition__TaskTool-Output__1';
     } & TaskToolWritable)
   | ({
@@ -21240,6 +21593,37 @@ export type ToolShieldLlmSecurityAnalyzerOutputWritable = {
    * - Any non-empty string: used as-is. The intended pattern is to call one of the helpers (``default_safety_experiences()``, ``load_safety_experiences(tool_names)``, ``auto_detect_safety_experiences()``) which require the ``[toolshield]`` optional extra (``pip install openhands-sdk[toolshield]``). Callers with their own source of guidelines can pass any custom string.
    */
   safety_experiences?: string;
+};
+
+/**
+ * UnreactTool
+ *
+ * Tool that takes an emoji reaction off a message.
+ */
+export type UnreactToolWritable = {
+  /**
+   * Action Type
+   */
+  action_type: string;
+  annotations?: OpenhandsSdkToolToolToolAnnotations | null;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Kind
+   */
+  kind: 'UnreactTool';
+  /**
+   * Meta
+   */
+  meta?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Observation Type
+   */
+  observation_type?: string | null;
 };
 
 /**
@@ -23624,6 +24008,50 @@ export type PauseConversationApiConversationsConversationIdPausePostResponses = 
 
 export type PauseConversationApiConversationsConversationIdPausePostResponse =
   PauseConversationApiConversationsConversationIdPausePostResponses[keyof PauseConversationApiConversationsConversationIdPausePostResponses];
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostData = {
+  body: ReactionRequest;
+  path: {
+    /**
+     * Conversation Id
+     */
+    conversation_id: string;
+  };
+  query?: never;
+  url: '/api/conversations/{conversation_id}/reactions';
+};
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostErrors = {
+  /**
+   * There is no such message to react to
+   */
+  400: unknown;
+  /**
+   * Item not found
+   */
+  404: unknown;
+  /**
+   * Conversation reactions are turned off
+   */
+  409: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostError =
+  ReactToMessageApiConversationsConversationIdReactionsPostErrors[keyof ReactToMessageApiConversationsConversationIdReactionsPostErrors];
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: ReactionEvent;
+};
+
+export type ReactToMessageApiConversationsConversationIdReactionsPostResponse =
+  ReactToMessageApiConversationsConversationIdReactionsPostResponses[keyof ReactToMessageApiConversationsConversationIdReactionsPostResponses];
 
 export type RunConversationApiConversationsConversationIdRunPostData = {
   body?: never;
@@ -26449,6 +26877,61 @@ export type GetConversationSettingsSchemaApiSettingsConversationSchemaGetRespons
 
 export type GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponse =
   GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponses[keyof GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponses];
+
+export type ListExperimentalFeaturesApiSettingsExperimentalGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: '/api/settings/experimental';
+};
+
+export type ListExperimentalFeaturesApiSettingsExperimentalGetResponses = {
+  /**
+   * Response List Experimental Features Api Settings Experimental Get
+   *
+   * Successful Response
+   */
+  200: Array<ExperimentalFeature>;
+};
+
+export type ListExperimentalFeaturesApiSettingsExperimentalGetResponse =
+  ListExperimentalFeaturesApiSettingsExperimentalGetResponses[keyof ListExperimentalFeaturesApiSettingsExperimentalGetResponses];
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchData = {
+  body: ExperimentalFeatureUpdate;
+  path: {
+    /**
+     * Key
+     */
+    key: string;
+  };
+  query?: never;
+  url: '/api/settings/experimental/{key}';
+};
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchErrors = {
+  /**
+   * There is no feature with this key
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchError =
+  UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchErrors[keyof UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchErrors];
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: ExperimentalFeature;
+};
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponse =
+  UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponses[keyof UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponses];
 
 export type DeleteMcpServerApiSettingsMcpSettingsKeyDeleteData = {
   body?: never;
