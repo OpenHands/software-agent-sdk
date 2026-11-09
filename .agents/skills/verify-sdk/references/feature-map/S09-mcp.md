@@ -147,7 +147,7 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check http_after_restart_again.1 eq false --check http_after_restart_again.0 contains count=1 \
     --check stdio_after_exit_again.1 eq false --check stdio_after_exit_again.0 contains count=1
   ```
-  Expected: at most one failed call, then the client reconnects (a new session or process, so the counter starts again). Known failure (reproduced 2026-10-13 and again 2026-11-08 with the `mcp` 2 client, not yet filed): neither recovers. After the restart every call returns `Error calling MCP tool counter: Session not found` (`Session terminated` before #6540); after the stdio server exits, every call returns `Error calling MCP tool counter: Connection closed` (empty before), so the server's tools stay broken for the rest of the conversation. `MCPToolExecutor.call_tool` reconnects only when `client.is_connected()` is false, which stays true in both cases.
+  Expected: at most one failed call, then the client reconnects (a new session or process, so the counter starts again). Before #6647, neither recovered: `MCPToolExecutor.call_tool` reconnected only when `client.is_connected()` was false, which stays true in both cases, so every later call returned `Session not found` (HTTP) or `Connection closed` (stdio). The executor now drops a lost session after the failed call (without retrying it, since it may have run), and the next call connects again.
 - **Config model, secrets, schemas, arguments and serialization without an agent (`S09.config-model`, `S09.config-secrets`, `S09.schema-conversion`, `S09.argument-validation`, `S09.observation`, `S09.tool-serialization`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

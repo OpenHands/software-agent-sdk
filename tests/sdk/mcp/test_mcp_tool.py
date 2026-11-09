@@ -3,12 +3,19 @@
 from typing import Any
 from unittest.mock import MagicMock, Mock
 
+import anyio
 import mcp.types
+import pytest
+from mcp.shared.exceptions import MCPError as McpProtocolError
 
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolObservation
-from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
+from openhands.sdk.mcp.tool import (
+    MCPToolDefinition,
+    MCPToolExecutor,
+    _is_session_lost,
+)
 from openhands.sdk.tool import ToolAnnotations
 from openhands.sdk.utils.async_executor import AsyncExecutor
 
@@ -522,3 +529,57 @@ def test_action_type_cache_serializes_get_and_evict(monkeypatch):
         t.join(5.0)
 
     assert not errors
+
+
+@pytest.mark.parametrize(
+    ("exc", "lost"),
+    [
+        (McpProtocolError(code=-32000, message="Connection closed"), True),
+        (McpProtocolError(code=-32600, message="Session not found"), True),
+        (McpProtocolError(code=-32600, message="Session terminated"), True),
+        (McpProtocolError(code=-32600, message="Invalid arguments"), False),
+        (
+            McpProtocolError(code=-32603, message="Server returned an error response"),
+            False,
+        ),
+        (anyio.ClosedResourceError(), True),
+        (ValueError("tool failed"), False),
+    ],
+)
+def test_is_session_lost(exc: Exception, lost: bool):
+    assert _is_session_lost(exc) is lost
+    wrapped = RuntimeError("wrapped")
+    wrapped.__cause__ = exc
+    assert _is_session_lost(wrapped) is lost
+
+
+def test_call_tool_drops_lost_session_without_retrying():
+    """A lost session is dropped so the next call reconnects; the failed call
+    is not retried, since it may already have run on the server."""
+    mock_action = MagicMock()
+    mock_action.model_dump.return_value = {}
+    mock_action.to_mcp_arguments.return_value = {}
+
+    client = MockMCPClient()
+    calls: list[int] = []
+    dropped: list[int] = []
+
+    async def failing_call_tool_mcp(**kwargs):
+        calls.append(1)
+        raise McpProtocolError(code=-32600, message="Session not found")
+
+    async def drop_session():
+        dropped.append(1)
+
+    client.is_connected = lambda: True  # type: ignore[method-assign]
+    client._closed = False
+    client.call_tool_mcp = failing_call_tool_mcp  # type: ignore[method-assign]
+    client.drop_session = drop_session  # type: ignore[method-assign]
+
+    observation = MCPToolExecutor(tool_name="test_tool", client=client)(mock_action)
+
+    assert observation.is_error
+    assert "Session not found" in observation.text
+    assert calls == [1]
+    assert dropped == [1]
+    client.sync_close()

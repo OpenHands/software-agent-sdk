@@ -863,3 +863,86 @@ def test_mcp_tool_reconnects_after_http_error():
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def _start_counter_http_server(port: int) -> tuple[uvicorn.Server, threading.Thread]:
+    """A fresh FastMCP HTTP server whose `counter` tool counts per process."""
+    mcp = FastMCP("restart-test-server")
+    calls = {"n": 0}
+
+    @mcp.tool()
+    def counter() -> str:
+        calls["n"] += 1
+        return f"count={calls['n']}"
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            mcp.http_app(path="/mcp"), host="127.0.0.1", port=port, log_level="error"
+        )
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    _wait_for_port(port)
+    return server, thread
+
+
+def test_mcp_tool_reconnects_after_http_server_restart():
+    """A restarted HTTP server has forgotten the session; the client starts a
+    new one instead of failing every later call with "Session not found"."""
+    port = _find_free_port()
+    server, thread = _start_counter_http_server(port)
+    try:
+        config = {"web": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}}
+        with create_mcp_tools(coerce_mcp_config(config), timeout=10) as client:
+            tool = next(tool for tool in client if tool.name == "counter")
+            assert tool.executor is not None
+            action = tool.action_from_arguments({})
+            assert "count=1" in tool.executor(action).text
+
+            server.should_exit = True
+            thread.join(timeout=5)
+            server, thread = _start_counter_http_server(port)
+
+            tool.executor(action)  # may fail: the old session is gone
+            again = tool.executor(action)
+
+            assert not again.is_error, again.text
+            assert "count=" in again.text
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_mcp_tool_reconnects_after_stdio_server_exits(tmp_path: Path):
+    """A stdio server that exits is started again on the next call instead of
+    every later call failing with "Connection closed"."""
+    script = tmp_path / "server.py"
+    script.write_text(
+        "import os, threading\n"
+        "from fastmcp import FastMCP\n"
+        "mcp = FastMCP('exit-test-server')\n"
+        "@mcp.tool()\n"
+        "def pid() -> str:\n"
+        "    return str(os.getpid())\n"
+        "@mcp.tool()\n"
+        "def die() -> str:\n"
+        "    threading.Timer(0.3, lambda: os._exit(0)).start()\n"
+        "    return 'dying'\n"
+        "mcp.run(transport='stdio', show_banner=False)\n"
+    )
+    config = {"local": {"command": sys.executable, "args": [str(script)]}}
+    with create_mcp_tools(coerce_mcp_config(config), timeout=20) as client:
+        tools = {tool.name: tool for tool in client}
+        pid_tool, die_tool = tools["pid"], tools["die"]
+        assert pid_tool.executor is not None and die_tool.executor is not None
+        pid_action = pid_tool.action_from_arguments({})
+        first_pid = pid_tool.executor(pid_action).text
+
+        die_tool.executor(die_tool.action_from_arguments({}))
+        time.sleep(1.0)
+
+        pid_tool.executor(pid_action)  # may fail: the process is gone
+        again = pid_tool.executor(pid_action)
+
+        assert not again.is_error, again.text
+        assert again.text != first_pid
