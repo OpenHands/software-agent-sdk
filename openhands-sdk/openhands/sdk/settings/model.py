@@ -318,7 +318,6 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
         from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
         condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
-        condenser_llm.reset_metrics()
         condenser_kwargs = self.model_dump(
             exclude={"enabled", "condenser_kind"},
             exclude_none=True,

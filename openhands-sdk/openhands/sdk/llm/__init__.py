@@ -34,6 +34,7 @@ from openhands.sdk.llm.llm_profile_store import (
 )
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
+from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.llm.message import (
     ImageContent,
     Message,
@@ -95,6 +96,7 @@ __all__ = [
     "LLMCallContext",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
+    "LLMSession",
     "LLMProfileLoader",
     "LLMProfileMutator",
     "LLMProfileStore",

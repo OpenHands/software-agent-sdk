@@ -117,7 +117,14 @@ class Metrics(MetricsSnapshot):
       - max_budget_per_task (budget limit)
       - A list of ResponseLatency
       - A list of TokenUsage (one per call).
+
+    A ledger can roll up into another one (see :meth:`roll_up_into`): what a
+    conversation records for a role is also counted on the ``LLM`` it used.
     """
+
+    # The roll-up target is wiring, not data. A slot keeps it out of what
+    # pydantic serializes, compares and copies, so a copy is a plain snapshot.
+    __slots__ = ("_rollup",)
 
     costs: list[Cost] = Field(
         default_factory=list, description="List of individual costs"
@@ -162,11 +169,31 @@ class Metrics(MetricsSnapshot):
             else None,
         )
 
+    def roll_up_into(self, target: "Metrics | None") -> None:
+        """Also record into ``target`` whatever is recorded here from now on.
+
+        What this ledger already holds is not copied over. ``None`` detaches.
+        """
+        if target is self:
+            raise ValueError("Metrics cannot roll up into itself.")
+        self._rollup = target
+
+    @property
+    def rolls_up_into(self) -> "Metrics | None":
+        """The ledger that also records what this one does, if any."""
+        try:
+            return self._rollup
+        except AttributeError:  # never attached: the slot is still empty
+            return None
+
     def add_cost(self, value: float) -> None:
         if value < 0:
             raise ValueError("Added cost cannot be negative.")
         self.accumulated_cost += value
         self.costs.append(Cost(cost=value, model=self.model_name))
+        target = self.rolls_up_into
+        if target is not None:
+            target.add_cost(value)
 
     def add_response_latency(self, value: float, response_id: str) -> None:
         self.response_latencies.append(
@@ -174,6 +201,9 @@ class Metrics(MetricsSnapshot):
                 latency=max(0.0, value), model=self.model_name, response_id=response_id
             )
         )
+        target = self.rolls_up_into
+        if target is not None:
+            target.add_response_latency(value, response_id)
 
     def add_token_usage(
         self,
@@ -219,8 +249,24 @@ class Metrics(MetricsSnapshot):
         else:
             self.accumulated_token_usage = self.accumulated_token_usage + new_usage
 
+        target = self.rolls_up_into
+        if target is not None:
+            target.add_token_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                context_window=context_window,
+                response_id=response_id,
+                reasoning_tokens=reasoning_tokens,
+            )
+
     def merge(self, other: "Metrics") -> None:
         """Merge 'other' metrics into this one."""
+        target = self.rolls_up_into
+        if target is not None:
+            target.merge(other)
+
         self.accumulated_cost += other.accumulated_cost
 
         # Keep the max_budget_per_task from other if it's set and this one isn't

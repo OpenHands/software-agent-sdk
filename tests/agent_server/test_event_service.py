@@ -3585,15 +3585,8 @@ class TestStatsCallbackNoDeadlock:
         service._emit_event_from_thread = MagicMock(name="_emit_event_from_thread")
 
         callbacks: list = []
-        service._setup_stats_streaming(
-            MagicMock(
-                get_all_llms=lambda: [
-                    MagicMock(
-                        telemetry=MagicMock(set_stats_update_callback=callbacks.append)
-                    )
-                ]
-            )
-        )
+        conversation.llm_registry.set_stats_update_callback = callbacks.append
+        service._setup_stats_streaming(conversation)
         assert len(callbacks) == 1, "stats_callback must be registered exactly once"
         return service, state, callbacks[0]
 
@@ -3908,8 +3901,8 @@ def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
     callbacks = []
-    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
-    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+    conversation = MagicMock()
+    conversation.llm_registry.set_log_completions_callback = callbacks.append
 
     object.__setattr__(
         event_service,
@@ -3918,8 +3911,8 @@ def test_llm_log_callback_swallows_emit_failures(
     )
 
     with caplog.at_level("ERROR"):
-        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
-        callbacks[0]("completion.json", "{}")
+        event_service._setup_llm_log_streaming(conversation)
+        callbacks[0]("completion.json", "{}", "test-usage", "gpt-4o")
 
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()

@@ -199,6 +199,15 @@ class Telemetry(BaseModel):
         """
         self._stats_update_callback = callback
 
+    def notify_stats_update(self) -> None:
+        """Tell the stats-update callback, if any, that the metrics changed."""
+        if self._stats_update_callback is None:
+            return
+        try:
+            self._stats_update_callback()
+        except Exception:
+            logger.exception("Stats update callback failed", exc_info=True)
+
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
@@ -243,11 +252,7 @@ class Telemetry(BaseModel):
         self._close_span()
 
         # 6) notify about stats update
-        if self._stats_update_callback is not None:
-            try:
-                self._stats_update_callback()
-            except Exception:
-                logger.exception("Stats update callback failed", exc_info=True)
+        self.notify_stats_update()
 
         return self.metrics.deep_copy()
 

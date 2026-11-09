@@ -246,7 +246,7 @@ def test_llm_responses_end_to_end(mock_responses_call):
         "ok"
     ]
     # Telemetry should have recorded usage (one entry)
-    assert len(llm._telemetry.metrics.token_usages) == 1  # type: ignore[attr-defined]
+    assert len(llm.telemetry.metrics.token_usages) == 1
 
 
 @pytest.mark.parametrize(

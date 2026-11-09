@@ -473,7 +473,7 @@ def test_switch_llm_refreshes_llm_condenser_credentials(
     assert state_condenser_llm.model == condenser_llm.model
     assert state_condenser_llm.api_key == condenser_llm.api_key
     assert condenser_llm.metrics is not conv.agent.llm.metrics
-    assert condenser_llm._telemetry is not None
+    assert condenser_llm.telemetry.metrics is condenser_llm.metrics
 
     async def _fake_acompletion(**kwargs):
         return create_mock_litellm_response(

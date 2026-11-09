@@ -360,11 +360,16 @@ class LocalConversation(BaseConversation):
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
+        # The registry owns this conversation's LLM sessions (usage metrics and
+        # telemetry per usage_id); the call context carries them to every LLM
+        # call. Agent LLMs are registered later, in _ensure_agent_ready().
+        self.llm_registry = LLMRegistry()
         self._llm_call_context = (
             _parent_llm_call_context or LLMCallContext()
         ).for_conversation(
             str(desired_id),
             prompt_cache_key=prompt_cache_key,
+            sessions=self.llm_registry.sessions,
         )
 
         # Resolve client-defined tools, then register them and inject the matching
@@ -548,7 +553,6 @@ class LocalConversation(BaseConversation):
 
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
-        self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
@@ -1802,7 +1806,6 @@ class LocalConversation(BaseConversation):
         condenser_llm = new_llm.model_copy(
             update={"usage_id": condenser.llm.usage_id},
         )
-        condenser_llm.reset_metrics()
         return condenser.model_copy(update={"llm": condenser_llm})
 
     def _reject_llm_switch_on_acp(self) -> None:
@@ -1821,8 +1824,8 @@ class LocalConversation(BaseConversation):
         entry with that key already exists and has the same config, the
         cached LLM is reused. If its config differs (e.g. ``default``, which
         agent initialization registers, posted with another model), the
-        passed ``llm`` replaces the entry and takes over the metrics already
-        recorded under that ``usage_id``.
+        passed ``llm`` replaces the entry. Usage keeps accumulating in the
+        session the registry holds for that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
@@ -1843,10 +1846,6 @@ class LocalConversation(BaseConversation):
             if registered is not None:
                 self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
-            if registered is not None:
-                # Keep one metrics object per usage_id: ConversationStats
-                # tracks the registered LLM's, so accrued usage is retained.
-                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:

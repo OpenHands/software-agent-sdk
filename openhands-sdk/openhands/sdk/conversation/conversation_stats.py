@@ -68,18 +68,19 @@ class ConversationStats(BaseModel):
         return self.usage_to_metrics[usage_id]
 
     def register_llm(self, event: RegistryEvent):
-        # Listen for LLM creations and track their metrics
-        llm = event.llm
-        usage_id = llm.usage_id
+        # Listen for LLM registrations and track the metrics of their session:
+        # the one the registry keeps for the usage ID, else the LLM's own.
+        usage_id = event.llm.usage_id
+        session = event.session if event.session is not None else event.llm.session
 
         # Usage costs exist but have not been restored yet
         if (
             usage_id in self.usage_to_metrics
             and usage_id not in self._restored_usage_ids
         ):
-            llm.restore_metrics(self.usage_to_metrics[usage_id])
+            session.restore_metrics(self.usage_to_metrics[usage_id])
             self._restored_usage_ids.add(usage_id)
 
         # Usage is new, track its metrics
-        if usage_id not in self.usage_to_metrics and llm.metrics:
-            self.usage_to_metrics[usage_id] = llm.metrics
+        if usage_id not in self.usage_to_metrics:
+            self.usage_to_metrics[usage_id] = session.metrics
