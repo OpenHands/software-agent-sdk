@@ -11,9 +11,12 @@ from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
+    MissingGitProviderTokenError,
     UnsupportedGitProviderError,
+    get_provider_pull_request,
     search_provider_repositories,
 )
+from openhands.agent_server.models import GitPullRequestStatus
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
@@ -158,6 +161,38 @@ async def git_repositories_search(
         )
     except UnsupportedGitProviderError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except GitProviderAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+
+
+_OWNER_REPO_PATTERN = r"^[A-Za-z0-9_.-]+$"
+
+
+@git_router.get(
+    "/pull-requests/{owner}/{repo}/{number}", response_model=GitPullRequestStatus
+)
+async def git_pull_request_status(
+    request: Request,
+    owner: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
+    repo: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
+    number: Annotated[int, PathParam(ge=1)],
+    provider: Annotated[
+        GitProvider, Query(description="Git provider hosting the pull request")
+    ] = GitProvider.GITHUB,
+) -> GitPullRequestStatus:
+    """Read a pull request's state and the combined CI result of its head commit.
+
+    Answers 424 when no token is configured for the provider, so a client can
+    hide the status instead of showing an error.
+    """
+    try:
+        return await get_provider_pull_request(
+            get_config(request), provider, owner, repo, number
+        )
+    except UnsupportedGitProviderError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except MissingGitProviderTokenError as e:
+        raise HTTPException(status_code=424, detail=str(e)) from e
     except GitProviderAPIError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e)) from e
 

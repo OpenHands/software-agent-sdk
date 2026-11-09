@@ -741,3 +741,18 @@ class BashEventSortOrder(Enum):
 class BashEventPage(OpenHandsModel):
     items: list[BashEventBase]
     next_page_id: str | None = None
+
+
+class GitPullRequestStatus(BaseModel):
+    """Live state of one pull request on a git provider, for status badges."""
+
+    state: Literal["open", "closed", "merged"]
+    draft: bool = False
+    title: str
+    url: str
+    checks: Literal["success", "failure", "pending", "none"] = Field(
+        description=(
+            "Combined result of the head commit's check runs and commit statuses. "
+            "'none' when the commit has neither."
+        )
+    )

@@ -22,6 +22,7 @@ from openhands.sdk.git.models import (
     GitProviderRepository,
     GitProviderRepositoryPage,
 )
+from openhands.sdk.workspace.repo import GitProvider
 
 
 @pytest.fixture
@@ -719,3 +720,48 @@ def test_git_empty_path_is_rejected(client, tmp_path, monkeypatch, endpoint):
     response = client.get(f"/api/git/{endpoint}", params={"path": ""})
 
     assert response.status_code == 400
+
+
+def test_git_pull_request_status_success(client):
+    """GET /api/git/pull-requests/{owner}/{repo}/{number} returns the PR badge."""
+    from openhands.agent_server.models import GitPullRequestStatus
+
+    status = GitPullRequestStatus(
+        state="open",
+        draft=False,
+        title="Add projects",
+        url="https://github.com/o/r/pull/7",
+        checks="pending",
+    )
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+    ) as get_pr:
+        get_pr.return_value = status
+        response = client.get("/api/git/pull-requests/o/r/7")
+
+    assert response.status_code == 200
+    assert response.json() == status.model_dump()
+    await_args = get_pr.await_args
+    assert await_args is not None
+    assert await_args.args[1:] == (GitProvider.GITHUB, "o", "r", 7)
+
+
+def test_git_pull_request_status_without_token_is_424(client):
+    from openhands.agent_server.git_provider_service import (
+        MissingGitProviderTokenError,
+    )
+
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+        side_effect=MissingGitProviderTokenError("No github token is configured"),
+    ):
+        response = client.get("/api/git/pull-requests/o/r/7")
+
+    assert response.status_code == 424
+
+
+def test_git_pull_request_status_rejects_bad_owner(client):
+    response = client.get("/api/git/pull-requests/o%20x/r/7")
+    assert response.status_code == 422
