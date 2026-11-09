@@ -2,9 +2,11 @@
 
 A reaction is a small emoji on a message: the agent's way to say "seen, working
 on it" before it answers, and the person's way to acknowledge an answer without
-writing back. Both are saved as a non-LLM `ReactionEvent` (`target_event_id`,
+writing back. Both are saved as a `ReactionEvent` (`target_event_id`,
 `emoji`, `removed`, `source`), so clients fold them into each message's current
-set and the model never sees them. The agent reacts with the `react` and
+set. The agent sees the person's reactions on its next turn as one line (the
+emoji and the message's text, clipped to its last 500 characters, saved on
+the event as `target_text_ending`); it never sees its own. The agent reacts with the `react` and
 `unreact` tools, whose executor only reads the log: the observation carries the
 reaction and the agent records the `ReactionEvent` right after it, on its own
 thread. The person reacts through `POST /api/conversations/{id}/reactions`,
@@ -28,7 +30,7 @@ Routes: `POST /api/conversations/{conversation_id}/reactions`, `GET /api/setting
 
 - `F37.flag`: `GET /api/settings/experimental` lists `conversation_reactions` with `enabled: false` on a fresh server; `PATCH .../conversation_reactions` `{"enabled": true}` returns it on and the list agrees; an unknown key is 404.
 - `F37.flag-gates`: with the flag off, `POST .../reactions` is 409 and a new conversation has no `react`/`unreact`; with it on, a new conversation started without naming them has both tools.
-- `F37.rest`: `POST .../reactions` with `{emoji, target_event_id}` saves a user `ReactionEvent` on that message and returns it; `removed: true` saves the removal; the conversation stays `idle`.
+- `F37.rest`: `POST .../reactions` with `{emoji, target_event_id}` saves a user `ReactionEvent` on that message, with the end of its text in `target_text_ending`, and returns it; `removed: true` saves the removal; the conversation stays `idle`.
 - `F37.rest-validation`: an emoji outside the set is 422, an unknown target is 400, and leaving out the target with no agent message yet is 400; nothing is saved.
 - `F37.tool`: an agent with `react` reacts to the person's latest message when asked to react first, and leaves the reaction on after it answers: the log has the tool's `ObservationEvent`, then one agent `ReactionEvent` whose parent is that observation and whose target is that message, and no removal.
 - `F37.rest-default`: after the agent has answered, a reaction without `target_event_id` goes on its answer: the latest agent message or `finish`.
@@ -85,7 +87,7 @@ Preconditions:
   ```sh
   control-agent-server api POST "/api/conversations/$RC/reactions" --json "{\"emoji\": \"heart\", \"target_event_id\": \"$RM\"}" \
     --expect 200 --check kind eq ReactionEvent --check source eq user --check emoji eq heart \
-    --check target_event_id eq "$RM" --check removed eq false --save F37.rest/add
+    --check target_event_id eq "$RM" --check removed eq false --check target_text_ending eq 'QA_F37 hello' --save F37.rest/add
   control-agent-server api POST "/api/conversations/$RC/reactions" --json "{\"emoji\": \"heart\", \"target_event_id\": \"$RM\", \"removed\": true}" \
     --expect 200 --check removed eq true
   control-agent-server api GET "/api/conversations/$RC/events/search" --query kind=ReactionEvent --check items len-eq 2
@@ -185,8 +187,8 @@ Preconditions:
   change the tools of running conversations, only the REST route. Child
   conversations reuse their parent's agent, and so its tools.
 
-- Reactions do not wake the agent. A person's `+1` on a question is not an
-  answer yet.
+- Reactions do not wake the agent. A person's `+1` on a question is read on the
+  agent's next turn, when the person writes again.
 - The agent's `react` call is an ordinary tool call, so the `ActionEvent` and
   its short `ObservationEvent` stay in the log next to the `ReactionEvent`;
   clients that show reactions as chips can hide that pair.
