@@ -498,6 +498,9 @@ def test_the_tool_that_steers_conversations_brings_the_coordinator_role(tmp_path
     guidance = message_tool.prompt_guidance or ""
     assert guidance.startswith("<PROJECT_COORDINATOR>")
     assert "unless the person asks you to do it here" in guidance
+    # It explains the feature as the person sees it, and keeps the cat's voice.
+    for topic in ("needs input", "resolving it", "Project memory", "emoji", "herd"):
+        assert topic in guidance
     assert list_tool.prompt_guidance is None
     assert ReadProjectConversationTool.name == "read_project_conversation"
 
