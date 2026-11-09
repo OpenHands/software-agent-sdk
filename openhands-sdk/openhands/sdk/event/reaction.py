@@ -6,9 +6,10 @@ from typing import Final, Literal, get_args
 from pydantic import Field
 from rich.text import Text
 
-from openhands.sdk.event.base import Event
+from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import ActionEvent, MessageEvent
 from openhands.sdk.event.types import EventID, SourceType
+from openhands.sdk.llm import Message, TextContent
 
 
 ReactionEmoji = Literal[
@@ -28,13 +29,26 @@ _GLYPHS: Final[dict[str, str]] = {
 }
 
 
-class ReactionEvent(Event):
+REACTION_TEXT_ENDING_MAX: Final[int] = 500
+"""How much of the end of a reacted message a person's reaction keeps."""
+
+CLIPPED_MESSAGE_START: Final[str] = (
+    "<clipped message start, if you need it find the message with the ending below>"
+)
+
+
+class ReactionEvent(LLMConvertibleEvent):
     """An emoji reaction added to, or removed from, a message.
 
     The agent reacts with the ``react``/``unreact`` tools, and a person
     through ``POST /api/conversations/{id}/reactions``. Clients fold these
     events into each message's current set of reactions: the latest event for
-    a (message, emoji, source) wins. Reactions never reach the LLM.
+    a (message, emoji, source) wins.
+
+    The agent sees the person's reactions on its next turn, as one line naming
+    the emoji and the end of the message (``target_text_ending``); a reaction
+    does not start a run. Its own reactions stay out of what it sees
+    (``View`` skips them): its ``react`` call is already there.
     """
 
     source: SourceType = "user"
@@ -48,6 +62,33 @@ class ReactionEvent(Event):
     removed: bool = Field(
         default=False, description="True when this removes the reaction."
     )
+    target_text_ending: str | None = Field(
+        default=None,
+        description=(
+            "The end of the reacted message's text, at most "
+            f"{REACTION_TEXT_ENDING_MAX} characters, saved with the person's "
+            "reaction so the agent can tell which message it is about."
+        ),
+    )
+    target_text_clipped: bool = Field(
+        default=False,
+        description="True when the message is longer than `target_text_ending`.",
+    )
+
+    def to_llm_message(self) -> Message:
+        who = "The person" if self.source == "user" else "You"
+        which = "a message." if self.target_text_ending is None else "this message:"
+        if self.removed:
+            line = f"[{who} took back the {self.glyph} reaction on {which}]"
+        else:
+            line = f"[{who} reacted {self.glyph} to {which}]"
+        if self.target_text_ending is None:
+            text = line
+        elif self.target_text_clipped:
+            text = f"{line}\n{CLIPPED_MESSAGE_START}\n{self.target_text_ending}"
+        else:
+            text = f"{line}\n{self.target_text_ending}"
+        return Message(role="user", content=[TextContent(text=text)])
 
     @property
     def glyph(self) -> str:
@@ -78,6 +119,24 @@ def is_reactable(event: Event) -> bool:
         and event.source == "agent"
         and event.tool_name == _FINISH_TOOL_NAME
     )
+
+
+def reaction_target_text(event: Event) -> tuple[str, bool]:
+    """The end of a reactable message's text, and whether it was clipped."""
+    from openhands.sdk.tool.builtins.finish import FinishAction
+
+    if isinstance(event, MessageEvent):
+        text = "\n".join(
+            c.text for c in event.llm_message.content if isinstance(c, TextContent)
+        )
+    elif isinstance(event, ActionEvent) and isinstance(event.action, FinishAction):
+        text = event.action.message
+    else:
+        text = ""
+    text = text.strip()
+    if len(text) <= REACTION_TEXT_ENDING_MAX:
+        return text, False
+    return text[-REACTION_TEXT_ENDING_MAX:], True
 
 
 def find_reaction_target(

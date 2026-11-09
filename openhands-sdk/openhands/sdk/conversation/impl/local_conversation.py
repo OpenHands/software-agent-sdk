@@ -57,6 +57,7 @@ from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.event.reaction import (
     check_reaction_emoji,
     find_reaction_target,
+    reaction_target_text,
 )
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
@@ -2087,7 +2088,8 @@ class LocalConversation(BaseConversation):
 
         Without ``target_event_id`` it reacts to the agent's latest message.
         The agent reacts through the ``react``/``unreact`` tools instead.
-        A reaction does not wake the agent.
+        A reaction does not wake the agent; it sees it on its next turn, with
+        the end of the message's text.
 
         Raises:
             ValueError: The emoji is not allowed, or there is no such message.
@@ -2097,8 +2099,14 @@ class LocalConversation(BaseConversation):
             target = find_reaction_target(
                 self._state.active_branch(), target_event_id, source="user"
             )
+            ending, clipped = reaction_target_text(target)
             event = ReactionEvent(
-                source="user", target_event_id=target.id, emoji=checked, removed=removed
+                source="user",
+                target_event_id=target.id,
+                emoji=checked,
+                removed=removed,
+                target_text_ending=ending,
+                target_text_clipped=clipped,
             )
             self._on_event(event)
         return event
