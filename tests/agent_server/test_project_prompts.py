@@ -104,3 +104,12 @@ def test_headers_name_the_conversation_as_a_mention():
         assert header.count("]") == 2
     assert headers[2].startswith(AWARENESS_PREFIXES)
     assert headers[3].startswith(AWARENESS_PREFIXES)
+
+
+def test_guidance_puts_the_persons_messages_above_the_coordinators():
+    """Live: after a condensation, a worker took the person's direct rename
+    for a coordinator note and shipped the coordinator's wording instead."""
+    text = worker_guidance("Cat", uuid4())
+
+    assert "The person's own messages outrank the coordinator's" in text
+    assert "summary of earlier events may lose who wrote what" in text
