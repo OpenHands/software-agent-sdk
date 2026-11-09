@@ -49,6 +49,19 @@ class StuckDetector:
         # (e.g. an empty/reasoning-only response that adds no new action)
         # doesn't re-emit the same nudge every iteration.
         self._last_nudged_error_event_id: str | None = None
+        # Id of the last event when a stuck conversation was resumed; only
+        # events after it count, like events after a new user message.
+        self._resumed_after_event_id: str | None = None
+
+    def mark_resumed(self) -> None:
+        """Start a fresh detection window at the current end of the history.
+
+        Called when ``run()`` resumes a STUCK conversation. Without it, the
+        repeated events that made it stuck are still in the window, so the
+        detector sets STUCK again before the agent takes another step.
+        """
+        events = self.state.active_branch(limit=1)
+        self._resumed_after_event_id = events[-1].id if events else None
 
     @property
     def action_observation_threshold(self) -> int:
@@ -86,6 +99,17 @@ class StuckDetector:
         )
         if last_user_msg_index != -1:
             events = events[last_user_msg_index + 1 :]
+        if self._resumed_after_event_id is not None:
+            resume_index = next(
+                (
+                    i
+                    for i in reversed(range(len(events)))
+                    if events[i].id == self._resumed_after_event_id
+                ),
+                -1,
+            )
+            if resume_index != -1:
+                events = events[resume_index + 1 :]
         return events
 
     def _collect_actions_and_observations(
