@@ -95,7 +95,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._working_dir = working_dir
         self._username = username
         self._no_change_timeout_seconds = no_change_timeout_seconds
-        self._terminal_type = terminal_type
+        self._terminal_type: Literal["tmux", "subprocess", "powershell"] | None = (
+            terminal_type
+        )
         self._env = normalize_terminal_env(env)
         self._max_panes = max_panes
         self.full_output_save_dir: str | None = full_output_save_dir
@@ -403,7 +405,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             work_dir=original_work_dir,
             username=original_username,
             no_change_timeout_seconds=original_no_change_timeout,
-            terminal_type=None,
+            terminal_type=self._terminal_type,
             shell_path=self.shell_path,
             env=self._env,
         )
