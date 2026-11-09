@@ -70,6 +70,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the person writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the person in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
 - `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_project_conversation` tool reads it.
 - `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the person), and runs again.
+- `F36.mention`: tools and headers name conversations as mentions, `[Title](conversation:<id hex>)`: `list_project_conversations` lists each conversation that way, and a coordinator asked which conversation handles a task answers with that mention.
 - `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
 
 ## How to get to it (agent POV)
@@ -318,12 +319,12 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 10 --save F36.turn/answered
   W2_HEX=$(printf %s "$W2" | tr -d -)
   for _ in $(seq 30); do
-    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $W2_HEX), a conversation in your project, to the person" --expect-min 2 >/dev/null 2>&1 && break
+    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the person" --expect-min 2 >/dev/null 2>&1 && break
     sleep 2
   done
-  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $W2_HEX), a conversation in your project. For your awareness" --expect-min 2 \
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project. For your awareness" --expect-min 2 \
     --save F36.turn/coordinator-copies
-  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $W2_HEX), a conversation in your project, to the person" --expect-min 2
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the person" --expect-min 2
   control-agent-server api GET "/api/conversations/$CAT" --check execution_status eq idle
   ```
   A question finishes as `asked` with the question as `ask` and lists as
@@ -456,11 +457,11 @@ Preconditions:
   Needs: `llm`
   ```sh
   for _ in $(seq 60); do
-    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $(printf %s "$CHILD" | tr -d -))" --expect-min 1 >/dev/null 2>&1 && break
+    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$(printf %s "$CHILD" | tr -d -))" --expect-min 1 >/dev/null 2>&1 && break
     sleep 2
   done
   CHILD_HEX=$(printf %s "$CHILD" | tr -d -)
-  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $CHILD_HEX), a conversation in your project" \
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$CHILD_HEX), a conversation in your project" \
     --expect-count 1 --save F36.wake/update
   control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "\"sender\": \"conversation:$CHILD_HEX\"" --expect-count 1
   control-agent-server conversation wait "$CAT" --until finished --timeout 300
@@ -491,6 +492,21 @@ Preconditions:
   ```
   The child receives a second user message, marked as the coordinator's, and
   finishes a second run.
+- **Model-backed: mentions (`F36.mention`).**
+  Requires: `F36.tool-start-and-list`
+  Needs: `llm`
+  ```sh
+  CHILD_HEX=$(printf %s "$CHILD" | tr -d -)
+  control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains "[qa-f36-child](conversation:$CHILD_HEX)" --expect-min 1 \
+    --save F36.mention/list
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Which conversation did you start for the qa-f36-child task? Answer in one sentence that names it for me. Do nothing else.'
+  control-agent-server conversation events "$CAT" --kinds ActionEvent,MessageEvent --show 1 --full --save F36.mention/answer \
+    | jq -r '.events[-1] | select(.source == "agent") | (.llm_message.content[0].text // .action.message // "")' \
+    | grep -F "](conversation:$CHILD_HEX)"
+  ```
+  The list observation names the child as a mention, and the coordinator's
+  last message, its answer, carries the same link although the prompt does not
+  say how to write it (the routing guidance does). Needs `jq`.
 - **Model-backed: no approval by message (`F36.tool-message-refuses-confirmation`).**
   Requires: `F36.attention`, `F36.tool-start-and-list`
   Needs: `llm`, `tmux`
