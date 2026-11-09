@@ -165,11 +165,32 @@ export interface ThinkEvent extends BaseEvent {
   thought: string;
 }
 
+/** Emoji shortcodes a reaction can use. */
+export type ReactionEmoji = 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+
+/**
+ * Reaction event - an emoji put on (or taken off) a message.
+ *
+ * The latest event for a (target, emoji, source) triple is the current state.
+ * Reactions never reach the LLM. Needs the `conversation_reactions` feature.
+ */
+export interface ReactionEvent extends BaseEvent {
+  kind: 'ReactionEvent';
+  /** The message or finish action the reaction is on */
+  target_event_id: EventID;
+  emoji: ReactionEmoji;
+  /** True when this event takes the reaction off */
+  removed: boolean;
+  /** Who reacted: the agent or the person */
+  source: 'agent' | 'user';
+}
+
 /**
  * Union type of all conversation events
  */
 export type ConversationEvent =
   | AgentServerEvent
+  | ReactionEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
   | StuckDetectionEvent
@@ -181,6 +202,13 @@ export type ConversationEvent =
  */
 export function isMessageEvent(event: BaseEvent): event is MessageEvent {
   return event.kind === 'MessageEvent';
+}
+
+/**
+ * Type guard to check if an event is a ReactionEvent
+ */
+export function isReactionEvent(event: BaseEvent): event is ReactionEvent {
+  return event.kind === 'ReactionEvent';
 }
 
 /**

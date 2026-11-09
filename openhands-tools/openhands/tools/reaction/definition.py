@@ -33,7 +33,7 @@ class ReactAction(Action):
     """Put an emoji reaction on a message."""
 
     emoji: ReactionEmoji = Field(description="The emoji, as a shortcode.")
-    message_id: str | None = _MESSAGE_ID
+    message_id: EventID | None = _MESSAGE_ID
 
     @property
     def visualize(self) -> Text:
@@ -44,7 +44,7 @@ class UnreactAction(Action):
     """Take an emoji reaction off a message."""
 
     emoji: ReactionEmoji = Field(description="The emoji to remove, as a shortcode.")
-    message_id: str | None = _MESSAGE_ID
+    message_id: EventID | None = _MESSAGE_ID
 
     @property
     def visualize(self) -> Text:
@@ -82,10 +82,11 @@ class ReactionObservation(Observation):
 
 
 _GUIDANCE = (
-    "Give each message from the person the smallest visible sign that fits it: "
-    "react (for example with eyes) when the work comes before your answer, and "
-    "unreact once you have answered. Do not react to a message you are "
-    "answering right away. Reacting does not end your turn."
+    "React when it helps the person see where things stand, for example with "
+    "eyes when you start on work that comes before your answer, or +1 for a "
+    "note that needs no reply. Do this whenever the person asks you to react. "
+    "A reaction stays on the message: unreact only to take back one that no "
+    "longer fits, or when the person asks. Reacting does not end your turn."
 )
 
 _REACT_DESCRIPTION = (
@@ -102,7 +103,8 @@ def _annotations() -> ToolAnnotations:
     return ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,
-        idempotentHint=True,
+        # Each call records a new ReactionEvent.
+        idempotentHint=False,
         openWorldHint=False,
     )
 

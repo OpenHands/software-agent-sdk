@@ -5264,6 +5264,44 @@ export type ExecuteBashRequest = {
 };
 
 /**
+ * ExperimentalFeature
+ *
+ * A feature and whether it is on for this user.
+ */
+export type ExperimentalFeature = {
+  /**
+   * Default
+   */
+  default: boolean;
+  /**
+   * Description
+   */
+  description: string;
+  /**
+   * Enabled
+   */
+  enabled: boolean;
+  /**
+   * Key
+   */
+  key: 'conversation_reactions';
+  /**
+   * Label
+   */
+  label: string;
+};
+
+/**
+ * ExperimentalFeatureUpdate
+ */
+export type ExperimentalFeatureUpdate = {
+  /**
+   * Enabled
+   */
+  enabled: boolean;
+};
+
+/**
  * ExposedUrl
  *
  * Represents an exposed URL from the sandbox.
@@ -25316,6 +25354,10 @@ export type ReactToMessageApiConversationsConversationIdReactionsPostErrors = {
    */
   404: unknown;
   /**
+   * Conversation reactions are turned off
+   */
+  409: unknown;
+  /**
    * Validation Error
    */
   422: HttpValidationError;
@@ -28922,6 +28964,61 @@ export type GetConversationSettingsSchemaApiSettingsConversationSchemaGetRespons
 
 export type GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponse =
   GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponses[keyof GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponses];
+
+export type ListExperimentalFeaturesApiSettingsExperimentalGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: '/api/settings/experimental';
+};
+
+export type ListExperimentalFeaturesApiSettingsExperimentalGetResponses = {
+  /**
+   * Response List Experimental Features Api Settings Experimental Get
+   *
+   * Successful Response
+   */
+  200: Array<ExperimentalFeature>;
+};
+
+export type ListExperimentalFeaturesApiSettingsExperimentalGetResponse =
+  ListExperimentalFeaturesApiSettingsExperimentalGetResponses[keyof ListExperimentalFeaturesApiSettingsExperimentalGetResponses];
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchData = {
+  body: ExperimentalFeatureUpdate;
+  path: {
+    /**
+     * Key
+     */
+    key: string;
+  };
+  query?: never;
+  url: '/api/settings/experimental/{key}';
+};
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchErrors = {
+  /**
+   * There is no feature with this key
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchError =
+  UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchErrors[keyof UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchErrors];
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: ExperimentalFeature;
+};
+
+export type UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponse =
+  UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponses[keyof UpdateExperimentalFeatureApiSettingsExperimentalKeyPatchResponses];
 
 export type DeleteMcpServerApiSettingsMcpSettingsKeyDeleteData = {
   body?: never;

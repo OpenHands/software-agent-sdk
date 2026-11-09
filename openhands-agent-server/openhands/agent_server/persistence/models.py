@@ -200,6 +200,15 @@ class PersistedSettings(BaseModel):
         description="Name of the currently active meta-profile used for "
         "intelligent model routing.",
     )
+    experimental_features: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Feature flags the user turned on or off, by feature key. A key "
+            "that is absent uses the feature's default. Changed through "
+            "PATCH /api/settings/experimental/{key}; see "
+            "openhands.agent_server.experimental_features for the known features."
+        ),
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -410,6 +419,11 @@ class PersistedSettings(BaseModel):
           (removed deprecated live input paths; persisted inputs still migrate).
         - **v7** (current): nested ``agent_settings`` advanced to schema v10
           (MCP servers with neither ``command`` nor ``url`` are dropped).
+
+        ``experimental_features`` (user feature flags) was added within v7
+        without a bump: it is additive and defaults to empty. An older server
+        ignores it and drops it on its next save, so after a downgrade the
+        user's flags fall back to their defaults.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
