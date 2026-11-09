@@ -753,8 +753,8 @@ async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
     assert launch.parent_id.hex in suffix
     assert launch.child.parent_conversation_id == launch.parent_id
     assert launch.child.title == "Login fix"
-    assert "project" in launch.child.tags and "insiderrole" in launch.child.tags
-    assert "resolved" not in launch.child.tags
+    # Only the project tag: the parent's app markers describe the parent.
+    assert set(launch.child.tags) == {"project"}
     launch.services[child_id].send_message.assert_awaited_once_with(
         Message(role="user", content=[TextContent(text="Fix the login bug")]),
         False,

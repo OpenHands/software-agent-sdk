@@ -2328,10 +2328,11 @@ class ConversationService:
     ) -> StartChildConversationResponse:
         """Start a project member's new conversation from an agent profile.
 
-        It keeps what makes it part of the project: the parent's tags and
-        workspace (in a worktree when asked), the parent link, the person's
-        confirmation policy, plugins, hooks and secrets, the parent as sender
-        of the task, the worker guidance, and the project tools a worker uses.
+        It keeps what makes it part of the project: the ``project`` tag, the
+        parent's workspace (in a worktree when asked), the parent link, the
+        person's confirmation policy, plugins, hooks and secrets, the parent
+        as sender of the task, the worker guidance, and the project tools a
+        worker uses.
         It does not take the parent's agent, launch additions or client tools.
         """
         parent_stored = parent_service.stored
@@ -2360,11 +2361,9 @@ class ConversationService:
                     *await _project_memory_content(parent_stored.tags),
                 ],
             ),
-            tags={
-                key: value
-                for key, value in parent_stored.tags.items()
-                if key not in BOARD_TAG_KEYS
-            },
+            # A worker joins the project and nothing else: the parent's other
+            # tags (an app's role or controller markers) describe the parent.
+            tags={PROJECT_TAG_KEY: parent_stored.tags[PROJECT_TAG_KEY]},
             autotitle=request.title is None,
             prompt=None,
         )
