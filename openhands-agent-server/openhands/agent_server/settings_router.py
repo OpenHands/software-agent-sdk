@@ -7,20 +7,16 @@ from pydantic import ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
-    get_cipher,
-    get_config,
     parse_expose_secrets_header,
     profile_key_mismatch,
     store_errors,
     translate_missing_cipher,
 )
+from openhands.agent_server.dependencies import get_cipher, get_config, get_stores
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
     PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    get_secrets_store,
-    get_settings_store,
+    ServerStores,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
@@ -153,7 +149,7 @@ async def get_settings(request: Request) -> SettingsResponse:
     """
     expose_mode = parse_expose_secrets_header(request)
     config = get_config(request)
-    store = get_settings_store(config)
+    store = get_stores(request).settings
     settings = store.load() or PersistedSettings()
 
     # Audit log all settings access for security visibility
@@ -248,14 +244,14 @@ def update_settings(
             ),
         )
 
-    _require_pointer_targets(update_data)
+    _require_pointer_targets(get_stores(request), update_data)
     return _apply_settings_update(
         request,
         cast(SettingsUpdatePayload, update_data),
     )
 
 
-def _require_pointer_targets(update_data: dict) -> None:
+def _require_pointer_targets(stores: ServerStores, update_data: dict) -> None:
     """Refuse agent-profile / meta-profile pointers that name nothing.
 
     Mirrors ``POST /api/agent-profiles/{id}/activate`` and
@@ -264,7 +260,7 @@ def _require_pointer_targets(update_data: dict) -> None:
     profile_id = update_data.get("active_agent_profile_id")
     if profile_id is not None:
         with store_errors():
-            known = get_agent_profile_store().name_for_id(profile_id) is not None
+            known = stores.agent_profiles.name_for_id(profile_id) is not None
         if not known:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -294,7 +290,7 @@ def _load_active_profile_llm(
         return None
 
     cipher = get_cipher(request)
-    profile_store = get_llm_profile_store()
+    profile_store = get_stores(request).llm_profiles
     # ``load`` resolves any referenced provider connection (read-at-use); a
     # dangling reference raises ProviderConnectionNotFound, which
     # store_errors() maps to 422. A key the cipher cannot decrypt is refused
@@ -354,7 +350,7 @@ def _apply_settings_update(
         return settings
 
     config = get_config(request)
-    store = get_settings_store(config)
+    store = get_stores(request).settings
     client_host = request.client.host if request.client else "unknown"
     try:
         settings = store.update(apply_update)
@@ -507,13 +503,12 @@ def list_secrets(
     request: Request, agent_profile_id: str | None = None
 ) -> SecretsListResponse:
     """List available secret names, optionally scoped by an agent profile."""
-    config = get_config(request)
-    store = get_secrets_store(config)
+    store = get_stores(request).secrets
     secrets = store.load()
 
     allowed_names: set[str] | None = None
     if agent_profile_id is not None:
-        profile_store = get_agent_profile_store()
+        profile_store = get_stores(request).agent_profiles
         # store_errors() answers an unloadable profile (400) and a busy store
         # (503) the way the agent-profile routes do.
         with store_errors():
@@ -555,8 +550,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     """
     _validate_secret_name(name)
 
-    config = get_config(request)
-    store = get_secrets_store(config)
+    store = get_stores(request).secrets
     value = store.get_secret(name)
 
     client_host = request.client.host if request.client else "unknown"
@@ -594,8 +588,7 @@ async def create_secret(
             detail="Secret value must not be empty or redacted",
         )
 
-    config = get_config(request)
-    store = get_secrets_store(config)
+    store = get_stores(request).secrets
 
     try:
         store.set_secret(
@@ -639,8 +632,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """
     _validate_secret_name(name)
 
-    config = get_config(request)
-    store = get_secrets_store(config)
+    store = get_stores(request).secrets
 
     client_host = request.client.host if request.client else "unknown"
     try:

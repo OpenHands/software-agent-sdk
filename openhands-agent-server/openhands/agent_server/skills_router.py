@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
     MarketplaceSkillInfo,
@@ -304,8 +305,7 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
     if request.org_configs:
         org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
 
-    config = getattr(http_request.app.state, "config", None)
-    server_registrations = config.registered_marketplaces if config is not None else []
+    server_registrations = get_config(http_request).registered_marketplaces
     registered_marketplaces = _merge_registered_marketplaces(
         server_registrations,
         request.registered_marketplaces,

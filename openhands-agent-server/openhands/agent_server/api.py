@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
 )
@@ -41,14 +42,11 @@ from openhands.agent_server.config import (
     V1_SESSION_API_KEY_ENV,
     Config,
     export_session_api_key,
-    get_default_config,
+    load_config,
 )
 from openhands.agent_server.conversation_lease import (
     ConversationOwnershipLostError,
     _is_pid_alive,
-)
-from openhands.agent_server.conversation_registry import (
-    create_conversation_registry,
 )
 from openhands.agent_server.conversation_router import (
     conversation_catalog_router,
@@ -88,6 +86,11 @@ from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
+)
+from openhands.agent_server.server_context import (
+    build_server_context,
+    install_server_context,
+    server_context_of,
 )
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -316,28 +319,31 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         if backend_manager is not None:
             await backend_manager.reap_orphans()
 
-        config: Config = api.state.config
+        context = server_context_of(api)
+        config = context.config
         deferred = config.deferred_init
-        conversation_registry = getattr(
-            api.state, "conversation_registry", None
-        ) or create_conversation_registry(config)
-        api.state.conversation_registry = conversation_registry
+        conversation_registry = context.conversation_registry
 
         # Answer our own LookupSecret URLs in-process; a loopback fetch made
-        # from the event loop cannot be served by the loop blocked on it.
-        secret_resolution = local_secret_resolution(config)
+        # from the event loop cannot be served by the loop blocked on it. The
+        # store is looked up per resolution: POST /api/init replaces it.
+        secret_resolution = local_secret_resolution(
+            lambda: server_context_of(api).stores.secrets
+        )
         secret_resolution.__enter__()
 
         # Deferred pods boot with telemetry disabled and are rebuilt by
         # InitService, so they emit `server_started` there instead.
-        api.state.telemetry_sink = await build_telemetry_sink(config)
+        api.state.telemetry_sink = await build_telemetry_sink(
+            config, context.stores.settings
+        )
         if not deferred:
             emit_server_started()
 
         seal_tool_catalog()
 
-        vscode_service = get_vscode_service()
-        tool_preload_service = get_tool_preload_service()
+        vscode_service = get_vscode_service(config)
+        tool_preload_service = get_tool_preload_service(config)
 
         # Define async functions for starting each service
         async def start_vscode_service():
@@ -416,29 +422,35 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
-        await asyncio.to_thread(reencrypt_stale_stores, config)
+        await asyncio.to_thread(reencrypt_stale_stores, context.stores)
         #
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.
         export_session_api_key(config)
-        # Not get_default_conversation_service(): it rebuilds config from OH_*
-        # env, ignoring the config passed to create_app().
-        service = ConversationService.get_instance(config)
+        service = ConversationService.get_instance(config, context.stores)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
-        bash_svc = get_default_bash_event_service()
-        api.state.bash_event_service = bash_svc
+        bash_svc = BashEventService(
+            bash_events_dir=config.bash_events_dir, cipher=config.cipher
+        )
 
         conversation_registry.configure_service(service)
         # Runtime cleanup must precede external-catalog recovery so stale
         # runtime owners cannot lose their expired leases to the outer service.
         await conversation_registry.start()
 
-        async with service:
-            api.state.conversation_service = service
+        async with bash_svc, service:
+            # The same config, stores and registry, now with their services.
+            install_server_context(
+                api,
+                replace(
+                    context,
+                    conversation_service=service,
+                    bash_event_service=bash_svc,
+                ),
+            )
 
-            config = api.state.config
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
@@ -570,7 +582,7 @@ class AgentServerApp(FastAPI):
     def build_middleware_stack(self) -> ASGIApp:
         # ServerErrorMiddleware creates unhandled 500 responses outside user
         # middleware, so CORS must wrap the complete stack to decorate them.
-        config = self.state.config
+        config = server_context_of(self).config
         return CORSDispatcher(
             super().build_middleware_stack(),
             allow_origins=config.allow_cors_origins,
@@ -617,7 +629,7 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
 
 def _add_api_routes(app: FastAPI) -> None:
     """Add all API routes to the FastAPI application."""
-    conversation_registry = app.state.conversation_registry
+    conversation_registry = server_context_of(app).conversation_registry
     app.include_router(server_details_router)
 
     # The /api/init endpoint bypasses both the session-key auth and the
@@ -632,8 +644,8 @@ def _add_api_routes(app: FastAPI) -> None:
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
     # here so that we don't expand the CSRF surface across the whole API.
-    # check_session_api_key reads config from request.app.state at request time,
-    # so keys delivered via POST /api/init are honoured without re-registering routes.
+    # check_session_api_key reads the server context at request time, so keys
+    # delivered via POST /api/init are honoured without re-registering routes.
     dependencies = [
         # Dormant gate: 503s every /api/* route until POST /api/init completes.
         # No-op for non-deferred deployments.
@@ -937,17 +949,19 @@ def create_app(config: Config | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
-        config: Configuration object. If None, uses default config.
+        config: Configuration object. If None, it is loaded from the config
+            file and the ``OH_*`` environment variables.
 
     Returns:
         Configured FastAPI application.
     """
     if config is None:
-        config = get_default_config()
+        config = load_config()
     app = _create_fastapi_instance(config)
-    app.state.config = config
-    app.state.conversation_registry = create_conversation_registry(config)
-    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
+    install_server_context(app, build_server_context(config))
+    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager(
+        secrets_store=lambda: server_context_of(app).stores.secrets
+    )
     app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)

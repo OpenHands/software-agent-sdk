@@ -99,7 +99,9 @@ def test_launch_addition_uses_existing_acp_prompt_path():
 
 @pytest.mark.parametrize("profile_launch", [False, True])
 @pytest.mark.asyncio
-async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp_path):
+async def test_launch_additions_apply_after_agent_resolution(
+    profile_launch, tmp_path, server_stores
+):
     profile = OpenHandsAgentProfile(
         name="p",
         llm_profile_ref="default",
@@ -132,7 +134,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
         execution_status=ConversationExecutionStatus.IDLE,
     )
     captured: dict[str, Any] = {}
-    service = ConversationService(conversations_dir=tmp_path)
+    service = ConversationService(conversations_dir=tmp_path, stores=server_stores)
     service._event_services = {}
 
     async def capture_start(stored, **kwargs):

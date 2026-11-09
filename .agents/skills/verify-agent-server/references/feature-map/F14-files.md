@@ -922,7 +922,7 @@ Preconditions:
   event file, skips a top-level `acp/` directory, and redacts JSON/JSONL
   credential fields plus any Fernet token. It writes a fixed temp name
   (`F14.trajectory-concurrent`) and reads `conversations_path` from the live
-  `app.state.config`, so it follows an init-time path
+  server context's config, so it follows an init-time path
   (`F14.trajectory-init-path`).
 - No file route emits conversation events or WebSocket frames; their second
   views are downloads, listings, archives and the disk.

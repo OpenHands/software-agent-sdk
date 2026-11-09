@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.launch import configured_browser_available
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.hooks.config import HookConfig
@@ -137,7 +137,7 @@ def get_sub_agents(
         include_project=request.load_project,
         include_user=request.load_user,
     )
-    config: Config = http_request.app.state.config
+    config = get_config(http_request)
     builtins = (
         discover_builtin_agents(
             enable_browser=configured_browser_available(config) is not False

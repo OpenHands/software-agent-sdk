@@ -38,6 +38,7 @@ from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.skills import Skill
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 
 
 def _make_skill(name: str, content: str = "skill body bytes") -> Skill:
@@ -156,8 +157,9 @@ class TestRouteIntegration:
 
         app = FastAPI()
         app.include_router(conversation_router, prefix="/api")
-        app.state.config = Config(
-            static_files_path=None, session_api_keys=[], secret_key=None
+        install_test_context(
+            app,
+            Config(static_files_path=None, session_api_keys=[], secret_key=None),
         )
         app.dependency_overrides[get_conversation_service] = lambda: service
         return TestClient(app), heavy_conversation
@@ -240,8 +242,9 @@ class TestRouteIntegration:
         service.batch_get_conversations.return_value = [None]
         app = FastAPI()
         app.include_router(conversation_router, prefix="/api")
-        app.state.config = Config(
-            static_files_path=None, session_api_keys=[], secret_key=None
+        install_test_context(
+            app,
+            Config(static_files_path=None, session_api_keys=[], secret_key=None),
         )
         app.dependency_overrides[get_conversation_service] = lambda: service
         c = TestClient(app)

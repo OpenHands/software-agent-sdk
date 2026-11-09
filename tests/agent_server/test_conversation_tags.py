@@ -23,11 +23,13 @@ from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 
 
 @pytest.fixture
 def client():
     app = FastAPI()
+    install_test_context(app)
     app.include_router(conversation_router, prefix="/api")
     return TestClient(app)
 

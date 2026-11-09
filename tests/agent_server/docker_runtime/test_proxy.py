@@ -5,6 +5,7 @@ import pytest
 from starlette.websockets import WebSocket
 
 from openhands.agent_server.docker_runtime.proxy import _bridge_websocket_loop
+from openhands.agent_server.persistence import ServerStores
 
 
 class Upstream:
@@ -197,12 +198,11 @@ async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     )
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    registry = DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("outer-key"),
-        )
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
     )
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     request, target = request_and_target()
     conversation_id = uuid4()
 

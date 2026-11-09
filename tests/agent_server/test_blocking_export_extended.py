@@ -35,9 +35,11 @@ async def test_blocking_batch_export_does_not_hold_shutdown(
     monkeypatch.setattr(
         "openhands.agent_server.api._TRACE_FLUSH_TIMEOUT_SECONDS", 0.05, raising=False
     )
-    monkeypatch.setattr("openhands.agent_server.api.get_vscode_service", lambda: None)
     monkeypatch.setattr(
-        "openhands.agent_server.api.get_tool_preload_service", lambda: None
+        "openhands.agent_server.api.get_vscode_service", lambda _config: None
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.api.get_tool_preload_service", lambda _config: None
     )
     monkeypatch.setattr(
         "openhands.agent_server.api.unseal_tool_catalog", lambda: cleanup.append(True)

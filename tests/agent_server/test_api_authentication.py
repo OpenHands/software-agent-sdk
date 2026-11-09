@@ -122,15 +122,7 @@ def test_api_server_details_no_auth_required(client_with_auth):
     assert response.status_code != 401
 
 
-def test_openai_routes_accept_bearer_session_key(client_with_auth, monkeypatch):
-    class EmptyProfileStore:
-        def list_summaries(self) -> list[dict[str, object]]:
-            return []
-
-    monkeypatch.setattr(
-        "openhands.agent_server.openai.service.get_llm_profile_store", EmptyProfileStore
-    )
-
+def test_openai_routes_accept_bearer_session_key(client_with_auth):
     response = client_with_auth.get("/v1/models")
     assert response.status_code == 401
 

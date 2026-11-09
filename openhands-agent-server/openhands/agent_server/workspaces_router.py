@@ -11,12 +11,11 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.dependencies import get_stores
 from openhands.agent_server.persistence import (
     PersistedWorkspaces,
     WorkspaceItem,
     WorkspaceParentItem,
-    get_workspaces_store,
 )
 from openhands.sdk.logger import get_logger
 
@@ -62,8 +61,7 @@ def _to_response(persisted: PersistedWorkspaces) -> WorkspacesListResponse:
 )
 async def list_workspaces(request: Request) -> WorkspacesListResponse:
     """Return the saved workspaces and workspace parents."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
+    store = get_stores(request).workspaces
     try:
         persisted = store.load()
     except (OSError, PermissionError):
@@ -92,8 +90,7 @@ async def add_workspaces(
     request: Request, payload: AddWorkspacesRequest
 ) -> WorkspacesListResponse:
     """Append workspaces to the saved list. Idempotent — dedupes by ``path``."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
+    store = get_stores(request).workspaces
 
     def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
         # Dedupe against the existing list AND within the incoming payload,
@@ -133,8 +130,7 @@ async def delete_workspace(
     path: Annotated[str, Query(description="Absolute workspace path to remove")],
 ) -> DeleteResponse:
     """Remove a workspace by its absolute path."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
+    store = get_stores(request).workspaces
 
     removed = False
 
@@ -172,8 +168,7 @@ async def add_workspace_parents(
     request: Request, payload: AddWorkspaceParentsRequest
 ) -> WorkspacesListResponse:
     """Append workspace parents. Idempotent — dedupes by ``path``."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
+    store = get_stores(request).workspaces
 
     def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
         # Dedupe against the existing list AND within the incoming payload —
@@ -214,8 +209,7 @@ async def delete_workspace_parent(
     path: Annotated[str, Query(description="Absolute workspace parent path to remove")],
 ) -> DeleteResponse:
     """Remove a workspace parent by its absolute path."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
+    store = get_stores(request).workspaces
 
     removed = False
 

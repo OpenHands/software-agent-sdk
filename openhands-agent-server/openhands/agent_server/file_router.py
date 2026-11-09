@@ -31,7 +31,7 @@ from openhands.agent_server._secret_redaction import (
     redacted_json_bytes,
     should_redact,
 )
-from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.models import FileUploadResult, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -944,7 +944,7 @@ async def download_trajectory(
     request: Request,
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
-    config: Config = request.app.state.config
+    config = get_config(request)
     temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 

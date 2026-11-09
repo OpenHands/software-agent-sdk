@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
@@ -106,7 +107,7 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
 
 @router.post("/prepare-for-sandbox-pause", include_in_schema=False)
 async def prepare_for_sandbox_pause(request: Request) -> Response:
-    await request.app.state.conversation_service.prepare_for_sandbox_pause()
+    await get_conversation_service(request).prepare_for_sandbox_pause()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -128,7 +129,7 @@ async def activate_credential_binding(
     )
     try:
         await _probe_binding(binding)
-        await request.app.state.conversation_service.activate_credential_binding(
+        await get_conversation_service(request).activate_credential_binding(
             conversation_id,
             secret_name,
             binding,

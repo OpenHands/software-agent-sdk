@@ -187,12 +187,14 @@ async def test_websocket_disconnect_breaks_loop(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -214,12 +216,14 @@ async def test_websocket_no_double_unsubscription(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -250,13 +254,15 @@ async def test_websocket_general_exception_continues_loop(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
         patch("openhands.agent_server.sockets.logger.exception") as log_exception,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -290,12 +296,14 @@ async def test_websocket_successful_message_processing(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -318,13 +326,15 @@ async def test_disconnect_and_unsubscribe_when_send_error_fails(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
         patch("openhands.agent_server.sockets.logger.debug") as log_debug,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -347,12 +357,14 @@ async def test_resend_mode_none_no_resend(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -389,12 +401,14 @@ async def test_resend_mode_all_resends_events(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -433,12 +447,14 @@ async def test_resend_mode_since_with_timestamp(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -464,13 +480,15 @@ async def test_resend_mode_since_without_timestamp_logs_warning(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
         patch("openhands.agent_server.sockets.logger") as mock_logger,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -510,12 +528,14 @@ async def test_resend_mode_since_timezone_aware_is_normalized(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -560,13 +580,15 @@ async def test_deprecated_resend_all_true_still_works(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
         patch("openhands.agent_server.sockets.logger") as mock_logger,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -596,12 +618,14 @@ async def test_deprecated_resend_all_false_no_resend(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 
@@ -624,13 +648,15 @@ async def test_resend_mode_takes_precedence_over_resend_all(
 
     with (
         patch(
-            "openhands.agent_server.sockets.conversation_service"
+            "openhands.agent_server.sockets.get_conversation_service"
         ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.get_config") as mock_config,
         patch("openhands.agent_server.sockets.logger") as mock_logger,
     ):
         mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+        mock_conv_service.return_value.get_event_service = AsyncMock(
+            return_value=mock_event_service
+        )
 
         from openhands.agent_server.sockets import events_socket
 

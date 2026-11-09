@@ -590,9 +590,6 @@ class Config(BaseModel):
         return cipher
 
 
-_default_config: Config | None = None
-
-
 def _read_config_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -641,12 +638,3 @@ def load_config(config_path: Path | None = None) -> Config:
     if not data:
         return Config()
     return Config.model_validate(data)
-
-
-def get_default_config() -> Config:
-    """Get the default local server config shared across the server"""
-    global _default_config
-    if _default_config is None:
-        _default_config = load_config()
-        assert _default_config is not None
-    return _default_config

@@ -5,7 +5,7 @@ Generate a .env file containing all config options
 
 import argparse
 
-from openhands.agent_server.config import get_default_config
+from openhands.agent_server.config import load_config
 from openhands.agent_server.env_parser import to_env
 
 
@@ -17,5 +17,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(f"🛠️ Building: {args.file}")
     with open(args.file, "w") as f:
-        content = to_env(get_default_config(), "OH")
+        content = to_env(load_config(), "OH")
         f.write(content)

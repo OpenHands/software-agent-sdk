@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import get_settings_store, reset_stores
+from openhands.agent_server.persistence import (
+    ServerStores,
+)
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 
@@ -34,14 +36,12 @@ def temp_meta_profiles_dir(temp_settings_dir):
 
 @pytest.fixture
 def client(temp_meta_profiles_dir, temp_settings_dir, monkeypatch):
-    reset_stores()
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
     # No MetaProfileStore patch needed: the router now honors OH_PERSISTENCE_DIR
     # and resolves the same dir the store fixture seeds.
     yield TestClient(app)
-    reset_stores()
 
 
 @pytest.fixture
@@ -246,7 +246,7 @@ def test_delete_active_clears_nested_agent_settings(client, store):
 
     client.delete("/api/meta-profiles/p")
 
-    persisted = get_settings_store().load()
+    persisted = ServerStores.from_config(Config()).settings.load()
     assert persisted is not None
     agent = persisted.agent_settings
     assert isinstance(agent, OpenHandsAgentSettings)
@@ -279,7 +279,7 @@ def test_activate_propagates_into_agent_settings(client, store):
     response = client.post("/api/meta-profiles/p/activate")
     assert response.status_code == 200
 
-    persisted = get_settings_store().load()
+    persisted = ServerStores.from_config(Config()).settings.load()
     assert persisted is not None
     assert persisted.active_meta_profile == "p"
     agent = persisted.agent_settings
@@ -325,7 +325,7 @@ def test_activate_on_acp_settings_reports_not_applied(client, store):
     }
 
     assert client.get("/api/meta-profiles").json()["active_meta_profile"] is None
-    persisted = get_settings_store().load()
+    persisted = ServerStores.from_config(Config()).settings.load()
     assert persisted is not None
     assert persisted.active_meta_profile is None
 
@@ -365,7 +365,9 @@ def test_activate_settings_io_error_returns_500(client, store, monkeypatch):
     def fail(self, update_fn):
         raise OSError("disk full")
 
-    monkeypatch.setattr(type(get_settings_store()), "update", fail)
+    monkeypatch.setattr(
+        type(ServerStores.from_config(Config()).settings), "update", fail
+    )
 
     response = client.post("/api/meta-profiles/p/activate")
 
@@ -397,7 +399,7 @@ def test_concurrent_delete_and_activate_keep_settings_consistent(client, store):
             for future in futures:
                 assert future.result().status_code == 200
 
-        persisted = get_settings_store().load()
+        persisted = ServerStores.from_config(Config()).settings.load()
         assert persisted is not None
         active = persisted.active_meta_profile
         # "p" was deleted, so it must never remain active; outcome is "q" or None

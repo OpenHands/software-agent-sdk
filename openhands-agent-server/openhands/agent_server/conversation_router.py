@@ -19,16 +19,19 @@ from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
-    get_cipher,
     store_errors,
 )
-from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
     InvalidParentConversation,
     UnavailableAgentTool,
 )
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_cipher,
+    get_conversation_registry,
+    get_conversation_service,
+    get_stores,
+)
 from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
@@ -39,7 +42,6 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationRuntimeInfo,
-    ConversationRuntimeStatus,
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
@@ -54,7 +56,6 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
-from openhands.agent_server.persistence import get_llm_profile_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -149,9 +150,7 @@ START_CONVERSATION_EXAMPLES = [
 def _with_runtime_info(
     request: Request, conversation: ConversationInfo
 ) -> ConversationInfo:
-    registry = getattr(request.app.state, "conversation_registry", None)
-    if not isinstance(registry, ConversationRegistry):
-        return conversation
+    registry = get_conversation_registry(request)
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation.id)}
     )
@@ -243,12 +242,7 @@ async def get_local_conversation_runtime(
     """Inspect the always-available in-process runtime."""
     if await conversation_service.get_conversation(conversation_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    registry = getattr(request.app.state, "conversation_registry", None)
-    if isinstance(registry, ConversationRegistry):
-        return registry.runtime_info(conversation_id)
-    return ConversationRuntimeInfo(
-        runtime_status=ConversationRuntimeStatus.AVAILABLE, can_resume=True
-    )
+    return get_conversation_registry(request).runtime_info(conversation_id)
 
 
 @conversation_router.post("/{conversation_id}/runtime/reprovision")
@@ -656,7 +650,9 @@ async def switch_conversation_llm(
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
     with store_errors():
-        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+        llm = get_stores(request).llm_profiles.resolve_provider_connection(
+            llm, cipher=cipher
+        )
     try:
         conversation.switch_llm(llm)
     except ValueError as e:

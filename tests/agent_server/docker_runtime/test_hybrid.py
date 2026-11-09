@@ -1,8 +1,8 @@
 import json
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -12,6 +12,16 @@ from openhands.agent_server.docker_runtime.hybrid import (
     HybridConversationRegistry,
     RuntimeDispatchMiddleware,
 )
+from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.server_context import server_context_of
+from tests.agent_server.conftest import install_test_context
+
+
+def _app_with(registry: HybridConversationRegistry) -> FastAPI:
+    """An app whose server context holds ``registry``."""
+    app = FastAPI()
+    install_test_context(app, conversation_registry=registry)
+    return app
 
 
 @pytest.fixture
@@ -27,7 +37,8 @@ def config(tmp_path, monkeypatch):
 
 def test_selectable_mode_serves_both_runtimes(config):
     app = create_app(config)
-    assert isinstance(app.state.conversation_registry, HybridConversationRegistry)
+    registry = server_context_of(app).conversation_registry
+    assert isinstance(registry, HybridConversationRegistry)
     paths = [getattr(route, "path", "") for route in app.routes]
     assert any(
         p.startswith("/api/conversations/{runtime_conversation_id}/") for p in paths
@@ -55,7 +66,7 @@ async def _dispatch(registry, scope, body=b""):
 
     scope = {
         "root_path": "",
-        "app": SimpleNamespace(state=SimpleNamespace(conversation_registry=registry)),
+        "app": _app_with(registry),
         **scope,
     }
     await RuntimeDispatchMiddleware(app)(scope, receive, None)  # type: ignore[arg-type]
@@ -64,7 +75,7 @@ async def _dispatch(registry, scope, body=b""):
 
 @pytest.mark.asyncio
 async def test_dispatch_routes_conversations_by_runtime(config):
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     docker_id, local_id = uuid4(), uuid4()
     registry.provisioning.create(docker_id)
 
@@ -95,7 +106,7 @@ async def test_dispatch_routes_conversations_by_runtime(config):
     ],
 )
 async def test_dispatch_routes_fastapi_uuid_forms(config, uuid_format):
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     docker_id = uuid4()
     registry.provisioning.create(docker_id)
     path_id = uuid_format.format(docker_id)
@@ -110,7 +121,7 @@ async def test_dispatch_routes_fastapi_uuid_forms(config, uuid_format):
 
 @pytest.mark.asyncio
 async def test_dispatch_leaves_invalid_uuid_for_route_validation(config):
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     path = "/api/conversations/not-a-uuid/run"
     seen = await _dispatch(registry, {"type": "http", "method": "POST", "path": path})
     assert seen["path"] == path
@@ -133,9 +144,8 @@ async def test_dispatch_leaves_invalid_uuid_for_route_validation(config):
 async def test_dispatch_start_uses_requested_runtime(
     config, default, requested, expected
 ):
-    registry = HybridConversationRegistry(
-        config.model_copy(update={"conversation_runtime": default})
-    )
+    config = config.model_copy(update={"conversation_runtime": default})
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     body = json.dumps(
         {"conversation_runtime": requested} if requested else {"x": 1}
     ).encode()
@@ -147,9 +157,8 @@ async def test_dispatch_start_uses_requested_runtime(
 
 @pytest.mark.asyncio
 async def test_dispatch_start_resumes_existing_docker_conversation(config):
-    registry = HybridConversationRegistry(
-        config.model_copy(update={"conversation_runtime": "local"})
-    )
+    config = config.model_copy(update={"conversation_runtime": "local"})
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     docker_id = uuid4()
     registry.provisioning.create(docker_id)
     body = json.dumps({"conversation_id": str(docker_id)}).encode()
@@ -162,7 +171,9 @@ async def test_dispatch_start_resumes_existing_docker_conversation(config):
 def test_start_existing_docker_conversation_as_local_is_rejected(config):
     app = create_app(config.model_copy(update={"conversation_runtime": "local"}))
     docker_id = uuid4()
-    app.state.conversation_registry.provisioning.create(docker_id)
+    registry = server_context_of(app).conversation_registry
+    assert isinstance(registry, HybridConversationRegistry)
+    registry.provisioning.create(docker_id)
     response = TestClient(app).post(
         "/api/conversations",
         json={"conversation_id": str(docker_id), "conversation_runtime": "local"},
@@ -180,7 +191,7 @@ def test_start_existing_docker_conversation_as_local_is_rejected(config):
     ],
 )
 async def test_dispatch_routes_docker_sockets(config, uuid_format):
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     docker_id = uuid4()
     registry.provisioning.create(docker_id)
     path_id = uuid_format.format(docker_id)

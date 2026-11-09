@@ -19,15 +19,13 @@ import pytest
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import (
-    bash_service as bash_mod,
-    conversation_service as cs_mod,
-    file_router as file_router_module,
-)
+from openhands.agent_server import file_router as file_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.file_router import ARCHIVE_MANIFEST_NAME, _upload_file
+from openhands.agent_server.server_context import server_context_of
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from tests.agent_server.conftest import update_test_context
 
 
 @pytest.fixture
@@ -380,12 +378,13 @@ def test_upload_file_with_special_characters_in_path(client, tmp_path):
 def _use_conversations_path(client, conversations_path: Path) -> None:
     """Point the app's request-time config at ``conversations_path``.
 
-    Trajectory downloads resolve the conversations directory from
-    ``request.app.state.config`` — the same config ``POST /api/init``
+    Trajectory downloads resolve the conversations directory from the
+    config of the server context — the same config ``POST /api/init``
     replaces on a deferred-init server.
     """
-    client.app.state.config = Config(
-        session_api_keys=[], conversations_path=conversations_path
+    update_test_context(
+        client.app,
+        config=Config(session_api_keys=[], conversations_path=conversations_path),
     )
 
 
@@ -748,10 +747,10 @@ def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
 def test_download_trajectory_resolves_dir_from_request_config(
     client, monkeypatch, tmp_path
 ):
-    """The served directory comes from ``request.app.state.config``.
+    """The served directory comes from the server context's config.
 
-    ``POST /api/init`` on a deferred-init server only replaces that config;
-    the launch-time config lookup must not decide where the route looks.
+    ``POST /api/init`` on a deferred-init server replaces that context; the
+    config the app was created with must not decide where the route looks.
     """
     request_path = tmp_path / "request-conversations"
     conversation_id = uuid4()
@@ -760,10 +759,6 @@ def test_download_trajectory_resolves_dir_from_request_config(
     (conversation_dir / "meta.json").write_text("{}")
     (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
 
-    monkeypatch.setattr(
-        "openhands.agent_server.config.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=tmp_path / "elsewhere"),
-    )
     _use_conversations_path(client, request_path)
 
     response = client.get(f"/api/file/download-trajectory/{conversation_id}")
@@ -777,12 +772,10 @@ def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_p
     """Both trajectory routes work after ``/api/init`` moves storage.
 
     Regression test for a deferred-init (warm-pool) server: ``/api/init``
-    installs the per-user ``conversations_path`` on ``app.state.config``, so
+    installs the per-user ``conversations_path`` in the server context, so
     both the flat and the conversation-scoped download route must serve the
     conversation from that directory instead of the launch-time default.
     """
-    cs_mod._conversation_service = None
-    bash_mod._bash_event_service = None
     boot_conversations = tmp_path / "boot-conversations"
     user_conversations = tmp_path / "user" / "conversations"
     app = create_app(
@@ -793,75 +786,74 @@ def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_p
         )
     )
     headers = {"X-Session-API-Key": "init-key"}
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/init",
-                json={
-                    "session_api_keys": ["init-key"],
-                    "conversations_path": str(user_conversations),
-                    "bash_events_dir": str(tmp_path / "user" / "bash_events"),
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/init",
+            json={
+                "session_api_keys": ["init-key"],
+                "conversations_path": str(user_conversations),
+                "bash_events_dir": str(tmp_path / "user" / "bash_events"),
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        response = client.post(
+            "/api/conversations",
+            headers=headers,
+            json={
+                "workspace": {"working_dir": str(tmp_path / "workspace")},
+                "agent": {
+                    "kind": "Agent",
+                    "llm": {"model": "openai/test", "usage_id": "test"},
                 },
-            )
-            assert response.status_code == 200, response.text
+            },
+        )
+        assert response.status_code == 201, response.text
+        conversation_id = UUID(response.json()["id"])
+        assert (user_conversations / conversation_id.hex).is_dir()
+        assert not (boot_conversations / conversation_id.hex).exists()
 
-            response = client.post(
-                "/api/conversations",
-                headers=headers,
-                json={
-                    "workspace": {"working_dir": str(tmp_path / "workspace")},
-                    "agent": {
-                        "kind": "Agent",
-                        "llm": {"model": "openai/test", "usage_id": "test"},
-                    },
-                },
-            )
-            assert response.status_code == 201, response.text
-            conversation_id = UUID(response.json()["id"])
-            assert (user_conversations / conversation_id.hex).is_dir()
-            assert not (boot_conversations / conversation_id.hex).exists()
+        flat = client.get(
+            f"/api/file/download-trajectory/{conversation_id}", headers=headers
+        )
+        scoped = client.get(
+            f"/api/conversations/{conversation_id}/file/download-trajectory/"
+            f"{conversation_id}",
+            headers=headers,
+        )
 
-            flat = client.get(
-                f"/api/file/download-trajectory/{conversation_id}", headers=headers
-            )
-            scoped = client.get(
-                f"/api/conversations/{conversation_id}/file/download-trajectory/"
-                f"{conversation_id}",
-                headers=headers,
-            )
+        assert flat.status_code == 200, flat.text
+        assert scoped.status_code == 200, scoped.text
 
-            assert flat.status_code == 200, flat.text
-            assert scoped.status_code == 200, scoped.text
+        root = conversation_id.hex
+        with zipfile.ZipFile(io.BytesIO(flat.content)) as archive:
+            flat_names = set(archive.namelist())
+        with zipfile.ZipFile(io.BytesIO(scoped.content)) as archive:
+            scoped_names = set(archive.namelist())
+        assert flat_names == scoped_names
+        assert f"{root}/meta.json" in flat_names
+        assert f"{root}/base_state.json" in flat_names
 
-            root = conversation_id.hex
-            with zipfile.ZipFile(io.BytesIO(flat.content)) as archive:
-                flat_names = set(archive.namelist())
-            with zipfile.ZipFile(io.BytesIO(scoped.content)) as archive:
-                scoped_names = set(archive.namelist())
-            assert flat_names == scoped_names
-            assert f"{root}/meta.json" in flat_names
-            assert f"{root}/base_state.json" in flat_names
-
-            # No conversation directory under the resolved config → 404 on
-            # both routes. Rebinding the config stands in for a conversation
-            # whose storage moved away from the initialized path.
-            app.state.config = app.state.config.model_copy(
+        # No conversation directory under the resolved config → 404 on
+        # both routes. Rebinding the config stands in for a conversation
+        # whose storage moved away from the initialized path.
+        update_test_context(
+            app,
+            config=server_context_of(app).config.model_copy(
                 update={"conversations_path": tmp_path / "elsewhere"}
-            )
-            for url in (
-                f"/api/file/download-trajectory/{conversation_id}",
-                f"/api/conversations/{conversation_id}/file/download-trajectory/"
-                f"{conversation_id}",
-            ):
-                missing = client.get(url, headers=headers)
-                assert missing.status_code == 404, missing.text
-                assert missing.json()["detail"] == "Conversation not found"
+            ),
+        )
+        for url in (
+            f"/api/file/download-trajectory/{conversation_id}",
+            f"/api/conversations/{conversation_id}/file/download-trajectory/"
+            f"{conversation_id}",
+        ):
+            missing = client.get(url, headers=headers)
+            assert missing.status_code == 404, missing.text
+            assert missing.json()["detail"] == "Conversation not found"
 
-            # Repeated downloads leave no zip residue behind.
-            assert list(user_conversations.glob("*.zip")) == []
-    finally:
-        cs_mod._conversation_service = None
-        bash_mod._bash_event_service = None
+        # Repeated downloads leave no zip residue behind.
+        assert list(user_conversations.glob("*.zip")) == []
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):

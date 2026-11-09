@@ -18,8 +18,8 @@ from openhands.agent_server.persistence import (
     FileSecretsStore,
     FileSettingsStore,
     PersistedSettings,
+    ServerStores,
     reencrypt_stale_stores,
-    reset_stores,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.sdk.llm import LLM
@@ -36,11 +36,9 @@ SECRET_VALUE = "token-original"
 @pytest.fixture
 def persistence_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
-        reset_stores()
         old_val = os.environ.get("OH_PERSISTENCE_DIR")
         os.environ["OH_PERSISTENCE_DIR"] = tmpdir
         yield Path(tmpdir)
-        reset_stores()
         if old_val is not None:
             os.environ["OH_PERSISTENCE_DIR"] = old_val
         else:
@@ -244,7 +242,7 @@ def test_reencrypt_stale_stores_at_startup(persistence_dir):
         secret_key=SecretStr(KEY_B),
         previous_secret_keys=[SecretStr(KEY_A)],
     )
-    reencrypt_stale_stores(config)
+    reencrypt_stale_stores(ServerStores.from_config(config))
     _assert_readable_with(persistence_dir, Cipher(KEY_B))
 
 
@@ -270,7 +268,6 @@ def test_api_writes_succeed_after_rotation_with_previous_key(persistence_dir):
     assert delete.status_code == 200
 
     # The writes re-encrypted both files: the new key alone now reads them.
-    reset_stores()
     client = TestClient(
         create_app(
             Config(

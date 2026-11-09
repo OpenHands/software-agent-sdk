@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+from openhands.agent_server.config import Config
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
 
@@ -300,20 +301,17 @@ class VSCodeService:
 _vscode_service: VSCodeService | None = None
 
 
-def get_vscode_service() -> VSCodeService | None:
-    """Get the global VSCode service instance.
+def get_vscode_service(config: Config) -> VSCodeService | None:
+    """Get the global VSCode service instance, creating it from ``config``.
+
+    The service outlives a server (re)initialisation, so ``config`` only
+    decides how it is created the first time.
 
     Returns:
         VSCode service instance if enabled, None if disabled
     """
     global _vscode_service
     if _vscode_service is None:
-        from openhands.agent_server.config import (
-            get_default_config,
-        )
-
-        config = get_default_config()
-
         if not config.enable_vscode:
             logger.info("VSCode is disabled in configuration")
             return None

@@ -25,6 +25,7 @@ from openhands.agent_server.server_details_router import (
     server_details_router,
 )
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from tests.agent_server.conftest import install_test_context
 
 
 @pytest_asyncio.fixture
@@ -37,8 +38,7 @@ async def bash_service(tmp_path: Path) -> AsyncIterator[BashEventService]:
 @pytest_asyncio.fixture
 async def client(bash_service: BashEventService) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
-    app.state.config = Config()
-    app.state.bash_event_service = bash_service
+    install_test_context(app, Config(), bash_event_service=bash_service)
     app.include_router(server_details_router)
     app.include_router(bash_router_module.bash_router, prefix="/api")
     mark_initialization_complete()

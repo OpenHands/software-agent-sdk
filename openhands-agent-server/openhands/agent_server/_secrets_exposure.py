@@ -25,22 +25,6 @@ _logger = get_logger(__name__)
 ExposeSecretsMode = Literal["encrypted", "plaintext"]
 
 
-def get_config(request: Request):
-    """Get config from app state, raising 503 if uninitialized."""
-    config = getattr(request.app.state, "config", None)
-    if config is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Server not fully initialized",
-        )
-    return config
-
-
-def get_cipher(request: Request) -> Cipher | None:
-    """Get the configured cipher (``None`` when ``OH_SECRET_KEY`` is unset)."""
-    return get_config(request).cipher
-
-
 def parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
     """Parse the ``X-Expose-Secrets`` header.
 

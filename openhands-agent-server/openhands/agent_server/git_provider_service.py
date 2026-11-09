@@ -6,8 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import SecretsStore
 from openhands.sdk.git.models import GitProviderRepository, GitProviderRepositoryPage
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.repo import PROVIDER_TOKEN_NAMES, GitProvider
@@ -52,7 +51,7 @@ class GitProviderAPIError(GitProviderRepositorySearchError):
 
 
 async def search_provider_repositories(
-    config: Config,
+    secrets_store: SecretsStore,
     provider: GitProvider,
     *,
     query: str | None = None,
@@ -65,7 +64,7 @@ async def search_provider_repositories(
             f"Repository discovery is not supported for provider '{provider.value}'"
         )
 
-    token = _resolve_provider_token(config, provider)
+    token = _resolve_provider_token(secrets_store, provider)
     if token is None:
         return GitProviderRepositoryPage(
             items=[], next_page_id=None, missing_token=True
@@ -79,10 +78,11 @@ async def search_provider_repositories(
     )
 
 
-def _resolve_provider_token(config: Config, provider: GitProvider) -> str | None:
-    store = get_secrets_store(config)
+def _resolve_provider_token(
+    secrets_store: SecretsStore, provider: GitProvider
+) -> str | None:
     for name in _PROVIDER_TOKEN_CANDIDATES.get(provider, ()):  # pragma: no branch
-        if value := store.get_secret(name):
+        if value := secrets_store.get_secret(name):
             return value
     return None
 

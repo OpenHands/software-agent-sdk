@@ -7,8 +7,6 @@ activation by id (no ``agent_settings`` write), and the lazy migration seed.
 
 import concurrent.futures
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +16,6 @@ from pydantic import SecretStr
 from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 from openhands.agent_server.profiles_router import MAX_PROFILES
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -30,34 +27,27 @@ from openhands.sdk.profiles import (
 
 
 @pytest.fixture
-def temp_agent_profiles_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        agent_dir = Path(tmpdir) / "agent-profiles"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        yield agent_dir
+def temp_settings_dir(tmp_path, monkeypatch):
+    """The server's persistence directory; ``settings.json`` lives in it."""
+    settings_dir = tmp_path / "settings"
+    settings_dir.mkdir()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(settings_dir))
+    return settings_dir
 
 
 @pytest.fixture
-def temp_settings_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        settings_dir = Path(tmpdir) / "settings"
-        settings_dir.mkdir(parents=True, exist_ok=True)
-        yield settings_dir
+def temp_agent_profiles_dir(temp_settings_dir):
+    """Where the server's stores keep agent profiles."""
+    agent_dir = temp_settings_dir / "agent-profiles"
+    agent_dir.mkdir()
+    return agent_dir
 
 
 @pytest.fixture
-def client(temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
+def client(temp_agent_profiles_dir, temp_settings_dir):
     """Test client with isolated agent-profile/settings dirs, no cipher."""
-    reset_stores()
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
-    app = create_app(config)
-    with patch(
-        "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-        lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-    ):
-        yield TestClient(app)
-    reset_stores()
+    return TestClient(create_app(config))
 
 
 @pytest.fixture
@@ -67,9 +57,9 @@ def store(temp_agent_profiles_dir):
 
 @pytest.fixture
 def default_llm_profile_store(temp_settings_dir):
-    """The real (unpatched) LLM profile store the ``client`` fixture's
-    ``get_llm_profile_store()`` resolves to, given ``OH_PERSISTENCE_DIR`` —
-    see ``_get_profile_persistence_dir`` (``<dir>/profiles``)."""
+    """The LLM profile store of the ``client`` fixture's server, given
+    ``OH_PERSISTENCE_DIR`` — see ``ServerStores.llm_profiles``
+    (``<dir>/profiles``)."""
     return LLMProfileStore(base_dir=temp_settings_dir / "profiles")
 
 
@@ -1160,43 +1150,20 @@ def test_save_at_limit_returns_409(client, store, monkeypatch):
 
 
 @pytest.fixture
-def temp_llm_profiles_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        llm_dir = Path(tmpdir) / "llm-profiles"
-        llm_dir.mkdir(parents=True, exist_ok=True)
-        yield llm_dir
+def temp_llm_profiles_dir(temp_settings_dir):
+    """Where the server's stores keep LLM profiles."""
+    llm_dir = temp_settings_dir / "profiles"
+    llm_dir.mkdir(exist_ok=True)
+    return llm_dir
 
 
 @pytest.fixture
 def client_with_llm_store(
-    temp_agent_profiles_dir, temp_settings_dir, temp_llm_profiles_dir, monkeypatch
+    temp_agent_profiles_dir, temp_settings_dir, temp_llm_profiles_dir
 ):
     """Test client with isolated agent-profile/settings/llm-profile dirs, no cipher."""
-    reset_stores()
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
-    app = create_app(config)
-
-    def agent_profiles() -> AgentProfileStore:
-        return AgentProfileStore(base_dir=temp_agent_profiles_dir)
-
-    def llm_profiles() -> LLMProfileStore:
-        return LLMProfileStore(base_dir=temp_llm_profiles_dir)
-
-    with (
-        patch(
-            "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-            agent_profiles,
-        ),
-        patch(
-            "openhands.agent_server.agent_profiles_router.get_llm_profile_store",
-            llm_profiles,
-        ),
-        patch("openhands.agent_server.launch.get_agent_profile_store", agent_profiles),
-        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
-    ):
-        yield TestClient(app)
-    reset_stores()
+    return TestClient(create_app(config))
 
 
 @pytest.fixture

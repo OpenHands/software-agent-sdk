@@ -14,12 +14,7 @@ from openhands.agent_server.docker_runtime.provisioning import (
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.docker_runtime.routers import _prepare_forward
 from openhands.agent_server.launch import launch_source, target_launch_runtime
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    get_settings_store,
-)
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.request import (
@@ -47,10 +42,20 @@ def config(tmp_path, monkeypatch) -> Config:
     )
 
 
+def _registry(runtime_config: Config) -> DockerConversationRegistry:
+    """The part of a registry ``_prepare_forward`` reads: config and stores."""
+    return cast(
+        DockerConversationRegistry,
+        SimpleNamespace(
+            config=runtime_config, stores=ServerStores.from_config(runtime_config)
+        ),
+    )
+
+
 async def _forward(
     request: StartConversationRequest, runtime_config: Config, *, existing=False
 ) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
-    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    registry = _registry(runtime_config)
     body = request.model_dump(mode="json", context={"expose_secrets": True})
     payload, launched, _, _ = await _prepare_forward(body, registry, existing=existing)
     provisioning = RuntimeProvisioningStore(runtime_config)
@@ -62,7 +67,7 @@ async def _forward(
 @pytest.mark.parametrize("worktree", [False, True])
 async def test_forward_preserves_worktree_flag(tmp_path, monkeypatch, worktree):
     runtime_config = config(tmp_path, monkeypatch)
-    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    registry = _registry(runtime_config)
     request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
         agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
@@ -166,7 +171,7 @@ async def test_every_encrypted_field_reaches_the_container_decryptable(
         secrets_encrypted=True,
     )
     body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
-    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    registry = _registry(runtime_config)
 
     payload, _, _, _ = await _prepare_forward(body, registry, existing=False)
     identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
@@ -184,7 +189,8 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
-    get_llm_profile_store().save(
+    stores = ServerStores.from_config(runtime_config)
+    stores.llm_profiles.save(
         "docker-test-model",
         LLM(model="test", api_key=SecretStr("model-key")),
         include_secrets=True,
@@ -196,7 +202,7 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
         mcp_server_refs=[],
         secret_refs=["ALLOWED"],
     )
-    get_agent_profile_store().save(profile)
+    stores.agent_profiles.save(profile)
     monkeypatch.setattr(
         "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
@@ -246,17 +252,18 @@ async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
-    get_settings_store(runtime_config).save(
+    stores = ServerStores.from_config(runtime_config)
+    stores.settings.save(
         PersistedSettings(
             agent_settings=OpenHandsAgentSettings(
                 agent_context=AgentContext(load_memory=True)
             )
         )
     )
-    get_llm_profile_store().save("fast", LLM(model="fast-model"))
-    get_llm_profile_store().save("slow", LLM(model="slow-model"))
+    stores.llm_profiles.save("fast", LLM(model="fast-model"))
+    stores.llm_profiles.save("slow", LLM(model="slow-model"))
     profile = OpenHandsAgentProfile(name="p", llm_profile_ref="slow")
-    get_agent_profile_store().save(profile)
+    stores.agent_profiles.save(profile)
     monkeypatch.setattr(
         "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )

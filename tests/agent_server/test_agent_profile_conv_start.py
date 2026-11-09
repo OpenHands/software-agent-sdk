@@ -30,7 +30,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StoredConversation,
 )
-from openhands.agent_server.persistence import PersistedSettings
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent, AgentBase, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.request import AgentLaunchAdditions
@@ -55,6 +55,7 @@ from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSetting
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 from tests.sdk.launch import fakes
 
 
@@ -68,8 +69,8 @@ def client():
     """TestClient with no auth — conversations router only."""
     app = FastAPI()
     app.include_router(conversation_router, prefix="/api")
-    app.state.config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=None
+    install_test_context(
+        app, Config(static_files_path=None, session_api_keys=[], secret_key=None)
     )
     return TestClient(app)
 
@@ -96,8 +97,14 @@ def _make_agent() -> Agent:
 
 
 _STORES_PATH = "openhands.agent_server.conversation_service.server_launch_stores"
-_SETTINGS_STORE_PATH = "openhands.agent_server.persistence.get_settings_store"
 _BROWSER_PATH = "openhands.agent_server.launch.is_tool_usable"
+
+
+def _server_stores(persisted: PersistedSettings | None = None) -> ServerStores:
+    """The service's stores, holding ``persisted`` as the saved settings."""
+    stores = ServerStores.from_config(Config())
+    stores.settings.save(persisted or PersistedSettings())
+    return stores
 
 
 def _event_service_for(stored: StoredConversation, agent: AgentBase) -> AsyncMock:
@@ -138,10 +145,11 @@ async def _start(
         captured["launched"] = kwargs["launched"]
         return _event_service_for(stored, kwargs["launched"].agent)
 
-    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations", stores=_server_stores(persisted)
+    )
     service._event_services = {}
     with (
-        patch(_SETTINGS_STORE_PATH) as settings_store,
         patch(_STORES_PATH, return_value=stores or fakes.stores()),
         patch(_BROWSER_PATH, return_value=browser),
         patch.object(
@@ -151,7 +159,6 @@ async def _start(
             side_effect=capture_start,
         ),
     ):
-        settings_store.return_value.load.return_value = persisted or PersistedSettings()
         await service.start_conversation(request)
     return captured["stored"], captured["launched"]
 
@@ -426,15 +433,15 @@ class TestProfileLaunch:
             return _event_service_for(stored, kwargs["launched"].agent)
 
         service = ConversationService(
-            conversations_dir=tmp_path / "conversations", acp_skill_sourcing=sourcing
+            conversations_dir=tmp_path / "conversations",
+            acp_skill_sourcing=sourcing,
+            stores=_server_stores(),
         )
         service._event_services = {}
         with (
-            patch(_SETTINGS_STORE_PATH) as settings_store,
             patch(_STORES_PATH, return_value=stores),
             patch.object(service, "_start_event_service", side_effect=capture_start),
         ):
-            settings_store.return_value.load.return_value = PersistedSettings()
             await service.start_conversation(request)
 
         context = captured["agent"].agent_context

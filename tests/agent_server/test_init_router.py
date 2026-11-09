@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import Request, Response, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.testclient import TestClient
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import SecretStr
@@ -29,6 +29,11 @@ from openhands.agent_server.init_router import (
     InitState,
     _build_initialized_config,
     require_initialized,
+)
+from openhands.agent_server.server_context import (
+    build_server_context,
+    install_server_context,
+    server_context_of,
 )
 from openhands.agent_server.vscode_service import VSCodeService
 
@@ -51,58 +56,41 @@ def _clean_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_vscode_service(monkeypatch):
-    """/api/init updates the VSCode service singleton; give each test its own.
-
-    The service takes its token from the default config, which is loaded at
-    import time, before ``_clean_env`` runs, so reset that too.
-    """
+    """/api/init updates the VSCode service singleton; give each test its own."""
     monkeypatch.setattr("openhands.agent_server.vscode_service._vscode_service", None)
-    monkeypatch.setattr("openhands.agent_server.config._default_config", None)
 
 
-def _reset_conversation_singleton():
-    """Some tests build their own ConversationService; reset the module-level
-    cache so unrelated tests don't see leftover state."""
-    from openhands.agent_server import conversation_service as cs_mod
-
-    cs_mod._conversation_service = None
-
-
-def _reset_bash_singleton():
-    """Reset the module-level BashEventService cache so each test starts fresh."""
-    from openhands.agent_server import bash_service as bash_mod
-
-    bash_mod._bash_event_service = None
+def _dormant_app(config: Config) -> FastAPI:
+    """A bare app holding the dormant server context, as ``create_app`` leaves it."""
+    app = FastAPI()
+    install_server_context(app, build_server_context(config))
+    return app
 
 
 def _vscode_url_after_init(tmp_path: Path) -> str | None:
     """Boot a dormant app, deliver a session key through /api/init, and read
     /api/vscode/url with that key."""
-    _reset_conversation_singleton()
     cfg = Config(
         deferred_init=True,
         conversations_path=tmp_path / "convs",
         bash_events_dir=tmp_path / "bash",
     )
     with TestClient(create_app(cfg)) as client:
-        try:
-            resp = client.post(
-                "/api/init",
-                json={
-                    "session_api_keys": ["user-session-key"],
-                    "conversations_path": str(tmp_path / "u" / "convs"),
-                    "bash_events_dir": str(tmp_path / "u" / "bash"),
-                },
-            )
-            assert resp.status_code == 200
+        resp = client.post(
+            "/api/init",
+            json={
+                "session_api_keys": ["user-session-key"],
+                "conversations_path": str(tmp_path / "u" / "convs"),
+                "bash_events_dir": str(tmp_path / "u" / "bash"),
+            },
+        )
+        assert resp.status_code == 200
 
-            resp = client.get(
-                "/api/vscode/url", headers={"X-Session-API-Key": "user-session-key"}
-            )
-            assert resp.status_code == 200
-            return resp.json()["url"]
-        finally:
-            _reset_conversation_singleton()
+        resp = client.get(
+            "/api/vscode/url", headers={"X-Session-API-Key": "user-session-key"}
+        )
+        assert resp.status_code == 200
+        return resp.json()["url"]
 
 
 class TestConfigDefaults:
@@ -196,8 +184,6 @@ class TestRouterMounting:
 class TestInitServiceTransitions:
     @pytest.mark.asyncio
     async def test_init_transitions_dormant_to_ready(self, tmp_path):
-        _reset_conversation_singleton()
-        _reset_bash_singleton()
         from openhands.agent_server.bash_service import BashEventService
 
         base = Config(
@@ -205,8 +191,8 @@ class TestInitServiceTransitions:
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
         assert svc.state == "dormant"
 
         result = await svc.initialize(
@@ -219,28 +205,24 @@ class TestInitServiceTransitions:
         try:
             assert result.state == "ready"
             assert svc.state == "ready"
-            # New config landed on app.state with deferred_init cleared.
-            assert app.state.config.deferred_init is False
-            assert app.state.config.session_api_keys == ["user-key"]
-            assert app.state.conversation_service is not None
-            # BashEventService is registered on app.state so the bash
-            # websocket handler picks up the per-user bash_events_dir
-            # rather than the import-time default.
-            assert isinstance(
-                getattr(app.state, "bash_event_service", None), BashEventService
-            )
+            # The new context carries the delivered config with
+            # deferred_init cleared.
+            context = server_context_of(app)
+            assert context.config.deferred_init is False
+            assert context.config.session_api_keys == ["user-key"]
+            assert context.conversation_service is not None
+            # Its BashEventService is the one the bash websocket handler
+            # picks up, so it uses the per-user bash_events_dir rather than
+            # the dormant one.
+            assert isinstance(context.bash_event_service, BashEventService)
             assert (
-                app.state.bash_event_service.bash_events_dir
-                == tmp_path / "user" / "bash"
+                context.bash_event_service.bash_events_dir == tmp_path / "user" / "bash"
             )
         finally:
             await svc.teardown()
-            _reset_conversation_singleton()
-            _reset_bash_singleton()
 
     @pytest.mark.asyncio
     async def test_second_init_rejected_with_400(self, tmp_path):
-        _reset_conversation_singleton()
         from fastapi import HTTPException
 
         base = Config(
@@ -248,8 +230,8 @@ class TestInitServiceTransitions:
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
 
         await svc.initialize(
             InitRequest(
@@ -264,11 +246,9 @@ class TestInitServiceTransitions:
             assert "already in state" in str(excinfo.value.detail)
         finally:
             await svc.teardown()
-            _reset_conversation_singleton()
 
     @pytest.mark.asyncio
     async def test_init_applies_env_vars(self, tmp_path, monkeypatch):
-        _reset_conversation_singleton()
         # Pre-clean so the env var truly comes from /api/init.
         monkeypatch.delenv("DEFERRED_INIT_TEST_VAR", raising=False)
         observed_env = None
@@ -286,8 +266,8 @@ class TestInitServiceTransitions:
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
 
         await svc.initialize(
             InitRequest(
@@ -302,14 +282,11 @@ class TestInitServiceTransitions:
         finally:
             await svc.teardown()
             monkeypatch.delenv("DEFERRED_INIT_TEST_VAR", raising=False)
-            _reset_conversation_singleton()
 
     @pytest.mark.asyncio
     async def test_init_bash_service_uses_user_supplied_dir(self, tmp_path):
-        """After /api/init, app.state.bash_event_service uses the
+        """After /api/init, the context's bash service uses the
         bash_events_dir supplied in the InitRequest."""
-        _reset_conversation_singleton()
-        _reset_bash_singleton()
         from openhands.agent_server.bash_service import BashEventService
 
         base = Config(
@@ -317,8 +294,8 @@ class TestInitServiceTransitions:
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "boot" / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
 
         user_dir = tmp_path / "user" / "bash"
         await svc.initialize(
@@ -328,27 +305,23 @@ class TestInitServiceTransitions:
             )
         )
         try:
-            bash_svc = app.state.bash_event_service
+            bash_svc = server_context_of(app).bash_event_service
             assert isinstance(bash_svc, BashEventService)
             assert bash_svc.bash_events_dir == user_dir
         finally:
             await svc.teardown()
-            _reset_conversation_singleton()
-            _reset_bash_singleton()
 
     @pytest.mark.asyncio
     async def test_init_teardown_releases_bash_service(self, tmp_path):
         """When /api/init is followed by teardown, the bash service must also
         be exited so its background tasks are released."""
-        _reset_conversation_singleton()
-        _reset_bash_singleton()
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
 
         await svc.initialize(
             InitRequest(
@@ -356,11 +329,10 @@ class TestInitServiceTransitions:
                 bash_events_dir=tmp_path / "u" / "bash",
             )
         )
-        assert svc._entered_bash_service is not None
+        bash_svc = server_context_of(app).bash_event_service
+        assert bash_svc is not None and not bash_svc._closed
         await svc.teardown()
-        assert svc._entered_bash_service is None
-        _reset_conversation_singleton()
-        _reset_bash_singleton()
+        assert bash_svc._closed
 
     @pytest.mark.asyncio
     async def test_init_switches_vscode_to_first_session_key(
@@ -368,18 +340,18 @@ class TestInitServiceTransitions:
     ):
         """VSCode booted with a random token; init switches it to the first
         session key, which a server that booted with the key would use."""
-        _reset_conversation_singleton()
         vscode = SimpleNamespace(set_connection_token=AsyncMock())
         monkeypatch.setattr(
-            "openhands.agent_server.init_router.get_vscode_service", lambda: vscode
+            "openhands.agent_server.init_router.get_vscode_service",
+            lambda _config: vscode,
         )
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
 
         await svc.initialize(
             InitRequest(
@@ -392,25 +364,24 @@ class TestInitServiceTransitions:
             vscode.set_connection_token.assert_awaited_once_with("user-key")
         finally:
             await svc.teardown()
-            _reset_conversation_singleton()
 
     @pytest.mark.asyncio
     async def test_init_without_session_keys_keeps_vscode_token(
         self, tmp_path, monkeypatch
     ):
         """With no session key to switch to, VSCode keeps its boot token."""
-        _reset_conversation_singleton()
         vscode = SimpleNamespace(set_connection_token=AsyncMock())
         monkeypatch.setattr(
-            "openhands.agent_server.init_router.get_vscode_service", lambda: vscode
+            "openhands.agent_server.init_router.get_vscode_service",
+            lambda _config: vscode,
         )
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
 
         await svc.initialize(
             InitRequest(
@@ -422,14 +393,12 @@ class TestInitServiceTransitions:
             vscode.set_connection_token.assert_not_awaited()
         finally:
             await svc.teardown()
-            _reset_conversation_singleton()
 
 
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
 
     def test_blank_init_secret_falls_back_to_session_key(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -437,22 +406,20 @@ class TestEndToEndOverLifespan:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                response = client.post(
-                    "/api/init",
-                    json={
-                        "secret_key": "",
-                        "session_api_keys": ["user-session-key"],
-                    },
-                )
-                assert response.status_code == 200
-                assert app.state.config.cipher.secret_key == "user-session-key"
-            finally:
-                _reset_conversation_singleton()
+            response = client.post(
+                "/api/init",
+                json={
+                    "secret_key": "",
+                    "session_api_keys": ["user-session-key"],
+                },
+            )
+            assert response.status_code == 200
+            cipher = server_context_of(app).config.cipher
+            assert cipher is not None
+            assert cipher.secret_key == "user-session-key"
 
     @pytest.mark.parametrize("blank", ["", "   "])
     def test_blank_secret_key_env_keeps_init_closed(self, tmp_path, monkeypatch, blank):
-        _reset_conversation_singleton()
         monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
         monkeypatch.setenv("OH_SECRET_KEY", blank)
         monkeypatch.setenv("OH_DEFERRED_INIT", "true")
@@ -461,40 +428,33 @@ class TestEndToEndOverLifespan:
         cfg = load_config()
         assert cfg.deferred_init and cfg.secret_key is None
         with TestClient(create_app(cfg)) as client:
-            try:
-                assert client.post("/api/init", json={}).status_code == 401
-                assert client.get("/api/init").json()["state"] == "dormant"
-            finally:
-                _reset_conversation_singleton()
+            assert client.post("/api/init", json={}).status_code == 401
+            assert client.get("/api/init").json()["state"] == "dormant"
 
     @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
     def test_init_rejects_empty_session_keys(self, tmp_path, session_api_keys):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
         with TestClient(create_app(cfg)) as client:
-            try:
-                response = client.post(
-                    "/api/init", json={"session_api_keys": session_api_keys}
-                )
-                assert response.status_code == 422
-                assert "user-session-key" not in response.text
-                assert client.get("/api/init").json()["state"] == "dormant"
+            response = client.post(
+                "/api/init", json={"session_api_keys": session_api_keys}
+            )
+            assert response.status_code == 422
+            assert "user-session-key" not in response.text
+            assert client.get("/api/init").json()["state"] == "dormant"
 
-                response = client.post(
-                    "/api/init", json={"session_api_keys": ["user-session-key"]}
-                )
-                assert response.status_code == 200
-                response = client.get(
-                    "/api/conversations/count",
-                    headers={"X-Session-API-Key": "user-session-key"},
-                )
-                assert response.status_code == 200
-            finally:
-                _reset_conversation_singleton()
+            response = client.post(
+                "/api/init", json={"session_api_keys": ["user-session-key"]}
+            )
+            assert response.status_code == 200
+            response = client.get(
+                "/api/conversations/count",
+                headers={"X-Session-API-Key": "user-session-key"},
+            )
+            assert response.status_code == 200
 
     @pytest.mark.parametrize(
         ("method", "path"),
@@ -512,7 +472,6 @@ class TestEndToEndOverLifespan:
     def test_dormant_readiness_precedes_authentication(
         self, tmp_path: Path, method: str, path: str
     ) -> None:
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             session_api_keys=["dormant-key"],
@@ -520,10 +479,7 @@ class TestEndToEndOverLifespan:
             bash_events_dir=tmp_path / "bash",
         )
         with TestClient(create_app(cfg)) as client:
-            try:
-                assert client.request(method, path).status_code == 503
-            finally:
-                _reset_conversation_singleton()
+            assert client.request(method, path).status_code == 503
 
     @pytest.mark.parametrize("init_state", ("dormant", "initializing"))
     def test_app_backend_http_requires_ready_state(
@@ -542,7 +498,6 @@ class TestEndToEndOverLifespan:
             "proxy_app_backend_http",
             accept_app_backend_http,
         )
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -550,13 +505,10 @@ class TestEndToEndOverLifespan:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                init_service: InitService = app.state.init_service
-                init_service._state = init_state
-                assert client.get("/api/init").json()["state"] == init_state
-                assert client.get("/app-backends/test-extension").status_code == 503
-            finally:
-                _reset_conversation_singleton()
+            init_service: InitService = app.state.init_service
+            init_service._state = init_state
+            assert client.get("/api/init").json()["state"] == init_state
+            assert client.get("/app-backends/test-extension").status_code == 503
 
     @pytest.mark.parametrize(
         (
@@ -621,15 +573,6 @@ class TestEndToEndOverLifespan:
         expected_status: int,
         ready_headers: dict[str, str],
     ) -> None:
-        class EmptyProfileStore:
-            def list_summaries(self) -> list[dict[str, object]]:
-                return []
-
-        monkeypatch.setattr(
-            "openhands.agent_server.openai.service.get_llm_profile_store",
-            EmptyProfileStore,
-        )
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             session_api_keys=dormant_keys,
@@ -647,35 +590,31 @@ class TestEndToEndOverLifespan:
 
         app.dependency_overrides[require_initialized] = pause_at_readiness
         with TestClient(app) as client:
-            try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    pending = executor.submit(
-                        client.get,
-                        path,
-                        headers=request_headers,
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(
+                    client.get,
+                    path,
+                    headers=request_headers,
+                )
+                try:
+                    assert readiness_reached.wait(timeout=5)
+                    initialized = client.post(
+                        "/api/init",
+                        json={
+                            "session_api_keys": ["ready-key"],
+                            "conversations_path": str(tmp_path / "u" / "convs"),
+                            "bash_events_dir": str(tmp_path / "u" / "bash"),
+                        },
                     )
-                    try:
-                        assert readiness_reached.wait(timeout=5)
-                        initialized = client.post(
-                            "/api/init",
-                            json={
-                                "session_api_keys": ["ready-key"],
-                                "conversations_path": str(tmp_path / "u" / "convs"),
-                                "bash_events_dir": str(tmp_path / "u" / "bash"),
-                            },
-                        )
-                        assert initialized.status_code == 200
-                    finally:
-                        continue_request.set()
-                    crossed = pending.result(timeout=5)
+                    assert initialized.status_code == 200
+                finally:
+                    continue_request.set()
+                crossed = pending.result(timeout=5)
 
-                assert crossed.status_code == expected_status
-                assert client.get(path, headers=ready_headers).status_code == 200
-            finally:
-                _reset_conversation_singleton()
+            assert crossed.status_code == expected_status
+            assert client.get(path, headers=ready_headers).status_code == 200
 
     def test_dormant_503s_api_routes_until_init(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -683,43 +622,39 @@ class TestEndToEndOverLifespan:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                # Health/ready/server_info are not gated.
-                assert client.get("/alive").status_code == 200
-                assert client.get("/ready").status_code == 200
+            # Health/ready/server_info are not gated.
+            assert client.get("/alive").status_code == 200
+            assert client.get("/ready").status_code == 200
 
-                # Sample /api/* route — should be 503. The agent-server's
-                # 5xx exception handler replaces ``detail`` with a generic
-                # "Internal Server Error" message, so we only assert on the
-                # status code here — that's what the warm-pool orchestrator
-                # actually inspects.
-                resp = client.get("/api/conversations/count")
-                assert resp.status_code == 503
+            # Sample /api/* route — should be 503. The agent-server's
+            # 5xx exception handler replaces ``detail`` with a generic
+            # "Internal Server Error" message, so we only assert on the
+            # status code here — that's what the warm-pool orchestrator
+            # actually inspects.
+            resp = client.get("/api/conversations/count")
+            assert resp.status_code == 503
 
-                # Init status reports dormant.
-                resp = client.get("/api/init")
-                assert resp.status_code == 200
-                assert resp.json()["state"] == "dormant"
+            # Init status reports dormant.
+            resp = client.get("/api/init")
+            assert resp.status_code == 200
+            assert resp.json()["state"] == "dormant"
 
-                # Run /api/init.
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
-                assert resp.json()["state"] == "ready"
+            # Run /api/init.
+            resp = client.post(
+                "/api/init",
+                json={
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["state"] == "ready"
 
-                # /api/* now works (200, not 503).
-                resp = client.get("/api/conversations/count")
-                assert resp.status_code == 200
-            finally:
-                _reset_conversation_singleton()
+            # /api/* now works (200, not 503).
+            resp = client.get("/api/conversations/count")
+            assert resp.status_code == 200
 
     def test_dormant_refuses_bash_socket_until_init(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -727,64 +662,48 @@ class TestEndToEndOverLifespan:
         )
         marker = tmp_path / "marker"
         with TestClient(create_app(cfg)) as client:
-            try:
-                with pytest.raises(WebSocketDisconnect) as excinfo:
-                    with client.websocket_connect("/sockets/bash-events") as ws:
-                        ws.send_json({"command": f"touch {marker}"})
-                assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
-                assert not marker.exists()
+            with pytest.raises(WebSocketDisconnect) as excinfo:
+                with client.websocket_connect("/sockets/bash-events") as ws:
+                    ws.send_json({"command": f"touch {marker}"})
+            assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
+            assert not marker.exists()
 
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
+            resp = client.post(
+                "/api/init",
+                json={
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
 
-                with client.websocket_connect("/sockets/bash-events"):
-                    pass
-            finally:
-                _reset_conversation_singleton()
+            with client.websocket_connect("/sockets/bash-events"):
+                pass
 
-    def test_dormant_503s_openai_routes_until_init(self, tmp_path, monkeypatch):
-        class EmptyProfileStore:
-            def list_summaries(self) -> list[dict[str, object]]:
-                return []
-
-        monkeypatch.setattr(
-            "openhands.agent_server.openai.service.get_llm_profile_store",
-            EmptyProfileStore,
-        )
-        _reset_conversation_singleton()
+    def test_dormant_503s_openai_routes_until_init(self, tmp_path):
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
         with TestClient(create_app(cfg)) as client:
-            try:
-                assert client.get("/v1/models").status_code == 503
+            assert client.get("/v1/models").status_code == 503
 
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
+            resp = client.post(
+                "/api/init",
+                json={
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
 
-                assert client.get("/v1/models").status_code == 200
-            finally:
-                _reset_conversation_singleton()
+            assert client.get("/v1/models").status_code == 200
 
     def test_root_path_updates_from_init_web_url(self, tmp_path):
         """When /api/init delivers a ``web_url``, the FastAPI ``root_path``
         must be re-derived from it so OpenAPI/Swagger/ReDoc URLs reflect the
         external mount path (e.g. behind a reverse proxy)."""
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -792,31 +711,27 @@ class TestEndToEndOverLifespan:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                # Dormant server has no web_url → empty root_path.
-                assert app.root_path == ""
+            # Dormant server has no web_url → empty root_path.
+            assert app.root_path == ""
 
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "web_url": "https://example.com/agent-server-123/agent-server/",
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
+            resp = client.post(
+                "/api/init",
+                json={
+                    "web_url": "https://example.com/agent-server-123/agent-server/",
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
 
-                # The FastAPI app's root_path must now match the prefix from
-                # the per-user web_url so OpenAPI doc URLs and Swagger asset
-                # links are correct under the reverse-proxy mount path.
-                assert app.root_path == "/agent-server-123/agent-server", (
-                    f"root_path was not updated after /api/init: {app.root_path!r}"
-                )
-            finally:
-                _reset_conversation_singleton()
+            # The FastAPI app's root_path must now match the prefix from
+            # the per-user web_url so OpenAPI doc URLs and Swagger asset
+            # links are correct under the reverse-proxy mount path.
+            assert app.root_path == "/agent-server-123/agent-server", (
+                f"root_path was not updated after /api/init: {app.root_path!r}"
+            )
 
     def test_init_api_key_required_when_configured(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             secret_key=SecretStr("pool-key"),
@@ -825,41 +740,37 @@ class TestEndToEndOverLifespan:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                # Wrong key → 401.
-                resp = client.post(
-                    "/api/init",
-                    headers={"X-Init-API-Key": "wrong"},
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 401
+            # Wrong key → 401.
+            resp = client.post(
+                "/api/init",
+                headers={"X-Init-API-Key": "wrong"},
+                json={
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 401
 
-                # No key → 401.
-                resp = client.post("/api/init", json={})
-                assert resp.status_code == 401
+            # No key → 401.
+            resp = client.post("/api/init", json={})
+            assert resp.status_code == 401
 
-                # Right key → 200.
-                resp = client.post(
-                    "/api/init",
-                    headers={"X-Init-API-Key": "pool-key"},
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
+            # Right key → 200.
+            resp = client.post(
+                "/api/init",
+                headers={"X-Init-API-Key": "pool-key"},
+                json={
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
 
-                # GET /api/init does NOT require the key (status polling).
-                resp = client.get("/api/init")
-                assert resp.status_code == 200
-            finally:
-                _reset_conversation_singleton()
+            # GET /api/init does NOT require the key (status polling).
+            resp = client.get("/api/init")
+            assert resp.status_code == 200
 
     def test_session_api_key_set_at_init_protects_api(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -867,45 +778,43 @@ class TestEndToEndOverLifespan:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                # Before /api/init, no session key required at startup config
-                # level — but the dormant gate 503s anyway.
-                assert client.get("/api/conversations/count").status_code == 503
+            # Before /api/init, no session key required at startup config
+            # level — but the dormant gate 503s anyway.
+            assert client.get("/api/conversations/count").status_code == 503
 
-                # Init delivers the session key.
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "session_api_keys": ["user-session-key"],
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
+            # Init delivers the session key.
+            resp = client.post(
+                "/api/init",
+                json={
+                    "session_api_keys": ["user-session-key"],
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
 
-                assert app.state.config.session_api_keys == ["user-session-key"]
-                assert client.get("/api/conversations/count").status_code == 401
-                assert (
-                    client.get(
-                        "/api/conversations/count",
-                        headers={"X-Session-API-Key": "wrong-key"},
-                    ).status_code
-                    == 401
-                )
-                assert (
-                    client.get(
-                        "/api/conversations/count",
-                        headers={"X-Session-API-Key": "user-session-key"},
-                    ).status_code
-                    == 200
-                )
-            finally:
-                _reset_conversation_singleton()
+            assert server_context_of(app).config.session_api_keys == [
+                "user-session-key"
+            ]
+            assert client.get("/api/conversations/count").status_code == 401
+            assert (
+                client.get(
+                    "/api/conversations/count",
+                    headers={"X-Session-API-Key": "wrong-key"},
+                ).status_code
+                == 401
+            )
+            assert (
+                client.get(
+                    "/api/conversations/count",
+                    headers={"X-Session-API-Key": "user-session-key"},
+                ).status_code
+                == 200
+            )
 
     def test_download_trajectory_uses_init_conversations_path(self, tmp_path):
         """Both trajectory routes serve conversations stored under the
         ``conversations_path`` delivered by /api/init, not the launch path."""
-        _reset_conversation_singleton()
         init_convs = tmp_path / "u" / "convs"
         workspace = tmp_path / "ws"
         workspace.mkdir()
@@ -915,51 +824,48 @@ class TestEndToEndOverLifespan:
             bash_events_dir=tmp_path / "bash",
         )
         with TestClient(create_app(cfg)) as client:
-            try:
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "conversations_path": str(init_convs),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+            resp = client.post(
+                "/api/init",
+                json={
+                    "conversations_path": str(init_convs),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
+
+            resp = client.post(
+                "/api/conversations",
+                json={
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": {"model": "test", "api_key": "sk-init-path"},
+                        "tools": [],
                     },
-                )
-                assert resp.status_code == 200
+                    "workspace": {"working_dir": str(workspace)},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            conversation_id = UUID(resp.json()["id"])
+            assert (init_convs / conversation_id.hex / "base_state.json").exists()
 
-                resp = client.post(
-                    "/api/conversations",
-                    json={
-                        "agent": {
-                            "kind": "Agent",
-                            "llm": {"model": "test", "api_key": "sk-init-path"},
-                            "tools": [],
-                        },
-                        "workspace": {"working_dir": str(workspace)},
-                    },
-                )
-                assert resp.status_code in (200, 201), resp.text
-                conversation_id = UUID(resp.json()["id"])
-                assert (init_convs / conversation_id.hex / "base_state.json").exists()
+            for route in (
+                f"/api/file/download-trajectory/{conversation_id}",
+                f"/api/conversations/{conversation_id}"
+                f"/file/download-trajectory/{conversation_id}",
+            ):
+                resp = client.get(route)
+                assert resp.status_code == 200, (route, resp.text)
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+                    names = archive.namelist()
+                    blob = b"".join(archive.read(n) for n in names)
+                assert f"{conversation_id.hex}/base_state.json" in names
+                assert b"sk-init-path" not in blob
+                assert not list(init_convs.glob("*.zip"))
 
-                for route in (
-                    f"/api/file/download-trajectory/{conversation_id}",
-                    f"/api/conversations/{conversation_id}"
-                    f"/file/download-trajectory/{conversation_id}",
-                ):
-                    resp = client.get(route)
-                    assert resp.status_code == 200, (route, resp.text)
-                    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
-                        names = archive.namelist()
-                        blob = b"".join(archive.read(n) for n in names)
-                    assert f"{conversation_id.hex}/base_state.json" in names
-                    assert b"sk-init-path" not in blob
-                    assert not list(init_convs.glob("*.zip"))
-
-                missing = uuid4()
-                resp = client.get(f"/api/file/download-trajectory/{missing}")
-                assert resp.status_code == 404
-                assert resp.json()["detail"] == "Conversation not found"
-            finally:
-                _reset_conversation_singleton()
+            missing = uuid4()
+            resp = client.get(f"/api/file/download-trajectory/{missing}")
+            assert resp.status_code == 404
+            assert resp.json()["detail"] == "Conversation not found"
 
     def test_vscode_url_uses_session_key_after_init(self, tmp_path, monkeypatch):
         """After /api/init the VSCode URL's token is the first session key, so
@@ -994,7 +900,6 @@ class TestNonDeferredPathUnchanged:
     """Regression: deferred_init=False must behave exactly like before."""
 
     def test_non_deferred_does_not_create_init_service(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=False,
             conversations_path=tmp_path / "convs",
@@ -1002,15 +907,12 @@ class TestNonDeferredPathUnchanged:
         )
         app = create_app(cfg)
         with TestClient(app) as client:
-            try:
-                # No init_service in non-deferred mode.
-                assert getattr(app.state, "init_service", None) is None
-                # /api/* should be live (200) — the dormant gate is a no-op.
-                assert client.get("/api/conversations/count").status_code == 200
-                # /api/init returns 404 because no InitService is attached.
-                assert client.get("/api/init").status_code == 404
-            finally:
-                _reset_conversation_singleton()
+            # No init_service in non-deferred mode.
+            assert getattr(app.state, "init_service", None) is None
+            # /api/* should be live (200) — the dormant gate is a no-op.
+            assert client.get("/api/conversations/count").status_code == 200
+            # /api/init returns 404 because no InitService is attached.
+            assert client.get("/api/init").status_code == 404
 
 
 @pytest.mark.asyncio
@@ -1019,17 +921,15 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
 ):
     """If /api/init succeeds, the lifespan finally clause must release the
     conversation service. If /api/init never runs, teardown is a no-op."""
-    _reset_conversation_singleton()
-    _reset_bash_singleton()
     cfg = Config(
         deferred_init=True,
         conversations_path=tmp_path / "convs",
         bash_events_dir=tmp_path / "bash",
     )
-    # Build a fake FastAPI app — api_lifespan only touches `.state`.
-    fake_app = SimpleNamespace(state=SimpleNamespace(config=cfg))
-    async with api_lifespan(fake_app):  # type: ignore[arg-type]
-        init_svc = fake_app.state.init_service
+    # A bare app is enough: api_lifespan only reads its server context.
+    app = _dormant_app(cfg)
+    async with api_lifespan(app):
+        init_svc = app.state.init_service
         assert init_svc.state == "dormant"
         await init_svc.initialize(
             InitRequest(
@@ -1038,13 +938,14 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
             )
         )
         assert init_svc.state == "ready"
+        context = server_context_of(app)
+        assert context.conversation_service is not None
+        assert context.bash_event_service is not None
     # After lifespan exit the conversation service should have been torn
-    # down — i.e. _entered_service is cleared.
-    assert init_svc._entered_service is None
-    # Same for the bash service: it must be torn down on lifespan exit.
-    assert init_svc._entered_bash_service is None
-    _reset_conversation_singleton()
-    _reset_bash_singleton()
+    # down, and the bash service with it.
+    assert init_svc._started is None
+    assert context.conversation_service._event_services is None
+    assert context.bash_event_service._closed
 
 
 class TestSessionKeyExport:
@@ -1055,7 +956,6 @@ class TestSessionKeyExport:
     def test_init_exports_delivered_key_over_boot_key(self, tmp_path, monkeypatch):
         """A dormant pod boots holding a shared key; /api/init replaces it."""
         monkeypatch.setenv("OH_SESSION_API_KEYS_0", "boot-key")
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             session_api_keys=["boot-key"],
@@ -1063,36 +963,31 @@ class TestSessionKeyExport:
             bash_events_dir=tmp_path / "bash",
         )
         with TestClient(create_app(cfg)) as client:
-            try:
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "session_api_keys": ["user-session-key"],
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                    # The bootstrap credential is the dormant secret key, which
-                    # defaults to the first session key.
-                    headers={"X-Init-API-Key": "boot-key"},
-                )
-                assert resp.status_code == 200
-                assert os.environ["OH_SESSION_API_KEYS_0"] == "user-session-key"
-            finally:
-                _reset_conversation_singleton()
+            resp = client.post(
+                "/api/init",
+                json={
+                    "session_api_keys": ["user-session-key"],
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+                # The bootstrap credential is the dormant secret key, which
+                # defaults to the first session key.
+                headers={"X-Init-API-Key": "boot-key"},
+            )
+            assert resp.status_code == 200
+            assert os.environ["OH_SESSION_API_KEYS_0"] == "user-session-key"
 
     @pytest.mark.asyncio
     async def test_teardown_restores_the_env_after_a_direct_init(self, tmp_path):
         """Driving InitService without the lifespan (as other tests do) must
         not leak the delivered key into the process environment."""
-        _reset_conversation_singleton()
-        _reset_bash_singleton()
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = SimpleNamespace(state=SimpleNamespace(config=base))
-        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        app = _dormant_app(base)
+        svc = InitService(app, base_config=base)
         try:
             await svc.initialize(
                 InitRequest(
@@ -1104,44 +999,34 @@ class TestSessionKeyExport:
             assert os.environ["OH_SESSION_API_KEYS_0"] == "user-key"
         finally:
             await svc.teardown()
-            _reset_conversation_singleton()
-            _reset_bash_singleton()
         assert "OH_SESSION_API_KEYS_0" not in os.environ
 
     def test_init_without_keys_leaves_env_untouched(self, tmp_path):
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
         with TestClient(create_app(cfg)) as client:
-            try:
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
-                assert "OH_SESSION_API_KEYS_0" not in os.environ
-            finally:
-                _reset_conversation_singleton()
+            resp = client.post(
+                "/api/init",
+                json={
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
+            assert "OH_SESSION_API_KEYS_0" not in os.environ
 
     def test_startup_exports_config_key_and_restores_env_on_shutdown(self, tmp_path):
         """A key read from the config file is exported for the server's
         lifetime only."""
-        _reset_conversation_singleton()
         cfg = Config(
             deferred_init=False,
             session_api_keys=["file-key"],
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        try:
-            with TestClient(create_app(cfg)):
-                assert os.environ["OH_SESSION_API_KEYS_0"] == "file-key"
-            assert "OH_SESSION_API_KEYS_0" not in os.environ
-        finally:
-            _reset_conversation_singleton()
+        with TestClient(create_app(cfg)):
+            assert os.environ["OH_SESSION_API_KEYS_0"] == "file-key"
+        assert "OH_SESSION_API_KEYS_0" not in os.environ

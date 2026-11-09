@@ -36,6 +36,9 @@ from openhands.agent_server.local_storage import (
     conversation_worktree_dir,
     remove_conversation_worktree,
 )
+from openhands.agent_server.mcp_oauth_store import (
+    create_settings_backed_mcp_tool_provider,
+)
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -47,7 +50,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -83,8 +86,9 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
-from openhands.sdk.launch import LaunchedAgent, finalize
+from openhands.sdk.launch import LaunchedAgent, LaunchStoreError, LaunchStores, finalize
 from openhands.sdk.llm.call_context import LLMCallContext
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
@@ -560,7 +564,10 @@ class ConversationService:
     cipher: Cipher | None = None
     runtime_cipher_resolver: Callable[[UUID], Cipher] | None = None
     mcp_tool_provider: MCPToolProvider | None = None
-    secrets_store: FileSecretsStore | None = None
+    # The persistent stores of the server this service belongs to. ``None``
+    # is a service without any: it starts conversations with default settings
+    # and cannot launch from a profile.
+    stores: ServerStores | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
@@ -773,13 +780,36 @@ class ConversationService:
         return isinstance(agent, ACPAgent) and agent.acp_server == "codex"
 
     async def _has_local_codex_credential(self) -> bool:
-        if self.secrets_store is None:
+        if self.stores is None:
             return False
         value = await asyncio.to_thread(
-            self.secrets_store.get_secret,
+            self.stores.secrets.get_secret,
             CODEX_AUTH_SECRET_NAME,
         )
         return value is not None
+
+    async def _load_settings(self) -> PersistedSettings:
+        """The stored agent preferences, or the defaults when there are none."""
+        stores = self.stores
+        if stores is None:
+            return PersistedSettings()
+        # FileSettingsStore.load re-raises PermissionError/OSError by design;
+        # every launch reads it, so a bad file mode must not take down request
+        # shapes that need nothing from settings.
+        try:
+            settings = await asyncio.to_thread(stores.settings.load)
+        except (PermissionError, OSError):
+            logger.warning(
+                "Cannot read settings; starting without the stored agent preferences",
+                exc_info=True,
+            )
+            return PersistedSettings()
+        return settings or PersistedSettings()
+
+    def _launch_stores(self, settings: PersistedSettings) -> LaunchStores:
+        if self.stores is None:
+            raise LaunchStoreError("This server has no profile stores")
+        return server_launch_stores(settings, self.stores, self.cipher)
 
     async def _resolve_credential_bindings(
         self,
@@ -809,13 +839,13 @@ class ConversationService:
             and self._is_codex_agent(agent)
             and await self._has_local_codex_credential()
         ):
-            assert self.secrets_store is not None
+            assert self.stores is not None
             from openhands.agent_server.credential_binding import (
                 LocalVersionedCredentialBinding,
             )
 
             bindings[CODEX_AUTH_SECRET_NAME] = LocalVersionedCredentialBinding(
-                self.secrets_store,
+                self.stores.secrets,
                 CODEX_AUTH_SECRET_NAME,
             )
         return bindings
@@ -1545,26 +1575,7 @@ class ConversationService:
             else None
         )
 
-        from openhands.agent_server.persistence import (
-            PersistedSettings,
-            get_settings_store,
-        )
-
-        # get_settings_store() is safe here: get_instance() initialises the
-        # singleton with the server cipher before any conversation can start.
-        # FileSettingsStore.load re-raises PermissionError/OSError by design;
-        # now that every launch reads it, a bad file mode must not take down
-        # request shapes that need nothing from settings.
-        try:
-            settings = await asyncio.to_thread(
-                lambda: get_settings_store().load() or PersistedSettings()
-            )
-        except (PermissionError, OSError):
-            logger.warning(
-                "Cannot read settings; starting without the stored agent preferences",
-                exc_info=True,
-            )
-            settings = PersistedSettings()
+        settings = await self._load_settings()
         # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
         stored_context = settings.agent_settings.agent_context
         load_memory = bool(stored_context and stored_context.load_memory)
@@ -1572,7 +1583,7 @@ class ConversationService:
         source = await asyncio.to_thread(
             launch_source,
             request,
-            lambda: server_launch_stores(settings, self.cipher),
+            lambda: self._launch_stores(settings),
             self.cipher,
         )
         secrets = scoped_secrets(request.secrets, source)
@@ -2445,18 +2456,9 @@ class ConversationService:
             raise credential_failure or failures[0]
 
     @classmethod
-    def get_instance(cls, config: Config) -> "ConversationService":
-        # Initialise the settings-store singleton with the server cipher before
-        # any conversation handler can call get_settings_store() without config.
-        from openhands.agent_server.mcp_oauth_store import (
-            create_settings_backed_mcp_tool_provider,
-        )
-        from openhands.agent_server.persistence import (
-            get_secrets_store,
-            get_settings_store,
-        )
-
-        get_settings_store(config)
+    def get_instance(
+        cls, config: Config, stores: ServerStores
+    ) -> "ConversationService":
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,
@@ -2464,8 +2466,10 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
-            mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
-            secrets_store=get_secrets_store(config),
+            mcp_tool_provider=create_settings_backed_mcp_tool_provider(
+                config, stores.settings
+            ),
+            stores=stores,
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
@@ -2521,7 +2525,12 @@ class ConversationService:
             )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
-                    AutoTitleSubscriber(service=event_service)
+                    AutoTitleSubscriber(
+                        service=event_service,
+                        llm_profile_store=(
+                            self.stores.llm_profiles if self.stores else None
+                        ),
+                    )
                 )
             await self._maybe_subscribe_telemetry(
                 event_service, stored, is_new_conversation=is_new_conversation
@@ -2716,6 +2725,9 @@ def _generate_title_traced(
 @dataclass
 class AutoTitleSubscriber(Subscriber):
     service: EventService
+    # Where ``title_llm_profile`` is looked up; ``None`` leaves titling to the
+    # agent's own LLM.
+    llm_profile_store: LLMProfileStore | None = None
 
     async def __call__(self, event: Event) -> None:
         # Only act on incoming user messages
@@ -2782,16 +2794,11 @@ class AutoTitleSubscriber(Subscriber):
             falls back to the agent's LLM (and then to message truncation).
         """
         profile_name = self.service.stored.title_llm_profile
-        if not profile_name:
+        if not profile_name or self.llm_profile_store is None:
             return None
 
         try:
-            from openhands.agent_server.persistence.store import (
-                get_llm_profile_store,
-            )
-
-            profile_store = get_llm_profile_store()
-            return profile_store.load(profile_name, cipher=self.service.cipher)
+            return self.llm_profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
@@ -3086,20 +3093,3 @@ class ConversationWebhookSubscriber:
                         f"{conversations_url} after {self.spec.num_retries + 1} "
                         f"attempts. Response: {response_content}"
                     )
-
-
-_conversation_service: ConversationService | None = None
-
-
-def get_default_conversation_service() -> ConversationService:
-    global _conversation_service
-    if _conversation_service:
-        return _conversation_service
-
-    from openhands.agent_server.config import (
-        get_default_config,
-    )
-
-    config = get_default_config()
-    _conversation_service = ConversationService.get_instance(config)
-    return _conversation_service

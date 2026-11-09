@@ -16,12 +16,10 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import (
-    config as config_module,
-    conversation_service as service_module,
-)
 from openhands.agent_server.api import create_app
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.server_context import server_context_of
+from tests.agent_server.conftest import client_context
 
 
 pytestmark = pytest.mark.docker_live
@@ -103,21 +101,22 @@ def server(tmp_path, monkeypatch) -> Callable[..., AbstractContextManager[TestCl
             **env,
         }.items():
             monkeypatch.setenv(name, value)
-        # Both are process-wide and would keep another test's paths.
-        monkeypatch.setattr(config_module, "_default_config", None)
-        monkeypatch.setattr(service_module, "_conversation_service", None)
         app = create_app()
+        registry = server_context_of(app).conversation_registry
+        assert isinstance(registry, DockerConversationRegistry)
         try:
             with TestClient(app) as client:
                 yield client
         finally:
-            app.state.conversation_registry.cleanup_stale_containers()
+            registry.cleanup_stale_containers()
 
     return start
 
 
 def _registry(client: TestClient) -> DockerConversationRegistry:
-    return client.app.state.conversation_registry  # type: ignore[attr-defined]
+    registry = client_context(client).conversation_registry
+    assert isinstance(registry, DockerConversationRegistry)
+    return registry
 
 
 def _start(client: TestClient, working_dir: Path | None = None) -> UUID:

@@ -39,11 +39,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from openhands.agent_server._secrets_exposure import get_cipher, get_config
+from openhands.agent_server.dependencies import get_cipher, get_stores
 from openhands.agent_server.mcp_oauth_store import (
     InMemoryMCPOAuthTokenStore,
 )
-from openhands.agent_server.persistence import get_secrets_store
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.client import MCPClient
@@ -825,9 +824,9 @@ async def test_mcp_server(
 ) -> MCPTestResponse:
     """Probe a single MCP server config and report whether it works."""
     # Resolve the cipher and store here: the threadpool function below must
-    # not reach back into ``http_request.app.state``.
+    # not reach back into the request's server context.
     cipher = get_cipher(http_request)
-    secrets_store = get_secrets_store(get_config(http_request))
+    secrets_store = get_stores(http_request).secrets
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,

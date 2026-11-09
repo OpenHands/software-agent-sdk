@@ -16,6 +16,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.server_context import build_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -40,7 +41,9 @@ class _FakeWS:
         self.client_state = WebSocketState.CONNECTED
         self.headers: dict = {}
         self.app = SimpleNamespace(
-            state=SimpleNamespace(config=Config(session_api_keys=[]))
+            state=SimpleNamespace(
+                server_context=build_server_context(Config(session_api_keys=[]))
+            )
         )
 
     async def accept(self):
@@ -99,11 +102,11 @@ async def svc(tmp_path, monkeypatch):
     async def get_event_service(_cid):
         return service
 
-    monkeypatch.setattr(
-        sockets,
-        "conversation_service",
-        SimpleNamespace(get_event_service=get_event_service),
-    )
+    conversation_service = SimpleNamespace(get_event_service=get_event_service)
+    for module in (sockets, session_socket):
+        monkeypatch.setattr(
+            module, "get_conversation_service", lambda _ws: conversation_service
+        )
     yield service
     if service.is_open():
         await service.close()

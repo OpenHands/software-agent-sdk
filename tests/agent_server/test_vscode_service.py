@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.vscode_service import (
     VSCodeService,
     get_vscode_service,
@@ -589,46 +590,27 @@ async def test_wait_for_startup_timeout(vscode_service):
 
 def test_get_vscode_service_enabled(tmp_path):
     """Test get_vscode_service returns VSCodeService when enabled."""
-    with (
-        patch("openhands.agent_server.config.get_default_config") as mock_config,
-        patch("openhands.agent_server.vscode_service._vscode_service", None),
-    ):
-        mock_config.return_value.enable_vscode = True
-        mock_config.return_value.vscode_port = 8001
-        mock_config.return_value.vscode_base_path = None
-        mock_config.return_value.session_api_keys = []
-
-        service = get_vscode_service()
+    config = Config(enable_vscode=True, vscode_port=8001, session_api_keys=[])
+    with patch("openhands.agent_server.vscode_service._vscode_service", None):
+        service = get_vscode_service(config)
 
         assert isinstance(service, VSCodeService)
 
 
 def test_get_vscode_service_disabled():
     """Test get_vscode_service returns None when disabled."""
-    with (
-        patch("openhands.agent_server.config.get_default_config") as mock_config,
-        patch("openhands.agent_server.vscode_service._vscode_service", None),
-    ):
-        mock_config.return_value.enable_vscode = False
-
-        service = get_vscode_service()
+    with patch("openhands.agent_server.vscode_service._vscode_service", None):
+        service = get_vscode_service(Config(enable_vscode=False))
 
         assert service is None
 
 
 def test_get_vscode_service_singleton():
     """Test get_vscode_service returns the same instance on multiple calls."""
-    with (
-        patch("openhands.agent_server.config.get_default_config") as mock_config,
-        patch("openhands.agent_server.vscode_service._vscode_service", None),
-    ):
-        mock_config.return_value.enable_vscode = True
-        mock_config.return_value.vscode_port = 8001
-        mock_config.return_value.vscode_base_path = None
-        mock_config.return_value.session_api_keys = []
-
-        service1 = get_vscode_service()
-        service2 = get_vscode_service()
+    config = Config(enable_vscode=True, vscode_port=8001, session_api_keys=[])
+    with patch("openhands.agent_server.vscode_service._vscode_service", None):
+        service1 = get_vscode_service(config)
+        service2 = get_vscode_service(config)
 
         assert service1 is service2
         assert isinstance(service1, VSCodeService)
@@ -636,16 +618,9 @@ def test_get_vscode_service_singleton():
 
 def test_get_vscode_service_with_custom_port():
     """Test get_vscode_service uses the configured port."""
-    with (
-        patch("openhands.agent_server.config.get_default_config") as mock_config,
-        patch("openhands.agent_server.vscode_service._vscode_service", None),
-    ):
-        mock_config.return_value.enable_vscode = True
-        mock_config.return_value.vscode_port = 9001
-        mock_config.return_value.vscode_base_path = None
-        mock_config.return_value.session_api_keys = []
-
-        service = get_vscode_service()
+    config = Config(enable_vscode=True, vscode_port=9001, session_api_keys=[])
+    with patch("openhands.agent_server.vscode_service._vscode_service", None):
+        service = get_vscode_service(config)
 
         assert isinstance(service, VSCodeService)
         assert service.port == 9001
@@ -653,16 +628,14 @@ def test_get_vscode_service_with_custom_port():
 
 def test_get_vscode_service_with_base_path():
     """Test get_vscode_service passes vscode_base_path from config."""
-    with (
-        patch("openhands.agent_server.config.get_default_config") as mock_config,
-        patch("openhands.agent_server.vscode_service._vscode_service", None),
-    ):
-        mock_config.return_value.enable_vscode = True
-        mock_config.return_value.vscode_port = 8001
-        mock_config.return_value.vscode_base_path = "/runtime-123/vscode"
-        mock_config.return_value.session_api_keys = []
-
-        service = get_vscode_service()
+    config = Config(
+        enable_vscode=True,
+        vscode_port=8001,
+        vscode_base_path="/runtime-123/vscode",
+        session_api_keys=[],
+    )
+    with patch("openhands.agent_server.vscode_service._vscode_service", None):
+        service = get_vscode_service(config)
 
         assert isinstance(service, VSCodeService)
         assert service.server_base_path == "/runtime-123/vscode"

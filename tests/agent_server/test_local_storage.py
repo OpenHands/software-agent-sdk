@@ -8,10 +8,6 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import (
-    config as config_module,
-    conversation_service as service_module,
-)
 from openhands.agent_server.api import create_app
 
 
@@ -53,9 +49,6 @@ def client(tmp_path, monkeypatch) -> Iterator[TestClient]:
         "OH_SECRET_KEY": "key",
     }.items():
         monkeypatch.setenv(name, value)
-    # Both are process-wide and would keep another test's paths.
-    monkeypatch.setattr(config_module, "_default_config", None)
-    monkeypatch.setattr(service_module, "_conversation_service", None)
     with TestClient(create_app()) as client:
         yield client
 

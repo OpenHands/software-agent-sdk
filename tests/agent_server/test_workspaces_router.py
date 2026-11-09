@@ -16,18 +16,15 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 
 
 @pytest.fixture
 def client(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
-        reset_stores()
         monkeypatch.setenv("OH_PERSISTENCE_DIR", str(Path(tmpdir) / "persist"))
         config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
         app = create_app(config)
         yield TestClient(app)
-        reset_stores()
 
 
 @pytest.fixture
@@ -37,7 +34,6 @@ def client_with_auth(monkeypatch):
     workspaces router inherits the same auth as the rest of ``/api``.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        reset_stores()
         monkeypatch.setenv("OH_PERSISTENCE_DIR", str(Path(tmpdir) / "persist"))
         config = Config(
             static_files_path=None,
@@ -46,7 +42,6 @@ def client_with_auth(monkeypatch):
         )
         app = create_app(config)
         yield TestClient(app, raise_server_exceptions=False)
-        reset_stores()
 
 
 def test_list_workspaces_empty_when_no_file(client):
@@ -145,13 +140,15 @@ def test_workspaces_survive_across_requests_via_disk_persistence(client):
         json={"workspaces": [{"id": "/keep", "name": "keep", "path": "/keep"}]},
     )
 
-    # Act: confirm it's on disk, then reset the in-memory singleton (simulating
-    # a server restart) and re-read.
+    # Act: confirm it's on disk, then re-read through a new server on the same
+    # directory (a restart: its stores are built from scratch).
     persist_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
     assert (persist_dir / "workspaces.json").exists()
 
-    reset_stores()
-    listed_again = client.get("/api/workspaces").json()
+    restarted = TestClient(
+        create_app(Config(static_files_path=None, session_api_keys=[], secret_key=None))
+    )
+    listed_again = restarted.get("/api/workspaces").json()
 
     # Assert
     assert [w["path"] for w in listed_again["workspaces"]] == ["/keep"]
@@ -292,8 +289,6 @@ def test_list_workspaces_returns_409_when_persisted_file_is_corrupted(client):
     )
     persist_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
     (persist_dir / "workspaces.json").write_text("{not valid json", encoding="utf-8")
-    # Force the next request to re-read from disk rather than the in-memory store.
-    reset_stores()
 
     # Act
     response = client.get("/api/workspaces")

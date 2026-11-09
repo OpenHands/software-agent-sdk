@@ -7,18 +7,16 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import libtmux
 import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import (
-    config as config_module,
-    conversation_service as conversation_service_module,
-)
 from openhands.agent_server.api import (
     _cleanup_stale_tmux_sessions,
     _default_server_tmux_tmpdir,
@@ -28,6 +26,11 @@ from openhands.agent_server.api import (
     create_app,
 )
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.server_context import (
+    build_server_context,
+    server_context_of,
+)
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 
 
@@ -613,7 +616,9 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
 
             async with api_lifespan(mock_app):
                 pass
@@ -659,7 +664,7 @@ class TestServiceParallelization:
             mock_app = AsyncMock()
             mock_backend_manager = AsyncMock()
             mock_app.state = SimpleNamespace(
-                config=Config(),
+                server_context=build_server_context(Config()),
                 canvas_extension_backend_manager=mock_backend_manager,
             )
 
@@ -689,14 +694,17 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
 
             # This should not raise any exceptions
             async with api_lifespan(mock_app):
                 pass
 
             # Verify conversation service was set up
-            assert mock_app.state.conversation_service == mock_conversation_service
+            context = mock_app.state.server_context
+            assert context.conversation_service == mock_conversation_service
 
     async def test_registry_starts_before_conversation_recovery(self):
         events = []
@@ -721,7 +729,10 @@ class TestServiceParallelization:
         ):
             mock_app = AsyncMock()
             mock_app.state = SimpleNamespace(
-                config=Config(), conversation_registry=registry
+                server_context=replace(
+                    build_server_context(Config()),
+                    conversation_registry=cast(ConversationRegistry, registry),
+                )
             )
 
             async with api_lifespan(mock_app):
@@ -751,7 +762,9 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
                 assert expected_tmux_tmpdir.is_dir()
@@ -779,7 +792,9 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
 
@@ -815,7 +830,9 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
             async with api_lifespan(mock_app):
                 assert os.environ[overridden] == "C.UTF-8"
 
@@ -848,7 +865,9 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(substitute)
 
@@ -887,7 +906,9 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
             with caplog.at_level("WARNING"):
                 async with api_lifespan(mock_app):
                     pass
@@ -918,7 +939,9 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=build_server_context(Config())
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
 
@@ -1147,8 +1170,6 @@ def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeyp
     """
     monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "env-conversations"))
     monkeypatch.setenv("OH_WEBHOOKS_0_BASE_URL", "http://env-webhook.invalid/hooks")
-    monkeypatch.setattr(config_module, "_default_config", None)
-    monkeypatch.setattr(conversation_service_module, "_conversation_service", None)
     config = Config(
         static_files_path=None,
         session_api_keys=[],
@@ -1158,6 +1179,7 @@ def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeyp
 
     app = create_app(config)
     with TestClient(app):
-        service = app.state.conversation_service
+        service = server_context_of(app).conversation_service
+        assert service is not None
         assert service.conversations_dir == tmp_path / "conversations"
         assert service.webhook_specs == []

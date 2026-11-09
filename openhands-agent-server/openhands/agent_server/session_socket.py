@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from openhands.agent_server.conversation_service import (
     CredentialBindingActivationRequired,
 )
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
@@ -36,7 +37,6 @@ from openhands.agent_server.session_protocol import (
 )
 from openhands.agent_server.sockets import (
     _accept_authenticated_websocket,
-    _get_conversation_service,
     _is_auth_control_message,
     _is_websocket_connected,
     _safe_close_websocket,
@@ -372,7 +372,7 @@ async def session_socket(
         return
 
     logger.info("session_socket_connected: %s after_seq=%s", conversation_id, after_seq)
-    conv_service = _get_conversation_service(websocket)
+    conv_service = get_conversation_service(websocket)
     try:
         event_service = await conv_service.get_event_service(conversation_id)
     except CredentialBindingActivationRequired:

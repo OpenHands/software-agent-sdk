@@ -1,15 +1,27 @@
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
 
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import (
     V0_SESSION_API_KEY_ENV,
     V1_SESSION_API_KEY_ENV,
+    Config,
 )
-from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.server_context import (
+    ServerContext,
+    install_server_context,
+    server_context_of,
+)
 from openhands.sdk.mcp.config import MCPServer
 
 
@@ -81,19 +93,17 @@ def isolate_session_api_key_env():
 def isolate_persistence_dir(tmp_path, monkeypatch):
     """Keep the developer's real ``~/.openhands`` out of every test.
 
-    ``_start_conversation`` reads the settings store on every launch, not just
-    the ``agent_profile_id`` one, and ``get_settings_store`` falls back to
-    ``~/.openhands`` when ``OH_PERSISTENCE_DIR`` is unset. Tests that build a
-    ``ConversationService`` directly never initialise the singleton, so without
-    this they would pick up whatever settings.json happens to be on the host and
-    pass or fail depending on the machine.
+    A server's stores (``ServerStores``) fall back to ``~/.openhands`` when
+    ``OH_PERSISTENCE_DIR`` is unset, so without this an app built by a test
+    would pick up whatever settings.json happens to be on the host and pass or
+    fail depending on the machine.
     """
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
-    # The singleton getters resolve ``OH_PERSISTENCE_DIR`` per call, but three
-    # SDK defaults are frozen into module constants at import time and therefore
-    # ignore the env var above once the module is already imported (which it
-    # always is here). Pin them too, or a store constructed with no explicit
-    # ``base_dir`` still lands in the developer's real ``~/.openhands``.
+    # ``ServerStores`` resolves ``OH_PERSISTENCE_DIR`` when it is built, but
+    # three SDK defaults are frozen into module constants at import time and
+    # therefore ignore the env var above once the module is already imported
+    # (which it always is here). Pin them too, or a store constructed with no
+    # explicit ``base_dir`` still lands in the developer's real ``~/.openhands``.
     from openhands.sdk.llm import llm_profile_store
     from openhands.sdk.profiles import agent_profile_store
     from openhands.sdk.skills import installed as installed_skills
@@ -110,8 +120,72 @@ def isolate_persistence_dir(tmp_path, monkeypatch):
         "DEFAULT_INSTALLED_SKILLS_DIR",
         persistence_dir / "skills" / "installed",
     )
-    reset_stores()
-    try:
-        yield
-    finally:
-        reset_stores()
+
+
+@pytest.fixture
+def server_stores() -> ServerStores:
+    """The stores of a server with the default config, in the test's own dir.
+
+    For tests that build a ``ConversationService`` (or call a helper) directly
+    rather than through an app: pass these in, and read or seed them, instead
+    of expecting a process-wide store.
+    """
+    return ServerStores.from_config(Config())
+
+
+def client_context(client: TestClient) -> ServerContext:
+    """The server context of the app behind a ``TestClient``.
+
+    Read it after the request (or the ``with`` block) whose effect a test
+    checks: the lifespan and ``POST /api/init`` each install a new one.
+    """
+    app = client.app
+    assert isinstance(app, Starlette)
+    return server_context_of(app)
+
+
+def update_test_context(app: Starlette, **changes: Any) -> ServerContext:
+    """Rebind part of the context ``app`` already has, keeping the rest.
+
+    For an app from ``create_app`` whose test swaps in a config or a service:
+    ``update_test_context(app, config=other)`` leaves its stores, registry and
+    services where they are.
+    """
+    context = replace(server_context_of(app), **changes)
+    install_server_context(app, context)
+    return context
+
+
+def install_test_context(
+    app: Starlette,
+    config: Config | None = None,
+    *,
+    conversation_registry: ConversationRegistry | None = None,
+    conversation_service: ConversationService | None = None,
+    bash_event_service: BashEventService | None = None,
+) -> ServerContext:
+    """Give a hand-built app (a bare ``FastAPI`` plus routers) a server context.
+
+    ``create_app`` installs one itself; this is for tests that mount a router
+    on their own app and still need what its handlers read from the context.
+    Services passed here stand in for the ones the lifespan would start, and a
+    registry passed here brings its own config and stores. Without one the app
+    gets the plain host-local registry whatever runtime ``config`` names, so a
+    router test can describe a Docker deployment without a Docker registry.
+    """
+    if conversation_registry is not None:
+        config = config if config is not None else conversation_registry.config
+        stores = conversation_registry.stores
+    else:
+        config = config if config is not None else Config()
+        stores = ServerStores.from_config(config)
+        conversation_registry = ConversationRegistry(config, stores)
+    context = ServerContext(
+        config=config,
+        stores=stores,
+        conversation_registry=conversation_registry,
+        conversation_service=conversation_service,
+        bash_event_service=bash_event_service,
+    )
+    install_server_context(app, context)
+    return context

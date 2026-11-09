@@ -16,12 +16,17 @@ from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.config import Config
 from openhands.agent_server.credential_binding import LocalVersionedCredentialBinding
 from openhands.agent_server.local_secret_resolver import local_secret_resolution
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.acp_models import (
     ACPModelDiscovery,
     ACPModelDiscoveryError,
     ACPModelInfo,
+)
+from tests.agent_server.conftest import (
+    client_context,
+    install_test_context,
+    update_test_context,
 )
 
 
@@ -41,10 +46,15 @@ def config(tmp_path: Path) -> Config:
 @pytest.fixture
 def client(config: Config) -> Iterator[TestClient]:
     app = FastAPI()
-    app.state.config = config
+    context = install_test_context(app, config)
     app.include_router(acp_router, prefix="/api")
-    with local_secret_resolution(config):
+    with local_secret_resolution(lambda: context.stores.secrets):
         yield TestClient(app)
+
+
+@pytest.fixture
+def stores(client: TestClient) -> ServerStores:
+    return client_context(client).stores
 
 
 class _FakeDiscovery:
@@ -89,10 +99,10 @@ def test_reports_a_live_servers_models(
 
 
 def test_resolves_stored_secrets_by_reference(
-    client: TestClient, config: Config, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, stores: ServerStores, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("FAKE_ACP_KEY", raising=False)
-    get_secrets_store(config).set_secret("FAKE_ACP_KEY", "stored-key")
+    stores.secrets.set_secret("FAKE_ACP_KEY", "stored-key")
     lookup = {"kind": "LookupSecret", "url": "/api/settings/secrets/FAKE_ACP_KEY"}
 
     response = _discover(client, secrets={"FAKE_ACP_KEY": lookup})
@@ -152,9 +162,9 @@ def test_does_not_reuse_a_failure(
 
 
 def test_uses_the_stored_codex_login_like_a_conversation(
-    client: TestClient, config: Config, fake_discovery: _FakeDiscovery
+    client: TestClient, stores: ServerStores, fake_discovery: _FakeDiscovery
 ) -> None:
-    get_secrets_store(config).set_secret(CODEX_AUTH_SECRET_NAME, '{"tokens": {}}')
+    stores.secrets.set_secret(CODEX_AUTH_SECRET_NAME, '{"tokens": {}}')
     sent = {"kind": "StaticSecret", "value": "pasted"}
 
     client.post(
@@ -185,7 +195,9 @@ def test_is_unavailable_when_conversations_run_in_containers(
 ) -> None:
     app = client.app
     assert isinstance(app, FastAPI)
-    app.state.config = config.model_copy(update={"conversation_runtime": "docker"})
+    update_test_context(
+        app, config=config.model_copy(update={"conversation_runtime": "docker"})
+    )
 
     response = _discover(client)
 

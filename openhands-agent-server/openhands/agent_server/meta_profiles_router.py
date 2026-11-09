@@ -11,11 +11,8 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import AfterValidator, BaseModel
 
-from openhands.agent_server._secrets_exposure import get_config
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_settings_store,
-)
+from openhands.agent_server.dependencies import get_stores
+from openhands.agent_server.persistence import PersistedSettings
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.llm.meta_profile_store import (
     MetaProfile,
@@ -117,8 +114,7 @@ def _store_errors() -> Iterator[None]:
 def _set_active_meta_profile_if_matches(
     request: Request, old_name: str, new_name: str | None
 ) -> bool:
-    config = get_config(request)
-    settings_store = get_settings_store(config)
+    settings_store = get_stores(request).settings
     settings = settings_store.load() or PersistedSettings()
     if settings.active_meta_profile != old_name:
         return False
@@ -144,8 +140,7 @@ def _set_active_meta_profile_if_matches(
 @meta_profiles_router.get("", response_model=MetaProfileListResponse)
 def list_meta_profiles(request: Request) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
-    config = get_config(request)
-    settings_store = get_settings_store(config)
+    settings_store = get_stores(request).settings
     settings = settings_store.load() or PersistedSettings()
 
     store = _get_meta_profile_store()
@@ -253,8 +248,7 @@ def activate_meta_profile(
             detail=f"Meta-profile '{name}' not found",
         )
 
-    config = get_config(request)
-    settings_store = get_settings_store(config)
+    settings_store = get_stores(request).settings
     applied = False
 
     def apply_active(settings: PersistedSettings) -> PersistedSettings:

@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 import openhands.agent_server.vscode_service as vscode_service_module
@@ -12,7 +13,15 @@ from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.runtime_router import create_runtime_router
+from openhands.agent_server.server_context import server_context_of
 from openhands.agent_server.vscode_service import VSCodeService
+from tests.agent_server.conftest import update_test_context
+
+
+def _conversation_service(app: FastAPI) -> ConversationService:
+    service = server_context_of(app).conversation_service
+    assert service is not None
+    return service
 
 
 @pytest.fixture
@@ -25,8 +34,11 @@ async def runtime_client(tmp_path):
     async with ConversationService(
         conversations_dir=config.conversations_path
     ) as service:
-        app.state.conversation_service = service
-        app.state.bash_event_service = BashEventService(tmp_path / "global-bash")
+        update_test_context(
+            app,
+            conversation_service=service,
+            bash_event_service=BashEventService(tmp_path / "global-bash"),
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
@@ -149,7 +161,8 @@ async def test_conversation_close_stops_runtime_terminal(runtime_client, tmp_pat
         while not (root / "pid").exists():
             await asyncio.sleep(0.01)
     pid = int((root / "pid").read_text())
-    service = await app.state.conversation_service.get_event_service(UUID(cid))
+    service = await _conversation_service(app).get_event_service(UUID(cid))
+    assert service is not None
     await service.close()
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
@@ -203,7 +216,8 @@ async def test_concurrent_runtime_requests_share_event_loop_bash_service(
         )
     )
     assert all(response.status_code == 200 for response in responses)
-    event_service = await app.state.conversation_service.get_event_service(UUID(cid))
+    event_service = await _conversation_service(app).get_event_service(UUID(cid))
+    assert event_service is not None
     assert instances == [event_service.bash_event_service]
 
 

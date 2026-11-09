@@ -1,9 +1,7 @@
 """Tests for profiles_router endpoints."""
 
-import tempfile
 import time
 import warnings
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -14,7 +12,6 @@ from pydantic import SecretStr
 from openhands.agent_server import profiles_router as profiles_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM, Message
 from openhands.sdk.llm.auth.credentials import OAuthCredentials
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -27,90 +24,41 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
-def temp_profiles_dir():
-    """Create a temporary directory for profiles."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        profiles_dir = Path(tmpdir) / "profiles"
-        profiles_dir.mkdir(parents=True, exist_ok=True)
-        yield profiles_dir
+def temp_settings_dir(tmp_path, monkeypatch):
+    """The server's persistence directory; ``settings.json`` lives in it."""
+    settings_dir = tmp_path / "settings"
+    settings_dir.mkdir()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(settings_dir))
+    return settings_dir
 
 
 @pytest.fixture
-def temp_agent_profiles_dir():
-    """Create a temporary directory for agent profiles (FK store)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        agent_dir = Path(tmpdir) / "agent-profiles"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        yield agent_dir
+def temp_profiles_dir(temp_settings_dir):
+    """Where the server's stores keep LLM profiles."""
+    profiles_dir = temp_settings_dir / "profiles"
+    profiles_dir.mkdir()
+    return profiles_dir
 
 
 @pytest.fixture
-def temp_settings_dir():
-    """Create a temporary directory for settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        settings_dir = Path(tmpdir) / "settings"
-        settings_dir.mkdir(parents=True, exist_ok=True)
-        yield settings_dir
+def temp_agent_profiles_dir(temp_settings_dir):
+    """Where the server's stores keep agent profiles (FK store)."""
+    agent_dir = temp_settings_dir / "agent-profiles"
+    agent_dir.mkdir()
+    return agent_dir
 
 
 @pytest.fixture
-def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
-    """Create test client with isolated profiles/settings directories, no cipher."""
-    # Reset store singletons to ensure clean state
-    reset_stores()
+def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir):
+    """Create test client with isolated profiles/settings directories, no cipher.
 
-    # Set environment variable for persistence directory
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
-
+    The app's own stores live in those directories (its provider connections in
+    ``provider-connections`` beside the profiles), so the routes and the tests
+    read and write the same files.
+    """
     # Explicitly disable cipher by setting secret_key to None
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
-    app = create_app(config)
-
-    # Patch stores to use temp directories (AgentProfileStore is hit by the
-    # FK guard on delete/rename). The LLM profile store is wired to a shared
-    # provider-connection store so ``load`` resolves provider references, and
-    # the router's own ``get_provider_connections_store`` returns the same
-    # instance so CRUD and resolution see one file.
-    provider_store = ProviderConnectionStore(
-        base_dir=temp_profiles_dir.parent / "provider-connections"
-    )
-
-    def make_llm_store():
-        return LLMProfileStore(
-            base_dir=temp_profiles_dir, provider_store=provider_store
-        )
-
-    with (
-        patch(
-            "openhands.agent_server.profiles_router.get_llm_profile_store",
-            make_llm_store,
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_provider_connections_store",
-            lambda config=None: provider_store,
-        ),
-        patch(
-            "openhands.agent_server.settings_router.get_llm_profile_store",
-            make_llm_store,
-        ),
-        patch(
-            "openhands.agent_server.provider_connections_router.get_llm_profile_store",
-            make_llm_store,
-        ),
-        patch(
-            "openhands.agent_server.provider_connections_router."
-            "get_provider_connections_store",
-            lambda config=None: provider_store,
-        ),
-    ):
-        yield TestClient(app)
-
-    # Reset stores after test
-    reset_stores()
+    return TestClient(create_app(config))
 
 
 @pytest.fixture
@@ -1138,38 +1086,16 @@ def client_with_cipher(
     temp_agent_profiles_dir,
     temp_settings_dir,
     secret_key,
-    monkeypatch,
 ):
     """Create test client with cipher configured."""
     from pydantic import SecretStr
-
-    # Reset store singletons to ensure clean state
-    reset_stores()
-
-    # Set environment variable for persistence directory
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
 
     config = Config(
         static_files_path=None,
         session_api_keys=[],
         secret_key=SecretStr(secret_key),
     )
-    app = create_app(config)
-
-    with (
-        patch(
-            "openhands.agent_server.profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-        ),
-    ):
-        yield TestClient(app)
-
-    # Reset stores after test
-    reset_stores()
+    return TestClient(create_app(config))
 
 
 @pytest.fixture

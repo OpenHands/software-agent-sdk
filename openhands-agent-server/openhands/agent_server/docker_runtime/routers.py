@@ -14,7 +14,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_conversation_registry,
+    get_conversation_service,
+)
 from openhands.agent_server.docker_runtime.mediation import materialize_secrets
 from openhands.agent_server.docker_runtime.proxy import (
     bridge_websocket,
@@ -39,7 +42,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateSecretsRequest,
 )
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -56,7 +59,7 @@ logger = get_logger(__name__)
 
 
 def get_registry(request: Request) -> DockerConversationRegistry:
-    registry = request.app.state.conversation_registry
+    registry = get_conversation_registry(request)
     if not isinstance(registry, DockerConversationRegistry):
         raise HTTPException(503, "Docker conversation runtime is unavailable")
     return registry
@@ -289,7 +292,7 @@ async def _prepare_forward(
         context={"cipher": config.cipher} if body.get("secrets_encrypted") else None,
     )
     try:
-        settings = await asyncio.to_thread(get_settings_store(config).load)
+        settings = await asyncio.to_thread(registry.stores.settings.load)
     except (OSError, PermissionError):
         settings = None
     settings = settings or PersistedSettings()
@@ -302,7 +305,7 @@ async def _prepare_forward(
         else await asyncio.to_thread(
             launch_source,
             start,
-            lambda: server_launch_stores(settings, config.cipher),
+            lambda: server_launch_stores(settings, registry.stores, config.cipher),
             config.cipher,
         )
     )
@@ -507,7 +510,7 @@ async def _proxy_socket(
 
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
-    registry = websocket.app.state.conversation_registry
+    registry = get_conversation_registry(websocket)
     if not isinstance(registry, DockerConversationRegistry):
         await websocket.close(code=1011)
         return
@@ -532,7 +535,7 @@ async def _proxy_socket(
         if release is not None:
             release()
         registry.detach_session(conversation_id)
-        await websocket.app.state.conversation_service.refresh_persisted_conversation(
+        await get_conversation_service(websocket).refresh_persisted_conversation(
             conversation_id
         )
 

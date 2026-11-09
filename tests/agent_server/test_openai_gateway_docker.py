@@ -20,6 +20,7 @@ from openhands.agent_server.docker_runtime.registry import DockerConversationReg
 from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.openai import service as gateway
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -36,7 +37,7 @@ def _setup(tmp_path):
         workspace_path=tmp_path / "outer-workspace",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     outer_service = AsyncMock()
     request = StartConversationRequest(
         agent_profile_id=uuid4(),
@@ -184,7 +185,7 @@ async def test_f55r_resume_gateway_run_stays_in_existing_docker_container(
                 "conversation_runtime_selectable": True,
             }
         )
-        registry = HybridConversationRegistry(config)
+        registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     registry.provisioning.create(conversation_id)
     requests = []
@@ -443,7 +444,7 @@ async def test_docker_gateway_rejects_id_owned_by_local_conversation(tmp_path):
 async def test_hybrid_gateway_keeps_a_local_owned_conversation_local(tmp_path):
     config, _, outer_service, start_request = _setup(tmp_path)
     config = config.model_copy(update={"conversation_runtime_selectable": True})
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     conversation_dir = registry.conversation_dir(conversation_id)
     conversation_dir.mkdir(parents=True)

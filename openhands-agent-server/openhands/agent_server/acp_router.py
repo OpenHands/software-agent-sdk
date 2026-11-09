@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.config import Config
 from openhands.agent_server.credential_binding import LocalVersionedCredentialBinding
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.dependencies import get_config, get_stores
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.acp_model_discovery import discover_acp_models
 from openhands.sdk.agent.acp_models import ACPModelDiscovery
@@ -130,11 +130,10 @@ def _cache_key(
 
 
 def _codex_bindings(
-    settings: ACPAgentSettings, config: Config, secrets: dict[str, str]
+    settings: ACPAgentSettings, store: FileSecretsStore, secrets: dict[str, str]
 ) -> dict[str, VersionedCredentialBinding]:
     if settings.acp_server != "codex":
         return {}
-    store = get_secrets_store(config)
     if store.get_secret(CODEX_AUTH_SECRET_NAME) is None:
         return {}
     # A stored ChatGPT login refreshes through the store, as in a conversation.
@@ -169,7 +168,9 @@ async def discover_models(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     secrets = await asyncio.to_thread(_resolve_secrets, body.secrets)
-    bindings = await asyncio.to_thread(_codex_bindings, settings, config, secrets)
+    bindings = await asyncio.to_thread(
+        _codex_bindings, settings, get_stores(request).secrets, secrets
+    )
     key = _cache_key(settings, command, secrets)
 
     async def run() -> ACPModelDiscovery:

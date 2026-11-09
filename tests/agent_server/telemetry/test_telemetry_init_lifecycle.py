@@ -8,13 +8,16 @@ Regression coverage for two review findings:
   unpaired second start.
 """
 
-from types import SimpleNamespace
-
 import pytest
+from fastapi import FastAPI
 
 import openhands.agent_server.telemetry.service as service_mod
 from openhands.agent_server.config import Config
 from openhands.agent_server.init_router import InitRequest, InitService
+from openhands.agent_server.server_context import (
+    build_server_context,
+    install_server_context,
+)
 from openhands.agent_server.telemetry import models as m
 from openhands.agent_server.telemetry.factory import (
     DiagnosticEventFactory,
@@ -53,13 +56,6 @@ def recording(monkeypatch):
     service_mod.reset_telemetry_sink()
 
 
-def _reset_singletons():
-    from openhands.agent_server import bash_service, conversation_service
-
-    conversation_service._conversation_service = None
-    bash_service._bash_event_service = None
-
-
 async def test_emit_server_started_is_idempotent(recording):
     service_mod.emit_server_started()
     service_mod.emit_server_started()
@@ -84,14 +80,14 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
     server_started there, leaving an unpaired start and letting the retry emit
     a second one.
     """
-    _reset_singletons()
     base = Config(
         deferred_init=True,
         conversations_path=tmp_path / "convs",
         bash_events_dir=tmp_path / "bash",
     )
-    app = SimpleNamespace(state=SimpleNamespace(config=base))
-    svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+    app = FastAPI()
+    install_server_context(app, build_server_context(base))
+    svc = InitService(app, base_config=base)
 
     # The sink is (re)built inside initialize(); keep our recording sink in
     # place so the emit path is observable regardless.
@@ -106,10 +102,10 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
     boom = {"raise": True}
     real_get_instance = init_mod.ConversationService.get_instance
 
-    def _maybe_boom(config):
+    def _maybe_boom(config, stores):
         if boom["raise"]:
             raise RuntimeError("get_instance failed")
-        return real_get_instance(config)
+        return real_get_instance(config, stores)
 
     monkeypatch.setattr(init_mod.ConversationService, "get_instance", _maybe_boom)
 
@@ -130,11 +126,10 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
         )
     finally:
         await svc.teardown()
-        _reset_singletons()
 
 
 def _keep_sink(sink):
-    async def _build(_config):
+    async def _build(_config, _settings_store):
         service_mod._telemetry_sink = sink
         return sink
 

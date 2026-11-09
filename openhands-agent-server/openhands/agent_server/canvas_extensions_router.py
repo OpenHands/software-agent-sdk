@@ -38,6 +38,7 @@ from openhands.agent_server.canvas_extensions.manifest import (
     MANIFEST_FILENAME,
     CanvasExtensionManifest,
 )
+from openhands.agent_server.server_context import server_context_of
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.utils.redact import redact_url_credentials
 
@@ -63,7 +64,10 @@ CanvasExtensionNamePath = Annotated[
 def _backend_manager(request: Request) -> CanvasExtensionBackendManager:
     manager = getattr(request.app.state, "canvas_extension_backend_manager", None)
     if manager is None:
-        manager = CanvasExtensionBackendManager()
+        app = request.app
+        manager = CanvasExtensionBackendManager(
+            secrets_store=lambda: server_context_of(app).stores.secrets
+        )
         request.app.state.canvas_extension_backend_manager = manager
     return manager
 

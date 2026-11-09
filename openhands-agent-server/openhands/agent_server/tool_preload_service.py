@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from openhands.agent_server.config import get_default_config
+from openhands.agent_server.config import Config
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.schema import Action
 from openhands.sdk.tool.tool import create_action_type_with_risk
@@ -55,11 +55,9 @@ class ToolPreloadService:
 _tool_preload_service: ToolPreloadService | None = None
 
 
-def get_tool_preload_service() -> ToolPreloadService | None:
-    """Get the tool preload service instance if preload is enabled."""
+def get_tool_preload_service(config: Config) -> ToolPreloadService | None:
+    """Get the tool preload service instance if ``config`` enables preload."""
     global _tool_preload_service
-    config = get_default_config()
-
     if not config.preload_tools:
         _logger.info("Tool preload is disabled in configuration")
         return None

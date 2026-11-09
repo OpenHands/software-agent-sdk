@@ -10,7 +10,7 @@ from openhands.agent_server.local_secret_resolver import (
     _secret_name_if_local,
     build_local_secret_resolver,
 )
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.secret import (
     LookupSecret,
     register_local_secret_resolver,
@@ -73,9 +73,9 @@ def test_ignores_other_routes_and_malformed_names(monkeypatch):
 
 def test_foreign_loopback_port_uses_its_own_server(monkeypatch):
     monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://127.0.0.1:18000")
-    config = Config()
-    get_secrets_store(config).set_secret("TOKEN", "local-value")
-    resolver = build_local_secret_resolver(config)
+    stores = ServerStores.from_config(Config())
+    stores.secrets.set_secret("TOKEN", "local-value")
+    resolver = build_local_secret_resolver(lambda: stores.secrets)
     register_local_secret_resolver(resolver)
     try:
         with _foreign_secret_server() as base_url:

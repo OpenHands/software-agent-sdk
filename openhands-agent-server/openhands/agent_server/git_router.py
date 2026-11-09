@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.dependencies import get_stores
 from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
     UnsupportedGitProviderError,
@@ -150,7 +150,7 @@ async def git_repositories_search(
     """List repositories accessible to a configured git provider token."""
     try:
         return await search_provider_repositories(
-            get_config(request),
+            get_stores(request).secrets,
             provider,
             query=query,
             limit=limit,

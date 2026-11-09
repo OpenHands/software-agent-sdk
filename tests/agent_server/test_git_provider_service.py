@@ -10,7 +10,13 @@ from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
     search_provider_repositories,
 )
+from openhands.agent_server.persistence import SecretsStore, ServerStores
 from openhands.sdk.workspace.repo import GitProvider
+
+
+def _secrets_store() -> SecretsStore:
+    """The secrets store of a server with the default config."""
+    return ServerStores.from_config(Config()).secrets
 
 
 class FakeResponse:
@@ -95,7 +101,7 @@ def _patch_github_client(monkeypatch, responses: list[FakeResponse]):
 async def test_search_provider_repositories_reports_missing_token(monkeypatch):
     _patch_provider_token(monkeypatch, None)
 
-    result = await search_provider_repositories(Config(), GitProvider.GITHUB)
+    result = await search_provider_repositories(_secrets_store(), GitProvider.GITHUB)
 
     assert result.items == []
     assert result.next_page_id is None
@@ -123,7 +129,7 @@ async def test_search_provider_repositories_maps_github_repositories(monkeypatch
     )
 
     result = await search_provider_repositories(
-        Config(),
+        _secrets_store(),
         GitProvider.GITHUB,
         limit=30,
         page_id="2",
@@ -171,7 +177,7 @@ async def test_search_provider_repositories_filters_across_pages(monkeypatch):
     )
 
     result = await search_provider_repositories(
-        Config(), GitProvider.GITHUB, query="software", limit=2
+        _secrets_store(), GitProvider.GITHUB, query="software", limit=2
     )
 
     assert captured["calls"] == [
@@ -218,7 +224,7 @@ async def test_search_provider_repositories_continues_from_offset_cursor(monkeyp
     )
 
     result = await search_provider_repositories(
-        Config(), GitProvider.GITHUB, query="software", limit=1, page_id="2:1"
+        _secrets_store(), GitProvider.GITHUB, query="software", limit=1, page_id="2:1"
     )
 
     assert [item.full_name for item in result.items] == ["OpenHands/software-agents"]
@@ -231,7 +237,7 @@ async def test_search_provider_repositories_rejects_invalid_page_id(monkeypatch)
 
     with pytest.raises(GitProviderAPIError) as exc_info:
         await search_provider_repositories(
-            Config(), GitProvider.GITHUB, page_id="not-a-page"
+            _secrets_store(), GitProvider.GITHUB, page_id="not-a-page"
         )
 
     assert exc_info.value.status_code == 400
@@ -249,10 +255,10 @@ async def test_search_provider_repositories_cursor_survives_limit_changes(
     )
 
     first = await search_provider_repositories(
-        Config(), GitProvider.GITHUB, query="OpenHands/r", limit=4
+        _secrets_store(), GitProvider.GITHUB, query="OpenHands/r", limit=4
     )
     second = await search_provider_repositories(
-        Config(),
+        _secrets_store(),
         GitProvider.GITHUB,
         query="OpenHands/r",
         limit=2,
@@ -286,7 +292,7 @@ async def test_search_provider_repositories_maps_provider_status(
     _patch_github_client(monkeypatch, [FakeResponse(status_code=provider_status)])
 
     with pytest.raises(GitProviderAPIError) as exc_info:
-        await search_provider_repositories(Config(), GitProvider.GITHUB)
+        await search_provider_repositories(_secrets_store(), GitProvider.GITHUB)
 
     assert exc_info.value.status_code == expected_status
 
@@ -314,6 +320,6 @@ async def test_search_provider_repositories_maps_timeout(monkeypatch):
     )
 
     with pytest.raises(GitProviderAPIError) as exc_info:
-        await search_provider_repositories(Config(), GitProvider.GITHUB)
+        await search_provider_repositories(_secrets_store(), GitProvider.GITHUB)
 
     assert exc_info.value.status_code == 504

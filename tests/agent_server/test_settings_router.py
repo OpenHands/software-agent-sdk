@@ -16,9 +16,7 @@ from openhands.agent_server.persistence import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     FileSettingsStore,
     PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    reset_stores,
+    ServerStores,
 )
 from openhands.agent_server.persistence.models import _deep_merge
 from openhands.sdk.llm import LLM
@@ -32,6 +30,7 @@ from openhands.sdk.settings import (
 )
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from tests.agent_server.conftest import client_context
 
 
 @pytest.fixture
@@ -39,13 +38,11 @@ def temp_persistence_dir():
     """Create a temporary directory for persistence files and reset stores."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Reset global store singletons before test
-        reset_stores()
         # Set environment variable for persistence directory
         old_val = os.environ.get("OH_PERSISTENCE_DIR")
         os.environ["OH_PERSISTENCE_DIR"] = tmpdir
         yield Path(tmpdir)
         # Cleanup: reset stores and restore environment
-        reset_stores()
         if old_val is not None:
             os.environ["OH_PERSISTENCE_DIR"] = old_val
         else:
@@ -643,7 +640,9 @@ def test_patch_settings_updates_llm_config(client_with_settings):
 
 def test_patch_settings_updates_active_profile(client_with_settings):
     """PATCH /api/settings can update and clear the active LLM profile."""
-    get_llm_profile_store().save("fast-profile", LLM(model="gpt-4o-mini"))
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "fast-profile", LLM(model="gpt-4o-mini")
+    )
 
     response = client_with_settings.patch(
         "/api/settings",
@@ -682,9 +681,11 @@ def test_patch_settings_rejects_invalid_active_profile(client_with_settings):
 
 def test_patch_settings_active_agent_profile_id_independent(client_with_settings):
     """active_agent_profile_id sets/clears independently of active_profile."""
-    get_llm_profile_store().save("fast-profile", LLM(model="gpt-4o-mini"))
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "fast-profile", LLM(model="gpt-4o-mini")
+    )
     profile = OpenHandsAgentProfile(name="mine", llm_profile_ref="fast-profile")
-    get_agent_profile_store().save(profile)
+    ServerStores.from_config(Config()).agent_profiles.save(profile)
 
     agent_id = str(profile.id)
     set_response = client_with_settings.patch(
@@ -713,7 +714,9 @@ def test_patch_settings_active_agent_profile_id_independent(client_with_settings
 
 def test_patch_settings_active_profile_applies_llm(client_with_settings):
     """PATCH active_profile applies that profile's LLM (#4314)."""
-    get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "fast-profile", LLM(model="claude-haiku")
+    )
 
     response = client_with_settings.patch(
         "/api/settings",
@@ -735,7 +738,7 @@ def test_patch_settings_active_profile_applies_encrypted_api_key(
 ):
     """Applying a profile carries its at-rest-encrypted api_key through PATCH."""
     cipher = Cipher(secret_key)
-    get_llm_profile_store().save(
+    ServerStores.from_config(Config()).llm_profiles.save(
         "secure-profile",
         LLM(model="claude-haiku", api_key=SecretStr("sk-secret")),
         include_secrets=True,
@@ -762,7 +765,7 @@ def test_patch_settings_active_profile_leaves_acp_settings_without_llm(
     monkeypatch.setattr(
         "openhands.sdk.utils.deprecation._current_version", lambda: "1.51.0"
     )
-    get_llm_profile_store().save(
+    ServerStores.from_config(Config()).llm_profiles.save(
         "fast-profile",
         LLM(model="claude-haiku", api_key=SecretStr("sk-secret")),
         include_secrets=True,
@@ -787,7 +790,9 @@ def test_patch_settings_active_profile_leaves_acp_settings_without_llm(
 def test_patch_settings_active_profile_applies_llm_when_switching_to_openhands(
     client_with_settings,
 ):
-    get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "fast-profile", LLM(model="claude-haiku")
+    )
     client_with_settings.patch(
         "/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}}
     )
@@ -808,8 +813,12 @@ def test_patch_settings_active_profile_applies_llm_when_switching_to_openhands(
 
 def test_patch_settings_switching_active_profile_updates_llm(client_with_settings):
     """Switching active_profile re-applies the new profile's LLM."""
-    get_llm_profile_store().save("profile-a", LLM(model="model-a"))
-    get_llm_profile_store().save("profile-b", LLM(model="model-b"))
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "profile-a", LLM(model="model-a")
+    )
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "profile-b", LLM(model="model-b")
+    )
 
     client_with_settings.patch("/api/settings", json={"active_profile": "profile-a"})
     response = client_with_settings.patch(
@@ -839,7 +848,9 @@ def test_patch_settings_explicit_llm_diff_overrides_profile_autoload(
     client_with_settings,
 ):
     """An explicit agent_settings_diff.llm overrides profile autoload."""
-    get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
+    ServerStores.from_config(Config()).llm_profiles.save(
+        "fast-profile", LLM(model="claude-haiku")
+    )
 
     response = client_with_settings.patch(
         "/api/settings",
@@ -2065,7 +2076,7 @@ def test_list_secrets_busy_agent_profile_store_is_503(
     client_with_settings, monkeypatch
 ):
     """A lock timeout on the agent-profile store answers 503, not 500."""
-    store = get_agent_profile_store()
+    store = client_context(client_with_settings).stores.agent_profiles
 
     def _timeout(*_args, **_kwargs):
         raise TimeoutError("Agent profile store lock acquisition timed out")
