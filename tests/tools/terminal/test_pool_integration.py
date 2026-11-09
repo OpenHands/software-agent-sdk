@@ -162,3 +162,25 @@ class TestPoolClose:
         (obs,) = observations
         assert obs.is_error
         assert "terminal was closed" in obs.text
+
+
+def test_terminal_query_reply_does_not_reach_the_next_command(pool_executor):
+    """tmux answers a cursor-position query (ESC [ 6 n) by typing the reply
+    into the pane; it must not show up or land in the next command (#6652)."""
+    query = pool_executor(TerminalAction(command="printf 'a\\033[6nb\\n'"))
+    after = pool_executor(TerminalAction(command="echo next"))
+    failing = pool_executor(TerminalAction(command="(exit 7)"))
+
+    assert query.text.strip() == "ab", query.text
+    assert after.text.strip() == "next", after.text
+    assert "syntax error" not in after.text
+    assert failing.exit_code == 7  # the prompt keeps the command's exit code
+
+
+def test_echoed_cursor_report_is_removed_from_output():
+    from openhands.tools.terminal.terminal.terminal_session import (
+        _ECHOED_CURSOR_REPORT,
+    )
+
+    assert _ECHOED_CURSOR_REPORT.sub("", "ab\n^[[13;2R\nnext") == "ab\nnext"
+    assert _ECHOED_CURSOR_REPORT.sub("", "a ^[[1;1 b") == "a ^[[1;1 b"

@@ -353,6 +353,9 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
+        # C-u first: drop anything left on the input line (e.g. a terminal
+        # query reply that arrived after the prompt) so it does not run.
+        self.pane.send_keys("C-u", enter=False)
         self.pane.send_keys("clear", enter=True)
         time.sleep(0.1)
         self.pane.cmd("clear-history")

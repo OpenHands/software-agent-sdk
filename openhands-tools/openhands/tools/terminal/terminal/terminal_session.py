@@ -35,6 +35,9 @@ from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 logger = get_logger(__name__)
 
+# The tty's caret echo of a cursor-position report (reply to ``ESC [ 6 n``).
+_ECHOED_CURSOR_REPORT = re.compile(r"\^\[\[\d+;\d+R\n?")
+
 
 class TerminalCommandStatus(Enum):
     """Status of a terminal command execution."""
@@ -235,6 +238,10 @@ class TerminalSession(TerminalSessionBase):
         if is_final:
             # Flush any pending bytes when command completes
             command_output += self._query_filter.flush()
+        # A terminal emulator (tmux) answers a cursor-position query by typing
+        # ``ESC [ row ; col R`` into the pty; while the command still runs, the
+        # tty echoes that reply into the output as ``^[[row;colR``.
+        command_output = _ECHOED_CURSOR_REPORT.sub("", command_output)
 
         return command_output.rstrip()
 
@@ -299,8 +306,11 @@ class TerminalSession(TerminalSessionBase):
             get_content_before_last_match = bool(len(ps1_matches) == 1)
             if metadata.working_dir != self._cwd and metadata.working_dir:
                 self._cwd = metadata.working_dir
+            # After the final prompt there is only the new command line, which
+            # is empty unless something was typed into it before the agent
+            # sent anything (e.g. a terminal's reply to a query); not output.
             raw_command_output = self._combine_outputs_between_matches(
-                terminal_content,
+                terminal_content[: ps1_matches[-1].end()],
                 ps1_matches,
                 get_content_before_last_match=get_content_before_last_match,
             )

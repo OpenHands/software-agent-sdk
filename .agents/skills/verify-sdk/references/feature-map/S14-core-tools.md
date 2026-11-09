@@ -132,7 +132,7 @@ Preconditions:
   control-sdk program S14/terminal --arg auto \
     --check escape_filtered eq true --check dsr_reply_visible eq false --check after_dsr_clean eq true
   ```
-  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-10-13, not yet filed): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
+  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Before #6652, tmux's answer to the query landed in the shell's input: the observation showed `^[[13;2R`, and the next command started with the leftover and failed with `bash: syntax error near unexpected token ';'`. Now `clear` is preceded by `C-u` (dropping the leftover), the tty's echo of the reply is removed from the output, and so is whatever sits on the new prompt line when a command completes.
 - **A reset keeps the configured backend (`S14.terminal-reset`, `S14.terminal-backend-select`).** The subprocess run's `echo shell=$0` after `reset=True`, and the session type at the end.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
