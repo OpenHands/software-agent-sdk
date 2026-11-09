@@ -3,6 +3,10 @@ Observability & Laminar example
 
 This example demonstrates enabling OpenTelemetry tracing with Laminar in the
 OpenHands SDK. Set LMNR_PROJECT_API_KEY and run the script to see traces.
+
+Decision models are traced the same way: each DecisionModel.decide() call
+emits a ``decision.<model>`` span with its questions, answers, tokens and cost.
+See 60_decision_model.py and 61_decision_model_agent_gate.py.
 """
 
 import os
