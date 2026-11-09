@@ -12,7 +12,7 @@ that map's `Fnn`.
 
 Maintenance baseline: main@51ad22388a154d48353fac7a82cfd5255dbeefc1 (2026-11-08). The first mapping; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **458 sub-features**, **29 of them untested** (no unit or cross
+The map has **458 sub-features**, **28 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
 
 ## What each sub-feature links
@@ -88,7 +88,7 @@ an interactive login are labeled **blocked**.
 | S15 | [Browser tools and session recording](S15-browser.md) | `BrowserToolSet`, Chromium detection and fallback, navigation, interaction, tabs, storage, screenshots, rrweb recording | `Tool(name="browser_tool_set")`, `BrowserToolExecutor` | chromium, llm, network | 17 | 0 |
 | S16 | [Planning, task tracking, oracle, ToM and workflow tools](S16-planning-workflow-tools.md) | task tracker, planning preset and PLAN.md editor, plan-then-execute, `ask_oracle`, `tom_consult`, sleeptime compute, the workflow tool | `Tool(name="task_tracker" \| "ask_oracle" \| "tom_consult" \| "workflow_tool_set")`, `get_planning_agent` | llm | 20 | 6 |
 | S17 | [Custom tools, client-defined tools and the tool registry](S17-custom-and-client-tools.md) | custom tool classes and tool sets, registration and naming, tool schemas, injected fields, catalog seal, module qualnames, client tools, `execute_tool` | `register_tool`, `Tool(name, params)`, `Conversation(client_tools=)`, `execute_tool` | llm | 23 | 0 |
-| S18 | [Workspaces and sandbox backends](S18-workspace-backends.md) | the `Workspace` factory, `LocalWorkspace`, `RemoteWorkspace`, and the Docker, API-remote, Cloud, Apptainer and agent-sandbox backends (start, health, commands, files, pause, cleanup) | `Workspace(...)`, `LocalWorkspace`, `openhands.workspace.*Workspace` | docker, apptainer, cloud, k8s, network, llm, git | 24 | 3 |
+| S18 | [Workspaces and sandbox backends](S18-workspace-backends.md) | the `Workspace` factory, `LocalWorkspace`, `RemoteWorkspace`, and the Docker, API-remote, Cloud, Apptainer and agent-sandbox backends (start, health, commands, files, pause, cleanup) | `Workspace(...)`, `LocalWorkspace`, `openhands.workspace.*Workspace` | docker, apptainer, cloud, k8s, network, llm, git | 24 | 2 |
 | S19 | [Agent settings, persisted schema migrations and agent profiles](S19-settings.md) | `OpenHandsAgentSettings`, ACP settings, schema migrations v0 to v8, settings diffs and export, the persisted-settings compatibility gate, agent profiles and their store | `openhands.sdk.settings`, `openhands.sdk.profiles`, `~/.openhands/agent-profiles/` | llm, tmux, network | 25 | 0 |
 | S20 | [Observability, tracing and logging](S20-observability.md) | enabling tracing, Laminar and OTLP backends, conversation, step, tool and LLM spans, sub-agent trace links, automation helpers, the logger | `LMNR_*`/`OTEL_*` env vars, `Conversation(observability_*=)`, `get_logger` | llm, network | 20 | 5 |
 | S21 | [ACP agent (in-process)](S21-acp-agent.md) | construction, provider registry, handshake, turns and tool-call events, permission auto-approval, timeouts and cancel, session resume, model switching, usage, MCP forwarding, secrets, cleanup | `ACPAgent(acp_command=...)`, `switch_acp_model`, `ACPAgentSettings` | node, network, llm | 24 | 2 |
