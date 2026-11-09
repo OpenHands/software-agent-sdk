@@ -163,10 +163,62 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
             return any(
-                fnmatch.fnmatch(filename, pattern)
+                self._match_include_pattern(relative_parts, pattern)
                 for pattern in _expand_braces(include_pattern)
             )
         return not filename.startswith(".")
+
+    @staticmethod
+    def _match_include_pattern(
+        relative_parts: tuple[str, ...],
+        pattern: str,
+    ) -> bool:
+        """Match a relative path against an include glob.
+
+        Patterns without a slash match the basename anywhere, matching
+        ``rg -g``. Patterns with slashes are matched against the path relative
+        to the search root, with ``**`` spanning any number of directories.
+        """
+        if "/" not in pattern:
+            filename = relative_parts[-1] if relative_parts else ""
+            return fnmatch.fnmatch(filename, pattern)
+
+        pattern_parts = [part for part in pattern.split("/") if part not in ("", ".")]
+        return GrepExecutor._match_path_parts(list(relative_parts), pattern_parts)
+
+    @staticmethod
+    def _match_path_parts(parts: list[str], pattern_parts: list[str]) -> bool:
+        part_count, pattern_count = len(parts), len(pattern_parts)
+        matches = [[False] * (pattern_count + 1) for _ in range(part_count + 1)]
+        matches[part_count][pattern_count] = True
+        for part_index in range(part_count, -1, -1):
+            for pattern_index in range(pattern_count, -1, -1):
+                if part_index == part_count and pattern_index == pattern_count:
+                    continue
+                if (
+                    pattern_index < pattern_count
+                    and pattern_parts[pattern_index] == "**"
+                ):
+                    if pattern_index == pattern_count - 1:
+                        # A trailing ** matches contents below the prefix, not
+                        # the prefix itself.
+                        matches[part_index][pattern_index] = part_index < part_count
+                    else:
+                        matches[part_index][pattern_index] = matches[part_index][
+                            pattern_index + 1
+                        ] or (
+                            part_index < part_count
+                            and matches[part_index + 1][pattern_index]
+                        )
+                elif (
+                    part_index < part_count
+                    and pattern_index < pattern_count
+                    and fnmatch.fnmatch(parts[part_index], pattern_parts[pattern_index])
+                ):
+                    matches[part_index][pattern_index] = matches[part_index + 1][
+                        pattern_index + 1
+                    ]
+        return matches[0][0]
 
     def _match_mtime(self, path: Path) -> float:
         """Return a sortable modification time for matched paths."""
@@ -241,7 +293,9 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             str(search_path),
             "--sortr=modified",
         ]
-        if action.include:
+        if action.include and "/" not in action.include:
+            # rg matches -g against the absolute path it prints, so path-bearing
+            # patterns are applied by _finalize_matches instead.
             cmd.extend(["-g", action.include])
 
         result = subprocess.run(

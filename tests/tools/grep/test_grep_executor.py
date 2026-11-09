@@ -125,6 +125,55 @@ def test_grep_executor_brace_include_filter(monkeypatch, tmp_path, backend):
     assert {Path(match).name for match in observation.matches} == {"a.ts", "b.tsx"}
 
 
+@pytest.mark.parametrize("backend", ["ripgrep", "grep", "python"])
+@pytest.mark.parametrize(
+    ("include", "expected"),
+    [
+        pytest.param("sub/*.ts", {"sub/a.ts"}, id="one_level"),
+        pytest.param(
+            "**/*.ts", {"root.ts", "sub/a.ts", "sub/deep/a.ts"}, id="any_depth"
+        ),
+        pytest.param("sub/**/*.ts", {"sub/a.ts", "sub/deep/a.ts"}, id="subtree"),
+        pytest.param("*.ts", {"root.ts", "sub/a.ts", "sub/deep/a.ts"}, id="basename"),
+        pytest.param("*/a.ts", {"sub/a.ts"}, id="single_directory"),
+        pytest.param("sub/*.{ts,py}", {"sub/a.ts", "sub/b.py"}, id="brace_path"),
+        pytest.param(
+            "sub/**", {"sub/a.ts", "sub/b.py", "sub/deep/a.ts"}, id="trailing_globstar"
+        ),
+        pytest.param("x/**", set(), id="trailing_globstar_not_prefix_file"),
+    ],
+)
+def test_grep_executor_path_include_filter(
+    monkeypatch, tmp_path, backend, include, expected
+):
+    available = {
+        "ripgrep": _check_ripgrep_available(),
+        "grep": _check_grep_available(),
+        "python": True,
+    }
+    if not available[backend]:
+        pytest.skip(f"{backend} backend not available")
+    monkeypatch.setattr(
+        grep_impl, "_check_ripgrep_available", lambda: backend == "ripgrep"
+    )
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: backend == "grep")
+
+    (tmp_path / "root.ts").write_text("needle\n")
+    (tmp_path / "x").write_text("needle\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.ts").write_text("needle\n")
+    (tmp_path / "sub" / "b.py").write_text("needle\n")
+    (tmp_path / "sub" / "deep").mkdir()
+    (tmp_path / "sub" / "deep" / "a.ts").write_text("needle\n")
+
+    executor = GrepExecutor(working_dir=str(tmp_path))
+    observation = executor(GrepAction(pattern="needle", include=include))
+
+    assert {
+        Path(match).relative_to(tmp_path).as_posix() for match in observation.matches
+    } == expected
+
+
 def test_grep_executor_custom_path():
     """Test search in custom directory."""
     with tempfile.TemporaryDirectory() as temp_dir:
