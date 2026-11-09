@@ -210,50 +210,48 @@ class TestGetACPProvider:
             assert result is not None
             assert result.key == key
 
-    def test_returns_none_for_custom(self):
-        assert get_acp_provider("custom") is None
-
-    def test_returns_none_for_unknown(self):
-        assert get_acp_provider("nonexistent-provider") is None
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("custom", id="custom"),
+            pytest.param("nonexistent-provider", id="unknown"),
+        ],
+    )
+    def test_returns_none_for_non_registry_key(self, key):
+        assert get_acp_provider(key) is None
 
 
 class TestDetectACPProviderByAgentName:
-    def test_detects_claude_code_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("claude-agent-acp v0.29.0")
+    @pytest.mark.parametrize(
+        ("agent_name", "expected_key"),
+        [
+            pytest.param("claude-agent-acp v0.29.0", "claude-code", id="claude_code"),
+            pytest.param("codex-acp", "codex", id="codex"),
+            pytest.param("gemini-cli 0.38.0", "gemini-cli", id="gemini_cli"),
+            # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
+            pytest.param("Kimi Code CLI", "kimi-code", id="kimi_code"),
+            # ``opencode acp`` reports agentInfo.name "OpenCode".
+            pytest.param("OpenCode", "opencode", id="opencode"),
+        ],
+    )
+    def test_detects_provider_by_agent_name(self, agent_name, expected_key):
+        info = detect_acp_provider_by_agent_name(agent_name)
         assert info is not None
-        assert info.key == "claude-code"
-
-    def test_detects_codex_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("codex-acp")
-        assert info is not None
-        assert info.key == "codex"
-
-    def test_detects_gemini_cli_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("gemini-cli 0.38.0")
-        assert info is not None
-        assert info.key == "gemini-cli"
-
-    def test_detects_kimi_code_by_agent_name(self):
-        # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
-        info = detect_acp_provider_by_agent_name("Kimi Code CLI")
-        assert info is not None
-        assert info.key == "kimi-code"
-
-    def test_detects_opencode_by_agent_name(self):
-        # ``opencode acp`` reports agentInfo.name "OpenCode".
-        info = detect_acp_provider_by_agent_name("OpenCode")
-        assert info is not None
-        assert info.key == "opencode"
+        assert info.key == expected_key
 
     def test_case_insensitive_detection(self):
         assert detect_acp_provider_by_agent_name("CLAUDE-AGENT-ACP") is not None
         assert detect_acp_provider_by_agent_name("Gemini-CLI") is not None
 
-    def test_returns_none_for_unknown_agent_name(self):
-        assert detect_acp_provider_by_agent_name("some-unknown-agent") is None
-
-    def test_returns_none_for_empty_string(self):
-        assert detect_acp_provider_by_agent_name("") is None
+    @pytest.mark.parametrize(
+        "agent_name",
+        [
+            pytest.param("some-unknown-agent", id="unknown_agent_name"),
+            pytest.param("", id="empty_string"),
+        ],
+    )
+    def test_returns_none_for_unmatched_agent_name(self, agent_name):
+        assert detect_acp_provider_by_agent_name(agent_name) is None
 
 
 class TestDetectACPProviderByCommand:
@@ -386,16 +384,22 @@ class TestBuildSessionModelMeta:
         result = build_session_model_meta("claude-agent-acp v0.29.0", "claude-opus-4")
         assert result == {"claudeCode": {"options": {"model": "claude-opus-4"}}}
 
-    def test_codex_returns_empty(self):
-        result = build_session_model_meta("codex-acp", "gpt-4o")
-        assert result == {}
+    def test_claude_splits_effort(self):
+        result = build_session_model_meta("claude-agent-acp", "opus[1m]/high")
+        assert result == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "high"}}
+        }
 
-    def test_gemini_returns_empty(self):
-        result = build_session_model_meta("gemini-cli 0.38.0", "gemini-2.0-flash")
-        assert result == {}
-
-    def test_unknown_agent_returns_empty(self):
-        result = build_session_model_meta("unknown-agent", "some-model")
+    @pytest.mark.parametrize(
+        ("agent_name", "model"),
+        [
+            pytest.param("codex-acp", "gpt-4o", id="codex"),
+            pytest.param("gemini-cli 0.38.0", "gemini-2.0-flash", id="gemini"),
+            pytest.param("unknown-agent", "some-model", id="unknown_agent"),
+        ],
+    )
+    def test_non_claude_agent_returns_empty(self, agent_name, model):
+        result = build_session_model_meta(agent_name, model)
         assert result == {}
 
 

@@ -1,6 +1,6 @@
 """Build the default :class:`~openhands.sdk.profiles.AgentProfile` from live settings.
 
-The inverse of :func:`~openhands.sdk.profiles.resolve_agent_profile`: turns the
+The inverse of ``openhands.sdk.launch.resolve``: turns the
 current ``AgentSettingsConfig`` into the single profile used by the one-time
 migration (lazy on the local agent-server, eager backfill on the cloud one).
 """

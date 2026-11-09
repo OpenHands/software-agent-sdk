@@ -84,6 +84,23 @@ class SecretSource(DiscriminatedUnionMixin, ABC):
         default=None,
         description="Optional description for this secret",
     )
+    scope: str | None = Field(
+        default=None,
+        description=(
+            "Optional grouping name shown to the agent when rendering the "
+            "available secrets (e.g. 'personal', 'organization'). The SDK "
+            "attaches no meaning to the value; it only groups by it."
+        ),
+    )
+    scope_description: str | None = Field(
+        default=None,
+        description=(
+            "Optional guidance shown once above the secret's scope group when "
+            "rendering secrets, e.g. who actions are attributed to. Only the "
+            "first non-empty value within a scope is used; conflicts log a "
+            "warning."
+        ),
+    )
 
     @abstractmethod
     def get_value(self) -> str | None:

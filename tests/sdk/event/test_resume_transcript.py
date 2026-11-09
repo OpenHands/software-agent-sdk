@@ -613,22 +613,40 @@ class TestIsPatchEdit:
         ev = _tool("tc-1")
         assert ev.is_patch_edit is False
 
-    def test_dict_content_with_old_text_is_patch(self) -> None:
-        # Persisted ACP events store content blocks as plain dicts (via
-        # ``_serialize_tool_content`` → ``model_dump``). The property must
-        # handle both attribute and dict access.
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "old_text": "before", "new_text": "after"}],
-        )
-        assert ev.is_patch_edit is True
-
-    def test_dict_content_without_old_text_is_full_write(self) -> None:
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "old_text": None, "new_text": "whole file"}],
-        )
-        assert ev.is_patch_edit is False
+    @pytest.mark.parametrize(
+        ("block", "expected"),
+        [
+            # Persisted ACP events store content blocks as plain dicts (via
+            # ``_serialize_tool_content`` → ``model_dump``). The property must
+            # handle both attribute and dict access.
+            pytest.param(
+                {"type": "diff", "old_text": "before", "new_text": "after"},
+                True,
+                id="dict_with_old_text_is_patch",
+            ),
+            pytest.param(
+                {"type": "diff", "old_text": None, "new_text": "whole file"},
+                False,
+                id="dict_without_old_text_is_full_write",
+            ),
+            # ACP's JSON wire format uses camelCase: ``oldText`` / ``newText``.
+            # When events arrive from an external API or websocket frame the
+            # dict keys keep that shape because ``content`` is ``list[Any]``.
+            pytest.param(
+                {"type": "diff", "oldText": "before", "newText": "after"},
+                True,
+                id="camel_case_oldText_is_patch",
+            ),
+            pytest.param(
+                {"type": "diff", "oldText": None, "newText": "whole file"},
+                False,
+                id="camel_case_without_oldText_is_full_write",
+            ),
+        ],
+    )
+    def test_dict_content_classification(self, block: dict, expected: bool) -> None:
+        ev = _tool("tc-1", content=[block])
+        assert ev.is_patch_edit is expected
 
     def test_model_validate_dict_content_classifies_correctly(self) -> None:
         # Regression for the QA reviewer's failure case: an event reconstructed
@@ -651,16 +669,22 @@ class TestIsPatchEdit:
         assert isinstance(ev.content[0], dict)
         assert ev.is_patch_edit is True
 
-    def test_raw_input_only_new_string_is_not_patch(self) -> None:
-        # A Write/create payload may carry only ``new_string`` — that's not
-        # a patch edit, it's a full-file write.
-        ev = _tool("tc-1", raw_input={"new_string": "whole file", "file_path": "/a"})
-        assert ev.is_patch_edit is False
-
-    def test_raw_input_empty_old_string_is_not_patch(self) -> None:
-        # An empty ``old_string`` has nothing to patch — it's effectively a
-        # create.
-        ev = _tool("tc-1", raw_input={"old_string": "", "new_string": "y"})
+    @pytest.mark.parametrize(
+        "raw_input",
+        [
+            # A Write/create payload may carry only ``new_string`` — that's not
+            # a patch edit, it's a full-file write.
+            pytest.param(
+                {"new_string": "whole file", "file_path": "/a"},
+                id="only_new_string",
+            ),
+            # An empty ``old_string`` has nothing to patch — it's effectively a
+            # create.
+            pytest.param({"old_string": "", "new_string": "y"}, id="empty_old_string"),
+        ],
+    )
+    def test_raw_input_without_old_string_is_not_patch(self, raw_input: dict) -> None:
+        ev = _tool("tc-1", raw_input=raw_input)
         assert ev.is_patch_edit is False
 
     def test_diff_content_takes_precedence_over_raw_input(self) -> None:
@@ -670,23 +694,6 @@ class TestIsPatchEdit:
             "tc-1",
             content=[{"type": "diff", "old_text": None, "new_text": "x"}],
             raw_input={"old_string": "abc", "new_string": "def"},
-        )
-        assert ev.is_patch_edit is False
-
-    def test_camel_case_oldText_alias_classifies_as_patch(self) -> None:
-        # ACP's JSON wire format uses camelCase: ``oldText`` / ``newText``.
-        # When events arrive from an external API or websocket frame the
-        # dict keys keep that shape because ``content`` is ``list[Any]``.
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "oldText": "before", "newText": "after"}],
-        )
-        assert ev.is_patch_edit is True
-
-    def test_camel_case_without_oldText_is_full_write(self) -> None:
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "oldText": None, "newText": "whole file"}],
         )
         assert ev.is_patch_edit is False
 

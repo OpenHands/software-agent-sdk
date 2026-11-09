@@ -12,7 +12,8 @@ registry is replacing (proposal #2827).
 # the rendered bytes, so line-length (E501) is disabled for this whole file.
 # ruff: noqa: E501
 
-from openhands.sdk.context.prompts.section import CacheTier, PromptContext
+from openhands.sdk.context.prompts.section import CacheTier, PromptContext, SecretInfo
+from openhands.sdk.logger import get_logger
 
 
 __all__ = [
@@ -23,6 +24,9 @@ __all__ = [
     "MemoryContextSection",
     "RepoContextSection",
 ]
+
+
+logger = get_logger(__name__)
 
 
 class DateTimeSection:
@@ -130,7 +134,15 @@ class CustomSuffixSection:
 
 
 class CustomSecretsSection:
-    """``<CUSTOM_SECRETS>`` -- advertises registered secret names (and descriptions)."""
+    """``<CUSTOM_SECRETS>`` -- advertises registered secret names (and descriptions).
+
+    When at least one secret carries a ``scope``, secrets are rendered grouped
+    by scope in first-appearance order, with each scope's ``scope_description``
+    shown once as a heading above that scope's secrets. Unscoped secrets come
+    last in a final group with no heading. When no secret carries a scope, the
+    output is byte-identical to the legacy flat rendering so existing prompts,
+    tests, and prompt caching are unaffected.
+    """
 
     name = "custom_secrets"
     cache_tier = CacheTier.DYNAMIC
@@ -139,10 +151,7 @@ class CustomSecretsSection:
         return bool(ctx.secret_infos)
 
     def render(self, ctx: PromptContext) -> str | None:
-        lines = "".join(
-            f"\n* **${name}**" + (f" - {description}" if description else "") + "\n"
-            for name, description in ctx.secret_infos
-        )
+        lines = "".join(_render_secret_lines(ctx.secret_infos))
         return (
             "<CUSTOM_SECRETS>\n"
             "### Credential Access\n"
@@ -158,3 +167,61 @@ class CustomSecretsSection:
             f"{lines}\n"
             "</CUSTOM_SECRETS>"
         )
+
+
+def _render_secret_lines(secret_infos: tuple[SecretInfo, ...]) -> list[str]:
+    """Render the secret list, grouped by scope when any secret has one.
+
+    With no scopes set, output is byte-identical to the legacy flat list.
+    """
+    if not any(info.scope for info in secret_infos):
+        return [
+            f"\n* **${info.name}**"
+            + (f" - {info.description}" if info.description else "")
+            + "\n"
+            for info in secret_infos
+        ]
+
+    # Group by scope in first-appearance order; unscoped secrets go last.
+    scope_order: list[str | None] = []
+    groups: dict[str | None, list[SecretInfo]] = {}
+    scope_descriptions: dict[str | None, str | None] = {}
+    for info in secret_infos:
+        scope = info.scope or None
+        if scope not in groups:
+            scope_order.append(scope)
+            groups[scope] = []
+            scope_descriptions[scope] = None
+        groups[scope].append(info)
+        if scope_descriptions[scope] is None and info.scope_description:
+            scope_descriptions[scope] = info.scope_description
+        elif (
+            info.scope_description
+            and scope_descriptions[scope]
+            and info.scope_description != scope_descriptions[scope]
+        ):
+            logger.warning(
+                "Conflicting scope_description values for scope %r; "
+                "using the first non-empty value",
+                scope,
+            )
+
+    # Move the unscoped group (None) to the end if any appeared mid-list.
+    if None in groups and scope_order[-1] is not None:
+        scope_order.remove(None)
+        scope_order.append(None)
+
+    lines: list[str] = []
+    for scope in scope_order:
+        if scope is not None:
+            lines.append(f"\n### {scope}\n")
+            description = scope_descriptions[scope]
+            if description:
+                lines.append(f"{description}\n")
+        for info in groups[scope]:
+            lines.append(
+                f"\n* **${info.name}**"
+                + (f" - {info.description}" if info.description else "")
+                + "\n"
+            )
+    return lines

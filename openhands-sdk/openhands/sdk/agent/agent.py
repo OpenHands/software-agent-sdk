@@ -113,7 +113,7 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     if "summary" in tool.action_type.model_fields:
         return True
     if isinstance(tool, MCPToolDefinition):
-        props = tool.mcp_tool.inputSchema.get("properties", {})
+        props = tool.mcp_tool.input_schema.get("properties", {})
         if "summary" in props:
             return True
     return False
@@ -686,8 +686,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
@@ -705,6 +705,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
+        # Each tool masks its observation in a worker thread while arun() holds
+        # the state lock. A lookup made there may call a server on this event
+        # loop that registers secrets on the conversation, which needs that lock
+        # (#6642). Resolve lookups first with the lock released, as astep does
+        # for agent messages, so masking under the lock finds them cached.
+        while True:
+            sources = dict(state.secret_registry.secret_sources)
+            async with conversation._released_state_lock_during_io():
+                await asyncio.to_thread(state.secret_registry.resolve_uncached_values)
+            if sources == state.secret_registry.secret_sources:
+                break
         batch = await _ActionBatch.aprepare(
             action_events,
             state=state,
@@ -717,8 +728,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )

@@ -8,10 +8,11 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, LocalConversation, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
+from openhands.sdk.launch import LaunchStores, resolve as launch_resolve
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.profiles import OpenHandsAgentProfile, resolve_agent_profile
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.subagent import AgentDefinition, SubAgentScope
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
@@ -229,9 +230,10 @@ def test_a_profile_without_task_tracker_delegates_to_general_purpose(
             Tool(name=TaskToolSet.name),
         ],
     )
-    settings = resolve_agent_profile(
-        profile, llm_store=store, mcp_config={}, available_skills=None
-    )
+    settings = launch_resolve(
+        profile,
+        LaunchStores(llm_profiles=store, mcp_config={}, skills=lambda: []),
+    ).settings
     parent = LocalConversation(
         agent=settings.create_agent(), workspace=str(tmp_path), visualizer=None
     )
@@ -327,9 +329,10 @@ def test_a_read_only_profile_cannot_delegate_beyond_its_tools(
             Tool(name=TaskToolSet.name),
         ],
     )
-    settings = resolve_agent_profile(
-        profile, llm_store=store, mcp_config={}, available_skills=None
-    )
+    settings = launch_resolve(
+        profile,
+        LaunchStores(llm_profiles=store, mcp_config={}, skills=lambda: []),
+    ).settings
     parent_llm = TestLLM.from_messages(
         [_tool_call("task", prompt="go", subagent_type=subagent), _done()]
     )

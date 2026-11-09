@@ -377,7 +377,7 @@ def merge(a, b, *, none_overrides: bool = False):
         result = a.copy()
         for index, value in enumerate(b):
             if index >= len(a):
-                result[index] = value
+                result.append(value)
             else:
                 result[index] = merge(
                     result[index], value, none_overrides=none_overrides

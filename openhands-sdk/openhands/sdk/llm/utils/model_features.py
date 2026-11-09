@@ -86,6 +86,21 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
             normalized = normalized.removeprefix(provider_prefix)
             break
 
+    # ``openai/prod/<upstream>`` (and dev/staging/test variants) reaches the
+    # LiteLLM proxy over its OpenAI-compatible endpoint, but the upstream is
+    # named after the deployment prefix -- e.g. ``openai/prod/claude-*`` is
+    # served by Anthropic. Stripping only the leading provider segment leaves
+    # LiteLLM parsing ``prod/claude-*`` as an OpenAI model and reporting the
+    # full OpenAI param set (including ``prompt_cache_key``), which Anthropic
+    # then rejects with UnsupportedParamsError. Strip the deployment segment
+    # too so the bare upstream name resolves to its real provider.
+    if "/" in normalized:
+        first, rest = normalized.split("/", 1)
+        if first in ("openai", "litellm_proxy", "openhands") and any(
+            rest.startswith(prefix) for prefix in DEPLOYMENT_PREFIXES
+        ):
+            normalized = rest
+
     # Strip deployment prefixes (e.g., "prod/", "dev/", "staging/", "test/")
     for prefix in DEPLOYMENT_PREFIXES:
         if normalized.startswith(prefix):

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.openai.service import _run_agent
@@ -280,6 +281,8 @@ async def test_gateway_turn_refused_before_message_is_saved(runs, tmp_path):
                 user_content=[TextContent(text="hi")],
                 conversation_service=runs.owner,
                 reusable_conversation_id=spare.stored.id,
+                config=Config(),
+                registry=None,
             )
     assert spare._run_task is None
     assert len((await spare.get_state()).events) == events_before

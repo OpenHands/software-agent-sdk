@@ -14,6 +14,7 @@ from openhands.sdk.utils import sanitized_env
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
+from openhands.tools.glob.impl import _expand_braces
 from openhands.tools.grep.definition import GrepAction, GrepObservation
 from openhands.tools.utils import (
     _check_grep_available,
@@ -161,7 +162,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
-            return fnmatch.fnmatch(filename, include_pattern)
+            return any(
+                fnmatch.fnmatch(filename, pattern)
+                for pattern in _expand_braces(include_pattern)
+            )
         return not filename.startswith(".")
 
     def _match_mtime(self, path: Path) -> float:
@@ -231,6 +235,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             "rg",
             "-l",
             "-i",
+            # -e keeps a pattern that starts with "-" from being read as a flag.
+            "-e",
             action.pattern,
             str(search_path),
             "--sortr=modified",
@@ -246,6 +252,12 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             check=False,
             env=sanitized_env(),
         )
+        if result.returncode not in (0, 1):
+            logger.warning(
+                "ripgrep failed with exit code %s; falling back to Python search",
+                result.returncode,
+            )
+            return self._execute_with_python_search(action, search_path)
 
         matches = []
         if result.stdout:
