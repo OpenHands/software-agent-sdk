@@ -135,6 +135,16 @@ Content.
         agent = AgentDefinition.load(agent_md)
         assert agent.max_iteration_per_run is None
 
+    def test_load_empty_frontmatter_values_fall_back_to_defaults(self, tmp_path: Path):
+        md = tmp_path / "reviewer.md"
+        md.write_text("---\nname:\ndescription:\nmodel:\n---\n\nPrompt.\n")
+
+        agent = AgentDefinition.load(md)
+
+        assert agent.name == "reviewer"
+        assert agent.description == ""
+        assert agent.model == "inherit"
+
     def test_load_boolean_max_iteration_per_run_is_not_one(self, tmp_path: Path):
         agent_md = tmp_path / "a.md"
         agent_md.write_text("---\nmax_iteration_per_run: yes\n---\n\nPrompt.\n")

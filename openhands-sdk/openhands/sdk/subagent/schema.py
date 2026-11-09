@@ -137,6 +137,16 @@ def _extract_permission_mode(fm: dict[str, object]) -> str | None:
     return value
 
 
+def _frontmatter_str(value: object, default: str) -> str:
+    """A frontmatter string field, with an empty YAML value falling back to ``default``.
+
+    ``fm.get(key, default)`` returns ``None`` for a key written without a value
+    (``model:``), so ``str()`` would produce the literal ``"None"`` — a model
+    named "None" is then looked up as an LLM profile.
+    """
+    return default if value is None else str(value)
+
+
 def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     """Extract max iterations per run from frontmatter file."""
     max_iter_raw = fm.get("max_iteration_per_run")
@@ -348,9 +358,9 @@ class AgentDefinition(BaseModel):
         content = post.content.strip()
 
         # Extract frontmatter fields with proper type handling
-        name: str = str(fm.get("name", agent_path.stem))
-        description: str = str(fm.get("description", ""))
-        model: str = str(fm.get("model", "inherit"))
+        name: str = _frontmatter_str(fm.get("name"), agent_path.stem)
+        description: str = _frontmatter_str(fm.get("description"), "")
+        model: str = _frontmatter_str(fm.get("model"), "inherit")
         color: str | None = _extract_color(fm)
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
