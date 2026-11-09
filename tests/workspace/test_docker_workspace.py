@@ -118,6 +118,22 @@ def test_removed_mount_dir_input_fails_loudly():
         )
 
 
+def test_exit_sends_completion_callback(mock_docker_workspace, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace, _ = mock_docker_workspace()
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.args[0] == "https://svc.test/complete"
+
+
 def test_cleanup_without_image_deletion(mock_docker_workspace):
     """Test that cleanup with cleanup_image=False does not delete the image."""
     workspace, mock_exec = mock_docker_workspace(cleanup_image=False)
