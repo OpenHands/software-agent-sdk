@@ -5790,56 +5790,6 @@ export type GitProviderRepositoryPage = {
 };
 
 /**
- * GitPullRequestChecks
- *
- * Combined CI result of a pull request's head commit.
- */
-export type GitPullRequestChecks = 'success' | 'failure' | 'pending' | 'none';
-
-/**
- * GitPullRequestState
- */
-export type GitPullRequestState = 'open' | 'closed' | 'merged';
-
-/**
- * GitPullRequestStatus
- *
- * Live state of one pull request on a git provider, for status badges.
- */
-export type GitPullRequestStatus = {
-  checks: GitPullRequestChecks;
-  /**
-   * Draft
-   */
-  draft?: boolean;
-  /**
-   * Git Provider
-   */
-  git_provider: string;
-  /**
-   * Head Sha
-   */
-  head_sha?: string | null;
-  /**
-   * Number
-   */
-  number: number;
-  /**
-   * Repository
-   */
-  repository: string;
-  state: GitPullRequestState;
-  /**
-   * Title
-   */
-  title: string;
-  /**
-   * Url
-   */
-  url: string;
-};
-
-/**
  * GlobAction
  *
  * Schema for glob pattern matching operations.
@@ -25316,59 +25266,6 @@ export type GitRepositoriesSearchApiGitRepositoriesSearchGetResponses = {
 
 export type GitRepositoriesSearchApiGitRepositoriesSearchGetResponse =
   GitRepositoriesSearchApiGitRepositoriesSearchGetResponses[keyof GitRepositoriesSearchApiGitRepositoriesSearchGetResponses];
-
-export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetData = {
-  body?: never;
-  path: {
-    /**
-     * Owner
-     */
-    owner: string;
-    /**
-     * Repo
-     */
-    repo: string;
-    /**
-     * Number
-     */
-    number: number;
-  };
-  query: {
-    /**
-     * Git provider hosting the repository
-     */
-    provider: GitProvider;
-  };
-  url: '/api/git/repositories/{owner}/{repo}/pull-requests/{number}';
-};
-
-export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetErrors = {
-  /**
-   * No token is configured for the provider. The detail is {"code": "missing_provider_token", "message": ...}, so a client can hide the status instead of showing an error.
-   */
-  409: unknown;
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-  /**
-   * The provider's rate limit was reached.
-   */
-  429: unknown;
-};
-
-export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetError =
-  GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetErrors[keyof GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetErrors];
-
-export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponses = {
-  /**
-   * Successful Response
-   */
-  200: GitPullRequestStatus;
-};
-
-export type GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponse =
-  GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponses[keyof GitPullRequestStatusApiGitRepositoriesOwnerRepoPullRequestsNumberGetResponses];
 
 export type GetHooksApiHooksPostData = {
   body: HooksRequest;
