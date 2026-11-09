@@ -836,6 +836,16 @@ def test_find_regular_md_files_sorted(tmp_path, monkeypatch):
     assert [p.name for p in results] == ["a.md", "b.md", "c.md"]
 
 
+def test_find_regular_md_files_recursive_skips_readme_any_case(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.md").write_text("docs")
+    (tmp_path / "skill-a.md").write_text("a")
+
+    files = find_regular_md_files(tmp_path, set())
+
+    assert [f.name for f in files] == ["skill-a.md"]
+
+
 def test_find_skill_md_collision_winner_deterministic(tmp_path, monkeypatch):
     """SKILL.md/skill.md collision deterministically picks 'SKILL.md' (S < s)."""
     require_case_sensitive_fs(tmp_path)
