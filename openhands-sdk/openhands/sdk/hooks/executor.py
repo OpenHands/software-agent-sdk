@@ -421,7 +421,9 @@ class HookExecutor:
             )
 
         decision_str = str(data.get("decision", "")).lower()
-        reason = str(data.get("reason", ""))
+        # A JSON null reason means the hook gave none; str(None) would turn it
+        # into the literal "None" and show that to the model.
+        reason = None if (raw_reason := data.get("reason")) is None else str(raw_reason)
         if decision_str == "deny":
             return HookResult(
                 success=True,
@@ -602,7 +604,10 @@ class HookExecutor:
 
                         # Parse other fields
                         if "reason" in output_data:
-                            hook_result.reason = str(output_data["reason"])
+                            raw_reason = output_data["reason"]
+                            hook_result.reason = (
+                                None if raw_reason is None else str(raw_reason)
+                            )
                         if "additionalContext" in output_data:
                             hook_result.additional_context = str(
                                 output_data["additionalContext"]
