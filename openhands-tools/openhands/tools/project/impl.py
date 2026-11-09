@@ -13,7 +13,7 @@ from uuid import UUID
 import httpx
 from pydantic import ValidationError
 
-from openhands.sdk.conversation.types import PROJECT_TAG_KEY
+from openhands.sdk.conversation.types import PROJECT_TAG_KEY, conversation_mention
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.child_conversation.impl import (
@@ -158,7 +158,7 @@ class ListProjectConversationsExecutor(
 
         if conversations:
             lines = [
-                f"- [{t.attention}] {t.title or '(untitled)'} "
+                f"- [{t.attention}] {conversation_mention(t.title, t.conversation_id)} "
                 f"(id: {t.conversation_id}, status: {t.execution_status}"
                 + (
                     f", parent: {t.parent_conversation_id}"

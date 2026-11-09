@@ -52,6 +52,27 @@ The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
 the person wrote the message."""
 
 
+CONVERSATION_MENTION_SCHEME = "conversation:"
+"""Link scheme of a conversation mention: ``[Title](conversation:<id hex>)``.
+UIs render such a link as a way to open that conversation; anywhere else it
+reads as the title."""
+
+_MENTION_TITLE_MAX = 80
+
+
+def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) -> str:
+    """A markdown link that points at a conversation.
+
+    The title is the person's or an agent's text, so it is cut to one line
+    without brackets, parentheses, quotes or backslashes: it can neither end
+    the link early nor end a bracketed header the link sits in.
+    """
+    hex_id = uuid.UUID(str(conversation_id)).hex
+    text = re.sub(r"[\s\"\[\]()\\`]+", " ", title or "").strip()
+    text = text[:_MENTION_TITLE_MAX].strip() or "untitled conversation"
+    return f"[{text}]({CONVERSATION_MENTION_SCHEME}{hex_id})"
+
+
 GOAL_LOOP_SENDER = "goal_loop"
 """``sender`` of the messages a ``/goal`` loop sends its own conversation: the
 goal and each round's follow-up. They continue the person's turn; they are not

@@ -419,7 +419,7 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
 
     suffix = _system_suffix(launch)
     assert suffix.count(WORKER_GUIDANCE_MARKER) == 1
-    assert f'"Coordinator" (conversation {launch.parent_id.hex})' in suffix
+    assert f"[Coordinator](conversation:{launch.parent_id.hex})" in suffix
 
 
 @pytest.mark.asyncio

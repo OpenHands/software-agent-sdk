@@ -120,6 +120,7 @@ def test_executor_maps_launch_response_into_observation():
     assert observation.workspace == "/workspace"
     assert observation.isolation == "shared"
     assert str(child_id) in observation.text
+    assert f"[Docs](conversation:{child_id.hex})" in observation.text
 
 
 def test_executor_uses_launch_url_override():

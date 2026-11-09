@@ -141,8 +141,11 @@ def test_list_reads_project_from_tags_with_session_key(tmp_path):
     assert request.headers["X-Session-API-Key"] == "session-key"
     assert observation.project_id == PROJECT_ID
     assert [t.title for t in observation.conversations] == ["asks", "busy"]
-    assert "[needs_you] asks" in observation.text
-    assert "[working] busy" in observation.text
+    for conversation in observation.conversations:
+        assert (
+            f"[{conversation.attention}] [{conversation.title}](conversation:"
+            f"{UUID(conversation.conversation_id).hex})"
+        ) in observation.text
 
 
 def test_list_leaves_out_the_caller(tmp_path):

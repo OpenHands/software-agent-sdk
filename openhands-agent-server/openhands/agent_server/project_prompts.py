@@ -24,6 +24,7 @@ from typing import Literal
 from uuid import UUID
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.types import conversation_mention
 
 
 WORKER_GUIDANCE_MARKER = "You are working on a project with a coordinator."
@@ -31,15 +32,14 @@ WORKER_GUIDANCE_MARKER = "You are working on a project with a coordinator."
 :func:`without_worker_guidance` can remove an inherited copy."""
 
 _GUIDANCE_BLOCK = re.compile(re.escape(WORKER_GUIDANCE_MARKER) + r"(?:\n- [^\n]*)*")
-_TITLE_MAX = 80
 
 
 def _name(title: str | None, conversation_id: UUID) -> str:
-    # The title is the person's or an agent's text: one line, no quotes or
-    # brackets, so it cannot end the header or the guidance early.
-    title = re.sub(r"[\s\"\[\]]+", " ", title or "").strip()[:_TITLE_MAX].strip()
-    who = f'"{title}"' if title else "an untitled conversation"
-    return f"{who} (conversation {conversation_id.hex})"
+    # A conversation mention, ``[Title](conversation:<hex>)``: the agent can
+    # copy it into its own messages, and UIs render it as a link. The title is
+    # sanitized there (one line, no brackets, parentheses or quotes), so it
+    # cannot end the header or the guidance early.
+    return conversation_mention(title, conversation_id)
 
 
 def without_worker_guidance[AgentT: AgentBase](agent: AgentT) -> AgentT:
