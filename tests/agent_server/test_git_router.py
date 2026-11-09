@@ -710,3 +710,12 @@ def test_git_commit_endpoints_in_openapi(client):
     assert commit_param is not None
     assert commit_param["in"] == "query"
     assert commit_param.get("required", False) is False
+
+
+@pytest.mark.parametrize("endpoint", ["changes", "diff", "commits"])
+def test_git_empty_path_is_rejected(client, tmp_path, monkeypatch, endpoint):
+    monkeypatch.chdir(tmp_path)
+
+    response = client.get(f"/api/git/{endpoint}", params={"path": ""})
+
+    assert response.status_code == 400
