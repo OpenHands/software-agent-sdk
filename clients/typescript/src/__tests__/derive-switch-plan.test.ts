@@ -146,12 +146,9 @@ describe('deriveSwitchPlan', () => {
       }
     });
 
-    // `acp_effort` joins ACPAgentProfile once the pinned server schema has it.
-    type WithEffort = ACPAgentProfile & { acp_effort?: string | null };
-
     it('switch-live names every live field that differs', () => {
-      const effortOnly: WithEffort = { ...acpBase, revision: 1, acp_effort: 'high' };
-      const both: WithEffort = { ...effortOnly, acp_model: 'claude-opus-4-8' };
+      const effortOnly: ACPAgentProfile = { ...acpBase, revision: 1, acp_effort: 'high' };
+      const both: ACPAgentProfile = { ...effortOnly, acp_model: 'claude-opus-4-8' };
 
       expect(deriveSwitchPlan(acpBase, effortOnly, claudeProvider)).toEqual({
         action: 'switch-live',
@@ -164,13 +161,13 @@ describe('deriveSwitchPlan', () => {
     });
 
     it('starts a new session to restore the default effort', () => {
-      const snapshot: WithEffort = { ...acpBase, acp_effort: 'high' };
-      const target: WithEffort = { ...acpBase, revision: 1, acp_effort: null };
+      const snapshot: ACPAgentProfile = { ...acpBase, acp_effort: 'high' };
+      const target: ACPAgentProfile = { ...acpBase, revision: 1, acp_effort: null };
       expect(deriveSwitchPlan(snapshot, target, claudeProvider).action).toBe('start-new');
     });
 
     it('treats a missing acp_effort like null', () => {
-      const target: WithEffort = { ...acpBase, revision: 1, acp_effort: null };
+      const target: ACPAgentProfile = { ...acpBase, revision: 1, acp_effort: null };
       expect(deriveSwitchPlan(acpBase, target, claudeProvider).action).toBe('current');
     });
 
