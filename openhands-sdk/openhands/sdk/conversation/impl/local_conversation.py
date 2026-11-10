@@ -1858,6 +1858,8 @@ class LocalConversation(BaseConversation):
         skip_lock = self._step_holds_state_lock and not self._state.owned()
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
+            if registered is not None and new_llm is not registered:
+                self._state.stats.usage_to_metrics[usage_id] = new_llm.metrics
             update: dict[str, object] = {"llm": new_llm}
             update["condenser"] = self._condenser_for_switched_llm(
                 self.agent.llm,
@@ -1871,9 +1873,11 @@ class LocalConversation(BaseConversation):
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
 
-        Loads the profile from :class:`LLMProfileStore` (cached in the
-        registry under ``profile:{profile_name}`` after first load) and
-        delegates the swap to :meth:`switch_llm`.
+        Loads the profile from :class:`LLMProfileStore` on every call and
+        delegates the swap to :meth:`switch_llm` under the usage id
+        ``profile:{profile_name}``. The LLM registered under that id is reused
+        while the profile is unchanged; after the profile was edited it is
+        replaced by the edited config, which keeps the usage recorded so far.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -1885,12 +1889,9 @@ class LocalConversation(BaseConversation):
         """
         self._reject_llm_switch_on_acp()
         usage_id = f"profile:{profile_name}"
-        try:
-            cached = self.llm_registry.get(usage_id)
-        except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
-            cached = loaded.model_copy(update={"usage_id": usage_id})
-        self.switch_llm(cached)
+        loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+        profile_llm = loaded.model_copy(update={"usage_id": usage_id})
+        self.switch_llm(profile_llm)
 
     def get_or_create_profile_llm(self, profile_name: str, usage_id: str) -> LLM:
         """Return a saved profile LLM registered for this conversation.
