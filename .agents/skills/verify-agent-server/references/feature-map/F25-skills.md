@@ -420,7 +420,7 @@ Preconditions:
   commit, and the skill leaves the store again. This bullet is the network
   arrange step for `F25.install-documented-sources`: it proves github.com is
   reachable and `skills/github` installs.
-- **Documented install sources (`F25.install-documented-sources`), known bug.**
+- **Documented install sources (`F25.install-documented-sources`).**
   Install the same skill in each GitHub form the OpenAPI description of
   `InstallSkillRequest.source` advertises.
 
@@ -431,20 +431,15 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 422 && response.body.detail eq 'Invalid skill. Ensure the source contains a valid SKILL.md.'
+          --check name eq github --save F25.install-documented-sources/documented
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
   done
   ```
   `F25.install-github` proves the skill installs from github.com when the
-  subpath is explicit. The shorthand should install the same skill, but
-  currently answers 422: the installation manager treats an omitted
-  `repo_path` as a repository-root install and loads the fetched `github`
-  skill from a temporary directory named `extensions`. Skill validation
-  rejects the resulting directory/name mismatch. This regression is tracked
-  in [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184).
-  The earlier parser rejection was fixed in #5909; the current shorthand clones
+  subpath is explicit. The shorthand installs the same skill under its own
+  name. The shorthand clones
   `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
   The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
   again; that form is not parsed (it would be cloned as
@@ -683,7 +678,7 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/qa-f25-invoke"'"}' --expect 200 --check name eq qa-f25-invoke
   control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": true, "load_project": false, "load_org": false}' \
     --expect 200 --check skills contains '"name": "qa-f25-invoke", "type": "agentskills", "content": "QA_INVOKE_BODY' \
-    --check skills contains '"triggers": [], "source": "'"$I/qa-f25-invoke/SKILL.md"'"'
+    --check skills contains '"triggers": [], "paths": [], "source": "'"$I/qa-f25-invoke/SKILL.md"'"'
   CID2=$(control-agent-server conversation start --tools none --no-autotitle \
     --prompt 'Call the invoke_skill tool with name "qa-f25-invoke", then finish.' --wait --until finished,idle --timeout 300 --print-id)
   control-agent-server conversation events "$CID2" --kinds SystemPromptEvent --contains '<name>qa-f25-invoke</name>'
@@ -905,11 +900,8 @@ Preconditions:
   are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
   `github:OpenHands/extensions/skills/github` is the same install as
   `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
-  in the fetch layer, but installation currently rejects that shorthand with
-  422 because the loader renames the skill directory to the repository name
-  (`F25.install-documented-sources`,
-  [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184)). Use the
-  explicit `repo_path` form until fixed. A GitHub `/tree/<ref>/<path>` URL
+  in the fetch layer, and installation accepts both
+  (`F25.install-documented-sources`). A GitHub `/tree/<ref>/<path>` URL
   is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
@@ -945,5 +937,4 @@ Preconditions:
   `--until-kind K --until FIELD=VALUE` fails unless a frame of kind `K` with
   that field arrives within `--duration`, which is how the activation bullet
   asserts the WebSocket replay.
-- Error 500s carry the exception text in an `exception` field; the
-  `known bug` bullets save it as evidence.
+- Error 500s carry the exception text in an `exception` field.
