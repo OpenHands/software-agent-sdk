@@ -105,7 +105,8 @@ Preconditions:
   ```
   Nothing new is saved.
 - **Model-backed: the agent reacts (`F37.tool`).**
-  Requires: `F37.flag`
+  Requires: `F37.flag-gates` (it turns the reactions flag on; without it the
+  agent has no react tool)
   Needs: `llm`
   ```sh
   control-agent-server llm preset deepseek
@@ -140,7 +141,8 @@ Preconditions:
   action), or its latest `MessageEvent` when it answered in plain text.
 
 - **Reactions racing the end of a run (`F37.run-end`).**
-  Requires: `F37.flag`
+  Requires: `F37.flag-gates` (it turns the reactions flag on; without it the
+  reactions route answers 409)
   Needs: `llm`, `tmux`
   The probe posts the person's reactions from four threads while a real run
   goes and for two seconds after it ends, keeps each 200 response as a
