@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "em-dash-overuse",
+        "value": "*",
+        "files": [
+          ".pr/review-fixes.html"
+        ],
+        "createdAt": "2026-10-11T05:30:01.741Z",
+        "reason": "Codex decided: all detected double hyphens are literal CLI options and unified-diff markers; the prose contains none, and code examples must stay exact."
+      }
+    ]
+  }
+}

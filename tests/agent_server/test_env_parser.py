@@ -73,24 +73,27 @@ def clean_env():
     os.environ.update(original_env)
 
 
-def test_bool_env_parser(clean_env):
-    """Test BoolEnvParser with various boolean representations."""
-    parser = BoolEnvParser()
+def test_bool_env_parser_missing_key(clean_env):
+    assert BoolEnvParser().from_env("MISSING_KEY") is MISSING
 
-    # Test missing key
-    assert parser.from_env("MISSING_KEY") is MISSING
 
-    # Test truthy values
-    for value in ["1", "TRUE", "true", "True"]:
-        os.environ["TEST_BOOL"] = value
-        assert parser.from_env("TEST_BOOL") is True
-        del os.environ["TEST_BOOL"]
-
-    # Test falsy values
-    for value in ["0", "FALSE", "false", "False", ""]:
-        os.environ["TEST_BOOL"] = value
-        assert parser.from_env("TEST_BOOL") is False
-        del os.environ["TEST_BOOL"]
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        ("TRUE", True),
+        ("true", True),
+        ("True", True),
+        ("0", False),
+        ("FALSE", False),
+        ("false", False),
+        ("False", False),
+        pytest.param("", False, id="empty"),
+    ],
+)
+def test_bool_env_parser(clean_env, value, expected):
+    os.environ["TEST_BOOL"] = value
+    assert BoolEnvParser().from_env("TEST_BOOL") is expected
 
 
 def test_int_env_parser(clean_env):
@@ -243,6 +246,17 @@ def test_list_env_parser_sequential(clean_env):
     assert result == ["first"]
 
 
+def test_config_env_list_longer_than_file_list_overrides_it(tmp_path, clean_env):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"session_api_keys": ["file-key"]}))
+    os.environ["OH_SESSION_API_KEYS_0"] = "env-key-a"
+    os.environ["OH_SESSION_API_KEYS_1"] = "env-key-b"
+
+    config = load_config(config_path)
+
+    assert config.session_api_keys == ["env-key-a", "env-key-b"]
+
+
 def test_list_env_parser_with_complex_items(clean_env):
     """Test ListEnvParser with complex item types."""
     item_parser = IntEnvParser()
@@ -356,13 +370,11 @@ def test_merge_function():
     expected = [10, 20, 3]
     assert merge(list1, list2) == expected
 
-    # Test with lists of different lengths (second list longer) - this will fail
+    # Test with lists of different lengths (second list longer): the extra
+    # items extend the result rather than raising.
     list1 = [1, 2]
     list2 = [10, 20, 30, 40]
-    # The current implementation has a bug - it tries to assign to index that
-    # doesn't exist
-    with pytest.raises(IndexError):
-        merge(list1, list2)
+    assert merge(list1, list2) == [10, 20, 30, 40]
 
     # Test with lists of different lengths (first list longer)
     list1 = [1, 2, 3, 4]
@@ -786,47 +798,6 @@ def test_discriminated_union_parsing(clean_env):
     os.environ["A_BARKING"] = "1"
     model = from_env(Animal, "A")
     assert model == Dog(name="Bowser", barking=True)
-
-
-def test_config_vnc_environment_variable_parsing(clean_env):
-    """Test parsing OH_ENABLE_VNC environment variable in Config class."""
-    # Test OH_ENABLE_VNC set to true
-    os.environ["OH_ENABLE_VNC"] = "true"
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is True
-
-    # Test OH_ENABLE_VNC set to false
-    os.environ["OH_ENABLE_VNC"] = "false"
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is False
-
-    # Test default value when OH_ENABLE_VNC is not set
-    del os.environ["OH_ENABLE_VNC"]
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is False  # Default value from Config class
-
-
-@pytest.mark.parametrize(
-    "env_value,expected",
-    [
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("1", True),
-        ("false", False),
-        ("False", False),
-        ("FALSE", False),
-        ("0", False),
-        ("", False),
-    ],
-)
-def test_config_vnc_various_boolean_values(clean_env, env_value, expected):
-    """Test that OH_ENABLE_VNC accepts various boolean representations."""
-    os.environ["OH_ENABLE_VNC"] = env_value
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is expected, (
-        f"Failed for OH_ENABLE_VNC='{env_value}', expected {expected}"
-    )
 
 
 # ============================================================================

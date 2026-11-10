@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import griffe
+import pytest
 
 
 def _load_prod_module():
@@ -41,7 +42,6 @@ _field_default_repr = _prod._field_default_repr
 _is_field_default_only_change = _prod._is_field_default_only_change
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
 _was_deprecated = _prod._was_deprecated
-_is_accepted_removed_member = _prod._is_accepted_removed_member
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
@@ -367,40 +367,23 @@ def test_parse_version_prerelease():
     assert v.minor == 2
 
 
-def test_no_breaks_passes():
-    """No breaking changes should always pass."""
-    assert _check_version_bump("1.0.0", "1.0.1", total_breaks=0) == 0
-
-
-def test_minor_bump_with_breaks_passes():
-    """MINOR bump satisfies policy for breaking changes."""
-    assert _check_version_bump("1.0.0", "1.1.0", total_breaks=1) == 0
-    assert _check_version_bump("1.5.3", "1.6.0", total_breaks=5) == 0
-
-
-def test_major_bump_with_breaks_passes():
-    """MAJOR bump also satisfies policy for breaking changes."""
-    assert _check_version_bump("1.0.0", "2.0.0", total_breaks=1) == 0
-    assert _check_version_bump("1.5.3", "2.0.0", total_breaks=10) == 0
-
-
-def test_patch_bump_with_breaks_fails():
-    """PATCH bump should fail when there are breaking changes."""
-    assert _check_version_bump("1.0.0", "1.0.1", total_breaks=1) == 1
-    assert _check_version_bump("1.5.3", "1.5.4", total_breaks=1) == 1
-
-
-def test_same_version_with_breaks_fails():
-    """Same version should fail when there are breaking changes."""
-    assert _check_version_bump("1.0.0", "1.0.0", total_breaks=1) == 1
-
-
-def test_prerelease_versions():
-    """Pre-release versions should work correctly."""
-    # 1.1.0a1 has minor=1, so it satisfies minor bump from 1.0.0
-    assert _check_version_bump("1.0.0", "1.1.0a1", total_breaks=1) == 0
-    # 1.0.1a1 is still a patch bump
-    assert _check_version_bump("1.0.0", "1.0.1a1", total_breaks=1) == 1
+@pytest.mark.parametrize(
+    ("old", "new", "total_breaks", "expected"),
+    [
+        pytest.param("1.0.0", "1.0.1", 0, 0, id="no_breaks"),
+        pytest.param("1.0.0", "1.1.0", 1, 0, id="minor_bump_with_breaks-1.0.0"),
+        pytest.param("1.5.3", "1.6.0", 5, 0, id="minor_bump_with_breaks-1.5.3"),
+        pytest.param("1.0.0", "2.0.0", 1, 0, id="major_bump_with_breaks-1.0.0"),
+        pytest.param("1.5.3", "2.0.0", 10, 0, id="major_bump_with_breaks-1.5.3"),
+        pytest.param("1.0.0", "1.0.1", 1, 1, id="patch_bump_with_breaks-1.0.0"),
+        pytest.param("1.5.3", "1.5.4", 1, 1, id="patch_bump_with_breaks-1.5.3"),
+        pytest.param("1.0.0", "1.0.0", 1, 1, id="same_version_with_breaks"),
+        pytest.param("1.0.0", "1.1.0a1", 1, 0, id="prerelease_minor_bump"),
+        pytest.param("1.0.0", "1.0.1a1", 1, 1, id="prerelease_patch_bump"),
+    ],
+)
+def test_check_version_bump(old, new, total_breaks, expected):
+    assert _check_version_bump(old, new, total_breaks=total_breaks) == expected
 
 
 def test_find_deprecated_symbols_decorator(tmp_path):
@@ -553,70 +536,6 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     assert undeprecated == 1
 
 
-def test_accepted_docker_mount_dir_member_removal_detection_is_exact():
-    assert _is_accepted_removed_member(
-        "openhands.workspace", "DockerWorkspace.mount_dir"
-    )
-    assert _is_accepted_removed_member(
-        "openhands.workspace", "DockerDevWorkspace.mount_dir"
-    )
-    assert not _is_accepted_removed_member(
-        "openhands.workspace", "ApptainerWorkspace.mount_dir"
-    )
-    assert not _is_accepted_removed_member("openhands.sdk", "DockerWorkspace.mount_dir")
-
-
-def test_accepted_docker_mount_dir_removal_is_not_breaking(tmp_path, capsys):
-    ws_cfg = PackageConfig(
-        package="openhands.workspace",
-        distribution="openhands-workspace",
-        source_dir="openhands-workspace",
-    )
-    old_pkg = _write_pkg_init(
-        tmp_path,
-        "old",
-        ["DockerWorkspace", "DockerDevWorkspace"],
-        module_parts=("openhands", "workspace"),
-    )
-    new_pkg = _write_pkg_init(
-        tmp_path,
-        "new",
-        ["DockerWorkspace", "DockerDevWorkspace"],
-        module_parts=("openhands", "workspace"),
-    )
-
-    old_pkg.joinpath("__init__.py").write_text(
-        old_pkg.joinpath("__init__.py").read_text()
-        + "\nfrom pydantic import BaseModel, Field\n\n"
-        + "class DockerWorkspace(BaseModel):\n"
-        + "    mount_dir: str | None = Field(default=None)\n\n"
-        + "class DockerDevWorkspace(DockerWorkspace):\n"
-        + "    pass\n"
-    )
-    new_pkg.joinpath("__init__.py").write_text(
-        new_pkg.joinpath("__init__.py").read_text()
-        + "\nfrom pydantic import BaseModel\n\n"
-        + "class DockerWorkspace(BaseModel):\n"
-        + "    pass\n\n"
-        + "class DockerDevWorkspace(DockerWorkspace):\n"
-        + "    pass\n"
-    )
-
-    old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
-    new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
-
-    total_breaks, removal_policy_errors = _prod._compute_breakages(
-        old_root,
-        new_root,
-        ws_cfg,
-    )
-
-    assert total_breaks == 0
-    assert removal_policy_errors == 0
-    captured = capsys.readouterr()
-    assert "Accepted removal of DockerWorkspace.mount_dir" in captured.out
-
-
 def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     """Unresolvable aliases should not abort checking other exports.
 
@@ -665,87 +584,127 @@ def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     assert undeprecated == 1
 
 
-def test_is_field_metadata_only_change_description_only():
-    """Changing only Field description is detected as metadata-only."""
-    old = "Field(default=False, description='old description')"
-    new = "Field(default=False, description='new description')"
-    assert _is_field_metadata_only_change(old, new) is True
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        pytest.param(
+            "Field(default=False, description='old description')",
+            "Field(default=False, description='new description')",
+            True,
+            id="description_only",
+        ),
+        pytest.param(
+            "Field(default=False, title='old', description='old desc')",
+            "Field(default=False, title='new', description='new desc')",
+            True,
+            id="title_and_description",
+        ),
+        pytest.param(
+            "Field(default=False, description='desc')",
+            "Field(default=True, description='desc')",
+            False,
+            id="default_changed",
+        ),
+        pytest.param(
+            "SomeClass(value=1)",
+            "SomeClass(value=2)",
+            False,
+            id="not_field",
+        ),
+        pytest.param(
+            "Field(default=False, description='Whether to automatically load "
+            "skills from https://github.com/OpenHands/skills.')",
+            "Field(default=False, description='Whether to automatically load "
+            "skills from https://github.com/OpenHands/extensions.')",
+            True,
+            id="long_description",
+        ),
+        pytest.param(
+            "Field(default=False, deprecated=False)",
+            "Field(default=False, deprecated=True)",
+            True,
+            id="deprecated_bool_only",
+        ),
+        pytest.param(
+            "Field(default=False, description='old description')",
+            "Field(default=False, deprecated=True, description='new description')",
+            True,
+            id="added_deprecated_kwarg",
+        ),
+        pytest.param(
+            "Field(default='claude-sonnet-4-20250514', description='Model name.')",
+            "Field(default='claude-sonnet-4-20250514', description='Model name.', "
+            "json_schema_extra={'openhands_settings': "
+            "{'label': None, 'prominence': 'critical', 'depends_on': []}})",
+            True,
+            id="json_schema_extra_dict",
+        ),
+        pytest.param(
+            "Field(default=None, description='API key.')",
+            "Field(default=None, description='API key.', "
+            "json_schema_extra=field_meta(SettingProminence.CRITICAL, "
+            "label='API Key'))",
+            True,
+            id="json_schema_extra_function_call",
+        ),
+        pytest.param(
+            "Field(default='old-model', description='Model name.')",
+            "Field(default='new-model', description='Model name.', "
+            "json_schema_extra={'key': 'value'})",
+            False,
+            id="json_schema_extra_with_real_change",
+        ),
+    ],
+)
+def test_is_field_metadata_only_change(old, new, expected):
+    assert _is_field_metadata_only_change(old, new) is expected
 
 
-def test_is_field_metadata_only_change_title_and_description():
-    """Changing title and description is detected as metadata-only."""
-    old = "Field(default=False, title='old', description='old desc')"
-    new = "Field(default=False, title='new', description='new desc')"
-    assert _is_field_metadata_only_change(old, new) is True
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        pytest.param(
+            "Field(default='claude-sonnet-4-20250514', description='desc')",
+            "Field(default='gpt-5.5', description='desc')",
+            True,
+            id="detects_keyword_default_change",
+        ),
+        pytest.param(
+            "Field(default_factory=datetime.now, description='desc')",
+            "Field(default_factory=lambda: datetime.now().astimezone(), "
+            "description='new')",
+            True,
+            id="detects_keyword_default_factory_change",
+        ),
+        pytest.param(
+            "Field(default='claude-sonnet-4-20250514', alias='model')",
+            "Field(default='gpt-5.5', alias='llm_model')",
+            False,
+            id="ignores_other_runtime_changes",
+        ),
+    ],
+)
+def test_is_field_default_only_change(old, new, expected):
+    assert _is_field_default_only_change(old, new) is expected
 
 
-def test_is_field_metadata_only_change_default_changed():
-    """Changing Field default value is NOT metadata-only."""
-    old = "Field(default=False, description='desc')"
-    new = "Field(default=True, description='desc')"
-    assert _is_field_metadata_only_change(old, new) is False
-
-
-def test_is_field_default_only_change_detects_keyword_default_change():
-    """Changing only Field default value is classified separately."""
-    old = "Field(default='claude-sonnet-4-20250514', description='desc')"
-    new = "Field(default='gpt-5.5', description='desc')"
-
-    assert _is_field_default_only_change(old, new) is True
-
-
-def test_is_field_default_only_change_detects_keyword_default_factory_change():
-    """Changing only Field default_factory is classified separately."""
-    old = "Field(default_factory=datetime.now, description='desc')"
-    new = (
-        "Field(default_factory=lambda: datetime.now().astimezone(), description='new')"
-    )
-
-    assert _is_field_default_only_change(old, new) is True
-
-
-def test_is_field_default_only_change_ignores_other_runtime_changes():
-    """Changing non-default runtime kwargs is not a default-only change."""
-    old = "Field(default='claude-sonnet-4-20250514', alias='model')"
-    new = "Field(default='gpt-5.5', alias='llm_model')"
-
-    assert _is_field_default_only_change(old, new) is False
-
-
-def test_field_default_repr_supports_positional_default():
-    """Positional Field defaults are normalized for reporting."""
-    assert (
-        _field_default_repr("Field('gpt-5.5', description='Model name.')")
-        == "'gpt-5.5'"
-    )
-
-
-def test_field_default_repr_supports_default_factory():
-    """Field default_factory values are normalized for reporting."""
-    assert (
-        _field_default_repr("Field(default_factory=datetime.now, description='desc')")
-        == "datetime.now"
-    )
-
-
-def test_is_field_metadata_only_change_not_field():
-    """Non-Field values return False."""
-    old = "SomeClass(value=1)"
-    new = "SomeClass(value=2)"
-    assert _is_field_metadata_only_change(old, new) is False
-
-
-def test_is_field_metadata_only_change_long_description():
-    """Long descriptions with URLs are handled correctly."""
-    old = (
-        "Field(default=False, description='Whether to automatically load "
-        "skills from https://github.com/OpenHands/skills.')"
-    )
-    new = (
-        "Field(default=False, description='Whether to automatically load "
-        "skills from https://github.com/OpenHands/extensions.')"
-    )
-    assert _is_field_metadata_only_change(old, new) is True
+@pytest.mark.parametrize(
+    ("field_repr", "expected"),
+    [
+        pytest.param(
+            "Field('gpt-5.5', description='Model name.')",
+            "'gpt-5.5'",
+            id="positional_default",
+        ),
+        pytest.param(
+            "Field(default_factory=datetime.now, description='desc')",
+            "datetime.now",
+            id="default_factory",
+        ),
+    ],
+)
+def test_field_default_repr_normalizes_default(field_repr, expected):
+    assert _field_default_repr(field_repr) == expected
 
 
 def test_is_field_metadata_only_change_multiline_description_with_quotes():
@@ -767,51 +726,6 @@ def test_is_field_metadata_only_change_multiline_description_with_quotes():
     )
 
     assert _is_field_metadata_only_change(old, new) is True
-
-
-def test_is_field_metadata_only_change_deprecated_bool_only():
-    """Changing only Field deprecated metadata is detected as metadata-only."""
-    old = "Field(default=False, deprecated=False)"
-    new = "Field(default=False, deprecated=True)"
-    assert _is_field_metadata_only_change(old, new) is True
-
-
-def test_is_field_metadata_only_change_added_deprecated_kwarg():
-    """Adding deprecated metadata should still be treated as metadata-only."""
-    old = "Field(default=False, description='old description')"
-    new = "Field(default=False, deprecated=True, description='new description')"
-    assert _is_field_metadata_only_change(old, new) is True
-
-
-def test_is_field_metadata_only_change_json_schema_extra_dict():
-    """Adding json_schema_extra with a dict value is metadata-only."""
-    old = "Field(default='claude-sonnet-4-20250514', description='Model name.')"
-    new = (
-        "Field(default='claude-sonnet-4-20250514', description='Model name.', "
-        "json_schema_extra={'openhands_settings': "
-        "{'label': None, 'prominence': 'critical', 'depends_on': []}})"
-    )
-    assert _is_field_metadata_only_change(old, new) is True
-
-
-def test_is_field_metadata_only_change_json_schema_extra_function_call():
-    """Adding json_schema_extra with a function call value is metadata-only."""
-    old = "Field(default=None, description='API key.')"
-    new = (
-        "Field(default=None, description='API key.', "
-        "json_schema_extra=field_meta(SettingProminence.CRITICAL, label='API Key'))"
-    )
-    assert _is_field_metadata_only_change(old, new) is True
-
-
-def test_is_field_metadata_only_change_json_schema_extra_with_real_change():
-    """json_schema_extra + real default change is NOT metadata-only."""
-    old = "Field(default='old-model', description='Model name.')"
-    new = (
-        "Field(default='new-model', description='Model name.', "
-        "json_schema_extra={'key': 'value'})"
-    )
-    assert _is_field_metadata_only_change(old, new) is False
 
 
 def test_field_deprecated_change_is_not_breaking(tmp_path):

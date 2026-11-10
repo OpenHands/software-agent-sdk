@@ -107,7 +107,7 @@ def test_llm_private_attributes_not_serialized() -> None:
 
     # Set private attributes (these would normally be set internally)
     llm._model_info = {"some": "info"}
-    llm._tokenizer = "mock-tokenizer"
+    llm._tokenizer = {"tokenizer": "mock-tokenizer"}
 
     # Serialize to dict
     llm_dict = llm.model_dump()

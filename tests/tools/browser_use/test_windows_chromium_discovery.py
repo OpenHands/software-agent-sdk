@@ -356,3 +356,73 @@ def test_windows_skips_candidate_when_metadata_is_unreadable(
     monkeypatch.setattr(Path, "exists", unreadable)
 
     assert BrowserToolExecutor.check_chromium_available() == str(older)
+
+
+def test_windows_falls_back_when_configured_cache_cannot_expand(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fallback = _system_chrome(windows_browser_paths)
+
+    def broken_expanduser(_path: Path):
+        raise RuntimeError("home directory unavailable")
+
+    monkeypatch.setattr(Path, "expanduser", broken_expanduser)
+
+    assert BrowserToolExecutor.check_chromium_available() == str(fallback)
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_non_windows_keeps_system_before_configured_and_default_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+):
+    home = tmp_path / "home"
+    configured_cache = tmp_path / "configured"
+    default_cache = home / (
+        "Library/Caches/ms-playwright"
+        if platform == "darwin"
+        else ".cache/ms-playwright"
+    )
+    system = tmp_path / "system-chrome"
+    system.touch()
+    configured = impl._playwright_chromium_paths(
+        configured_cache / "chromium-1200", platform
+    )[0]
+    default = impl._playwright_chromium_paths(
+        default_cache / "chromium-1300", platform
+    )[0]
+    for executable in (configured, default):
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+    monkeypatch.setattr(impl.sys, "platform", platform)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(impl, "_standard_chromium_paths", lambda _platform: [system])
+    monkeypatch.setattr(impl.shutil, "which", lambda _binary: None)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(configured_cache))
+
+    assert BrowserToolExecutor.check_chromium_available() == str(system)
+    system.unlink()
+    BrowserToolExecutor.check_chromium_available.cache_clear()
+    assert BrowserToolExecutor.check_chromium_available() == str(configured)
+    configured.unlink()
+    BrowserToolExecutor.check_chromium_available.cache_clear()
+    assert BrowserToolExecutor.check_chromium_available() == str(default)
+
+
+def test_windows_executor_rescans_after_managed_browser_is_installed(
+    windows_browser_paths: dict[str, Path],
+):
+    fallback = _system_chrome(windows_browser_paths)
+    assert BrowserToolExecutor.check_chromium_available() == str(fallback)
+    managed = _create_pe_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1200"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    assert BrowserToolExecutor.check_chromium_available() == str(fallback)
+
+    executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+    assert executor._ensure_chromium_available() == str(managed)

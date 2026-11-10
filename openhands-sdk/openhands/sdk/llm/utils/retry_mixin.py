@@ -4,12 +4,20 @@ from typing import Any, cast
 from tenacity import (
     RetryCallState,
     retry,
+    retry_base,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
+from tenacity.stop import stop_base
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions.classifier import (
+    is_quota_exhaustion_error,
+    is_transient_http_error,
+)
+from openhands.sdk.llm.utils.retry_after import retry_after_seconds
 from openhands.sdk.logger import get_logger
 
 
@@ -17,6 +25,25 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
+
+
+def transient_error_condition(
+    exception_types: tuple[type[BaseException], ...],
+) -> retry_base:
+    """Retry ``exception_types`` and transient HTTP errors, never quota exhaustion."""
+    return (
+        retry_if_exception_type(exception_types)
+        | retry_if_exception(is_transient_http_error)
+    ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
+
+
+class _StopBeforeLongWait(stop_base):
+    def __init__(self, max_wait: float):
+        self.max_wait = max_wait
+
+    def __call__(self, retry_state: RetryCallState) -> bool:
+        error = retry_state.outcome.exception() if retry_state.outcome else None
+        return retry_after_seconds(error) > self.max_wait
 
 
 class RetryMixin:
@@ -76,7 +103,9 @@ class RetryMixin:
     def retry_decorator(
         self,
         num_retries: int = 5,
-        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
+        retry_exceptions: tuple[type[BaseException], ...] | retry_base = (
+            LLMNoResponseError,
+        ),
         retry_min_wait: int = 8,
         retry_max_wait: int = 64,
         retry_multiplier: float = 2.0,
@@ -85,19 +114,36 @@ class RetryMixin:
         """
         Create a LLM retry decorator with customizable parameters.
         This is used for 429 errors, and a few other exceptions in LLM classes.
+
+        ``retry_exceptions`` may be either a tuple of exception types (retried
+        as-is) or a tenacity retry predicate (e.g. a combined
+        ``retry_if_exception_type(...) & retry_if_not_exception(...)``) for
+        finer-grained control over which exceptions are retried.
         """
         before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
+        retry_condition = (
+            retry_if_exception_type(retry_exceptions)
+            if isinstance(retry_exceptions, tuple)
+            else retry_exceptions
+        )
+
+        exponential_wait = wait_exponential(
+            multiplier=retry_multiplier, min=retry_min_wait, max=retry_max_wait
+        )
+
+        def wait(retry_state: RetryCallState) -> float:
+            error = retry_state.outcome.exception() if retry_state.outcome else None
+            return max(exponential_wait(retry_state), retry_after_seconds(error))
+
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=stop_after_attempt(num_retries),
-            reraise=True,
-            retry=retry_if_exception_type(retry_exceptions),
-            wait=wait_exponential(
-                multiplier=retry_multiplier,
-                min=retry_min_wait,
-                max=retry_max_wait,
+            stop=(
+                stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
             ),
+            reraise=True,
+            retry=retry_condition,
+            wait=wait,
         )
         return retry_decorator
 

@@ -38,6 +38,14 @@ class MyCountingFailingSource(SecretSource):
         raise OSError("Secret retrieval failed")
 
 
+class MyCountingLazySource(SecretSource):
+    attempts: int = 0
+
+    def get_value(self):
+        type(self).attempts += 1
+        return "lazy-value"
+
+
 class MyRecoveringSource(SecretSource):
     fail: bool = True
 
@@ -376,6 +384,16 @@ def test_mask_secrets_in_output_ignores_empty_value():
     assert secret_registry.mask_secrets_in_output("hello") == "hello"
 
 
+def test_mask_secrets_in_output_masks_the_longest_overlapping_value():
+    """Same contract as compile_stream_mask: no fragment of a secret survives."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"SHORT": "abc", "LONG": "abc123"})
+
+    assert secret_registry.mask_secrets_in_output("leak: abc123") == (
+        "leak: <secret-hidden>"
+    )
+
+
 def test_mask_secrets_without_name_reference_in_command():
     """A secret value is masked even if no command ever referenced its name."""
     token = "github_pat_REALSECRETVALUE123"
@@ -451,3 +469,52 @@ def test_mask_secrets_retries_until_source_succeeds():
     assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
         "leak: <secret-hidden>"
     )
+
+
+def test_compile_stream_mask_uses_only_already_resolved_values():
+    """The stream path cannot afford a resolve: get_value() may block on I/O."""
+    MyCountingLazySource.attempts = 0
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {"RESOLVED": "abc123", "LAZY": MyCountingLazySource()}
+    )
+    secret_registry.get_secrets_as_env_vars("echo $RESOLVED")
+
+    def mask(text: str) -> str:
+        masker = secret_registry.compile_stream_mask()
+        return masker.feed(text) + masker.flush()
+
+    assert mask("leak: abc123") == "leak: <secret-hidden>"
+    # The unresolved source is not consulted, so its value is not masked here.
+    assert mask("leak: lazy-value") == "leak: lazy-value"
+    assert MyCountingLazySource.attempts == 0
+
+
+def test_compile_stream_mask_prefers_the_longest_overlapping_value():
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"SHORT": "abc", "LONG": "abc123"})
+    secret_registry.get_secrets_as_env_vars("echo $SHORT $LONG")
+
+    masker = secret_registry.compile_stream_mask()
+
+    assert masker.feed("leak: abc123") + masker.flush() == "leak: <secret-hidden>"
+
+
+def test_compile_stream_mask_masks_a_value_split_across_chunks():
+    """A per-chunk masker cannot see a secret the provider splits in two."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": "hunter2"})
+    secret_registry.get_secrets_as_env_vars("echo $TOKEN")
+
+    masker = secret_registry.compile_stream_mask()
+    released = [masker.feed(piece) for piece in ("leak: ", "hunt", "er2", " done")]
+    released.append(masker.flush())
+
+    assert "".join(released) == "leak: <secret-hidden> done"
+
+
+def test_compile_stream_mask_releases_text_when_nothing_is_registered():
+    masker = SecretRegistry().compile_stream_mask()
+
+    assert masker.feed("nothing held back") == "nothing held back"
+    assert masker.flush() == ""

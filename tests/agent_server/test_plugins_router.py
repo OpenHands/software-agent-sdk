@@ -5,14 +5,17 @@ default install dir is redirected), so nothing touches the real ~/.openhands.
 """
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.plugins_router import plugins_router
-from openhands.sdk.plugin import Plugin
+from openhands.sdk.plugin import Plugin, PluginFetchError
 
 
 def _make_installable_plugin(plugin_dir: Path, name: str) -> Path:
@@ -87,6 +90,22 @@ def test_install_existing_without_force_returns_409(client: TestClient, tmp_path
     assert conflict.status_code == 409
 
 
+def test_install_fetch_error_returns_400(client: TestClient):
+    with patch(
+        "openhands.agent_server.plugins_router.service_install_plugin",
+        side_effect=PluginFetchError("unknown ref"),
+    ):
+        response = client.post(
+            "/plugins/install",
+            json={"source": "github:owner/repo", "ref": "missing-ref"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Failed to fetch plugin source. Check that the source is valid."
+    )
+
+
 def test_missing_plugin_returns_404(client: TestClient):
     assert client.get("/plugins/installed/ghost").status_code == 404
     assert (
@@ -105,6 +124,53 @@ def test_refresh_returns_updated_plugin(client: TestClient, tmp_path: Path):
 
     assert refreshed.status_code == 200
     assert refreshed.json()["plugin"]["name"] == "demo-plugin"
+
+
+def test_refresh_vanished_source_is_400_and_keeps_plugin(
+    client: TestClient, tmp_path: Path
+):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    assert client.post("/plugins/install", json={"source": str(src)}).status_code == 200
+    shutil.rmtree(src)
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 400
+    assert "fetch" in refreshed.json()["detail"].lower()
+    kept = client.get("/plugins/installed/demo-plugin")
+    assert kept.status_code == 200
+    assert kept.json()["enabled"] is True
+
+
+def test_refresh_invalid_manifest_is_422_and_keeps_plugin(
+    client: TestClient, tmp_path: Path
+):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    assert client.post("/plugins/install", json={"source": str(src)}).status_code == 200
+    (src / ".plugin" / "plugin.json").write_text("{bad json")
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 422
+    kept = client.get("/plugins/installed/demo-plugin")
+    assert kept.status_code == 200
+    assert kept.json()["version"] == "1.0.0"
+
+    _make_installable_plugin(src, "demo-plugin")
+    assert client.post("/plugins/installed/demo-plugin/refresh").status_code == 200
+
+
+def test_refresh_adopted_local_plugin_is_400(client: TestClient, tmp_path: Path):
+    store = tmp_path / "installed-store"
+    _make_installable_plugin(store / "demo-plugin", "demo-plugin")
+    # Listing adopts the hand-copied directory with source "local".
+    assert client.get("/plugins/installed").status_code == 200
+    assert client.get("/plugins/installed/demo-plugin").json()["source"] == "local"
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 400
+    assert client.get("/plugins/installed/demo-plugin").status_code == 200
 
 
 def test_installed_plugin_carries_bundled_skills(client: TestClient, tmp_path: Path):
@@ -182,3 +248,103 @@ def test_list_available_returns_plugin_summaries(
             }
         ]
     }
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_git_plugin_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "git-plugin"
+    plugin = repo / "plugins" / "demo"
+    (plugin / ".plugin").mkdir(parents=True)
+    (plugin / "commands").mkdir()
+    (plugin / ".plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-plugin",
+                "version": "1.0.0",
+                "automation": {"runner": "conversation"},
+            }
+        )
+    )
+    (plugin / "commands" / "run.md").write_text("---\ndescription: Run\n---\nRun it")
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "initial")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def test_fetch_endpoint_pins_without_installing(
+    client: TestClient, tmp_path: Path, monkeypatch
+):
+    repo, sha = _make_git_plugin_repo(tmp_path)
+    monkeypatch.setattr(
+        "openhands.sdk.plugin.strict_fetch.DEFAULT_CACHE_DIR", tmp_path / "cache"
+    )
+
+    before = client.get("/plugins/installed").json()
+    resp = client.post(
+        "/plugins/fetch",
+        json={
+            "source": f"file://{repo}",
+            "ref": "HEAD",
+            "repo_path": "plugins/demo",
+        },
+    )
+    after = client.get("/plugins/installed").json()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["resolved_ref"] == sha
+    assert sha in body["path"]
+    assert body["source"] == f"file://{repo}"
+    assert body["repo_path"] == "plugins/demo"
+    assert body["manifest"]["automation"] == {"runner": "conversation"}
+    assert body["commands"] == ["run"]
+    assert before == after
+
+
+def test_fetch_endpoint_returns_structured_error(client: TestClient):
+    resp = client.post(
+        "/plugins/fetch",
+        json={"source": "https://x-access-token:${TOKEN}@example.invalid/repo.git"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {
+        "code": "missing_secret",
+        "message": "Missing secret: TOKEN",
+    }
+
+
+def test_fetch_endpoint_invalid_expanded_source_is_structured_and_redacted(
+    client: TestClient,
+):
+    secret_value = "supersecretvalue"
+
+    resp = client.post(
+        "/plugins/fetch",
+        json={
+            "source": "${TOKEN}",
+            "secrets": {
+                "TOKEN": {"kind": "StaticSecret", "value": secret_value},
+            },
+        },
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {
+        "code": "invalid_source",
+        "message": "Invalid plugin source.",
+    }
+    assert secret_value not in resp.text

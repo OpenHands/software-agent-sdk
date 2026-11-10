@@ -2,7 +2,6 @@
 
 from typing import TYPE_CHECKING
 
-from openhands.sdk.agent.utils import make_llm_completion
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.ask_oracle.definition import (
@@ -96,7 +95,7 @@ class AskOracleExecutor(ToolExecutor[AskOracleAction, AskOracleObservation]):
         ]
 
         try:
-            llm_response = make_llm_completion(oracle_llm, messages)
+            llm_response = oracle_llm.generate(messages=messages, store=False)
         except Exception as exc:
             return AskOracleObservation.from_text(
                 text=(

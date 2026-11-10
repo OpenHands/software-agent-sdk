@@ -1,13 +1,16 @@
+import pytest
 from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
     ContextWindowExceededError,
     InternalServerError,
+    RateLimitError,
 )
 
 from openhands.sdk.llm.exceptions import (
     is_context_window_exceeded,
     is_prompt_cache_too_small,
+    is_quota_exhaustion_error,
     looks_like_auth_error,
     looks_like_malformed_conversation_history_error,
 )
@@ -136,18 +139,15 @@ def test_is_context_window_exceeded_negative():
     )
 
 
-def test_looks_like_auth_error_positive():
-    assert (
-        looks_like_auth_error(BadRequestError("Invalid API key", MODEL, PROVIDER))
-        is True
-    )
-
-
-def test_looks_like_auth_error_negative():
-    assert (
-        looks_like_auth_error(BadRequestError("Something else", MODEL, PROVIDER))
-        is False
-    )
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        pytest.param("Invalid API key", True, id="positive"),
+        pytest.param("Something else", False, id="negative"),
+    ],
+)
+def test_looks_like_auth_error(message: str, expected: bool):
+    assert looks_like_auth_error(BadRequestError(message, MODEL, PROVIDER)) is expected
 
 
 def test_is_prompt_cache_too_small_positive():
@@ -180,3 +180,52 @@ def test_is_prompt_cache_too_small_context_window_not_cache_too_small():
     )
     assert is_prompt_cache_too_small(ctx_error) is False
     assert is_context_window_exceeded(ctx_error) is True
+
+
+@pytest.mark.parametrize(
+    ("message", "llm_provider", "model", "expected"),
+    [
+        # OpenAI's usage_limit_reached is a hard quota outcome, not a transient 429.
+        pytest.param(
+            (
+                "RateLimitError: OpenAIException - "
+                '{"error":{"type":"usage_limit_reached",'
+                '"message":"The usage limit has been reached","plan_type":"team"}}'
+            ),
+            "openai",
+            "gpt-5.6-sol",
+            True,
+            id="usage_limit_reached",
+        ),
+        pytest.param(
+            (
+                "RateLimitError: OpenAIException - "
+                '{"error":{"type":"insufficient_quota",'
+                '"message":"You exceeded your current quota"}}'
+            ),
+            "openai",
+            "gpt-5.6-sol",
+            True,
+            id="insufficient_quota",
+        ),
+        pytest.param(
+            "RateLimitError: Rate limit exceeded",
+            "openai",
+            "gpt-5.6-sol",
+            False,
+            id="transient_rate_limit",
+        ),
+        pytest.param(
+            "Quota exceeded for quota metric Generate Content API requests per minute",
+            "vertex_ai",
+            "gemini-test",
+            False,
+            id="transient_quota_metric",
+        ),
+    ],
+)
+def test_is_quota_exhaustion_error(
+    message: str, llm_provider: str, model: str, expected: bool
+):
+    error = RateLimitError(message=message, llm_provider=llm_provider, model=model)
+    assert is_quota_exhaustion_error(error) is expected

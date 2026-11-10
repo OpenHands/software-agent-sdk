@@ -150,7 +150,7 @@ class InstallationMetadata(BaseModel):
             return cls()
 
         try:
-            return cls.model_validate_json(metadata_path.read_text())
+            return cls.model_validate_json(metadata_path.read_text(encoding="utf-8"))
         except Exception as e:
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
@@ -159,7 +159,7 @@ class InstallationMetadata(BaseModel):
         """Save metadata to the installed extensions directory."""
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(self.model_dump_json(indent=2))
+        metadata_path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.

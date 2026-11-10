@@ -27,10 +27,14 @@ import time
 import tomllib
 from contextlib import chdir
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.logger import IN_CI, get_logger, rolling_log_view
+from openhands.sdk.settings.acp_install_catalog import (
+    DEFAULT_PREINSTALLED_ACP_PROVIDERS,
+)
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.workspace import PlatformType, TargetType
 
@@ -46,6 +50,18 @@ VALID_TARGETS = {
     "base-image",
     "builder",
 }
+# Relative path (from sdk_project_root) of the dependency-free ACP install
+# catalog the Dockerfile's `acp-providers` stage COPYs in directly. Mirrored
+# here so the empty-context fast path below (`is_base_only`) can stage just
+# this one file instead of pulling in the full SDK source tree.
+_ACP_INSTALL_CATALOG_RELPATH = Path(
+    "openhands-sdk/openhands/sdk/settings/acp_install_catalog.py"
+)
+# Capability keys accepted by the Dockerfile's INSTALL_CAPABILITIES build arg
+# (the `base-image` stage's VSCode Web, browser, and Docker blocks). Kept
+# local to this module since, unlike ACP_PROVIDERS, no other repo/runtime
+# code needs this set.
+AGENT_SERVER_CAPABILITIES = ("vscode", "browser", "docker")
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
@@ -377,13 +393,12 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 
 
 class BuildOptions(BaseModel):
-    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
-    # with Python 3.13. See issue #1886 for details.
-    base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22-slim")
+    base_image: str = Field(default="python-node-runtime")
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
     image: str = Field(default="ghcr.io/openhands/agent-server")
+    image_flavor: Literal["default", "slim", "minimal"] = Field(default="default")
     target: TargetType = Field(default="binary")
     platforms: list[PlatformType] = Field(default=["linux/amd64"])
     push: bool | None = Field(
@@ -435,7 +450,7 @@ class BuildOptions(BaseModel):
         ),
     )
     install_acp_providers: str = Field(
-        default="claude-code,codex,gemini-cli",
+        default=",".join(DEFAULT_PREINSTALLED_ACP_PROVIDERS),
         description=(
             "Comma-separated ACP provider keys (see ACP_PROVIDERS in "
             "openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake "
@@ -453,6 +468,31 @@ class BuildOptions(BaseModel):
             raise ValueError(
                 f"Unknown ACP provider(s) in install_acp_providers: "
                 f"{', '.join(unknown)}. Valid keys: {', '.join(ACP_PROVIDERS)}"
+            )
+        return v
+
+    install_capabilities: str = Field(
+        default="vscode,browser,docker",
+        description=(
+            "Comma-separated capability keys to bake into the `base-image` "
+            "stage (VSCode Web, browser, Docker Engine). Empty "
+            "string installs none."
+        ),
+    )
+
+    @field_validator("install_capabilities")
+    @classmethod
+    def _valid_install_capabilities(cls, v: str) -> str:
+        unknown = [
+            p
+            for p in (t.strip() for t in v.split(","))
+            if p and p not in AGENT_SERVER_CAPABILITIES
+        ]
+        if unknown:
+            raise ValueError(
+                f"Unknown capability(ies) in install_capabilities: "
+                f"{', '.join(unknown)}. "
+                f"Valid keys: {', '.join(AGENT_SERVER_CAPABILITIES)}"
             )
         return v
 
@@ -515,18 +555,22 @@ class BuildOptions(BaseModel):
         if not self.release_tag_source:
             return []
         return [
-            f"{release_tag}-{custom_tag}"
+            f"{release_tag}-{custom_tag}{self.flavor_suffix}"
             for custom_tag in self.custom_tag_list
             for release_tag in _release_tag_aliases(self.release_tag_source)
         ]
 
     @property
+    def flavor_suffix(self) -> str:
+        return "" if self.image_flavor == "default" else f"-{self.image_flavor}"
+
+    @property
     def base_tag(self) -> str:
-        return f"{self.short_sha}-{self.base_image_slug}"
+        return f"{self.short_sha}-{self.base_image_slug}{self.flavor_suffix}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        base = f"buildcache-{self.target}-{self.base_image_slug}"
+        base = f"buildcache-{self.target}-{self.base_image_slug}{self.flavor_suffix}"
         if self.git_ref in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif self.git_ref != "unknown":
@@ -540,6 +584,7 @@ class BuildOptions(BaseModel):
         arch_suffix = f"-{self.arch}" if self.arch else ""
 
         for custom_tag in self.custom_tag_list:
+            custom_tag = f"{custom_tag}{self.flavor_suffix}"
             tags.extend(
                 [
                     f"{self.image}:{self.short_sha}-{custom_tag}{arch_suffix}",
@@ -555,8 +600,10 @@ class BuildOptions(BaseModel):
             for versioned_tag in self.versioned_tags:
                 tags.append(f"{self.image}:{versioned_tag}{arch_suffix}")
 
-        # Append target suffix for clarity (binary is default, no suffix needed)
-        if self.target != "binary":
+        # The minimal image flavor already names its binary-minimal target.
+        if self.target != "binary" and not (
+            self.target == "binary-minimal" and self.image_flavor == "minimal"
+        ):
             tags = [f"{t}-{self.target}" for t in tags]
         return list(dict.fromkeys(tags))
 
@@ -829,12 +876,26 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    # Base-image targets don't need SDK source (no COPY from build context),
-    # so use an empty temp dir instead of running the expensive uv build --sdist.
-    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    # Only base-image-minimal has zero context dependency (no COPY from the
+    # build context, direct or transitive). base-image is NOT eligible for
+    # this fast path even though it looked context-free at a glance: it pulls
+    # in the `builder` stage (for VSCode extensions), and `builder` itself
+    # COPYs the real SDK source from context. This dependency is
+    # unconditional at the Dockerfile level, so excluding vscode from
+    # INSTALL_CAPABILITIES shrinks the resulting image but not this
+    # build-context cost or the `builder` stage's own build time (a full SDK
+    # venv sync).
+    is_base_only = opts.target == "base-image-minimal"
     if is_base_only:
         ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
         shutil.copy2(dockerfile_path, ctx / "Dockerfile")
+        # The acp-providers stage COPYs this one dependency-free catalog file
+        # (see the Dockerfile) — stage it at the same relative path the real
+        # sdist-extracted context uses, so the same COPY instruction works
+        # here without pulling in the rest of the SDK source.
+        catalog_dst = ctx / _ACP_INSTALL_CATALOG_RELPATH
+        catalog_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(opts.sdk_project_root / _ACP_INSTALL_CATALOG_RELPATH, catalog_dst)
     else:
         ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
     telemetry.build_context_seconds = _round_seconds(
@@ -858,6 +919,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
         "--build-arg",
         f"INSTALL_ACP_PROVIDERS={opts.install_acp_providers}",
+        "--build-arg",
+        f"INSTALL_CAPABILITIES={opts.install_capabilities}",
     ]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
@@ -1006,9 +1069,7 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--base-image",
-        # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
-        # with Python 3.13. See issue #1886.
-        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22-slim"),
+        default=_env("BASE_IMAGE", "python-node-runtime"),
         help="Base image to use (default from $BASE_IMAGE).",
     )
     parser.add_argument(
@@ -1020,6 +1081,12 @@ def main(argv: list[str]) -> int:
         "--image",
         default=_env("IMAGE", "ghcr.io/openhands/agent-server"),
         help="Image repo/name (default from $IMAGE).",
+    )
+    parser.add_argument(
+        "--image-flavor",
+        default=_env("IMAGE_FLAVOR", "default"),
+        choices=("default", "slim", "minimal"),
+        help="Image flavor (default from $IMAGE_FLAVOR).",
     )
     parser.add_argument(
         "--target",
@@ -1079,10 +1146,22 @@ def main(argv: list[str]) -> int:
         "--install-acp-providers",
         # os.environ.get, not _env(): an explicit empty string here means
         # "install none" and must survive, but _env() treats blank as unset.
-        default=os.environ.get("INSTALL_ACP_PROVIDERS", "claude-code,codex,gemini-cli"),
+        default=os.environ.get(
+            "INSTALL_ACP_PROVIDERS", ",".join(DEFAULT_PREINSTALLED_ACP_PROVIDERS)
+        ),
         help=(
             "Comma-separated ACP provider keys to bake into the image "
             "(default from $INSTALL_ACP_PROVIDERS; empty string installs none)."
+        ),
+    )
+    parser.add_argument(
+        "--install-capabilities",
+        # os.environ.get, not _env(): an explicit empty string here means
+        # "install none" and must survive, but _env() treats blank as unset.
+        default=os.environ.get("INSTALL_CAPABILITIES", "vscode,browser,docker"),
+        help=(
+            "Comma-separated capability keys to bake into the image "
+            "(default from $INSTALL_CAPABILITIES; empty string installs none)."
         ),
     )
 
@@ -1107,6 +1186,7 @@ def main(argv: list[str]) -> int:
             base_image=args.base_image,
             custom_tags=args.custom_tags,
             image=args.image,
+            image_flavor=args.image_flavor,
             target=args.target,  # type: ignore
             platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
             push=None,  # Not relevant for build-ctx-only
@@ -1115,6 +1195,7 @@ def main(argv: list[str]) -> int:
             arch=args.arch or None,
             include_versioned_tag=args.versioned_tag,
             install_acp_providers=args.install_acp_providers,
+            install_capabilities=args.install_capabilities,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -1156,6 +1237,7 @@ def main(argv: list[str]) -> int:
         base_image=args.base_image,
         custom_tags=args.custom_tags,
         image=args.image,
+        image_flavor=args.image_flavor,
         target=args.target,  # type: ignore
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
@@ -1164,6 +1246,7 @@ def main(argv: list[str]) -> int:
         arch=args.arch or None,
         include_versioned_tag=args.versioned_tag,
         install_acp_providers=args.install_acp_providers,
+        install_capabilities=args.install_capabilities,
     )
     tags = build(opts)
 

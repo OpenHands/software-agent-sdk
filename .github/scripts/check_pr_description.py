@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from markdown_sections import find_headings, without_fenced_code_blocks
+
 
 # Reject placeholders while allowing a concise human-written sentence.
 MIN_HUMAN_NOTE_CHARS = 20
@@ -22,13 +24,9 @@ AGENT_HEADING_RE = re.compile(r"(?im)^\s*AGENT:\s*$")
 ISSUE_REF_RE = re.compile(r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+)")
 BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)")
 READY_FOR_DEV_LABEL = "ready-for-dev"
-# Issues created before the `ready-for-dev` rollout are grandfathered: the
-# issue-readiness workflow only labels issues on `issues` events, so long-open
-# issues were never evaluated. Requiring the label retroactively would block
-# existing PRs linked to those issues. The cutoff is the UTC day AFTER the
-# rollout/deployment day (2026-08-12), so every issue predating deployment —
-# including ones opened earlier that same day, before the workflow existed —
-# is exempt. Issues created on or after 2026-08-13 must carry the label.
+# Older issues are exempt: the rollout did not evaluate them retroactively.
+# The cutoff is the UTC day after deployment (2026-08-12), so issues opened
+# earlier on deployment day are also exempt. Issues from 2026-08-13 need the label.
 READY_FOR_DEV_ROLLOUT_ISO = "2026-08-13"
 
 
@@ -51,7 +49,7 @@ def first_visible_line(text: str) -> str:
 
 
 def extract_sections(body: str) -> dict[str, str]:
-    matches = list(HEADING_RE.finditer(body))
+    matches = find_headings(body, HEADING_RE)
     sections: dict[str, str] = {}
     for index, match in enumerate(matches):
         start = match.end()
@@ -61,12 +59,19 @@ def extract_sections(body: str) -> dict[str, str]:
 
 
 def extract_human_note(body: str) -> str:
-    """Return human-written text in the required location before AGENT."""
-    human_match = HUMAN_HEADING_RE.search(body)
+    """Return human-written text in the required location before `AGENT:`.
+
+    The markers are located outside fenced code blocks so that quoting the
+    template does not stand in for filling it out. Offsets are preserved by the
+    masking, so the note itself is still read from the original body.
+    """
+    outside_fences = without_fenced_code_blocks(body)
+
+    human_match = HUMAN_HEADING_RE.search(outside_fences)
     if human_match is None:
         return ""
 
-    agent_match = AGENT_HEADING_RE.search(body, human_match.end())
+    agent_match = AGENT_HEADING_RE.search(outside_fences, human_match.end())
     if agent_match is None:
         return ""
 
@@ -164,7 +169,7 @@ def validate_pr_body(body: str) -> list[str]:
     if len(human_note) < MIN_HUMAN_NOTE_CHARS:
         errors.append("Add a short human-written note between `HUMAN:` and `AGENT:`.")
 
-    if AGENT_HEADING_RE.search(body) is None:
+    if AGENT_HEADING_RE.search(without_fenced_code_blocks(body)) is None:
         errors.append("Keep the `AGENT:` marker from the PR template.")
 
     sections = extract_sections(body)

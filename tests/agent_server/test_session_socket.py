@@ -1,0 +1,595 @@
+"""Session socket semantics: framing, the replay boundary, backpressure."""
+
+import asyncio
+import contextlib
+import json
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+from fastapi import WebSocketDisconnect
+
+from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
+from openhands.agent_server.session_socket import (
+    _ConnectionWriter,
+    _inbound_loop,
+    _ProgressSubscriber,
+    _read_page,
+    _replay,
+    _SessionSubscriber,
+)
+from openhands.sdk import Message, TextContent
+from openhands.sdk.agent.stream_context import (
+    StreamAborted,
+    StreamDelta,
+    StreamStarted,
+)
+from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.io import InMemoryFileStore
+
+
+def _msg(text: str) -> MessageEvent:
+    return MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text=text)]),
+    )
+
+
+class _FakeWebSocket:
+    """Records what actually reached the wire, and can be made to hang."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.gate: asyncio.Event | None = None
+        self.send_started = asyncio.Event()
+
+    async def send_text(self, payload: str) -> None:
+        if self.gate is not None:
+            self.send_started.set()
+            await self.gate.wait()
+        self.sent.append(payload)
+
+    def frames(self) -> list[dict]:
+        return [json.loads(p) for p in self.sent]
+
+
+class _FakeEventLog:
+    """Enough EventLog for framing: index by id, read by index, length."""
+
+    def __init__(self) -> None:
+        self._events: list = []
+        self._by_id: dict[str, int] = {}
+
+    def add(self, event) -> int:
+        idx = len(self._events)
+        self._events.append(event)
+        self._by_id[event.id] = idx
+        return idx
+
+    def get_index(self, event_id: str) -> int:
+        try:
+            return self._by_id[event_id]
+        except KeyError:
+            raise KeyError(f"Unknown event_id: {event_id}")
+
+    def __getitem__(self, idx: int):
+        return self._events[idx]
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+    def get_seq(self, idx: int) -> int:
+        return idx
+
+    def index_after_seq(self, seq: int) -> int:
+        return min(max(seq + 1, 0), len(self._events))
+
+
+async def _drain(writer: _ConnectionWriter) -> None:
+    """Let the writer task flush what has been admitted."""
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_durable_frame_carries_seq_and_untouched_event():
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    event = _msg("hello")
+    log.add(event)
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+    await sub(event)
+    await _drain(writer)
+    await writer.aclose()
+
+    (frame,) = ws.frames()
+    assert frame["type"] == "durable"
+    assert frame["seq"] == 0
+    # Byte-identical to what the legacy endpoint sends.
+    assert frame["event"] == event.model_dump(mode="json", exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_deltas_never_reach_the_durable_channel():
+    """The bug that put token deltas on webhooks and telemetry."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    await sub(StreamingDeltaEvent(content="tok"))
+    await sub(StreamingDeltaEvent(reasoning_content="think"))
+    await _drain(writer)
+    await writer.aclose()
+
+    assert ws.frames() == []
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_event_is_transient_and_carries_no_seq():
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+    await _drain(writer)
+    await writer.aclose()
+
+    (frame,) = ws.frames()
+    assert frame["type"] == "transient"
+    assert "seq" not in frame
+
+
+@pytest.mark.asyncio
+async def test_replay_and_live_do_not_interleave_or_duplicate():
+    """Subscribe (buffering) -> read mark -> replay -> flush.
+
+    An event landing during replay arrives exactly once, after the history.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    history = [_msg(f"h{i}") for i in range(3)]
+    for e in history:
+        log.add(e)
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    through_seq = len(log) - 1
+
+    # Two arrive mid-replay: one already on disk, one genuinely new.
+    await sub(history[2])
+    live = _msg("live")
+    log.add(live)
+    await sub(live)
+
+    assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
+    sub.go_live(through_seq)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["seq"] for f in frames] == [0, 1, 2, 3], "no gaps, no duplicates"
+    assert [f["event"]["id"] for f in frames] == [e.id for e in [*history, live]]
+
+
+@pytest.mark.asyncio
+async def test_event_persisted_before_mark_but_published_after_go_live():
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    history = [_msg(f"h{i}") for i in range(3)]
+    for e in history:
+        log.add(e)
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    through_seq = len(log) - 1
+    assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
+    sub.go_live(through_seq)
+    await sub(history[2])
+    live = _msg("live")
+    log.add(live)
+    await sub(live)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["seq"] for f in frames] == [0, 1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_seq_survives_a_reload_that_finds_a_lost_file():
+    """A seq is the on-disk index: a reload after a lost file keeps every
+    survivor's seq, and the next event gets one no client has seen."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    history = [_msg(f"h{i}") for i in range(4)]
+    for e in history:
+        log.append(e)
+    fs.delete(log._path(1))
+    reloaded = EventLog(fs)
+
+    writer = _ConnectionWriter(ws := _FakeWebSocket())  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=reloaded)
+
+    # The client saw seq 0 before the restart and resumes after it.
+    through_seq = reloaded.get_seq(len(reloaded) - 1)
+    assert through_seq == 3
+    start = reloaded.index_after_seq(0)
+    assert await _replay(reloaded, start, len(reloaded), writer)
+    sub.go_live(through_seq)
+    live = _msg("live")
+    reloaded.append(live)
+    await sub(live)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = [(f["seq"], f["event"]["id"]) for f in ws.frames()]
+    assert frames == [(2, history[2].id), (3, history[3].id), (4, live.id)]
+
+
+@pytest.mark.asyncio
+async def test_persisted_state_update_is_durable_and_deduped():
+    """A ConversationStateUpdateEvent in the log must not be transient.
+
+    append_event stores these, so deciding by type would strip their seq and
+    defeat the dedupe — the event would arrive from replay and again from the
+    buffer.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    state_update = ConversationStateUpdateEvent(key="execution_status", value="running")
+    log.add(state_update)
+    through_seq = len(log) - 1
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    # Buffered mid-replay and also sent from disk: one copy must reach the wire.
+    await sub(state_update)
+    assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
+    sub.go_live(through_seq)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["type"] for f in frames] == ["durable"], "sent twice, or sent transient"
+    assert frames[0]["seq"] == 0
+
+
+@pytest.mark.asyncio
+async def test_live_only_connection_keeps_events_buffered_during_subscribe():
+    """No replay ran, so nothing may be discarded as 'already replayed'.
+
+    A client omitting ``after_seq`` has no cursor to recover what deduping
+    against the mark would drop.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    for i in range(3):
+        log.add(_msg(f"h{i}"))
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    # Arrived during subscribe, so its seq is below the mark.
+    raced = _msg("landed during subscribe")
+    log.add(raced)
+    await sub(raced)
+
+    # Live-only: the endpoint passes None when no replay happened.
+    sub.go_live(None)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["event"]["id"] for f in frames] == [raced.id]
+    assert frames[0]["seq"] == 3
+
+
+@pytest.mark.asyncio
+async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
+    """Admission is synchronous: a stuck socket must never stall the caller.
+
+    What the legacy endpoint gets wrong by awaiting send_json in its
+    subscriber.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    ws.gate = asyncio.Event()  # accepts nothing until released
+
+    writer = _ConnectionWriter(ws, max_pending_bytes=4096)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    async def publish():
+        first = _msg("first")
+        log.add(first)
+        await sub(first)
+        await ws.send_started.wait()
+
+        for i in range(20):
+            event = _msg(f"m{i}" * 50)
+            log.add(event)
+            await sub(event)
+
+    # The timeout guards against deadlock while the socket gate stays closed.
+    try:
+        await asyncio.wait_for(publish(), timeout=10)
+
+        assert writer.closed, "over-budget connection should be dropped"
+        assert writer.drop_reason == "slow_consumer"
+        assert ws.frames() == []
+    finally:
+        ws.gate.set()
+        await writer.aclose()
+
+
+@pytest.mark.asyncio
+async def test_oversized_frame_drops_the_connection_not_the_event():
+    """Durable must survive a reconnect, so an unsendable frame kills the
+    connection and the client resumes from its cursor."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    huge = _msg("x" * (MAX_FRAME_BYTES + 1))
+    log.add(huge)
+    await sub(huge)
+    await _drain(writer)
+
+    assert writer.closed
+    assert writer.drop_reason == "frame_too_large"
+    assert ws.frames() == []
+    await writer.aclose()
+
+
+def test_replay_skips_unreadable_events_instead_of_failing():
+    class _Corrupt(_FakeEventLog):
+        def __getitem__(self, idx: int):
+            if idx == 1:
+                raise FileNotFoundError("half-written")
+            return super().__getitem__(idx)
+
+    log = _Corrupt()
+    for i in range(3):
+        log.add(_msg(f"e{i}"))
+
+    page = _read_page(log, 0, 3)  # type: ignore[arg-type]
+    assert [seq for seq, _ in page] == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_malformed_inbound_frame_is_reported_not_raised():
+    """A non-JSON text frame must not escape the inbound loop.
+
+    receive_json raises JSONDecodeError, not WebSocketDisconnect, so catching
+    only the latter let one bad frame take down the connection.
+    """
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+
+    receives = 0
+
+    async def receive_json():
+        nonlocal receives
+        receives += 1
+        if receives == 1:
+            raise json.JSONDecodeError("Expecting value", "not json", 0)
+        raise WebSocketDisconnect()
+
+    ws.receive_json = receive_json  # type: ignore[attr-defined]
+
+    await asyncio.wait_for(
+        _inbound_loop(uuid4(), ws, object(), writer),  # type: ignore[arg-type]
+        timeout=5,
+    )
+    await _drain(writer)
+    await writer.aclose()
+
+    (frame,) = ws.frames()
+    assert frame["type"] == "error"
+    assert frame["code"] == "JSONDecodeError"
+    # The loop kept going rather than unwinding.
+    assert receives == 2
+
+
+@pytest.mark.asyncio
+async def test_progress_frames_reach_the_wire_with_their_identity():
+    """StreamContext's frames map onto the envelope, one for one."""
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _ProgressSubscriber(writer)
+
+    await sub(StreamStarted(item_id="item-1", attempt=1, anchor_seq=4))
+    await sub(
+        StreamDelta(
+            item_id="item-1",
+            attempt=1,
+            order=0,
+            kind="reasoning",
+            content="thinking",
+            chunk_id="chatcmpl-9",
+            choice_index=0,
+        )
+    )
+    await sub(StreamAborted(item_id="item-1", attempt=1, reason="cancelled"))
+    await _drain(writer)
+    await writer.aclose()
+
+    started, delta, aborted = ws.frames()
+    assert started == {
+        "type": "item_started",
+        "item_id": "item-1",
+        "attempt": 1,
+        "anchor_seq": 4,
+    }
+    assert delta["type"] == "delta"
+    assert (delta["order"], delta["kind"], delta["content"]) == (
+        0,
+        "reasoning",
+        "thinking",
+    )
+    # The provider's own identity, carried through as corroboration.
+    assert (delta["chunk_id"], delta["choice_index"]) == ("chatcmpl-9", 0)
+    assert aborted["type"] == "item_aborted"
+    assert aborted["reason"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_progress_frame_does_not_drop_the_connection():
+    """Progress is recoverable from the durable event, so it is droppable."""
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _ProgressSubscriber(writer)
+
+    await sub(
+        StreamDelta(
+            item_id="item-1",
+            attempt=1,
+            order=0,
+            kind="text",
+            content="x" * (MAX_FRAME_BYTES + 1),
+        )
+    )
+    await _drain(writer)
+    assert writer.closed
+
+
+class _LockedEventService:
+    """A running conversation: subscribing and sending both wait for its step."""
+
+    def __init__(self) -> None:
+        self.step_done = asyncio.Event()
+        self.sending = asyncio.Event()
+        self.saved: list[Message] = []
+        self.events = _FakeEventLog()
+
+    def get_conversation(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(state=SimpleNamespace(events=self.events))
+
+    async def subscribe_to_events(self, subscriber) -> object:
+        await self.step_done.wait()
+        return uuid4()
+
+    async def subscribe_to_stream_progress(self, subscriber) -> object:
+        return uuid4()
+
+    async def unsubscribe_from_events(self, subscriber_id) -> bool:
+        return True
+
+    async def unsubscribe_from_stream_progress(self, subscriber_id) -> bool:
+        return True
+
+    async def send_message(self, message: Message, run: bool) -> None:
+        self.sending.set()
+        await self.step_done.wait()
+        self.saved.append(message)
+
+
+class _ClientSocket(_FakeWebSocket):
+    """Sends its frames, then nothing more."""
+
+    def __init__(self, frames: list[dict]) -> None:
+        super().__init__()
+        self._frames = list(frames)
+
+    async def receive_json(self):
+        if self._frames:
+            return self._frames.pop(0)
+        await asyncio.Event().wait()
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        return None
+
+
+def _user_frame(text: str) -> dict:
+    return Message(role="user", content=[TextContent(text=text)]).model_dump(
+        mode="json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_message_sent_while_a_step_runs_is_saved_after_the_client_leaves(
+    monkeypatch,
+):
+    """The demo's lost "wait, actually": a socket opened on a running worker.
+
+    Subscribing waits for the step to end, so the server used to read no
+    frame until then; a client that left first lost its message. The frame
+    is now read at once and saved when the step ends, socket or not.
+    """
+    from openhands.agent_server import session_socket as module
+
+    service = _LockedEventService()
+    ws = _ClientSocket([_user_frame("wait, actually")])
+
+    async def accept(websocket, key):
+        return True
+
+    monkeypatch.setattr(module, "_accept_authenticated_websocket", accept)
+    monkeypatch.setattr(
+        module,
+        "_get_conversation_service",
+        lambda websocket: type(
+            "S", (), {"get_event_service": AsyncMock(return_value=service)}
+        )(),
+    )
+
+    task = asyncio.ensure_future(module.session_socket(uuid4(), ws))  # type: ignore[arg-type]
+    # The frame is taken while the step still runs; then the client leaves.
+    await asyncio.wait_for(service.sending.wait(), timeout=5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert service.saved == []
+
+    service.step_done.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert [m.content[0].text for m in service.saved] == ["wait, actually"]  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_a_frame_that_arrives_with_the_close_is_still_saved():
+    """When the writer fails as a frame arrives, the frame is not dropped."""
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    saved: list[Message] = []
+
+    class _Service:
+        async def send_message(self, message, run):
+            saved.append(message)
+
+    async def receive_json():
+        writer.closed_event.set()
+        return _user_frame("last words")
+
+    ws.receive_json = receive_json  # type: ignore[attr-defined]
+
+    await asyncio.wait_for(
+        _inbound_loop(uuid4(), ws, _Service(), writer),  # type: ignore[arg-type]
+        timeout=5,
+    )
+    await writer.aclose()
+
+    assert [m.content[0].text for m in saved] == ["last words"]  # type: ignore[union-attr]

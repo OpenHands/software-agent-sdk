@@ -166,9 +166,18 @@ def _playwright_hermetic_cache_dirs() -> list[Path]:
 
 
 def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
-    match _current_platform(platform):
+    current_platform = _current_platform(platform)
+    dirs: list[Path] = []
+    # Windows resolves relative and hermetic paths below; other platforms
+    # retain their configured-cache-then-default-cache lookup.
+    if current_platform != "win32":
+        if (browsers_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH")) and (
+            browsers_path != "0"
+        ):
+            dirs.append(Path(browsers_path).expanduser())
+    match current_platform:
         case "darwin":
-            return [Path.home() / "Library" / "Caches" / "ms-playwright"]
+            dirs.append(Path.home() / "Library" / "Caches" / "ms-playwright")
         case "win32":
             if configured_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
                 if configured_path == "0":
@@ -192,7 +201,8 @@ def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
             except RuntimeError:
                 return []
         case _:
-            return [Path.home() / ".cache" / "ms-playwright"]
+            dirs.append(Path.home() / ".cache" / "ms-playwright")
+    return dirs
 
 
 def _playwright_chromium_paths(
@@ -433,17 +443,12 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._close_lock = threading.Lock()
 
         def init_logic():
-            nonlocal headless
             executable_path = (
                 config.pop("executable_path", None) or self._ensure_chromium_available()
             )
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )
-            if os.getenv("OH_ENABLE_VNC", "false").lower() in {"true", "1", "yes"}:
-                headless = False  # Force headless off if VNC is enabled
-                logger.info("VNC is enabled - running browser in non-headless mode")
-
             # Configure scripts to inject
             if inject_scripts:
                 self._server.set_inject_scripts(inject_scripts)

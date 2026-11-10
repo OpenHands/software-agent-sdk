@@ -30,18 +30,54 @@ strong bias toward simplicity and maintainable code.
 This repository owns the Python SDK and Agent Server: agent and tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. Related responsibilities live elsewhere:
 
 - [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
-- [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors this repository's Agent Server API for browser-compatible TypeScript clients.
+- `clients/typescript/` mirrors the Agent Server API for browser-compatible TypeScript clients.
 - [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
 
-The usual flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Implement backend behavior and endpoints here first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
+The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript` → Agent Canvas. Implement backend behavior and endpoints in the Python SDK or Agent Server packages first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
 
 All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
 
+For issue triage, read [the review guide](.agents/skills/custom-codereview-guide.md#issue-triage-ownership-and-scope)
+for ownership and scope; PR evidence is not an issue-readiness requirement.
+
+## Review-Facing Implementation Checklist
+
+Code should satisfy the repository review checkpoints before the PR is opened:
+
+- Trace cross-layer changes through every affected public entry point, including
+  factories, constructors, registries, serialization, REST/WebSocket transport,
+  `clients/typescript/`, and create/resume/fork paths. Do not add a field or
+  option at one layer while another supported path drops or ignores it.
+- Treat public Python and server APIs, defaults, serialized events, persisted
+  settings, and stored conversations as compatibility surfaces. Use the
+  deprecation, schema-version migration, and golden-fixture mechanisms described
+  below instead of one-off shims.
+- Give tasks, processes, connections, plugins, event loops, and persistent
+  artifacts an owner. Cancellation must stop underlying work; close and rollback
+  paths must cover success, failure, and cancellation; shared conversation state
+  must use its existing synchronization mechanism.
+- Route credentials through `openhands.sdk.utils.pydantic_secrets` and verify the
+  full input, serialization, persistence, logging, resume, and delivery path.
+  Never introduce a parallel redaction or secret-sentinel implementation.
+- Verify imports, executables, dependency installation, paths, and process
+  cleanup in every affected production artifact, including the packaged Agent
+  Server, Docker images, and relevant host platforms. A mocked unit test alone
+  does not validate a packaging or installation change.
+- Every LLM request built in this repo must place a `system` message before the
+  first `user` message (see "LLM message construction invariant" in
+  `DEVELOPMENT.md`). This covers the agent loop and all standalone calls
+  (condensers, goal judge, profile pre-flight ping, security analyzers, etc.).
+  The first message role must be `system`, or there must be a documented
+  exception (ACP agents, subscription/Codex transport).
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
+- Async LLM hard timeouts belong inside the tenacity-decorated attempt so each timeout is retryable; stream idle timeouts wrap each `__anext__()` call so receiving a chunk resets the idle deadline. Both become LiteLLM `Timeout` errors before retry classification and eventually map to `LLMTimeoutError` after retries are exhausted.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
 - OpenHands provider LLMs keep public config as `openhands/<model>` and translate to `litellm_proxy/<model>` plus the OpenHands proxy `api_base` only at LiteLLM boundaries. Legacy persisted proxy payloads are migrated once at settings/profile load boundaries; do not add downstream UI reverse-mapping for the normal path.
 - Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config structure and semantics; downstream apps should own client-specific ordering, icons, widgets, and slash-command presentation.
+- `ACP_PROVIDERS` declares which ACP harnesses exist, not which ones a product offers. Product clients declare `SURFACED_ACP_PROVIDERS` independently and assert only `SURFACED_ACP_PROVIDERS ⊆ ACP_PROVIDERS`; this makes a rename or removal fail while an addition is a no-op. Do not require a complementary not-surfaced list or add deployment policy to `ACPProviderInfo`.
+- ACP examples routed through the OpenHands LiteLLM proxy (`examples/01_standalone_sdk/40_acp_agent_example.py`, `examples/02_remote_agent_server/09_acp_agent_with_remote_runtime.py`) use a dedicated `ACP_LLM_API_KEY` whose LiteLLM key alias (`acp-llm-api-key`) is in the proxy's `ignored_key_aliases`. Claude Code sends its own non-OpenHands system prompt, which the proxy's identity guardrail would 403; the bypassed key opts out of the guardrail instead of making Claude Code pretend to be OpenHands. Real users running ACP against `api.anthropic.com` are unaffected. See saas-deploy PRs #1929 (staging) / #1930 (prod) and issue #6434.
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `mcp_config` is declared on `OpenHandsAgentSettings` and `ACPAgentSettings` (and inherited by `LLMAgentSettings`) — the variants of the `AgentSettingsConfig` union. It is a flat `dict[str, MCPServer]` server map, where `MCPServer` is the SDK's own model in `openhands-sdk/openhands/sdk/mcp/config.py` — not FastMCP's `MCPConfig`, and not the `.mcp.json`-style `{"mcpServers": {...}}` wrapper (the v4→v5 migration `_migrate_mcp_config_to_server_map` unwraps that key). FastMCP's typed `MCPConfig` is built only at the FastMCP boundary, in `_prepare_mcp_config()` in `openhands-sdk/openhands/sdk/mcp/utils.py`, from the payload produced by `to_fastmcp_mcp_config()` in `openhands-sdk/openhands/sdk/mcp/config.py`. Keep serialized MCP output compact with `exclude_none=True, exclude_defaults=True`, applied per-`MCPServer` in `openhands-sdk/openhands/sdk/mcp/config.py`.
@@ -49,7 +85,7 @@ All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`]
 - Persisted settings compatibility is enforced by `.github/scripts/check_persisted_settings_compat.py` plus `tests/sdk/persisted_settings_baselines/vN/` golden fixtures. When a versioned persisted settings shape changes incompatibly, bump the relevant schema version constant, add the migration step, and add a fixture for the old shape.
 - The persisted-settings compatibility check builds its historical PyPI baseline environment with `uv` and a PyPI release-date `exclude-newer` cutoff, and golden fixtures may include a top-level `__expected__` map of dotted paths whose post-migration values must be preserved.
 
-- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a real migration chain (`AGENT_SETTINGS_SCHEMA_VERSION` is at 5) plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
+- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a versioned migration chain plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
 - Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
 - `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
 - Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
@@ -146,11 +182,13 @@ consult each relevant package-level AGENTS.md.
 <PR_ARTIFACTS>
 # PR-Specific Evidence Documents
 
-The `.pr/` directory is intentionally temporary by repository policy: the
-`PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
-PR-only reviewer context and automatically removes it after PR approval.
+The `.pr/` directory is intentionally temporary by repository policy: it holds
+PR-only reviewer context. It stays on the PR branch through review and on
+`main` after merge, until the next release PR removes it:
+`.github/workflows/prepare-release.yml` deletes the tracked root `.pr/`
+directory in the same commit as the version changes.
 
-When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should not be kept long-term, store them in a `.pr/` directory at the repository root.
 
 You can also use the `.pr/` directory for evidence, such as logs, live-tests, live-test summary files.
 
@@ -169,15 +207,14 @@ mkdir -p .pr
 
 ## How It Works
 
-1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
-2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
-3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+1. **Notification**: When a PR adds or changes files under `.pr/`, the `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) posts a single comment to the PR conversation alerting reviewers
+2. **Release cleanup**: `.pr/` accumulates on `main` until the next release PR removes it; release PR checks reject any `.pr/` files that remain
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+- Do not open separate PRs to remove `.pr/` from `main`; release preparation removes it
 
 ## When to Use
 
@@ -290,7 +327,9 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 
 <TESTING>
 - AFTER you edit ONE file, you should run pre-commit hook on that file via `uv run pre-commit run --files [filepath]` to make sure you didn't break it.
-- Don't write TOO MUCH test, you should write just enough to cover edge cases.
+- For each behavior you add or change, test at least one failure or edge input it must handle (invalid or missing input, legacy or persisted data, an error from a dependency, cancellation), not only the success path. Keep it focused: one test per case is enough.
+- Take expected values from the issue, the spec, or the documented contract, not from what the code returns today. A test whose expectation was copied from the implementation passes on the bug.
+- For a bug fix, the regression test must fail without the fix.
 - Check how we perform tests in .github/workflows/tests.yml
 - Put unit tests under the corresponding domain folder in `tests/` (e.g., `tests/sdk`, `tests/tools`, `tests/workspace`). For example, changes to `openhands-sdk/openhands/sdk/tool/tool.py` should be covered in `tests/sdk/tool/test_tool.py`.
 - DON'T write TEST CLASSES unless absolutely necessary!
@@ -327,7 +366,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 
 <REPO>
 <PROJECT_STRUCTURE>
-- This is a `uv`-managed Python monorepo (single `uv.lock` at repo root) with multiple distributable packages: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- This is a monorepo with a `uv`-managed Python workspace (single `uv.lock` at repo root) and a separately managed npm package under `clients/typescript/`. The Python distributable packages are: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- `clients/typescript/` contains the browser-compatible TypeScript client, with its own `package-lock.json`, npm scripts, and Vitest tests.
 - `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>
@@ -335,7 +375,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 <QUICK_COMMANDS>
 - Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
 - Lint/format: `make lint`, `make format`
-- Run tests: `uv run pytest`
+- Run Python tests: `uv run pytest`
+- Set up and validate the TypeScript client: `cd clients/typescript && npm ci && npm run lint && npm run build && npm test`
 - Run agent-server stress tests: `uv run pytest -m stress` (see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md))
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`
@@ -357,3 +398,23 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 </KNOWN_RACES_AND_GOTCHAS>
 
 </REPO>
+
+## Dependency release-age policy
+
+- Wait at least seven days after publication before adding or updating a
+  third-party npm or PyPI version, including transitive lockfile changes.
+  A weekly update schedule alone does not enforce this minimum age.
+- Keep Dependabot `cooldown.default-days: 7` for npm and Python version
+  updates, and preserve `tool.uv.exclude-newer = "7 days"` where configured.
+  Existing named first-party exceptions do not exempt their third-party
+  dependencies. Do not add broad exemptions or disable the cutoff to make a
+  resolver succeed.
+- Verify the exact version's publication/upload time from npm or PyPI metadata
+  (or artifact `upload-time` in `uv.lock`), not the package's creation date.
+  If age cannot be established, report the missing evidence rather than guess.
+- Security updates can bypass Dependabot cooldown. An urgent exception needs
+  explicit maintainer approval recorded in the PR with the package, version,
+  advisory/reason, and publication time. Agents must not grant themselves an
+  exception.
+- Use the committed lock for reproducible installs; review newly resolved
+  artifacts before committing a lock update.

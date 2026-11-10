@@ -12,15 +12,19 @@ from pydantic import TypeAdapter, ValidationError
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
     OpenAIModelListResponse,
+    OpenAIResponse,
+    OpenAIResponseRequest,
 )
 from openhands.agent_server.openai.service import (
     iter_openai_chat_completion_sse,
     list_openai_models,
     run_chat_completion,
+    run_response,
 )
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
@@ -76,11 +80,17 @@ def _get_config(request: Request) -> Config:
     return config
 
 
+def _get_docker_registry(request: Request) -> DockerConversationRegistry | None:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    return registry if isinstance(registry, DockerConversationRegistry) else None
+
+
 def _parse_observability_overrides(
     *,
     span_name: str | None,
     tags: str | None,
     metadata: str | None,
+    parent_span_context: str | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     try:
@@ -108,6 +118,8 @@ def _parse_observability_overrides(
             status_code=422,
             detail=exc.errors(include_context=False),
         ) from exc
+    if parent_span_context:
+        overrides["observability_parent_span_context"] = parent_span_context
     return overrides
 
 
@@ -138,6 +150,9 @@ async def create_chat_completion(
     x_openhands_observability_metadata: Annotated[
         str | None, Header(alias="X-OpenHands-Observability-Metadata")
     ] = None,
+    x_openhands_observability_parent_span_context: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
+    ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> OpenAIChatCompletionResponse | StreamingResponse:
     result = await run_chat_completion(
@@ -145,10 +160,12 @@ async def create_chat_completion(
         config=_get_config(request),
         conversation_service=conversation_service,
         reusable_conversation_id=x_openhands_server_conversation_id,
+        registry=_get_docker_registry(request),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
             metadata=x_openhands_observability_metadata,
+            parent_span_context=x_openhands_observability_parent_span_context,
         ),
     )
     conversation_id = str(result.conversation_id)
@@ -166,4 +183,43 @@ async def create_chat_completion(
         )
 
     response.headers["X-OpenHands-ServerConversation-ID"] = conversation_id
+    return result.response
+
+
+@openai_router.post(
+    "/v1/responses",
+    response_model=OpenAIResponse,
+    response_model_exclude_none=True,
+)
+async def create_response(
+    body: OpenAIResponseRequest,
+    request: Request,
+    response: Response,
+    x_openhands_observability_span_name: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Span-Name")
+    ] = None,
+    x_openhands_observability_tags: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Tags")
+    ] = None,
+    x_openhands_observability_metadata: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Metadata")
+    ] = None,
+    x_openhands_observability_parent_span_context: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
+    ] = None,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> OpenAIResponse:
+    result = await run_response(
+        request=body,
+        config=_get_config(request),
+        conversation_service=conversation_service,
+        registry=_get_docker_registry(request),
+        observability_overrides=_parse_observability_overrides(
+            span_name=x_openhands_observability_span_name,
+            tags=x_openhands_observability_tags,
+            metadata=x_openhands_observability_metadata,
+            parent_span_context=x_openhands_observability_parent_span_context,
+        ),
+    )
+    response.headers["X-OpenHands-ServerConversation-ID"] = str(result.conversation_id)
     return result.response

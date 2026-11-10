@@ -15,6 +15,7 @@ from filelock import FileLock, Timeout
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import validate_agent_profile
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
         OpenHandsAgentProfile,
     )
 
-_DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "agent-profiles"
+_DEFAULT_PROFILE_DIR: Final[Path] = get_user_persistence_dir() / "agent-profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # Profile names: 1-64 chars, must start with alphanumeric, then alphanumerics
@@ -37,6 +38,15 @@ PROFILE_NAME_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 PROFILE_NAME_REGEX: Final[re.Pattern[str]] = re.compile(PROFILE_NAME_PATTERN)
 
 logger = get_logger(__name__)
+
+
+def canonical_profile_name(name: str) -> str:
+    """Return the store key for ``name``: a trailing ``.json`` is dropped.
+
+    The file store keys a profile by its file stem, so ``x.json`` and ``x``
+    name the same profile.
+    """
+    return name.removesuffix(".json")
 
 
 class ProfileLimitExceeded(Exception):
@@ -106,7 +116,7 @@ class AgentProfileStore:
         Raises:
             ValueError: If ``name`` does not match ``PROFILE_NAME_PATTERN``.
         """
-        clean_name = name.removesuffix(".json")
+        clean_name = canonical_profile_name(name)
         if not PROFILE_NAME_REGEX.match(clean_name):
             raise ValueError(
                 f"Invalid profile name: {name!r}. "
@@ -152,6 +162,9 @@ class AgentProfileStore:
         """
         profile_path = self._get_profile_path(profile.name)
         payload = profile.model_dump(mode="json")
+        # Keep the stored name equal to the file stem (as ``rename`` does), so
+        # ``x.json`` and ``x`` are one profile with one name.
+        payload["name"] = profile_path.stem
 
         with self._acquire_lock():
             if max_profiles is not None and not profile_path.exists():
@@ -247,14 +260,21 @@ class AgentProfileStore:
                 raise FileNotFoundError(f"Profile `{old_name}` not found")
             if old_path == new_path:
                 return
-            if new_path.exists():
+            # On a case-insensitive filesystem a case-only rename finds the
+            # source file itself under the new name.
+            case_only = new_path.exists() and new_path.samefile(old_path)
+            if new_path.exists() and not case_only:
                 raise FileExistsError(f"Profile `{new_name}` already exists")
 
             data = json.loads(old_path.read_text())
             if isinstance(data, dict):
                 data["name"] = new_stem
             self._atomic_write(new_path, json.dumps(data, indent=2))
-            old_path.unlink()
+            if case_only:
+                # Replacing the file kept the old spelling; renaming fixes it.
+                old_path.rename(new_path)
+            else:
+                old_path.unlink()
             logger.info(
                 f"[AgentProfile Store] Renamed profile `{old_name}` to `{new_name}`"
             )
@@ -275,7 +295,7 @@ class AgentProfileStore:
                 return
             try:
                 data = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 return
             if not isinstance(data, dict):
                 return
@@ -304,7 +324,7 @@ class AgentProfileStore:
                     continue
                 try:
                     data = json.loads(path.read_text())
-                except (OSError, json.JSONDecodeError) as e:
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                     logger.warning(
                         f"[AgentProfile Store] Skipping corrupted profile {name!r}: {e}"
                     )
@@ -419,6 +439,9 @@ def save_profile_preserving_identity(
     Raises:
         ProfileLimitExceeded: If ``max_profiles`` would be exceeded.
     """
+    name = canonical_profile_name(profile.name)
+    if name != profile.name:
+        profile = profile.model_copy(update={"name": name})
     with store.lock():
         existing_id, existing_rev = _existing_identity(store, profile.name)
         if existing_id is not None:

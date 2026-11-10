@@ -1,0 +1,75 @@
+---
+# SandboxTemplate that runs the OpenHands agent server.
+#
+# The agent server image is a standalone server that listens on a port and speaks
+# the same HTTP API the DockerWorkspace / APIRemoteWorkspace connect to, so it drops
+# straight into an agent-sandbox pod. A readiness probe on /health makes the Sandbox
+# reach its Ready condition only once the agent server is actually accepting requests.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+    name: openhands-agent-server
+    namespace: default
+spec:
+    # The controller-managed NetworkPolicy (the default) allows public egress but
+    # blocks private ranges, so a sandbox cannot reach an in-cluster or on-host LLM.
+    # Rather than switching the template to `networkPolicyManagement: Unmanaged`,
+    # keep it Managed and allow just what the agent needs, e.g.:
+    #
+    # networkPolicy:
+    #     egress:
+    #         # DNS
+    #         - to:
+    #               - namespaceSelector:
+    #                     matchLabels: {kubernetes.io/metadata.name: kube-system}
+    #           ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    #         # In-cluster LLM (adjust selector/namespace/port to your deployment)
+    #         - to:
+    #               - podSelector:
+    #                     matchLabels: {app: ollama}
+    #           ports: [{protocol: TCP, port: 11434}]
+    #         # Hosted LLM APIs over HTTPS
+    #         - ports: [{protocol: TCP, port: 443}]
+    #
+    # A persistent volume mounted at /workspace so the workspace (and anything the
+    # agent writes) survives a suspend/resume cycle.
+    volumeClaimTemplates:
+        - metadata:
+              name: workspace-volume
+          spec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                  requests:
+                      storage: 5Gi
+    podTemplate:
+        spec:
+            # runtimeClassName: gvisor   # uncomment for strong isolation of untrusted code
+            securityContext:
+                # The agent-server image runs as uid/gid 10001; make the PVC group-writable.
+                runAsUser: 10001
+                runAsGroup: 10001
+                fsGroup: 10001
+            containers:
+                - name: agent-server
+                  image: ghcr.io/openhands/agent-server:1.42.1-python
+                  args: [--host, 0.0.0.0, --port, '8000']
+                  workingDir: /workspace
+                  ports:
+                      - containerPort: 8000
+                  readinessProbe:
+                      httpGet:
+                          path: /health
+                          port: 8000
+                      initialDelaySeconds: 3
+                      periodSeconds: 3
+                      failureThreshold: 40
+                  resources:
+                      requests:
+                          cpu: 250m
+                          memory: 512Mi
+                      limits:
+                          cpu: '2'
+                          memory: 2Gi
+                  volumeMounts:
+                      - name: workspace-volume
+                        mountPath: /workspace

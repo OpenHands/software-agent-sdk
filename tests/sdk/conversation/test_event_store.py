@@ -1,19 +1,26 @@
 """Comprehensive edge case tests for EventLog class."""
 
-import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import (
+    LOCK_FILE_NAME,
+    UNREADABLE_EVENT_FILE_CODE,
+    EventLog,
+)
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
     EVENT_NAME_RE,
     EVENTS_DIR,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.utils.path import posix_path_name
 
 
 def create_test_event(event_id: str, content: str = "Test content") -> MessageEvent:
@@ -40,6 +47,45 @@ def test_event_log_empty_initialization():
 
     with pytest.raises(IndexError):
         log[-1]
+
+
+@pytest.mark.parametrize("backend", ["memory", "local"])
+@pytest.mark.parametrize(
+    "stray_name",
+    ["event-backup.json", "event-00001-not-an-id.json", "event-backup.json.bak"],
+)
+def test_stray_event_named_file_does_not_corrupt_a_legacy_log(
+    backend: str, stray_name: str, tmp_path: Path
+):
+    fs = InMemoryFileStore() if backend == "memory" else LocalFileStore(str(tmp_path))
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    # Legacy logs have no length marker and must count their event files.
+    for path in fs.list(EVENTS_DIR):
+        if posix_path_name(path).startswith(".eventlog-len-"):
+            fs.delete(path)
+    stray_path = f"{EVENTS_DIR}/{stray_name}"
+    fs.write(stray_path, "{}")
+
+    reopened = EventLog(fs)
+    assert reopened.append(create_test_event("bbbbbbbb-0000", "Second")) == 1
+
+    assert len(reopened) == 2
+    expected_ids = ["aaaaaaaa-0000", "bbbbbbbb-0000"]
+    assert [event.id for event in reopened] == expected_ids
+    assert [event.id for event in EventLog(fs)] == expected_ids
+    assert fs.read(stray_path) == "{}"
+
+
+def test_event_log_append_returns_assigned_index():
+    """``append`` returns the sequence number it assigned, so callers don't
+    need a separate ``get_index`` lookup right after appending."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    assert log.append(create_test_event("event-1")) == 0
+    assert log.append(create_test_event("event-2")) == 1
+    assert log.append(create_test_event("event-3")) == 2
 
 
 def test_event_log_id_validation_duplicate_id():
@@ -164,10 +210,13 @@ def test_event_log_missing_event_file():
     # Cached access still works — the event was cached on append
     assert log[0].id == "test-event"
 
-    # Clear cache to test the disk-access path
+    # On the disk-access path the lost file reads as a stand-in that keeps
+    # the event's id and place.
     log._event_cache.clear()
-    with pytest.raises(FileNotFoundError):
-        log[0]
+    stand_in = log[0]
+    assert isinstance(stand_in, ConversationErrorEvent)
+    assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+    assert stand_in.id == "test-event"
 
 
 def test_event_log_corrupted_json_in_file():
@@ -215,39 +264,24 @@ def test_event_log_clear_functionality():
 
 
 def test_event_log_index_gaps_detection():
-    """Test detection and handling of index gaps."""
+    """A gap must not discard every later event: survivors are reindexed (#6174)."""
     fs = InMemoryFileStore()
-
-    # Create files with gaps (missing event-00001)
-    event0 = {
-        "id": "event-0",
-        "llm_message": {
-            "role": "user",
-            "content": [{"type": "text", "text": "Event 0"}],
-        },
-        "source": "user",
-        "kind": "openhands.sdk.event.llm_convertible.MessageEvent",
-    }
-    fs.write("events/event-00000-event-0.json", json.dumps(event0))
-
-    event2 = {
-        "id": "event-2",
-        "llm_message": {
-            "role": "user",
-            "content": [{"type": "text", "text": "Event 2"}],
-        },
-        "source": "user",
-        "kind": "openhands.sdk.event.llm_convertible.MessageEvent",
-    }
-    fs.write("events/event-00002-event-2.json", json.dumps(event2))
-
-    # Should only load up to the gap
     log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "Event 0"))
+    log.append(create_test_event("bbbbbbbb-0000", "Event 1"))
+    log.append(create_test_event("cccccccc-0000", "Event 2"))
 
-    # The current scanning logic is very strict about gaps
-    # If there's a gap at any index, it stops loading events entirely
-    # This is the current behavior, though it could be improved
-    assert len(log) == 0  # No events loaded due to gap detection
+    # Create a gap (missing event-00001) and rescan from disk.
+    fs.delete(log._path(1, event_id="bbbbbbbb-0000"))
+    reloaded = EventLog(fs)
+
+    # Every surviving event file is indexed, densely renumbered in file order,
+    # so one lost file no longer makes the rest of the log unknown.
+    assert len(reloaded) == 2
+    assert reloaded[0].id == "aaaaaaaa-0000"
+    assert reloaded[1].id == "cccccccc-0000"
+    assert reloaded.get_index("cccccccc-0000") == 1
+    assert reloaded.get_id(1) == "cccccccc-0000"
 
 
 def test_event_log_file_store_exceptions():
@@ -284,10 +318,11 @@ def test_event_log_iteration_with_missing_files():
     # Cached iteration still works — all 3 events were cached on append
     assert [e.id for e in log] == ["event-1", "event-2", "event-3"]
 
-    # Clear cache to test the disk-access path
+    # On the disk-access path the lost file reads as a stand-in.
     log._event_cache.clear()
-    with pytest.raises(FileNotFoundError):
-        list(log)
+    read = list(log)
+    assert [e.id for e in read] == ["event-1", "event-2", "event-3"]
+    assert isinstance(read[1], ConversationErrorEvent)
 
 
 def test_event_log_iteration_backfills_missing_mappings():
@@ -407,14 +442,19 @@ def test_event_log_concurrent_writes_serialized():
         log1 = EventLog(fs)
         log2 = EventLog(fs)
 
-        log1.append(create_test_event("event-1", "First"))
-        log2.append(create_test_event("event-2", "Second"))
+        # Cross-instance discovery requires IDs recognized by EVENT_NAME_RE.
+        log1.append(create_test_event("aaaaaaaa-0000", "First"))
+        log2.append(create_test_event("bbbbbbbb-0000", "Second"))
 
         assert log1._length == 1
         assert log2._length == 2
 
-        files = [f for f in fs.list("events") if not f.endswith(".lock")]
+        # Sidecars (lock file, event-count marker) are dotfiles, not events.
+        files = [f for f in fs.list("events") if not posix_path_name(f).startswith(".")]
         assert len(files) == 2
+        expected_ids = ["aaaaaaaa-0000", "bbbbbbbb-0000"]
+        assert [event.id for event in log2] == expected_ids
+        assert [event.id for event in EventLog(fs)] == expected_ids
 
 
 def test_get_single_item_recovers_from_stale_index():
@@ -544,3 +584,286 @@ def test_event_log_cold_reload_past_100k_events():
     # Appending after reload keeps length accounting consistent.
     log.append(create_test_event("after-reload", "after"))
     assert len(log) == n + 1
+
+
+def test_append_does_not_scan_the_directory_as_the_log_grows():
+    """Append cost must not grow with conversation length (issue #4676).
+
+    The multi-writer sync used to count every file in the events directory on
+    every append, so appending event N cost O(N) directory work while holding
+    the lock. Listing calls are the proxy for that cost.
+    """
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    listings: list[str] = []
+    original_list = fs.list
+
+    def counting_list(path: str) -> list[str]:
+        listings.append(path)
+        return original_list(path)
+
+    fs.list = counting_list  # type: ignore[method-assign]
+
+    for i in range(50):
+        log.append(create_test_event(f"{i:08x}-0000-0000-0000-000000000000"))
+
+    # The first append has no marker to go on and pays for one listing; every
+    # later append is answered by the marker alone.
+    assert len(listings) <= 1, f"append listed the events dir {len(listings)} times"
+    assert len(log) == 50
+
+
+def test_append_still_syncs_when_another_writer_appended():
+    """A second writer's events are still picked up, marker or not."""
+    fs = InMemoryFileStore()
+    log1 = EventLog(fs)
+    log2 = EventLog(fs)
+
+    log1.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+    log1.append(create_test_event("00000000-0000-0000-0000-000000000002"))
+
+    # log2 opened at length 0 and never saw those appends; the marker no longer
+    # names its length, so it falls back to counting and lands after them.
+    log2.append(create_test_event("00000000-0000-0000-0000-000000000003"))
+
+    assert log2._length == 3
+    assert log2.get_index("00000000-0000-0000-0000-000000000003") == 2
+
+
+def test_append_syncs_when_marker_is_missing():
+    """A log written before the marker existed keeps the exact-count path."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+
+    # Simulate a legacy on-disk log: events present, no marker.
+    for path in list(fs.files.keys()):
+        if posix_path_name(path).startswith("."):
+            del fs.files[path]
+
+    reopened = EventLog(fs)
+    reopened.append(create_test_event("00000000-0000-0000-0000-000000000002"))
+    assert len(reopened) == 2
+
+    # And the marker is re-established for the appends that follow.
+    assert fs.exists(reopened._marker_path(2))
+
+
+def test_scan_does_not_warn_about_sidecar_files(caplog):
+    """The lock file and count marker are ours; they are not malformed events."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+    fs.write(f"{EVENTS_DIR}/{LOCK_FILE_NAME}", "")
+
+    with caplog.at_level("WARNING"):
+        EventLog(fs)
+
+    assert "Unrecognized event file name" not in caplog.text
+
+
+def _child(event_id: str, parent_id: str) -> MessageEvent:
+    return create_test_event(event_id, event_id).model_copy(
+        update={"parent_id": parent_id}
+    )
+
+
+def _log_with_lost_file(lost: int, n: int = 3) -> InMemoryFileStore:
+    """Append ``n`` events (aaaaaaaa-0000, bbbbbbbb-0000, ...), then lose one file."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    for c in "abcdefgh"[:n]:
+        log.append(create_test_event(f"{c * 8}-0000", c))
+    fs.delete(log._path(lost))
+    return fs
+
+
+def test_log_survives_missing_middle_file():
+    """Deleting one event file must not make the rest of the log unknown (#6174)."""
+    fs = _log_with_lost_file(1)
+
+    reloaded = EventLog(fs)
+    assert [e.id for e in reloaded] == ["aaaaaaaa-0000", "cccccccc-0000"]
+    assert reloaded.get_index("cccccccc-0000") == 1
+    reloaded._event_cache.clear()
+    assert reloaded[1].id == "cccccccc-0000"  # read back from its on-disk file
+
+    # The next append takes a fresh on-disk index: sharing the survivor's would
+    # let an id that sorts first swap the two on the next scan.
+    assert reloaded.append(create_test_event("11111111-0000", "new")) == 2
+    names = sorted(posix_path_name(p) for p in fs.list(EVENTS_DIR))
+    assert "event-00003-11111111-0000.json" in names
+    assert [e.id for e in EventLog(fs)] == [
+        "aaaaaaaa-0000",
+        "cccccccc-0000",
+        "11111111-0000",
+    ]
+
+
+def test_seq_is_the_on_disk_index_and_survives_a_reload():
+    """Behind a lost file the dense index shifts, the seq does not."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    for c in "abcd":
+        log.append(create_test_event(f"{c * 8}-0000", c))
+    assert [log.get_seq(i) for i in range(4)] == [0, 1, 2, 3]
+    assert log._disk_idx == {}  # an intact log records no overrides
+
+    fs.delete(log._path(1))
+    reloaded = EventLog(fs)
+    assert [reloaded.get_seq(i) for i in range(3)] == [0, 2, 3]
+    assert reloaded.append(create_test_event("eeeeeeee-0000", "e")) == 3
+    assert reloaded.get_seq(3) == 4  # a seq a client has seen is never reused
+    assert reloaded.index_after_seq(-1) == 0
+    assert reloaded.index_after_seq(1) == 1  # seq 1 is lost: resume at seq 2
+    assert reloaded.index_after_seq(4) == 4
+
+
+def test_duplicate_id_file_keeps_its_index():
+    """A second file with a known id stays an entry, so the scanned length
+    matches the file count and an unmarked append stays consistent."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "a"))
+    log.append(create_test_event("bbbbbbbb-0000", "b"))
+    fs.write(f"{EVENTS_DIR}/event-00002-aaaaaaaa-0000.json", fs.read(log._path(0)))
+    for path in list(fs.files.keys()):
+        if posix_path_name(path).startswith("."):
+            del fs.files[path]
+
+    reloaded = EventLog(fs)
+    assert reloaded.append(create_test_event("dddddddd-0000", "d")) == 3
+    assert [e.id for e in reloaded] == [
+        "aaaaaaaa-0000",
+        "bbbbbbbb-0000",
+        "aaaaaaaa-0000",
+        "dddddddd-0000",
+    ]
+    assert reloaded.get_index("aaaaaaaa-0000") == 0
+
+
+def test_sync_does_not_map_a_lost_id_onto_another_event():
+    """A writer that still holds a lost event must not restore its id onto the
+    index a rescan gave to a different event (a false cycle)."""
+    fs = InMemoryFileStore()
+    a = EventLog(fs)
+    a.append(create_test_event("aaaaaaaa-0000", "a"))
+    a.append(_child("bbbbbbbb-0000", "aaaaaaaa-0000"))
+    a.append(_child("cccccccc-0000", "bbbbbbbb-0000"))
+    fs.delete(a._path(1))  # lost while writer a still runs
+
+    b = EventLog(fs)  # a second writer loads the damaged log
+    b.append(_child("dddddddd-0000", "cccccccc-0000"))
+    b.append(_child("eeeeeeee-0000", "dddddddd-0000"))
+    a.append(_child("ffffffff-0000", "eeeeeeee-0000"))  # a syncs from disk
+
+    assert "bbbbbbbb-0000" not in a
+    assert [e.id[:1] for e in a.path_to_root("ffffffff-0000")] == list("acdef")
+
+
+@pytest.mark.parametrize("lost", [0, 1], ids=["head", "middle"])
+def test_lost_event_file_is_reported_once(caplog, lost):
+    fs = _log_with_lost_file(lost)
+
+    with caplog.at_level("WARNING"):
+        log = EventLog(fs)
+        log._length = log._scan_and_build_index()  # a rescan, as a sync does
+
+    messages = [r.getMessage() for r in caplog.records]
+    warnings = [m for m in messages if "is missing 1 event file" in m]
+    assert len(warnings) == 1
+    assert f"(on-disk index {lost})" in warnings[0]
+
+
+def test_far_stray_index_is_summarized_not_enumerated(caplog):
+    """One file with a huge index must not cost memory proportional to it."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "a"))
+    stray = fs.read(log._path(0)).replace("aaaaaaaa-0000", "bbbbbbbb-0000")
+    fs.write(f"{EVENTS_DIR}/event-1000000000-bbbbbbbb-0000.json", stray)
+
+    with caplog.at_level("WARNING"):
+        reloaded = EventLog(fs)
+
+    assert reloaded.get_seq(1) == 1_000_000_000
+    assert "missing 999999999 event file(s) (on-disk index 1-999999999)" in (
+        caplog.text
+    )
+
+
+def test_path_to_root_bridges_a_missing_ancestor(caplog):
+    """A lost parent is bridged to the preceding event, so the branch keeps its
+    root (in a conversation, the system prompt) instead of ending at the hole."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "a"))
+    log.append(_child("bbbbbbbb-0000", "aaaaaaaa-0000"))
+    log.append(_child("cccccccc-0000", "bbbbbbbb-0000"))
+    fs.delete(log._path(1))
+
+    reloaded = EventLog(fs)
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            branch = reloaded.path_to_root("cccccccc-0000")
+            assert [e.id for e in branch] == ["aaaaaaaa-0000", "cccccccc-0000"]
+
+    assert caplog.text.count("bbbbbbbb-0000") == 1  # once, not on every walk
+    # A fully unknown leaf yields an empty branch, not a KeyError
+    assert reloaded.path_to_root("dddddddd-0000") == []
+
+
+def test_path_to_root_legacy_chain_spans_a_gap():
+    """Legacy events without parent_id chain to their dense neighbour, so the
+    branch spans the hole left by a lost file."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    log.append(create_test_event("bbbbbbbb-0000", "Second"))
+    log.append(create_test_event("cccccccc-0000", "Third"))
+
+    fs.delete(log._path(1, event_id="bbbbbbbb-0000"))
+
+    reloaded = EventLog(fs)
+    # parent_id=None falls back to the previous indexed event: aaaaaaaa -> cccccc
+    assert [e.id for e in reloaded.path_to_root("cccccccc-0000")] == [
+        "aaaaaaaa-0000",
+        "cccccccc-0000",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("damage", "reason"), [("{not json", "unreadable"), ("", "empty")]
+)
+def test_damaged_event_file_reads_as_stand_in(caplog, damage, reason):
+    """An empty or corrupt event file (a crash, a bad copy) reads as a stand-in
+    error event with the same id and place; the other events stay readable,
+    appends keep working, and the damage is reported once."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    for c in "abc":
+        log.append(create_test_event(f"{c * 8}-0000", c))
+    fs.write(log._path(1), damage)
+
+    reloaded = EventLog(fs)
+    with caplog.at_level("WARNING"):
+        events = list(reloaded)
+        reloaded._event_cache.clear()
+        assert reloaded[1].id == "bbbbbbbb-0000"
+    assert [e.id for e in events] == ["aaaaaaaa-0000", "bbbbbbbb-0000", "cccccccc-0000"]
+    stand_in = events[1]
+    assert isinstance(stand_in, ConversationErrorEvent)
+    assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+    assert reason in stand_in.detail
+    assert stand_in.timestamp == events[0].timestamp
+    assert caplog.text.count("using a stand-in") == 1
+    # The tree bridges over it: the leaf's branch still reaches the root.
+    assert [e.id for e in reloaded.path_to_root("cccccccc-0000")] == [
+        "aaaaaaaa-0000",
+        "bbbbbbbb-0000",
+        "cccccccc-0000",
+    ]
+
+    assert reloaded.append(create_test_event("dddddddd-0000", "d")) == 3
+    assert fs.read(reloaded._path(1)) == damage  # the file is left as it was

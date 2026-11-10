@@ -24,6 +24,7 @@ from openai.types.responses.response_function_tool_call import (
 )
 from pydantic import ConfigDict, model_validator
 
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import (
@@ -43,7 +44,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 def _make_subscription_llm() -> LLM:
     """Create a minimal subscription-mode LLM for testing."""
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.4",
         base_url="https://chatgpt.com/backend-api/codex",
         reasoning_effort="high",
     )
@@ -73,7 +74,7 @@ def _make_responses_api_response(text: str = "ok") -> ResponsesAPIResponse:
                 ],
             )
         ],
-        model="gpt-5.2-codex",
+        model="gpt-5.4",
         object="response",
     )
 
@@ -110,15 +111,51 @@ def test_subscription_skips_unsupported_param(param: str):
 )
 def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
     """Non-subscription GPT-5 models should still send these params."""
-    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
     llm.enable_encrypted_reasoning = True
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=None, store=None)
     assert opts.get(param) == expected_value
 
 
+def test_subscription_sends_codex_session_headers():
+    """The Codex backend needs these to keep a conversation on one prompt cache."""
+    llm = _make_subscription_llm()
+    context = LLMCallContext().for_conversation("conv-abc")
+
+    opts = select_responses_options(
+        llm, {}, include=None, store=None, call_context=context
+    )
+
+    assert opts["prompt_cache_key"] == "conv-abc"
+    assert opts["extra_headers"]["session-id"] == "conv-abc"
+    assert opts["extra_headers"]["thread-id"] == "conv-abc"
+
+
+def test_subscription_without_conversation_sends_no_session_headers():
+    opts = select_responses_options(
+        _make_subscription_llm(), {}, include=None, store=None
+    )
+
+    assert "session-id" not in opts.get("extra_headers", {})
+    assert "thread-id" not in opts.get("extra_headers", {})
+
+
+def test_non_subscription_does_not_send_codex_session_headers():
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
+    context = LLMCallContext().for_conversation("conv-abc")
+
+    opts = select_responses_options(
+        llm, {}, include=None, store=None, call_context=context
+    )
+
+    assert opts["extra_headers"]["x-litellm-session-id"] == "conv-abc"
+    assert "session-id" not in opts["extra_headers"]
+    assert "thread-id" not in opts["extra_headers"]
+
+
 def test_non_subscription_does_not_invent_temperature():
-    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
 
     opts = select_responses_options(llm, {}, include=None, store=None)
 
@@ -134,7 +171,7 @@ def test_non_subscription_does_not_invent_temperature():
 )
 def test_non_subscription_keeps_structured_param(param: str, check: Any):
     """Non-subscription LLMs should send include and reasoning normally."""
-    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
     llm.enable_encrypted_reasoning = True
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=["text.output_text"], store=None)
@@ -341,6 +378,67 @@ def test_mixed_typed_and_generic_items():
     assert {tc.name for tc in msg.tool_calls} == {"think", "terminal"}
 
 
+@pytest.mark.parametrize("as_objects", [False, True])
+def test_response_output_preserves_replay_metadata(as_objects):
+    def item(**fields):
+        return SimpleNamespace(**fields) if as_objects else fields
+
+    message = Message.from_llm_responses_output(
+        [
+            item(type="unknown"),
+            item(type="message", content=[item(type="output_text", text="Answer")]),
+            item(
+                type="function_call",
+                id="fc_item",
+                call_id="call_tool",
+                name="terminal",
+                arguments="{}",
+            ),
+            item(
+                type="reasoning",
+                id="rs_item",
+                summary=[item(text="summary")],
+                content=[item(text="reasoning")],
+                encrypted_content="encrypted",
+                status="completed",
+            ),
+        ]
+    )
+    assert message.tool_calls
+    assert message.tool_calls[0].id == "call_tool"
+    assert message.tool_calls[0].responses_item_id == "fc_item"
+    assert message.responses_reasoning_item
+    assert message.responses_reasoning_item.model_dump() == {
+        "id": "rs_item",
+        "summary": ["summary"],
+        "content": ["reasoning"],
+        "encrypted_content": "encrypted",
+        "status": "completed",
+    }
+    restored = Message.model_validate_json(message.model_dump_json())
+    assert restored.to_responses_dict(vision_enabled=False) == (
+        message.to_responses_dict(vision_enabled=False)
+    )
+
+
+def test_response_output_missing_optional_fields():
+    message = Message.from_llm_responses_output(
+        [
+            object(),
+            {"type": "message"},
+            {"type": "function_call", "id": "fc_fallback"},
+            {"type": "reasoning", "summary": [{}]},
+        ]
+    )
+    assert message.content == []
+    assert message.tool_calls
+    assert message.tool_calls[0].id == "fc_fallback"
+    assert message.tool_calls[0].arguments == ""
+    assert message.responses_reasoning_item
+    assert message.responses_reasoning_item.summary == [""]
+    assert message.responses_reasoning_item.content is None
+
+
 # ---------------------------------------------------------------------------
 # Bug 4: Reasoning item IDs must be stripped in subscription mode
 # ---------------------------------------------------------------------------
@@ -395,7 +493,7 @@ def test_format_messages_reasoning_item_handling(
 ):
     """Subscription mode must strip reasoning item IDs (store=false means they
     can't be resolved).  Non-subscription mode must preserve them."""
-    llm = LLM(model="openai/gpt-5.2-codex")
+    llm = LLM(model="openai/gpt-5.4")
     if is_subscription:
         llm.is_subscription = True
 

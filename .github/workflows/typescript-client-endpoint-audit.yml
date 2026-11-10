@@ -1,0 +1,94 @@
+---
+name: TypeScript client endpoint audit
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+# The audit only reads the checked-out tree and writes to the job summary.
+permissions:
+    contents: read
+
+defaults:
+    run:
+        working-directory: clients/typescript
+
+jobs:
+  # Report divergences between handwritten Agent Server calls and the pinned
+  # server's OpenAPI contract. See scripts/endpoint-audit.mjs.
+    endpoint-audit:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v7.0.1
+
+            - name: Use Node.js 24
+              uses: actions/setup-node@v7
+              with:
+                  node-version: '24'
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Test endpoint-audit tooling
+              run: npm run test:endpoint-audit-tooling
+
+            # A release PR pins a version whose openapi.json is published only after merge.
+            - name: Resolve pinned Agent Server
+              id: pinned
+              working-directory: .
+              run: python3 .github/scripts/resolve_typescript_client_agent_server.py
+
+            - name: Install uv
+              if: steps.pinned.outputs.use_source_contract == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Export unreleased Agent Server contract from source
+              if: steps.pinned.outputs.use_source_contract == 'true'
+              working-directory: .
+              run: |
+                  uv sync --frozen --package openhands-agent-server
+                  OPENHANDS_SUPPRESS_BANNER=1 uv run python .github/scripts/export_agent_server_openapi.py \
+                    --output "$RUNNER_TEMP/openapi.json"
+                  echo "AGENT_SERVER_OPENAPI_PATH=$RUNNER_TEMP/openapi.json" >> "$GITHUB_ENV"
+
+            - name: Endpoint audit (report-only — client vs pinned release contract)
+              run: npm run audit:endpoints
+
+            - name: Upload audit report
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: endpoint-audit
+                  path: clients/typescript/.audit/
+          # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
+                  include-hidden-files: true
+
+      # The report's only destination. A job summary needs no token, so it
+      # renders identically for fork and same-repo PRs.
+            - name: Write audit report to the job summary
+              if: always()
+              uses: actions/github-script@v9
+              with:
+                  script: |
+                      const fs = require('node:fs');
+                      const reportPath =
+                        'clients/typescript/.audit/endpoint-audit.json';
+                      if (!fs.existsSync(reportPath)) {
+                        core.warning(`No audit report at ${reportPath}.`);
+                        return;
+                      }
+                      const { renderEndpointAuditReport } = require(
+                        './.github/scripts/render-typescript-endpoint-audit-report.cjs'
+                      );
+                      const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                      await core.summary
+                        .addRaw(renderEndpointAuditReport(report))
+                        .write();
