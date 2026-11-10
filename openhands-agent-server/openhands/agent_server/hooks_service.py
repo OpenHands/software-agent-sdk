@@ -8,6 +8,7 @@ Hook Sources:
 - User hooks: ~/.openhands/hooks.json (or $OH_PERSISTENCE_DIR/hooks.json)
 """
 
+import json
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal
@@ -108,11 +109,16 @@ def _load_hooks_file_with_error(
     source: HookSource, hooks_path: Path
 ) -> tuple[HookConfig | None, HooksSourceError | None]:
     try:
-        if not hooks_path.exists():
+        try:
+            hooks_file = hooks_path.open()
+        except FileNotFoundError:
+            if hooks_path.is_symlink():
+                raise
             logger.debug(f"No hooks.json found at {hooks_path}")
             return None, None
 
-        hook_config = HookConfig.load(path=hooks_path)
+        with hooks_file:
+            hook_config = HookConfig.model_validate(json.load(hooks_file))
 
         if hook_config.is_empty():
             logger.debug(f"hooks.json at {hooks_path} is empty")
