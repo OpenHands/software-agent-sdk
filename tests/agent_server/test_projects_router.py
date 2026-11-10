@@ -1928,8 +1928,8 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
 @pytest.mark.asyncio
 async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     """Review S6/N2: a full-set PATCH built from tags read a moment ago cannot
-    undo a board update, set board state or change membership; resolving by
-    writing ``resolved`` still works."""
+    undo a board update, set board state or change membership. Resolving goes
+    through the resolve and reopen routes only."""
     member = await _start(
         service,
         tmp_path,
@@ -1950,24 +1950,18 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
         "env": "prod",
     }
 
-    # Writing resolved=user resolves; "auto" is the server's to set.
+    # Writing resolved does nothing, either way.
     current = await _tags(service, member)
-    await service.update_conversation_from_client(
-        member, UpdateConversationRequest(tags={**current, "resolved": "auto"})
-    )
-    assert "resolved" not in await _tags(service, member)
-    await service.update_conversation_from_client(
-        member, UpdateConversationRequest(tags={**current, "resolved": "user"})
-    )
-    assert (await _tags(service, member))["resolved"] == "user"
-
-    # Dropping it reopens, and takes an auto-resolve note along.
-    await service.set_conversation_tag(member, "resolvenote", "done")
+    for value in ("user", "auto"):
+        await service.update_conversation_from_client(
+            member, UpdateConversationRequest(tags={**current, "resolved": value})
+        )
+        assert "resolved" not in await _tags(service, member)
+    await service.set_resolved(member, True)
     await service.update_conversation_from_client(
         member, UpdateConversationRequest(tags=current)
     )
-    tags = await _tags(service, member)
-    assert "resolved" not in tags and "resolvenote" not in tags
+    assert (await _tags(service, member))["resolved"] == "user"
 
 
 @pytest.mark.parametrize(

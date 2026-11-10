@@ -68,7 +68,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.message-rest`: `POST /api/conversations/{id}/events` with `refuse_pending_confirmation` saves the message, starts a run and answers `run: started` with the previous status. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
 - `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`), and an `asked` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
-- `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask` or `resolvenote`.
+- `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask`, `resolved` or `resolvenote`.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
 - `F36.artifacts-tool`: a member with `write_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused. With `list_artifacts` and `read_artifact` it sees the project's files and reads one: small UTF-8 text inline, anything else copied into its workspace (`.agent_tmp/artifacts/<name>` unless it names a path inside the workspace).
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
@@ -118,9 +118,9 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   The board shows the note as `resolve_note`.
   Clients resolve with `POST /api/projects/{id}/conversations/{cid}/resolve`
   and reopen with `.../reopen` (both 204, idempotent, and both clear
-  `resolvenote`); a new user message removes both tags. The conversation
-  `PATCH` still accepts `resolved` set to `user` or removed, with the same
-  effect, for older clients.
+  `resolvenote`); a new user message removes both tags. These routes are
+  the only way to resolve: the conversation `PATCH` leaves `resolved` as it
+  is.
 - REST: `GET /api/projects/{project_id}/artifacts` lists
   `{name, size, source, conversation_id, created_at, updated_at}` newest
   first; `POST` there uploads (multipart `file`, optional `name` form field);
@@ -373,8 +373,9 @@ Preconditions:
   Requires: `F36.turn`
   Needs: `llm`
   ```sh
-  control-agent-server api PATCH "/api/conversations/$W2" --json "{\"tags\": {\"project\": \"qa-f36-elsewhere\", \"turn\": \"asked\"}}" --expect 200
-  control-agent-server api GET "/api/conversations/$W2" --check tags.project eq "$P2" --check tags.turn eq answered
+  control-agent-server api PATCH "/api/conversations/$W2" --json "{\"tags\": {\"project\": \"qa-f36-elsewhere\", \"turn\": \"asked\", \"resolved\": \"user\"}}" --expect 200
+  control-agent-server api GET "/api/conversations/$W2" --check tags.project eq "$P2" --check tags.turn eq answered \
+    --check tags.resolved ne user
   control-agent-server api POST "/api/projects/$P2/conversations/$W2/resolve" --expect 204
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolved": "user"' \
     --check conversations contains '"attention": "resolved"' --save F36.resolved/conversations
@@ -620,7 +621,7 @@ Preconditions:
 ## Gotchas
 
 - Membership is the `project` tag, but a client's `PATCH /api/conversations/{id}`
-  cannot change it (nor `turn`, `ask`, `resolvenote`): a `tags` body that
+  cannot change it (nor `turn`, `ask`, `resolved`, `resolvenote`): a `tags` body that
   omits `project` keeps the conversation in its project. Use the project
   routes for membership and resolving.
 - A child copies its parent's tags when it is started. Tagging a parent later

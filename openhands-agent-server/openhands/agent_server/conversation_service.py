@@ -651,21 +651,13 @@ def _client_tags(current: Mapping[str, str], requested: Mapping[str, str]) -> di
 
     The reserved keys keep their current values, so a client that read the
     tags a moment ago cannot undo a board update made since, nor set board
-    state or membership. ``resolved`` is the one exception, since UIs resolve
-    by writing it: setting it to ``user`` resolves, dropping it reopens, and
-    either clears ``resolvenote``. Any other value is ignored.
+    state or membership. Resolving goes through the project's resolve and
+    reopen routes.
     """
     tags = {k: v for k, v in requested.items() if k not in RESERVED_TAG_KEYS}
     for key in RESERVED_TAG_KEYS:
         if key in current:
             tags[key] = current[key]
-    held = current.get(RESOLVED_TAG_KEY)
-    asked = requested.get(RESOLVED_TAG_KEY)
-    if asked != held and asked in ("user", None):
-        tags.pop(RESOLVE_NOTE_TAG_KEY, None)
-        tags.pop(RESOLVED_TAG_KEY, None)
-        if asked is not None:
-            tags[RESOLVED_TAG_KEY] = asked
     return tags
 
 
