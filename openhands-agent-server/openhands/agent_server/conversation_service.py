@@ -67,6 +67,7 @@ from openhands.agent_server.project_prompts import (
     worker_guidance,
 )
 from openhands.agent_server.project_wake import (
+    conversation_context,
     latest_turn_start,
     notify_coordinator,
     notify_coordinator_of_stop,
@@ -97,7 +98,6 @@ from openhands.sdk.conversation.request import (
     ConversationConfig,
     ConversationWorktreeOptions,
 )
-from openhands.sdk.conversation.resolution import EARLIER_REQUESTS_KEPT
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -634,42 +634,6 @@ async def _logged_turn_sender(event_service: EventService) -> str | None:
     """
     start = await latest_turn_start(event_service)
     return start.sender if start is not None else None
-
-
-async def _conversation_context(
-    event_service: EventService,
-) -> tuple[str | None, list[str]]:
-    """The conversation's first message and the requests between it and the
-    current turn, oldest first, for the resolution judge."""
-    first = await event_service.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP,
-        limit=_TURN_LOOKBACK,
-    )
-    task_event = next((e for e in first.items if starts_turn(e)), None)
-    recent = await event_service.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP_DESC,
-        limit=_TURN_LOOKBACK,
-    )
-    # Newest first: the current turn's message, then the ones before it.
-    turns = [e for e in recent.items if starts_turn(e)][1:]
-    earlier = [
-        text
-        for e in reversed(turns[:EARLIER_REQUESTS_KEPT])
-        if isinstance(e, MessageEvent)
-        and task_event is not None
-        and e.id != task_event.id
-        and (text := extract_message_text(e))
-    ]
-    task = (
-        extract_message_text(task_event)
-        if isinstance(task_event, MessageEvent)
-        else None
-    )
-    return task, earlier
 
 
 def _active_agent_profile_id() -> UUID | None:
@@ -3060,7 +3024,7 @@ class ConversationService:
                     ),
                     judge=make_resolution_judge(
                         functools.partial(_agent_llm, event_service),
-                        functools.partial(_conversation_context, event_service),
+                        functools.partial(conversation_context, event_service),
                     ),
                 )
             )

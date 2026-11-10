@@ -46,6 +46,7 @@ from openhands.agent_server.project_prompts import (
     update_text,
 )
 from openhands.sdk import Message, TextContent
+from openhands.sdk.conversation.resolution import EARLIER_REQUESTS_KEPT
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
@@ -353,6 +354,42 @@ async def latest_turn_start(event_service: "EventService") -> MessageEvent | Non
     )
     start = next((e for e in page.items if starts_turn(e)), None)
     return start if isinstance(start, MessageEvent) else None
+
+
+async def conversation_context(
+    event_service: "EventService",
+) -> tuple[str | None, list[str]]:
+    """The conversation's first message and the requests between it and the
+    current turn, oldest first, for the resolution judge."""
+    first = await event_service.search_events(
+        kind="MessageEvent",
+        source="user",
+        sort_order=EventSortOrder.TIMESTAMP,
+        limit=_TURN_LOOKBACK,
+    )
+    task_event = next((e for e in first.items if starts_turn(e)), None)
+    recent = await event_service.search_events(
+        kind="MessageEvent",
+        source="user",
+        sort_order=EventSortOrder.TIMESTAMP_DESC,
+        limit=_TURN_LOOKBACK,
+    )
+    # Newest first: the current turn's message, then the ones before it.
+    turns = [e for e in recent.items if starts_turn(e)][1:]
+    earlier = [
+        text
+        for e in reversed(turns[:EARLIER_REQUESTS_KEPT])
+        if isinstance(e, MessageEvent)
+        and task_event is not None
+        and e.id != task_event.id
+        and (text := extract_message_text(e))
+    ]
+    task = (
+        extract_message_text(task_event)
+        if isinstance(task_event, MessageEvent)
+        else None
+    )
+    return task, earlier
 
 
 def _since(timestamp: str) -> datetime | None:

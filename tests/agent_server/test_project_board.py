@@ -4,17 +4,24 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.models import (
+    EventPage,
+    EventSortOrder,
+    StartConversationRequest,
+)
 from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
     classify_turn,
     extract_ask,
 )
+from openhands.agent_server.project_wake import conversation_context
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.resolution import (
     ResolutionState,
@@ -26,6 +33,7 @@ from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     ConversationStateUpdateEvent,
+    Event,
     MessageEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -891,3 +899,43 @@ async def test_a_person_message_clears_the_resolve_note():
     await _feed(_subscriber(store), _message("user", "Wait, one more thing"))
 
     assert store.tags == {"project": "p1"}
+
+
+class _Log:
+    """The event search an EventService offers, over a fixed list."""
+
+    def __init__(self, events: list[Event]):
+        self.events = events
+
+    async def search_events(self, *, sort_order, limit, **_):
+        events = list(self.events)
+        if sort_order == EventSortOrder.TIMESTAMP_DESC:
+            events.reverse()
+        return EventPage(items=events[:limit])
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_reads_the_task_and_earlier_requests():
+    log = _Log(
+        [
+            _message("user", "Write two haiku: rain, then snow"),
+            _message("user", "[Update from a conversation] x", sender=GOAL_LOOP_SENDER),
+            _message("user", "Make the rain one sadder"),
+            _message("user", "Now the snow one"),
+        ]
+    )
+
+    task, earlier = await conversation_context(cast(EventService, log))
+
+    assert task == "Write two haiku: rain, then snow"
+    assert earlier == ["Make the rain one sadder"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_of_a_first_turn():
+    log = _Log([_message("user", "Only message")])
+
+    assert await conversation_context(cast(EventService, log)) == (
+        "Only message",
+        [],
+    )
