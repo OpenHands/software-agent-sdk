@@ -8,6 +8,7 @@ as ``PATCH /api/conversations/{id}``.
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -1399,13 +1400,66 @@ async def test_a_stale_memory_write_is_refused_with_the_current_file(client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["Notes.md", "notes.txt", "..md", ".hidden.md"])
+@pytest.mark.parametrize(
+    # memory.md would be the index on a case-insensitive filesystem.
+    "name",
+    ["Notes.md", "notes.txt", "..md", ".hidden.md", "memory.md"],
+)
 async def test_memory_names_are_checked(client, name):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     response = await client.put(
         f"/api/projects/{project['id']}/memory/{name}", json={"content": "x"}
     )
     assert response.status_code == 400
+
+
+def test_project_files_are_locked_across_processes(tmp_path):
+    """Review: two server processes sharing a persistence folder take turns
+    on a project's memory and artifacts, as they do on projects.json."""
+    import subprocess
+    import sys
+    import threading
+
+    from openhands.agent_server.project_memory import ProjectMemoryStore
+
+    project_id = uuid4()
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, uuid\n"
+            "from pathlib import Path\n"
+            "from openhands.agent_server.project_artifacts import "
+            "project_files_lock\n"
+            f"with project_files_lock(Path({str(tmp_path)!r}), "
+            f"uuid.UUID({project_id.hex!r})):\n"
+            "    print('held', flush=True)\n"
+            "    sys.stdin.readline()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1"},
+    )
+    try:
+        assert holder.stdout is not None and holder.stdin is not None
+        assert holder.stdout.readline().strip() == "held"
+        written = threading.Event()
+
+        def write() -> None:
+            ProjectMemoryStore(tmp_path).write(project_id, "MEMORY.md", "x", None)
+            written.set()
+
+        writer = threading.Thread(target=write)
+        writer.start()
+        assert not written.wait(0.5)
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        assert written.wait(10)
+        writer.join()
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 @pytest.mark.asyncio

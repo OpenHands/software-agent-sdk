@@ -20,7 +20,6 @@ All methods are blocking; callers run them in a worker thread.
 import hashlib
 import os
 import re
-import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +27,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.project_artifacts import project_files_dir
+from openhands.agent_server.project_artifacts import (
+    project_files_dir,
+    project_files_lock,
+)
 
 
 MEMORY_INDEX = "MEMORY.md"
@@ -38,8 +40,6 @@ MAX_MEMORY_BYTES = 64 * 1024
 """Largest memory file; memory is meant to stay short."""
 
 _TOPIC = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,78}[a-z0-9_-])?\.md")
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
 
 
 class MemoryFile(BaseModel):
@@ -66,8 +66,14 @@ class MemoryTooLarge(ValueError):
 
 
 def valid_memory_name(name: str) -> bool:
-    """``MEMORY.md``, or a lowercase ``.md`` name of letters, digits and ``._-``."""
-    return name == MEMORY_INDEX or bool(_TOPIC.fullmatch(name))
+    """``MEMORY.md``, or a lowercase ``.md`` name of letters, digits and ``._-``.
+
+    ``memory.md`` is refused: a case-insensitive filesystem would store it as
+    the index.
+    """
+    if name == MEMORY_INDEX:
+        return True
+    return name.casefold() != MEMORY_INDEX.casefold() and bool(_TOPIC.fullmatch(name))
 
 
 def _revision(data: bytes) -> str:
@@ -85,10 +91,6 @@ class ProjectMemoryStore:
         if not valid_memory_name(name):
             raise ValueError(f"Invalid memory file name: {name!r}")
         return self._dir(project_id) / name
-
-    def _lock(self, project_id: UUID) -> threading.Lock:
-        with _locks_guard:
-            return _locks.setdefault(str(self._dir(project_id)), threading.Lock())
 
     def list(self, project_id: UUID) -> list[MemoryFile]:
         """The index first, then the topic files by name."""
@@ -129,7 +131,7 @@ class ProjectMemoryStore:
             raise MemoryTooLarge(
                 f"Memory files are at most {MAX_MEMORY_BYTES // 1024} KiB"
             )
-        with self._lock(project_id):
+        with project_files_lock(self.persistence_dir, project_id):
             current = self._read(path)
             if (current.revision if current else None) != base_revision:
                 raise MemoryConflict(current)
@@ -151,7 +153,7 @@ class ProjectMemoryStore:
         changed since that revision.
         """
         path = self._path(project_id, name)
-        with self._lock(project_id):
+        with project_files_lock(self.persistence_dir, project_id):
             current = self._read(path)
             if current is None:
                 return False

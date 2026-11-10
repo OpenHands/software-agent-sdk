@@ -29,6 +29,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.persistence.store import _file_lock
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.utils.datetime import OpenHandsUUID
 
@@ -79,14 +80,25 @@ _project_locks: dict[str, threading.Lock] = {}
 _project_locks_guard = threading.Lock()
 
 
-def _project_lock(directory: Path) -> threading.Lock:
-    with _project_locks_guard:
-        return _project_locks.setdefault(str(directory), threading.Lock())
-
-
 def project_files_dir(persistence_dir: Path, project_id: UUID) -> Path:
     """The folder that holds every file of one project."""
     return Path(persistence_dir) / "projects" / project_id.hex
+
+
+@contextmanager
+def project_files_lock(persistence_dir: Path, project_id: UUID) -> Iterator[None]:
+    """Hold one project's files (artifacts and memory) for a change.
+
+    A thread lock for this process and a file lock for other server processes
+    sharing the persistence folder, as :class:`FileProjectsStore` does. The
+    lock file sits outside the project's folder so deleting the project does
+    not remove a lock another process is waiting on.
+    """
+    lock_path = Path(persistence_dir) / "projects" / ".locks" / f"{project_id.hex}.lock"
+    with _project_locks_guard:
+        thread_lock = _project_locks.setdefault(str(lock_path), threading.Lock())
+    with thread_lock, _file_lock(lock_path):
+        yield
 
 
 class ProjectArtifactStore:
@@ -152,7 +164,7 @@ class ProjectArtifactStore:
                     if size > MAX_ARTIFACT_BYTES:
                         raise ArtifactTooLarge(name)
                     out.write(chunk)
-            with _project_lock(self._dir(project_id)):
+            with project_files_lock(self.persistence_dir, project_id):
                 folded = name.casefold()
                 for other in meta.parent.glob("*.json"):
                     other_name = other.name[: -len(".json")]
@@ -176,7 +188,7 @@ class ProjectArtifactStore:
 
     def delete(self, project_id: UUID, name: str) -> bool:
         path, meta = self._paths(project_id, name)
-        with _project_lock(self._dir(project_id)):
+        with project_files_lock(self.persistence_dir, project_id):
             existed = meta.exists() or path.exists()
             meta.unlink(missing_ok=True)
             path.unlink(missing_ok=True)
@@ -184,7 +196,7 @@ class ProjectArtifactStore:
 
     def delete_project(self, project_id: UUID) -> None:
         """Delete the project's whole folder: its artifacts and other files."""
-        with _project_lock(self._dir(project_id)):
+        with project_files_lock(self.persistence_dir, project_id):
             shutil.rmtree(
                 project_files_dir(self.persistence_dir, project_id),
                 ignore_errors=True,
