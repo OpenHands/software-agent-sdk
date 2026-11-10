@@ -74,6 +74,7 @@ from openhands.agent_server.project_wake import (
     relay_person_message,
 )
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.resolution_judge import make_resolution_judge
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
     ConversationTelemetryContext,
@@ -3006,6 +3007,9 @@ class ConversationService:
                     turn_sender_lookup=functools.partial(
                         _logged_turn_sender, event_service
                     ),
+                    judge=make_resolution_judge(
+                        functools.partial(_agent_llm, event_service)
+                    ),
                 )
             )
             if stored.autotitle and stored.title is None:
@@ -3200,6 +3204,11 @@ def _generate_title_traced(
         on_error=on_error,
         prompt=prompt,
     )
+
+
+def _agent_llm(event_service: EventService) -> LLM | None:
+    conversation = event_service._conversation
+    return getattr(conversation.agent, "llm", None) if conversation else None
 
 
 @dataclass

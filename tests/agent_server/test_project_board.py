@@ -16,6 +16,7 @@ from openhands.agent_server.project_board import (
     extract_ask,
 )
 from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation.resolution import ResolutionState, ResolutionVerdict
 from openhands.sdk.conversation.types import BOARD_TAG_KEYS, GOAL_LOOP_SENDER
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
@@ -158,12 +159,18 @@ async def test_confident_critic_resolves_without_overriding_the_person():
     subscriber = _subscriber(store)
 
     await _feed(subscriber, _finish("All done.", score=0.95), _status("finished"))
-    assert store.tags == {"project": "p1", "turn": "answered", "resolved": "auto"}
+    assert store.tags == {
+        "project": "p1",
+        "turn": "answered",
+        "resolved": "auto",
+        "resolvenote": "0.95 critic",
+    }
 
     store.tags = {"project": "p1", "resolved": "user"}
+    store.calls.clear()
     await _feed(subscriber, _finish("All done.", score=0.95), _status("finished"))
     assert store.tags["resolved"] == "user"
-    assert ("resolved", "auto", True) in store.calls
+    assert not any(call[0] in ("resolved", "resolvenote") for call in store.calls)
 
 
 @pytest.mark.asyncio
@@ -296,7 +303,7 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
 
 
 def test_board_tag_keys():
-    assert BOARD_TAG_KEYS == {"resolved", "turn", "ask"}
+    assert BOARD_TAG_KEYS == {"resolved", "resolvenote", "turn", "ask"}
 
 
 @pytest.mark.asyncio
@@ -713,3 +720,107 @@ async def test_after_a_restart_the_turn_starter_is_read_from_the_log():
 
     assert stops == [("p1", "stuck", None, "conversation:cat")]
     assert finishes == [("answered", "Built.", "conversation:cat")]
+
+
+def _judging(store: _Tags, verdict: ResolutionVerdict | None, seen: list):
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        seen.append(state)
+        return verdict
+
+    return ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=judge,
+    )
+
+
+@pytest.mark.asyncio
+async def test_judge_resolves_when_nothing_is_left_for_the_person():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    verdict = ResolutionVerdict(probability=0.93, owed="nothing")
+
+    await _feed(
+        _judging(store, verdict, seen),
+        _message("user", "What does classify_turn do?"),
+        _status("running"),
+        _message("agent", "It reads the last paragraph for a question."),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "answered",
+        "resolved": "auto",
+        "resolvenote": "0.93 nothing",
+    }
+    assert seen[0].request == "What does classify_turn do?"
+    assert seen[0].reply == "It reads the last paragraph for a question."
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        ResolutionVerdict(probability=0.95, owed="review"),
+        ResolutionVerdict(probability=0.6, owed="nothing"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_judge_leaves_open_when_the_person_owes_something(verdict):
+    store = _Tags({"project": "p1"})
+
+    # A confident critic does not override a judge that says no.
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Open a PR"),
+        _status("running"),
+        _finish("Opened PR #12.", score=0.97),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1", "turn": "answered"}
+
+
+@pytest.mark.asyncio
+async def test_judge_is_not_asked_about_a_question_turn():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+
+    await _feed(
+        _judging(store, ResolutionVerdict(probability=1.0, owed="nothing"), seen),
+        _message("user", "Fix the bug"),
+        _status("running"),
+        _message("agent", "Fixed. Should I also add a test?"),
+        _status("finished"),
+    )
+
+    assert seen == []
+    assert "resolved" not in store.tags
+
+
+@pytest.mark.asyncio
+async def test_without_a_verdict_a_confident_critic_still_resolves():
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _judging(store, None, []),
+        _message("user", "Fix it"),
+        _status("running"),
+        _finish("All done.", score=0.95),
+        _status("finished"),
+    )
+
+    assert store.tags["resolved"] == "auto"
+    assert store.tags["resolvenote"] == "0.95 critic"
+
+
+@pytest.mark.asyncio
+async def test_a_person_message_clears_the_resolve_note():
+    store = _Tags(
+        {"project": "p1", "turn": "answered", "resolved": "auto", "resolvenote": "x"}
+    )
+
+    await _feed(_subscriber(store), _message("user", "Wait, one more thing"))
+
+    assert store.tags == {"project": "p1"}

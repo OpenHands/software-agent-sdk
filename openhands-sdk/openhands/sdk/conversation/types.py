@@ -27,7 +27,8 @@ belongs to. Child conversations copy their parent's tags, so they join it too.""
 
 RESOLVED_TAG_KEY = "resolved"
 """Tag marking a conversation's work as done: ``user`` when the person resolved
-it, ``auto`` when the server did from a confident critic score. A new user
+it, ``auto`` when the server judged that nothing is left for the person (see
+:data:`RESOLVE_NOTE_TAG_KEY`). A new user
 message removes it."""
 
 TURN_TAG_KEY = "turn"
@@ -42,7 +43,15 @@ line, while ``turn`` is ``asked``. A new user message removes it."""
 ASK_MAX_LENGTH = 200
 """Longest ``ask``; a longer question is cut and ends with an ellipsis."""
 
-BOARD_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY, ASK_TAG_KEY})
+RESOLVE_NOTE_TAG_KEY = "resolvenote"
+"""Why the server resolved a conversation (``resolved=auto``), in one short
+line: the judge's probability that nothing is left for the person and what it
+thinks the person owes (``0.93 nothing``), or a critic score
+(``0.95 critic``). A new user message removes it."""
+
+BOARD_TAG_KEYS = frozenset(
+    {RESOLVED_TAG_KEY, RESOLVE_NOTE_TAG_KEY, TURN_TAG_KEY, ASK_TAG_KEY}
+)
 """Tags that describe one conversation's state, so children do not copy them."""
 
 CONVERSATION_SENDER_PREFIX = "conversation:"

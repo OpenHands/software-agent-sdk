@@ -95,8 +95,17 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   updated_at}`. `attention` is `needs_you`, `needs_input`, `working`,
   `finished`, `idle` or `resolved`.
 - Tags the server sets on project members (`openhands.agent_server.project_board`):
-  `turn=asked|answered` when a run finishes, and `resolved=auto` when the
-  critic scored the finished task at least 0.9 (never over `resolved=user`).
+  `turn=asked|answered` when a run finishes, and `resolved=auto` plus
+  `resolvenote` when an answered turn leaves nothing for the person (never
+  over `resolved=user`, never on an `asked` turn). The resolution judge
+  (`openhands.sdk.conversation.resolution`, `resolution_judge.py`) asks typed
+  questions of `OH_RESOLUTION_MODEL` (a LiteLLM decision model such as
+  `typesafe/jev-latest` or `hosted_vllm/<model>`, key in
+  `OH_RESOLUTION_API_KEY` or `JEV_API_KEY`), else of the conversation's own
+  LLM; it resolves at probability >= 0.85 with `owed=nothing`
+  (`resolvenote` like `0.93 nothing`). `OH_RESOLUTION_MODEL=off` disables it;
+  without a verdict a critic score >= 0.9 still resolves (`0.95 critic`).
+  The board shows the note as `resolve_note`.
   Clients resolve a conversation by setting `resolved=user` with the conversation
   `PATCH` (full tag set); a new user message removes both tags.
 - REST: `GET /api/projects/{project_id}/artifacts` lists
@@ -360,7 +369,9 @@ Preconditions:
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
   ```
   The person's resolve shows as `resolved: "user"`; a new message reopens the
-  conversation. (`resolved=auto` needs a critic; the unit tests cover it.)
+  conversation. (`resolved=auto` needs a working judge model: with a real LLM, ask a plain
+  question in a member and expect `resolved: "auto"` and a `resolve_note`;
+  with an open PR left for review expect no resolve.)
 - **Artifacts over REST (`F36.artifacts-rest`).**
   Requires: `F36.coordinator`
   ```sh

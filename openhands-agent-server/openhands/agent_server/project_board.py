@@ -2,9 +2,13 @@
 
 When a conversation in a project finishes a run, :class:`ConversationOutcomeSubscriber`
 tags it with how the agent's last message ended (``turn=asked`` or
-``turn=answered``) and, when the critic is confident the task succeeded, marks
-it resolved (``resolved=auto``). When the agent stopped on a question, the
-question itself is saved, in one short line, as ``ask``. A new user message
+``turn=answered``) and, when a turn leaves nothing for the person to do, marks
+it resolved (``resolved=auto``). Two signals can resolve a turn: the resolution
+judge (:mod:`openhands.sdk.conversation.resolution`), which asks whether
+anything is left for the person, and a confident critic score. A turn that
+asked the person something is never resolved automatically. When the agent
+stopped on a question, the question itself is saved, in one short line, as
+``ask``. A new user message
 removes these tags, since the conversation is open again. Once the agent stops
 on a question, the turn (and its ``ask``) stays until the person answers, even
 if a Stop hook made it go on to a ``finish`` that does not repeat the question.
@@ -25,6 +29,7 @@ from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_STOP_HOOK_FEEDBACK_PREFIX as STOP_HOOK_FEEDBACK_PREFIX,
 )
+from openhands.sdk.conversation.resolution import ResolutionState, ResolutionVerdict
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
@@ -35,6 +40,7 @@ from openhands.sdk.conversation.types import (
     GOAL_LOOP_SENDER,
     HELD_FOR_PERSON_STATUSES,
     PROJECT_TAG_KEY,
+    RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
 )
@@ -82,6 +88,12 @@ OnStopped = Callable[[str, str, str | None, str | None], Awaitable[object]]
 waiting for confirmation, paused, error or stuck (see
 :data:`~openhands.sdk.conversation.types.HELD_FOR_PERSON_STATUSES`). ``text``
 says what it waits on: the pending action, the error, or the last message."""
+
+ResolutionJudge = Callable[[ResolutionState], Awaitable[ResolutionVerdict | None]]
+"""Judges whether an answered turn leaves anything for the person; ``None``
+when no judge model is available or the call failed."""
+
+_TURN_ACTIONS_KEPT: Final[int] = 20
 
 TurnSenderLookup = Callable[[], Awaitable[str | None]]
 """Reads who started the current turn from the event log, for a subscriber
@@ -213,6 +225,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     on_person_message: OnPersonMessage | None = None
     on_stopped: OnStopped | None = None
     turn_sender_lookup: TurnSenderLookup | None = None
+    judge: ResolutionJudge | None = None
+    # The message that started the current turn and what the agent did in
+    # it, for the resolution judge.
+    _turn_request: str | None = field(default=None, init=False)
+    _turn_actions: list[str] = field(default_factory=list, init=False)
     _last_text: str | None = field(default=None, init=False)
     _last_score: float | None = field(default=None, init=False)
     _seen_agent_output: bool = field(default=False, init=False)
@@ -265,6 +282,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 self._ask = None
                 self._turn_sender = event.sender
                 self._turn_known = True
+                self._turn_request = extract_message_text(event)
+                self._turn_actions = []
                 self._turn_open = True
                 self._reported_hold = None
                 self._last_action = None
@@ -296,6 +315,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             elif event.source == "agent":
                 self._turn_open = True
                 self._last_action = _describe_action(event)
+                self._turn_actions.append(self._last_action)
+                del self._turn_actions[:-_TURN_ACTIONS_KEPT]
             return
         if isinstance(event, ConversationErrorEvent):
             self._last_error = f"{event.code}: {event.detail}"[:_ACTION_SUMMARY_MAX]
@@ -327,10 +348,15 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             self._reset()
             self._turn_open = False
             self._reported_hold = None
+            judged = ResolutionState(
+                request=self._turn_request, reply=text, actions=self._turn_actions
+            )
             project = self.tags().get(PROJECT_TAG_KEY)
             if project:
                 self._enqueue(
-                    lambda: self._record(project, turn, score, text, sender, ask, known)
+                    lambda: self._record(
+                        project, turn, score, text, sender, ask, known, judged
+                    )
                 )
 
     def _stopped(self, status: str) -> None:
@@ -409,18 +435,57 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         sender: str | None,
         ask: str | None = None,
         sender_known: bool = True,
+        judged: ResolutionState | None = None,
     ) -> None:
         await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
         if ask is not None or ASK_TAG_KEY in self.tags():
             await self.set_tag(self.conversation_id, ASK_TAG_KEY, ask)
-        if score is not None and score >= AUTO_RESOLVE_THRESHOLD:
-            # Never overwrite the person's own resolve.
-            await self.set_tag(
-                self.conversation_id,
-                RESOLVED_TAG_KEY,
-                "auto",
-                only_if_absent=True,
+        self._notify_finished(project, turn, text, sender, sender_known)
+        # A turn that asked the person something is theirs to answer, and a
+        # conversation already resolved (by the person or before) stays so.
+        if turn == "asked" or RESOLVED_TAG_KEY in self.tags():
+            return
+        note: str | None = None
+        verdict = await self._judge(judged) if judged is not None else None
+        if verdict is not None and verdict.resolved:
+            note = verdict.note()
+        elif verdict is None and score is not None and score >= AUTO_RESOLVE_THRESHOLD:
+            # Without a judge, a confident critic still resolves.
+            note = f"{score:.2f} critic"
+        if verdict is not None and note is None:
+            logger.debug(
+                "Conversation %s not resolved: %s", self.conversation_id, verdict.note()
             )
+        if note is None:
+            return
+        # Never overwrite the person's own resolve.
+        await self.set_tag(
+            self.conversation_id, RESOLVED_TAG_KEY, "auto", only_if_absent=True
+        )
+        if self.tags().get(RESOLVED_TAG_KEY) == "auto":
+            await self.set_tag(self.conversation_id, RESOLVE_NOTE_TAG_KEY, note)
+
+    async def _judge(self, state: ResolutionState) -> ResolutionVerdict | None:
+        if self.judge is None:
+            return None
+        try:
+            return await self.judge(state)
+        except Exception:
+            logger.warning(
+                "Resolution judge failed for conversation %s",
+                self.conversation_id,
+                exc_info=True,
+            )
+            return None
+
+    def _notify_finished(
+        self,
+        project: str,
+        turn: TurnOutcome,
+        text: str | None,
+        sender: str | None,
+        sender_known: bool,
+    ) -> None:
         if self.on_finished is not None:
             # Delivering to the coordinator can wait for its whole agent step;
             # keep it off the tag-write chain.

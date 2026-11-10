@@ -75,6 +75,7 @@ from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
     PROJECT_TAG_KEY,
+    RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
     ConversationTags,
@@ -270,8 +271,18 @@ class ProjectConversation(BaseModel):
         default=None,
         description=(
             "`user` when the person resolved the conversation, `auto` when the "
-            "server did because the critic scored the finished task at least "
-            "0.9. Backed by the `resolved` tag; a new user message clears it."
+            "server judged that nothing is left for the person (see "
+            "`resolve_note`). Backed by the `resolved` tag; a new user message "
+            "clears it."
+        ),
+    )
+    resolve_note: str | None = Field(
+        default=None,
+        description=(
+            "While `resolved` is `auto`: why, in one short line. Either the "
+            "judge's probability that nothing is left for the person and what "
+            "it thinks the person owes (`0.93 nothing`), or a critic score "
+            "(`0.95 critic`). Backed by the `resolvenote` tag."
         ),
     )
     turn: TurnOutcome | None = Field(
@@ -482,6 +493,9 @@ def _conversation(
         execution_status=execution_status,
         attention=_attention(execution_status, resolved, turn),
         resolved=resolved,
+        resolve_note=(stored.tags.get(RESOLVE_NOTE_TAG_KEY) or None)
+        if resolved == "auto"
+        else None,
         turn=turn,
         ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asked" else None,
         automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
