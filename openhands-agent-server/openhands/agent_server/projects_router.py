@@ -69,6 +69,7 @@ from openhands.agent_server.project_memory import (
     valid_memory_name,
 )
 from openhands.agent_server.utils import utc_now
+from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
@@ -76,9 +77,13 @@ from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
+    ConversationTags,
 )
 from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.settings.model import ConversationRuntime
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.datetime import OpenHandsUUID
 
@@ -152,6 +157,49 @@ class NewProjectCoordinator(BaseModel):
         max_length=256,
         description="Conversation title. Unset, it is titled automatically.",
     )
+    conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Id for the coordinator, reserved by the client so it can find the "
+            "conversation after a lost response. Must not exist yet."
+        ),
+    )
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description="More tags for the coordinator; the server adds `project`.",
+    )
+    conversation_runtime: ConversationRuntime | None = Field(
+        default=None, description="As in a conversation start request."
+    )
+    agent_launch_additions: AgentLaunchAdditions | None = Field(
+        default=None,
+        description=(
+            "As in a conversation start request, such as a client's own "
+            "system-prompt addition for its coordinator."
+        ),
+    )
+    confirmation_policy: ConfirmationPolicyBase | None = Field(
+        default=None,
+        description="As in a conversation start request. Unset, the default.",
+    )
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None, description="As in a conversation start request."
+    )
+
+    def start_options(self) -> dict[str, Any]:
+        """The fields passed on to the coordinator's start request."""
+        options: dict[str, Any] = {"tags": dict(self.tags)}
+        for name in (
+            "conversation_id",
+            "conversation_runtime",
+            "agent_launch_additions",
+            "confirmation_policy",
+            "security_analyzer",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                options[name] = value
+        return options
 
 
 class CreateProjectRequest(BaseModel):
@@ -521,6 +569,7 @@ async def _start_new_coordinator(
             new.working_dir,
             agent_profile_id=new.agent_profile_id,
             title=new.title,
+            options=new.start_options(),
         )
     except ValueError as exc:
         await _update(store, lambda current: _without(current, project.id))

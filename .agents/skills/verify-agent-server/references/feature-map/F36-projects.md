@@ -573,8 +573,9 @@ Preconditions:
 - `refuse_pending_confirmation` answers 409 only when the conversation is already
   waiting. If it reaches a confirmation while the message is being
   delivered, the message is kept and `run` is `waiting_for_confirmation`;
-  a run that was already active answers `queued`. A `paused`
-  conversation is resumed. Delivery to a running conversation waits for its state lock,
+  a run that was already active answers `queued`. The same guard keeps a
+  `paused`, `error` or `stuck` conversation from running (409, or `run` is
+  that status): those are the person's to resume. Delivery to a running conversation waits for its state lock,
   which a long tool call holds, so the tool waits up to 300 seconds and, on a
   timeout, tells the agent not to resend.
 - The tools read the project from the caller's tags on every call, so adding

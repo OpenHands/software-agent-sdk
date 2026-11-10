@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -2482,15 +2482,19 @@ class ConversationService:
         *,
         agent_profile_id: UUID | None = None,
         title: str | None = None,
+        options: Mapping[str, Any] | None = None,
     ) -> ConversationInfo:
         """Start an idle coordinator conversation for a new project.
 
         It runs ``agent_profile_id``, or else the person's active agent
         profile, with the coordinator's project tools added by the server,
         and joins the project through its ``project`` tag. It gets no first
-        message: it waits for the person.
+        message: it waits for the person. ``options`` are more
+        ``StartConversationRequest`` fields from the client (its own tags,
+        a reserved ``conversation_id``, launch additions, policies).
 
-        Raises ValueError when there is no profile to run or it cannot start.
+        Raises ValueError when there is no profile to run, the reserved id is
+        taken, or it cannot start.
         """
         if self._event_services is None:
             raise ValueError("inactive_service")
@@ -2502,13 +2506,18 @@ class ConversationService:
                 "No agent profile to start the coordinator from: pass "
                 "agent_profile_id or set an active agent profile"
             )
+        extra = dict(options or {})
+        tags = {**extra.pop("tags", {}), PROJECT_TAG_KEY: project_hex}
         start = StartConversationRequest(
+            **extra,
             workspace=LocalWorkspace(working_dir=working_dir),
             agent_profile_id=profile_id,
-            tags={PROJECT_TAG_KEY: project_hex},
+            tags=tags,
             autotitle=title is None,
         )
-        conversation_id = uuid4()
+        conversation_id = start.conversation_id or uuid4()
+        if self._has_conversation(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} already exists")
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             try:
                 info, _ = await self._create_conversation(

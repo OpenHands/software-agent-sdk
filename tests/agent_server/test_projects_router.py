@@ -1411,7 +1411,11 @@ async def test_creating_a_project_can_start_its_coordinator(
     ((project_hex, working_dir, kwargs),) = started
     assert project_hex == project["id"]
     assert working_dir == str(workspace)
-    assert kwargs == {"agent_profile_id": None, "title": "Cat"}
+    assert kwargs == {
+        "agent_profile_id": None,
+        "title": "Cat",
+        "options": {"tags": {}},
+    }
     listed = (await client.get(f"/api/projects/{project['id']}")).json()
     assert (
         listed["coordinator_conversation_id"] == project["coordinator_conversation_id"]

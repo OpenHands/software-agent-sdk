@@ -943,3 +943,63 @@ async def test_a_new_coordinator_needs_a_profile(tmp_path, workspace_dir, monkey
     ) as service:
         with pytest.raises(ValueError, match="No agent profile"):
             await service.start_project_coordinator(uuid4().hex, str(workspace_dir))
+
+
+@pytest.mark.asyncio
+async def test_a_new_coordinator_keeps_the_clients_start_options(
+    tmp_path, workspace_dir, monkeypatch
+):
+    """A client such as Insider starts its Cat with its own id, tags and
+    system-prompt addition; the server still adds the project tag and tools."""
+    from openhands.agent_server import conversation_service as module
+    from openhands.agent_server.conversation_service import (
+        PROJECT_COORDINATOR_TOOLS,
+    )
+    from openhands.sdk.conversation.request import AgentLaunchAdditions
+
+    seen: list = []
+
+    def fake_launch_source(request, stores, cipher):
+        seen.append(request)
+        return Agent(llm=LLM(model="gpt-4o", usage_id="cat-profile"), tools=[])
+
+    monkeypatch.setattr(module, "launch_source", fake_launch_source)
+    services: dict[UUID, Any] = {}
+    project_hex = uuid4().hex
+    reserved = uuid4()
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=tmp_path / "worktrees",
+        ) as service:
+            info = await service.start_project_coordinator(
+                project_hex,
+                str(workspace_dir),
+                agent_profile_id=uuid4(),
+                options={
+                    "conversation_id": reserved,
+                    "tags": {"insidercat": "1", "project": "other"},
+                    "agent_launch_additions": AgentLaunchAdditions(
+                        system_message_suffix_append="<INSIDER_CONTROLLER/>"
+                    ),
+                },
+            )
+            with pytest.raises(ValueError, match="already exists"):
+                await service.start_project_coordinator(
+                    project_hex,
+                    str(workspace_dir),
+                    agent_profile_id=uuid4(),
+                    options={"conversation_id": reserved},
+                )
+
+    assert info.id == reserved
+    assert info.tags == {"insidercat": "1", "project": project_hex}
+    (request,) = seen
+    assert request.agent_launch_additions.system_message_suffix_append == (
+        "<INSIDER_CONTROLLER/>"
+    )
+    agent = services[info.id].get_conversation().agent
+    assert [tool.name for tool in agent.tools] == list(PROJECT_COORDINATOR_TOOLS)
