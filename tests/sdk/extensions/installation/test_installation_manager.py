@@ -1,5 +1,7 @@
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from openhands.sdk.extensions.installation import (
     InstallationInterface,
     InstallationManager,
     InstallationMetadata,
+    InstallationMetadataLoadError,
 )
 
 
@@ -594,3 +597,35 @@ def test_update_clears_requested_ref_to_track_latest(
     assert updated is not None
     assert updated.requested_ref is None
     assert updated.resolved_ref == "def456"
+
+
+# ============================================================================
+# Unloadable Metadata Tests
+# ============================================================================
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses file permissions",
+)
+def test_list_installed_keeps_unreadable_metadata(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+    mock_extension: MockExtension,
+):
+    """list_installed() must not rewrite an unreadable file as local/enabled."""
+    manager.install(str(mock_extension_dir))
+    manager.disable(mock_extension.name)
+    metadata_path = InstallationMetadata.get_metadata_path(manager.installation_dir)
+    metadata_path.chmod(0)
+    try:
+        with pytest.raises(InstallationMetadataLoadError):
+            manager.list_installed()
+    finally:
+        metadata_path.chmod(0o644)
+
+    info = manager.get(mock_extension.name)
+    assert info is not None
+    assert info.source == str(mock_extension_dir)
+    assert info.enabled is False

@@ -1,4 +1,5 @@
 import logging
+import os
 import stat
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
     InstallationMetadata,
+    InstallationMetadataLoadError,
 )
 
 
@@ -316,6 +318,73 @@ def test_open_does_not_save_on_exception(tmp_path: Path):
 
     loaded = InstallationMetadata.load_from_dir(installation_dir)
     assert loaded.extensions == {}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(b"invalid json {", id="invalid-json"),
+        pytest.param(b'{"extensions": []}', id="wrong-field-type"),
+        pytest.param(b"[]", id="wrong-top-level-type"),
+        pytest.param(b"\xff\xfe not utf-8", id="not-utf-8"),
+    ],
+)
+def test_open_refuses_metadata_it_cannot_load(tmp_path: Path, content: bytes):
+    """A write session must not save its empty fallback over a broken file."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    metadata_path.write_bytes(content)
+
+    with pytest.raises(InstallationMetadataLoadError) as exc_info:
+        with InstallationMetadata.open(
+            installation_dir, interface=MockExtensionInstallationInterface()
+        ) as session:
+            session.sync()
+
+    assert exc_info.value.metadata_path == metadata_path
+    assert str(metadata_path) in str(exc_info.value)
+    assert metadata_path.read_bytes() == content
+
+
+def test_open_without_metadata_file_starts_empty(tmp_path: Path):
+    """A missing file is a fresh install, not an error."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+
+    with InstallationMetadata.open(
+        installation_dir, interface=MockExtensionInstallationInterface()
+    ) as session:
+        assert session.extensions == {}
+        session.sync()
+
+    loaded = InstallationMetadata.load_from_dir(installation_dir)
+    assert "mock-extension" in loaded.extensions
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses file permissions",
+)
+def test_open_refuses_unreadable_metadata(tmp_path: Path):
+    """An unreadable file raises instead of being replaced by an atomic save."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    content = b'{"extensions": {}}'
+    metadata_path.write_bytes(content)
+    metadata_path.chmod(0)
+    try:
+        with pytest.raises(InstallationMetadataLoadError):
+            with InstallationMetadata.open(
+                installation_dir, interface=MockExtensionInstallationInterface()
+            ) as session:
+                session.sync()
+    finally:
+        metadata_path.chmod(0o644)
+
+    assert metadata_path.read_bytes() == content
 
 
 # ============================================================================

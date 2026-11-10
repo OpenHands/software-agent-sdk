@@ -21,6 +21,22 @@ logger = get_logger(__name__)
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 
+class InstallationMetadataLoadError(Exception):
+    """An existing metadata file could not be read or parsed.
+
+    A write session raises this instead of starting from empty metadata,
+    because saving that fallback would overwrite every recorded source and
+    enabled state. The file is left unchanged.
+    """
+
+    def __init__(self, metadata_path: Path, cause: BaseException) -> None:
+        super().__init__(
+            f"Could not load installation metadata at {metadata_path} "
+            f"({type(cause).__name__}); the file was left unchanged"
+        )
+        self.metadata_path = metadata_path
+
+
 class MetadataSession:
     """Context manager that binds ``InstallationMetadata`` to its directory.
 
@@ -147,12 +163,20 @@ class InstallationMetadata(BaseModel):
             installed_dir: Root directory where extensions are installed.
             interface: Optional installation interface, required if the
                 session will call ``sync()``.
+
+        Raises:
+            InstallationMetadataLoadError: The metadata file exists but cannot
+                be read or parsed. The lock is released and the file is left
+                unchanged.
         """
         installed_dir.mkdir(parents=True, exist_ok=True)
         lock = cls._acquire_lock(installed_dir)
         try:
             return MetadataSession(
-                installed_dir, cls.load_from_dir(installed_dir), interface, lock=lock
+                installed_dir,
+                cls._load_for_session(installed_dir),
+                interface,
+                lock=lock,
             )
         except BaseException:
             lock.release()
@@ -207,6 +231,26 @@ class InstallationMetadata(BaseModel):
         except Exception as e:
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
+
+    @classmethod
+    def _load_for_session(cls, installed_dir: Path) -> InstallationMetadata:
+        """Load metadata for a write session.
+
+        Unlike ``load_from_dir``, a file that exists but cannot be read or
+        parsed raises instead of loading as empty, since the session would
+        save that empty fallback over it. A missing file still loads as empty.
+        """
+        metadata_path = cls.get_metadata_path(installed_dir)
+        try:
+            text = metadata_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return cls()
+        except (OSError, UnicodeDecodeError) as e:
+            raise InstallationMetadataLoadError(metadata_path, e) from e
+        try:
+            return cls.model_validate_json(text)
+        except Exception as e:
+            raise InstallationMetadataLoadError(metadata_path, e) from e
 
     def save_to_dir(self, installed_dir: Path) -> None:
         """Save metadata to the installed extensions directory."""

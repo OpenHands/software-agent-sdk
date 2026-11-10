@@ -106,7 +106,7 @@ def test_list_cannot_load_metadata_while_another_session_is_open(
     if operation == "disable":
         manager.install(str(source_dir))
 
-    original_load = InstallationMetadata.load_from_dir.__func__
+    original_load = InstallationMetadata._load_for_session.__func__
     writer_loading = threading.Event()
     list_loaded = threading.Event()
 
@@ -122,7 +122,7 @@ def test_list_cannot_load_metadata_while_another_session_is_open(
             list_loaded.set()
         return result
 
-    monkeypatch.setattr(InstallationMetadata, "load_from_dir", classmethod(load))
+    monkeypatch.setattr(InstallationMetadata, "_load_for_session", classmethod(load))
 
     def write() -> None:
         if operation == "install":
@@ -239,7 +239,7 @@ def test_lock_is_released_when_a_session_fails(
         elif failure == "load_fails":
             patch.setattr(
                 InstallationMetadata,
-                "load_from_dir",
+                "_load_for_session",
                 classmethod(_raise_runtime_error),
             )
         with pytest.raises(RuntimeError) as excinfo:

@@ -6,6 +6,7 @@ from openhands.sdk.extensions.installation.interface import (
 from openhands.sdk.extensions.installation.manager import InstallationManager
 from openhands.sdk.extensions.installation.metadata import (
     InstallationMetadata,
+    InstallationMetadataLoadError,
     MetadataSession,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "ExtensionProtocol",
     "InstallationManager",
     "InstallationMetadata",
+    "InstallationMetadataLoadError",
     "MetadataSession",
 ]
