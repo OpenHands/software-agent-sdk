@@ -168,6 +168,17 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    project_context: str | None = Field(
+        default=None,
+        description=(
+            "The project this conversation belongs to (its name, goal, "
+            "coordinator and memory index), rendered by the host into the "
+            "<PROJECT> prompt block. Set by the launch, not by the person."
+        ),
+        # An ACP agent gets the same text in its suffix instead (see finalize),
+        # so the field itself never reaches its prompt.
+        json_schema_extra={"acp_compatible": True},
+    )
     disabled_skills: list[str] = Field(
         default_factory=list,
         description=(

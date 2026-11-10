@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.project import (
@@ -670,16 +671,13 @@ def test_read_outside_a_project_is_an_error(tmp_path):
     assert "not part of a project" in observation.text
 
 
-def test_the_tool_that_steers_conversations_brings_the_coordinator_role(tmp_path):
+def test_project_tools_bring_no_role_text(tmp_path):
+    """The coordinator's role is its prompt preset, not a tool's guidance:
+    the voice and the job no longer ride on message_project_conversation."""
     (message_tool,) = MessageProjectConversationTool.create(_conv_state(tmp_path))
     (list_tool,) = ListProjectConversationsTool.create(_conv_state(tmp_path))
 
-    guidance = message_tool.prompt_guidance or ""
-    assert guidance.startswith("<PROJECT_COORDINATOR>")
-    assert "unless the person asks you to do it here" in guidance
-    # It explains the feature as the person sees it, and keeps the cat's voice.
-    for topic in ("needs input", "resolving it", "Project memory", "emoji", "herd"):
-        assert topic in guidance
+    assert message_tool.prompt_guidance is None
     assert list_tool.prompt_guidance is None
     assert ReadProjectConversationTool.name == "read_project_conversation"
 
@@ -690,9 +688,16 @@ def test_a_coordinators_system_prompt_states_its_role(tmp_path):
     agent = Agent(
         llm=LLM(model="gpt-4o", usage_id="cat"),
         tools=[Tool(name="message_project_conversation")],
+        prompt_preset=PromptPreset.PROJECT_COORDINATOR,
     )
     state = _conv_state(tmp_path)
     agent._initialize(state)
 
-    assert "<PROJECT_COORDINATOR>" in agent.static_system_message
-    assert "<ROLE>" in agent.static_system_message
+    static = agent.static_system_message
+    for tag in ("ROLE", "ROUTING", "BRIEFS", "WHAT_YOU_HEAR", "TALKING_TO_THE_PERSON"):
+        assert f"<{tag}>" in static
+    assert "unless the person asks you to do it here" in static
+    # It routes rather than codes: no coding-workflow sections.
+    for tag in ("CODE_QUALITY", "PULL_REQUESTS", "PROBLEM_SOLVING_WORKFLOW"):
+        assert f"<{tag}>" not in static
+    assert "herd" not in static

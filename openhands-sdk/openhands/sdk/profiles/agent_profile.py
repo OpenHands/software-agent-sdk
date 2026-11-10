@@ -25,6 +25,7 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.settings.model import (
     ACPServerKind,
     AgentKind,
@@ -226,6 +227,14 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "security policy, risk assessment, browser, external services, process "
             "management, model-specific notes) and the dynamic context are still "
             "included. None keeps the built-in persona."
+        ),
+    )
+    prompt_preset: PromptPreset | None = Field(
+        default=None,
+        description=(
+            "Which built-in system prompt the agent uses: `default`, "
+            "`planning`, `project_coordinator` or `project_worker`. None keeps "
+            "the default."
         ),
     )
     system_message_suffix: str | None = Field(

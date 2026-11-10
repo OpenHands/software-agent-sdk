@@ -57,14 +57,17 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import FileSecretsStore, get_projects_store
+from openhands.agent_server.persistence.models import ProjectItem
 from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
 )
 from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
+from openhands.agent_server.project_profiles import ensure_project_profile
 from openhands.agent_server.project_prompts import (
-    memory_note,
+    SenderRole,
+    project_context,
+    sender_header,
     without_worker_guidance,
-    worker_guidance,
 )
 from openhands.agent_server.project_wake import (
     conversation_context,
@@ -90,6 +93,7 @@ from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.persistence_const import BASE_STATE
@@ -661,6 +665,11 @@ def _client_tags(current: Mapping[str, str], requested: Mapping[str, str]) -> di
     return tags
 
 
+def _coordinator_profile_id() -> UUID | None:
+    """The predefined coordinator profile, or the person's active one."""
+    return ensure_project_profile("coordinator") or _active_agent_profile_id()
+
+
 def _active_agent_profile_id() -> UUID | None:
     from openhands.agent_server.persistence import (
         PersistedSettings,
@@ -672,21 +681,54 @@ def _active_agent_profile_id() -> UUID | None:
     return UUID(str(active)) if active else None
 
 
-async def _project_memory_content(tags: dict[str, str]) -> list[TextContent]:
-    """``MEMORY.md`` of the project in ``tags``, for a child's first message."""
-    project_hex = tags.get(PROJECT_TAG_KEY)
-    if not project_hex:
-        return []
+def _load_project(project_hex: str) -> ProjectItem | None:
+    persisted = get_projects_store().load()
+    return next(
+        (
+            p
+            for p in (persisted.projects if persisted else [])
+            if p.id.hex == project_hex
+        ),
+        None,
+    )
+
+
+async def _project_prompt(
+    project_hex: str,
+    started_by: tuple[str | None, UUID] | None,
+) -> tuple[str | None, SenderRole]:
+    """The ``<PROJECT>`` block for a conversation of ``project_hex``.
+
+    ``started_by`` is the title and id of the conversation that starts a
+    worker, or ``None`` for the coordinator. Returns the block's body (``None``
+    when the project cannot be read) and how the starter relates to the
+    project, for the header of the worker's brief.
+    """
     try:
-        project_id = UUID(hex=project_hex)
+        project = await asyncio.to_thread(_load_project, project_hex)
+    except (OSError, ValueError):
+        logger.warning("Projects unreadable; no project context for %s", project_hex)
+        project = None
+    role: SenderRole = "member"
+    if started_by is not None and project is not None:
+        if project.coordinator_conversation_id == started_by[1]:
+            role = "coordinator"
+    if project is None:
+        return None, role
+    memory = None
+    try:
         store = ProjectMemoryStore(get_projects_store().persistence_dir)
-        memory = await asyncio.to_thread(store.get, project_id, MEMORY_INDEX)
+        index = await asyncio.to_thread(store.get, project.id, MEMORY_INDEX)
+        memory = index.content if index is not None else None
     except (ValueError, OSError):
         logger.warning("Project memory unreadable for project %s", project_hex)
-        return []
-    if memory is None or not memory.content.strip():
-        return []
-    return [TextContent(text=memory_note(memory.content, memory.revision))]
+    context = project_context(
+        project.name,
+        project.description,
+        started_by=None if started_by is None else (*started_by, role),
+        memory=memory,
+    )
+    return context, role
 
 
 @dataclass
@@ -2453,6 +2495,9 @@ class ConversationService:
             )
             if project is not None and project.worker_agent_profile_id is not None:
                 return project.worker_agent_profile_id
+            predefined = ensure_project_profile("worker")
+            if predefined is not None:
+                return predefined
             settings = get_settings_store().load() or PersistedSettings()
             active = settings.active_agent_profile_id
             return UUID(str(active)) if active else None
@@ -2480,13 +2525,16 @@ class ConversationService:
         It keeps what makes it part of the project: the ``project`` tag, the
         parent's workspace (in a worktree when asked), the parent link, the
         person's confirmation policy, plugins, hooks and secrets, the parent
-        as sender of the task, the worker guidance, and the project tools a
-        worker uses.
+        as sender of the task (with a header saying so), the worker's prompt
+        and project context, and the project tools a worker uses.
         It does not take the parent's agent, launch additions or client tools.
         """
         parent_stored = parent_service.stored
         parent_id = parent_stored.id
         child_id = uuid4()
+        context, role = await _project_prompt(
+            parent_stored.tags[PROJECT_TAG_KEY], (parent_stored.title, parent_id)
+        )
         config = {
             name: getattr(parent_stored, name)
             for name in ConversationConfig.model_fields
@@ -2499,15 +2547,16 @@ class ConversationService:
             secrets_encrypted=False,
             client_tools=[],
             agent_launch_additions=AgentLaunchAdditions(
-                system_message_suffix_append=worker_guidance(
-                    parent_stored.title, parent_id
-                )
+                prompt_preset=PromptPreset.PROJECT_WORKER,
+                project_context=context,
             ),
             initial_message=SendMessageRequest(
                 role="user",
                 content=[
+                    TextContent(
+                        text=sender_header(parent_stored.title, parent_id, role=role)
+                    ),
                     TextContent(text=request.task),
-                    *await _project_memory_content(parent_stored.tags),
                 ],
             ),
             # A worker joins the project and nothing else: the parent's other
@@ -2557,9 +2606,10 @@ class ConversationService:
     ) -> ConversationInfo:
         """Start an idle coordinator conversation for a new project.
 
-        It runs ``agent_profile_id``, or else the person's active agent
-        profile, with the coordinator's project tools added by the server,
-        and joins the project through its ``project`` tag. It gets no first
+        It runs ``agent_profile_id``, or else the predefined coordinator
+        profile (or the person's active one when that cannot be made), with
+        the coordinator's prompt, project context and project tools added by
+        the server, and joins the project through its ``project`` tag. It gets no first
         message: it waits for the person. ``options`` are more
         ``StartConversationRequest`` fields from the client (its own tags,
         a reserved ``conversation_id``, launch additions, policies).
@@ -2570,7 +2620,7 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         profile_id = agent_profile_id or await asyncio.to_thread(
-            _active_agent_profile_id
+            _coordinator_profile_id
         )
         if profile_id is None:
             raise ValueError(
@@ -2579,8 +2629,18 @@ class ConversationService:
             )
         extra = dict(options or {})
         tags = {**extra.pop("tags", {}), PROJECT_TAG_KEY: project_hex}
+        context, _ = await _project_prompt(project_hex, None)
+        additions = AgentLaunchAdditions.model_validate(
+            extra.pop("agent_launch_additions", None) or {}
+        ).model_copy(
+            update={
+                "prompt_preset": PromptPreset.PROJECT_COORDINATOR,
+                "project_context": context,
+            }
+        )
         start = StartConversationRequest(
             **extra,
+            agent_launch_additions=additions,
             workspace=LocalWorkspace(working_dir=working_dir),
             agent_profile_id=profile_id,
             tags=tags,
@@ -2681,18 +2741,34 @@ class ConversationService:
                 else None
             )
             suffixes = [worktree.guidance] if worktree else []
-            # The child inherits the parent's agent, and with it any guidance
-            # naming the conversation that started the parent; it gets its
-            # own instead, naming its parent, while that parent is in a project.
+            # The child inherits the parent's agent, and with it any legacy
+            # guidance naming the conversation that started the parent. In a
+            # project it runs the worker's prompt with its own project context,
+            # even when its parent is the coordinator.
             child_agent = without_worker_guidance(parent_agent)
+            additions: AgentLaunchAdditions | None = None
+            brief_header: list[TextContent] = []
             if projects_on:
-                suffixes.append(worker_guidance(parent_stored.title, parent_id))
+                context, role = await _project_prompt(
+                    parent_stored.tags[PROJECT_TAG_KEY],
+                    (parent_stored.title, parent_id),
+                )
+                additions = AgentLaunchAdditions(
+                    prompt_preset=PromptPreset.PROJECT_WORKER,
+                    project_context=context,
+                )
+                brief_header = [
+                    TextContent(
+                        text=sender_header(parent_stored.title, parent_id, role=role)
+                    )
+                ]
             launched = await asyncio.to_thread(
                 lambda: finalize(
                     child_agent,
                     live_launch_runtime(
                         self.acp_skill_sourcing, enable_browser=self.enable_browser
                     ),
+                    additions=additions,
                     extra_suffixes=suffixes,
                     withheld_tools=() if projects_on else PROJECT_TOOL_NAMES,
                 )
@@ -2732,14 +2808,7 @@ class ConversationService:
                 max_budget_per_run=max_budget_per_run,
                 initial_message=Message(
                     role="user",
-                    content=[
-                        TextContent(text=request.task),
-                        *(
-                            await _project_memory_content(parent_stored.tags)
-                            if projects_on
-                            else []
-                        ),
-                    ],
+                    content=[*brief_header, TextContent(text=request.task)],
                 ),
                 initial_sender=conversation_sender(parent_id),
             )

@@ -466,6 +466,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "template receives it as the `persona` kwarg."
         ),
     )
+    prompt_preset: PromptPreset | None = Field(
+        default=None,
+        description=(
+            "Which built-in system prompt to assemble: `default` (the coding "
+            "agent), `planning`, or a project role, `project_coordinator` or "
+            "`project_worker`. None selects it from `system_prompt_filename`, "
+            "as before. Ignored when `system_prompt` is set or a custom "
+            "template is used."
+        ),
+    )
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
         default_factory=ParallelToolExecutor
     )
@@ -475,6 +485,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self._parallel_executor = ParallelToolExecutor(
             max_workers=self.tool_concurrency_limit
         )
+
+    @property
+    def _prompt_preset(self) -> PromptPreset | None:
+        preset = super()._prompt_preset
+        if preset is None or self.prompt_preset is None:
+            return preset
+        return self.prompt_preset
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         template_kwargs = super()._resolved_template_kwargs()

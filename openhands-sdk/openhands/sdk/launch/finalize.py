@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.agent import Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import AgentLaunchAdditions
@@ -105,6 +106,8 @@ def finalize(
     for suffix in (appended, *extra_suffixes):
         if suffix.strip():
             agent = _append_system_message_suffix(agent, suffix.strip())
+    if additions is not None:
+        agent = _with_project_role(agent, additions)
     agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if additions and additions.skills:
         agent = _with_launch_skills(agent, additions.skills)
@@ -209,6 +212,32 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
             )
         }
     )
+
+
+def _with_project_role(agent: AgentBase, additions: AgentLaunchAdditions) -> AgentBase:
+    """Apply the deployment's prompt role and project context.
+
+    An OpenHands agent takes the preset and renders the context in its own
+    ``<PROJECT>`` block. An ACP agent builds its own prompt, so it keeps its
+    preset and gets the context in its suffix.
+    """
+    if isinstance(agent, Agent):
+        if additions.prompt_preset is not None:
+            agent = agent.model_copy(update={"prompt_preset": additions.prompt_preset})
+        if additions.project_context and additions.project_context.strip():
+            context = _context_of(agent)
+            agent = agent.model_copy(
+                update={
+                    "agent_context": context.model_copy(
+                        update={"project_context": additions.project_context.strip()}
+                    )
+                }
+            )
+        return agent
+    if additions.project_context and additions.project_context.strip():
+        block = f"<PROJECT>\n{additions.project_context.strip()}\n</PROJECT>"
+        agent = _append_system_message_suffix(agent, block)
+    return agent
 
 
 def _with_launch_skills(agent: AgentBase, skills: Sequence[Skill]) -> AgentBase:

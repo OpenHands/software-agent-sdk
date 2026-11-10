@@ -3,13 +3,24 @@
 from uuid import uuid4
 
 from openhands.agent_server.project_prompts import (
+    PROJECT_MEMORY_PROMPT_MAX,
     WORKER_GUIDANCE_MARKER,
+    project_context,
     sender_header,
     without_worker_guidance,
-    worker_guidance,
 )
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.context.prompts.presets import PromptPreset
+
+
+# What earlier versions appended to a worker's suffix; a child of a parent
+# started back then inherits it.
+_LEGACY_GUIDANCE = (
+    f"{WORKER_GUIDANCE_MARKER}\n"
+    "- A project groups the conversations that work toward one goal.\n"
+    "- Your final message is your report."
+)
 
 
 def _agent(suffix: str | None) -> Agent:
@@ -21,8 +32,7 @@ def _agent(suffix: str | None) -> Agent:
 
 
 def test_inherited_guidance_is_removed_and_the_rest_kept():
-    guidance = worker_guidance("Coordinator", uuid4())
-    agent = _agent(f"Use the worktree.\n\n{guidance}\n\nBe brief.")
+    agent = _agent(f"Use the worktree.\n\n{_LEGACY_GUIDANCE}\n\nBe brief.")
 
     suffix = without_worker_guidance(agent).agent_context.system_message_suffix  # type: ignore[union-attr]
 
@@ -30,7 +40,7 @@ def test_inherited_guidance_is_removed_and_the_rest_kept():
 
 
 def test_guidance_only_suffix_becomes_empty():
-    agent = _agent(worker_guidance(None, uuid4()))
+    agent = _agent(_LEGACY_GUIDANCE)
 
     assert without_worker_guidance(agent).agent_context.system_message_suffix is None  # type: ignore[union-attr]
 
@@ -54,28 +64,44 @@ def test_a_title_cannot_break_out_of_the_header():
     )
 
 
-def test_guidance_bullets_stay_on_one_line_each():
-    text = worker_guidance("A\nB", uuid4())
+def test_worker_context_names_the_project_and_who_started_it():
+    cid = uuid4()
+
+    text = project_context(
+        "Ship\nProjects",
+        "Help the person work a level up.",
+        started_by=("Cat", cid, "coordinator"),
+        memory="- Use the Paper theme.",
+    )
 
     lines = text.split("\n")
-    assert lines[0] == WORKER_GUIDANCE_MARKER
-    assert all(line.startswith("- ") for line in lines[1:])
+    assert lines[0] == "Project: Ship Projects"
+    assert lines[1] == "Goal: Help the person work a level up."
+    assert lines[2] == (
+        f"Started by: [Cat](conversation:{cid.hex}), the coordinator of this "
+        "project. Your report goes to it."
+    )
+    assert "<UNTRUSTED_CONTENT>\n- Use the Paper theme.\n</UNTRUSTED_CONTENT>" in text
 
 
-def test_guidance_names_the_worker_tools_and_the_coordinator():
-    cid = uuid4()
-    text = worker_guidance("Cat", cid)
+def test_a_member_started_worker_is_not_promised_a_relay():
+    text = project_context(
+        "P", "", started_by=("Worker", uuid4(), "member"), memory=None
+    )
 
-    assert f"[Cat](conversation:{cid.hex})" in text
-    for tool in (
-        "read_project_memory",
-        "update_project_memory",
-        "write_artifact",
-    ):
-        assert tool in text
-    # Coordinator-only tools are not offered to workers.
-    for tool in ("message_project_conversation", "list_project_conversations"):
-        assert tool not in text
+    assert "another conversation in this project." in text
+    assert "report goes" not in text
+    assert "Goal:" not in text and "UNTRUSTED_CONTENT" not in text
+
+
+def test_coordinator_context_and_long_memory_is_cut():
+    text = project_context(
+        "P", "Goal", started_by=None, memory="x" * (PROJECT_MEMORY_PROMPT_MAX + 50)
+    )
+
+    assert "You are this project's coordinator." in text
+    assert "x" * PROJECT_MEMORY_PROMPT_MAX + "\n[... cut;" in text
+    assert "x" * (PROJECT_MEMORY_PROMPT_MAX + 1) not in text
 
 
 def test_headers_name_the_conversation_as_a_mention():
@@ -106,10 +132,17 @@ def test_headers_name_the_conversation_as_a_mention():
     assert headers[3].startswith(AWARENESS_PREFIXES)
 
 
-def test_guidance_puts_the_persons_messages_above_the_coordinators():
+def test_worker_prompt_puts_the_persons_messages_above_the_coordinators():
     """Live: after a condensation, a worker took the person's direct rename
     for a coordinator note and shipped the coordinator's wording instead."""
-    text = worker_guidance("Cat", uuid4())
+    agent = Agent(
+        llm=LLM(model="gpt-4o", usage_id="test-llm"),
+        tools=[],
+        prompt_preset=PromptPreset.PROJECT_WORKER,
+    )
+    text = agent.static_system_message
 
-    assert "The person's own messages outrank the coordinator's" in text
-    assert "summary of earlier events may lose who wrote what" in text
+    assert "The person outranks the coordinator" in text
+    assert "A summary of earlier events can lose who wrote what" in text
+    assert "count the request as the person's" in text
+    assert "never as the person's approval" in text

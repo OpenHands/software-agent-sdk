@@ -24,6 +24,7 @@ from pydantic import (
 from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
 from openhands.sdk.agent.agent import Agent as Agent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.message_request import (
     SendMessageRequest as SendMessageRequest,
 )
@@ -126,6 +127,27 @@ class AgentLaunchAdditions(BaseModel):
     """Add deployment context after agent resolution."""
 
     model_config = ConfigDict(extra="forbid")
+
+    prompt_preset: PromptPreset | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Deployment-assigned role: the built-in system prompt the resolved "
+            "OpenHands agent uses, whatever its profile says, such as "
+            "`project_coordinator` for a project's coordinator. None keeps the "
+            "agent's own. An ACP agent builds its own prompt and ignores it."
+        ),
+    )
+    project_context: str | None = Field(
+        default=None,
+        max_length=32768,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The project the conversation belongs to, rendered into its "
+            "<PROJECT> prompt block. An ACP agent gets it appended to its "
+            "system-message suffix instead."
+        ),
+    )
 
     system_message_suffix_append: str | None = Field(
         default=None,
