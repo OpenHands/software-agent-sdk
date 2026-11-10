@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,10 +16,12 @@ from openhands.agent_server.canvas_extensions.installed import (
     enable_canvas_extension,
     get_installed_canvas_extension,
     install_canvas_extension,
+    list_installed_canvas_extensions,
     uninstall_canvas_extension,
 )
 from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
 from openhands.sdk.extensions.fetch import ExtensionFetchError
+from openhands.sdk.extensions.installation import InstallationMetadata
 
 from .conftest import write_extension as _write_extension
 
@@ -523,7 +526,7 @@ def test_apply_cleans_up_staging_after_success(extension_dir: Path, installed: P
     )
 
     assert not (installed / ".staging" / "my-extension").exists()
-    assert not (installed / ".staging" / "my-extension.previous").exists()
+    assert list((installed / ".staging").glob("my-extension.previous*")) == []
 
 
 def test_double_apply_without_recheck_raises(extension_dir: Path, installed: Path):
@@ -672,6 +675,97 @@ def test_apply_leaves_no_backup_when_first_rename_fails(
     assert _active_version(installed) == "1.0.0"
     staged = installed / ".staging" / "my-extension" / "local"
     assert staged.is_dir()
+
+
+def test_apply_keeps_the_previous_bundle_when_the_rollback_fails(
+    extension_dir: Path, installed: Path
+):
+    """If the rollback rename fails too, the previous bundle is the only copy
+    left, so it stays in its backup directory instead of being deleted.
+    """
+    _write_extension(extension_dir, version="2.0.0")
+    check = check_canvas_extension_update("my-extension", installed_dir=installed)
+    assert check is not None
+    install_path = installed / "my-extension"
+    real_replace = os.replace
+    renames = {"n": 0}
+
+    def flaky_replace(src, dst):
+        if install_path in (Path(src), Path(dst)):
+            renames["n"] += 1
+            if renames["n"] in (2, 3):
+                raise OSError("simulated rename failure")
+        return real_replace(src, dst)
+
+    with patch("os.replace", side_effect=flaky_replace):
+        with pytest.raises(OSError, match="simulated rename failure"):
+            apply_canvas_extension_update(
+                "my-extension",
+                resolved_ref=check.resolved_ref,
+                enabled=True,
+                installed_dir=installed,
+            )
+
+    assert not install_path.exists()
+    [backup_root] = (installed / ".staging").glob("my-extension.previous-*")
+    assert _active_version(backup_root) == "1.0.0"
+
+
+def test_list_cannot_run_between_the_apply_renames(
+    extension_dir: Path, installed: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The install path is missing between apply's two renames. The metadata
+    lock must keep a list call from loading in that window, where it would
+    prune the entry.
+    """
+    _write_extension(extension_dir, version="2.0.0")
+    check = check_canvas_extension_update("my-extension", installed_dir=installed)
+    assert check is not None
+    install_path = installed / "my-extension"
+    original_load = InstallationMetadata._load_for_session.__func__
+    list_loaded = threading.Event()
+
+    def load(cls: type[InstallationMetadata], directory: Path):
+        result = original_load(cls, directory)
+        if threading.current_thread().name == "list":
+            list_loaded.set()
+        return result
+
+    monkeypatch.setattr(InstallationMetadata, "_load_for_session", classmethod(load))
+    real_replace = os.replace
+    lists: list[threading.Thread] = []
+    listed: list[list] = []
+
+    def replace(src, dst):
+        real_replace(src, dst)
+        if Path(src) == install_path and not lists:
+            thread = threading.Thread(
+                target=lambda: listed.append(
+                    list_installed_canvas_extensions(installed_dir=installed)
+                ),
+                name="list",
+                daemon=True,
+            )
+            lists.append(thread)
+            thread.start()
+            assert not list_loaded.wait(0.5), (
+                "list loaded metadata between the apply renames"
+            )
+
+    monkeypatch.setattr(os, "replace", replace)
+
+    apply_canvas_extension_update(
+        "my-extension",
+        resolved_ref=check.resolved_ref,
+        enabled=False,
+        installed_dir=installed,
+    )
+
+    assert len(lists) == 1, "apply did not move the active bundle aside"
+    lists[0].join(10)
+    assert [(i.name, i.version, i.enabled) for i in listed[0]] == [
+        ("my-extension", "2.0.0", False)
+    ]
 
 
 def test_apply_rejects_manifest_that_became_invalid_since_check(

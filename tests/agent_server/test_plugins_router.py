@@ -7,6 +7,7 @@ default install dir is redirected), so nothing touches the real ~/.openhands.
 import json
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -124,6 +125,43 @@ def test_refresh_returns_updated_plugin(client: TestClient, tmp_path: Path):
 
     assert refreshed.status_code == 200
     assert refreshed.json()["plugin"]["name"] == "demo-plugin"
+
+
+def test_refresh_with_a_concurrent_list_keeps_a_disabled_plugin_disabled(
+    client: TestClient, tmp_path: Path, monkeypatch
+):
+    """#5985 through the API: a GET /plugins/installed while a refresh copies
+    the new version must not prune the plugin's entry, which would make the
+    refresh re-enable a disabled plugin.
+    """
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    client.post("/plugins/install", json={"source": str(src)})
+    client.patch("/plugins/installed/demo-plugin", json={"enabled": False})
+    store = (tmp_path / "installed-store").resolve()
+    real_copytree = shutil.copytree
+    listed = []
+
+    def copytree(source, destination, *args, **kwargs):
+        if Path(destination).is_relative_to(store) and not listed:
+            thread = threading.Thread(
+                target=lambda: listed.append(client.get("/plugins/installed"))
+            )
+            thread.start()
+            thread.join(10)
+        return real_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copytree", copytree)
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 200
+    assert len(listed) == 1, "the refresh did not copy into the install store"
+    assert listed[0].status_code == 200
+    assert [(p["name"], p["enabled"]) for p in listed[0].json()["plugins"]] == [
+        ("demo-plugin", False)
+    ]
+    plugin = client.get("/plugins/installed/demo-plugin").json()
+    assert (plugin["enabled"], plugin["source"]) == (False, str(src))
 
 
 def test_refresh_vanished_source_is_400_and_keeps_plugin(
