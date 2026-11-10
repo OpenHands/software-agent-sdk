@@ -2036,7 +2036,16 @@ def cmd_llm_show(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def conversation_status(run: Run, conversation_id: str) -> str:
+    if not conversation_id.strip():
+        raise CliError(
+            "conversation id is empty",
+            hint="the variable holding it is set by a step that failed or did not run",
+        )
     info = api_json(run, "GET", f"/api/conversations/{conversation_id}")
+    if not isinstance(info, dict):
+        raise CliError(
+            f"GET /api/conversations/{conversation_id} did not return a conversation"
+        )
     return str(info.get("execution_status", "unknown")).lower()
 
 

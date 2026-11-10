@@ -348,13 +348,13 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --check tags.ask matches '(?i)colou?r.*\?$' --until-ok 10 --save F36.turn/asked
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --check tags.ask matches '(?i)colou?r.*\?$' --until-ok 60 --save F36.turn/asked
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "needs_input"' \
     --check conversations contains '"ask": "' --save F36.turn/conversations
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Blue. Reply with the single word noted and finish."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 10 --save F36.turn/answered
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 60 --save F36.turn/answered
   W2_HEX=$(printf %s "$W2" | tr -d -)
   for _ in $(seq 30); do
     control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the person" --expect-min 2 >/dev/null 2>&1 && break
@@ -485,11 +485,14 @@ Preconditions:
   control-agent-server api GET "/api/projects/$P2/memory/MEMORY.md" --check content contains 'short answers' --check content contains 'staging' \
     --save F36.memory-tool/memory
   MEMCHILD=$(control-agent-server api GET "/api/conversations/$MEM" --field sub_conversation_ids.0)
-  control-agent-server conversation events "$MEMCHILD" --kinds MessageEvent --contains 'Project memory: MEMORY.md at revision' --expect-count 1 \
+  control-agent-server conversation events "$MEMCHILD" --kinds SystemPromptEvent \
+    --contains 'Project memory: MEMORY.md as it was when this conversation started' --expect-count 1 \
     --save F36.memory-tool/child
+  control-agent-server conversation events "$MEMCHILD" --kinds SystemPromptEvent --contains 'Deploys go through staging.' --expect-count 1
   ```
   The agent merges its line into the index it read, and the child it starts
-  sees the index in its first message.
+  sees the index, with that line, in the `<PROJECT>` block of its system
+  prompt.
 - **No approval over REST (`F36.message-refused`).**
   Requires: `F36.attention`
   ```sh
@@ -530,7 +533,7 @@ Preconditions:
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$CHILD" --check tags.project eq "$P2" \
     --check parent_conversation_id eq "$(control-agent-server api GET "/api/conversations/$CAT" --field id)"
-  control-agent-server conversation events "$CHILD" --kinds SystemPromptEvent --contains 'You are working on a project with a coordinator.' --expect-count 1
+  control-agent-server conversation events "$CHILD" --kinds SystemPromptEvent --contains 'the coordinator of this project. Your report goes to it.' --expect-count 1
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 1
   ```
   The child copies the coordinator's tags, so it is a project conversation; the

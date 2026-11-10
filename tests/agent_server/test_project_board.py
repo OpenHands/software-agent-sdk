@@ -798,6 +798,48 @@ async def test_judge_leaves_open_when_the_person_owes_something(verdict):
 
 
 @pytest.mark.asyncio
+async def test_the_turn_shows_while_the_judge_thinks():
+    """E2E finding: the turn tag was written only after the judge answered,
+    so a slow judge left a finished conversation with no outcome at all."""
+    store = _Tags({"project": "p1"})
+    release = asyncio.Event()
+    verdict = verdict_from_judgments(
+        {"handled": 0.99, "task_done": 0.9, "asks_person": 0.97, "offers_choice": 0.9}
+    )
+
+    async def slow_judge(state: ResolutionState) -> ResolutionVerdict | None:
+        await release.wait()
+        return verdict
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=slow_judge,
+    )
+    for event in (
+        _message("user", "Suggest two names for my cat"),
+        _status("running"),
+        _message("agent", "**Mochi** or **Juniper**.\n\nTell me which you prefer."),
+        _status("finished"),
+    ):
+        await subscriber(event)
+    for _ in range(50):
+        if "turn" in store.tags:
+            break
+        await asyncio.sleep(0.01)
+    assert store.tags == {"project": "p1", "turn": "answered"}
+
+    release.set()
+    await subscriber.drain()
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asked",
+        "ask": "Tell me which you prefer.",
+    }
+
+
+@pytest.mark.asyncio
 async def test_judge_sends_a_question_without_a_question_mark_to_the_person():
     store = _Tags({"project": "p1"})
     verdict = verdict_from_judgments(

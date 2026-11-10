@@ -484,8 +484,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         judged: ResolutionState | None = None,
     ) -> None:
         verdict = None
+        shown = False
         if judged is not None and RESOLVED_TAG_KEY not in self.tags():
+            # The judge can take a while; the board shows the heuristic's
+            # outcome meanwhile rather than no outcome at all.
+            await self._set_turn(turn, ask)
+            shown = True
             verdict = await self._judge(judged)
+        heuristic = (turn, ask)
         if verdict is not None:
             # The judge decides whether the reply waits on the person, also
             # when it asks without a question mark or ends on a pleasantry.
@@ -502,9 +508,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             else:
                 turn = "answered"
                 ask = None
-        await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
-        if ask is not None or ASK_TAG_KEY in self.tags():
-            await self.set_tag(self.conversation_id, ASK_TAG_KEY, ask)
+        if not shown or (turn, ask) != heuristic:
+            await self._set_turn(turn, ask)
         self._notify_finished(project, turn, text, sender, sender_known)
         # A turn that asked the person something is theirs to answer, and a
         # conversation already resolved (by the person or before) stays so.
@@ -530,6 +535,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         )
         if self.tags().get(RESOLVED_TAG_KEY) == "auto":
             await self.set_tag(self.conversation_id, RESOLVE_NOTE_TAG_KEY, note)
+
+    async def _set_turn(self, turn: TurnOutcome, ask: str | None) -> None:
+        await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
+        if ask is not None or ASK_TAG_KEY in self.tags():
+            await self.set_tag(self.conversation_id, ASK_TAG_KEY, ask)
 
     async def _judge(self, state: ResolutionState) -> ResolutionVerdict | None:
         if self.judge is None:
