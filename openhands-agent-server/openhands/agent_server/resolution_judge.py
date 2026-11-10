@@ -76,8 +76,13 @@ def make_resolution_judge(
             llm = agent_llm()
             if llm is None:
                 return None
+            # A copy with the judge's own limits: the conversation LLM's
+            # timeout and retries would nest inside the judge's retry loop.
+            judge_llm = llm.model_copy(
+                update={"timeout": _TIMEOUT_SECONDS, "num_retries": 0}
+            )
             model = LLMDecisionModel(
-                llm=llm, timeout=_TIMEOUT_SECONDS, num_retries=_RETRIES
+                llm=judge_llm, timeout=_TIMEOUT_SECONDS, num_retries=_RETRIES
             )
         return await judge_resolution(model, state)
 
