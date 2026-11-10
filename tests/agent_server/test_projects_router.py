@@ -1715,3 +1715,85 @@ async def test_the_server_catches_up_on_updates_when_it_starts(tmp_path, monkeyp
         reconcile_projects_on_start=True,
     ):
         await asyncio.wait_for(started.wait(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_reopen_routes(client, service, tmp_path):
+    """Review S6/N2: single-purpose routes; both clear an auto-resolve note."""
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/conversations"
+    member = await _start(
+        service,
+        tmp_path,
+        tags={
+            "project": project["id"],
+            "turn": "answered",
+            "resolved": "auto",
+            "resolvenote": "tests pass",
+        },
+    )
+    outsider = await _start(service, tmp_path)
+
+    assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
+    assert await _tags(service, member) == {
+        "project": project["id"],
+        "turn": "answered",
+        "resolved": "user",
+    }
+    assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
+
+    assert (await client.post(f"{base}/{member.hex}/reopen")).status_code == 204
+    assert await _tags(service, member) == {
+        "project": project["id"],
+        "turn": "answered",
+    }
+    assert (await client.post(f"{base}/{member.hex}/reopen")).status_code == 204
+
+    assert (await client.post(f"{base}/{outsider.hex}/resolve")).status_code == 404
+    missing = f"/api/projects/{uuid4().hex}/conversations/{member.hex}/resolve"
+    assert (await client.post(missing)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
+    """Review S6/N2: a full-set PATCH built from tags read a moment ago cannot
+    undo a board update, set board state or change membership; resolving by
+    writing ``resolved`` still works."""
+    member = await _start(
+        service,
+        tmp_path,
+        tags={"project": "p1", "turn": "asked", "ask": "Which DB?", "env": "dev"},
+    )
+
+    # Stale read: no board tags, a different project, a forged resolve note.
+    await service.update_conversation_from_client(
+        member,
+        UpdateConversationRequest(
+            tags={"project": "p2", "env": "prod", "resolvenote": "x", "turn": "y"}
+        ),
+    )
+    assert await _tags(service, member) == {
+        "project": "p1",
+        "turn": "asked",
+        "ask": "Which DB?",
+        "env": "prod",
+    }
+
+    # Writing resolved=user resolves; "auto" is the server's to set.
+    current = await _tags(service, member)
+    await service.update_conversation_from_client(
+        member, UpdateConversationRequest(tags={**current, "resolved": "auto"})
+    )
+    assert "resolved" not in await _tags(service, member)
+    await service.update_conversation_from_client(
+        member, UpdateConversationRequest(tags={**current, "resolved": "user"})
+    )
+    assert (await _tags(service, member))["resolved"] == "user"
+
+    # Dropping it reopens, and takes an auto-resolve note along.
+    await service.set_conversation_tag(member, "resolvenote", "done")
+    await service.update_conversation_from_client(
+        member, UpdateConversationRequest(tags=current)
+    )
+    tags = await _tags(service, member)
+    assert "resolved" not in tags and "resolvenote" not in tags

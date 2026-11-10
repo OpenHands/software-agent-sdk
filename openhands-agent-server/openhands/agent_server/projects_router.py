@@ -835,6 +835,60 @@ async def remove_project_conversation(
     return DeleteResponse()
 
 
+async def _set_member_resolved(
+    project_id: UUID,
+    conversation_id: UUID,
+    request: Request,
+    service: ConversationService,
+    resolved: bool,
+) -> Response:
+    _find(await _load(_store(request)), project_id)
+    info = await service.get_conversation(conversation_id)
+    if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
+        raise HTTPException(status_code=404, detail="Conversation not in project")
+    if await service.set_resolved(conversation_id, resolved) is None:
+        raise HTTPException(status_code=404, detail="Conversation not in project")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@projects_router.post(
+    "/{project_id}/conversations/{conversation_id}/resolve",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "Project not found, or conversation not a member"}},
+)
+async def resolve_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    """Resolve a member for the person: ``resolved=user``. Idempotent.
+
+    It replaces an automatic resolve and its note. The person's next message
+    in the conversation reopens it, as before.
+    """
+    return await _set_member_resolved(
+        project_id, conversation_id, request, service, True
+    )
+
+
+@projects_router.post(
+    "/{project_id}/conversations/{conversation_id}/reopen",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "Project not found, or conversation not a member"}},
+)
+async def reopen_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    """Reopen a resolved member: removes ``resolved`` and its note. Idempotent."""
+    return await _set_member_resolved(
+        project_id, conversation_id, request, service, False
+    )
+
+
 class ProjectTranscriptMessage(BaseModel):
     id: str
     source: str = Field(description="`user`, `agent` or `environment`.")

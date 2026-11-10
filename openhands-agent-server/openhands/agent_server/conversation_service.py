@@ -109,6 +109,8 @@ from openhands.sdk.conversation.title_utils import (
 from openhands.sdk.conversation.types import (
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
+    RESOLVE_NOTE_TAG_KEY,
+    RESOLVED_TAG_KEY,
     conversation_sender,
 )
 from openhands.sdk.credential import (
@@ -634,6 +636,37 @@ async def _logged_turn_sender(event_service: EventService) -> str | None:
     """
     start = await latest_turn_start(event_service)
     return start.sender if start is not None else None
+
+
+RESERVED_TAG_KEYS = BOARD_TAG_KEYS | {PROJECT_TAG_KEY}
+"""Tags the server owns: project membership and the board's state.
+
+A client's tag ``PATCH`` keeps their current values (see :func:`_client_tags`);
+the projects routes change them.
+"""
+
+
+def _client_tags(current: Mapping[str, str], requested: Mapping[str, str]) -> dict:
+    """The tags a client's full-set ``PATCH`` leaves on a conversation.
+
+    The reserved keys keep their current values, so a client that read the
+    tags a moment ago cannot undo a board update made since, nor set board
+    state or membership. ``resolved`` is the one exception, since UIs resolve
+    by writing it: setting it to ``user`` resolves, dropping it reopens, and
+    either clears ``resolvenote``. Any other value is ignored.
+    """
+    tags = {k: v for k, v in requested.items() if k not in RESERVED_TAG_KEYS}
+    for key in RESERVED_TAG_KEYS:
+        if key in current:
+            tags[key] = current[key]
+    held = current.get(RESOLVED_TAG_KEY)
+    asked = requested.get(RESOLVED_TAG_KEY)
+    if asked != held and asked in ("user", None):
+        tags.pop(RESOLVE_NOTE_TAG_KEY, None)
+        tags.pop(RESOLVED_TAG_KEY, None)
+        if asked is not None:
+            tags[RESOLVED_TAG_KEY] = asked
+    return tags
 
 
 def _active_agent_profile_id() -> UUID | None:
@@ -2116,6 +2149,57 @@ class ConversationService:
         )
         return True
 
+    async def update_conversation_from_client(
+        self, conversation_id: UUID, request: UpdateConversationRequest
+    ) -> bool:
+        """``update_conversation`` for a client's ``PATCH``.
+
+        Its tags are merged under the conversation's tag lock, so the
+        server-owned keys (:data:`RESERVED_TAG_KEYS`) keep their values; see
+        :func:`_client_tags`.
+        """
+        if request.tags is None:
+            return await self.update_conversation(conversation_id, request)
+        async with self._tag_lock(conversation_id):
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return False
+            tags = _client_tags(event_service.stored.tags, request.tags)
+            return await self.update_conversation(
+                conversation_id, request.model_copy(update={"tags": tags})
+            )
+
+    async def set_resolved(
+        self, conversation_id: UUID, resolved: bool
+    ) -> dict[str, str] | None:
+        """Resolve a conversation for the person (``resolved=user``) or reopen it.
+
+        Either way the auto-resolve note goes. Returns the tags after the
+        change, or ``None`` when the conversation does not exist.
+        """
+        async with self._tag_lock(conversation_id):
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return None
+            current = dict(event_service.stored.tags)
+            tags = dict(current)
+            tags.pop(RESOLVE_NOTE_TAG_KEY, None)
+            tags.pop(RESOLVED_TAG_KEY, None)
+            if resolved:
+                tags[RESOLVED_TAG_KEY] = "user"
+            if tags != current:
+                await self.update_conversation(
+                    conversation_id, UpdateConversationRequest(tags=tags)
+                )
+            return dict(event_service.stored.tags)
+
+    def _tag_lock(self, conversation_id: UUID) -> asyncio.Lock:
+        lock = self._tag_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._tag_locks[conversation_id] = lock
+        return lock
+
     async def list_tagged_conversations(
         self, key: str, value: str
     ) -> list[tuple[StoredConversation, ConversationExecutionStatus]]:
@@ -2170,11 +2254,7 @@ class ConversationService:
         Raises:
             ValueError: If ``expected`` is given and does not match.
         """
-        lock = self._tag_locks.get(conversation_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._tag_locks[conversation_id] = lock
-        async with lock:
+        async with self._tag_lock(conversation_id):
             event_service = await self._get_or_load_event_service(conversation_id)
             if event_service is None:
                 return None

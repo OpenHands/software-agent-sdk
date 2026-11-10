@@ -789,9 +789,16 @@ async def update_conversation(
 ) -> Success:
     """Update conversation metadata.
 
-    This endpoint allows updating conversation details like title.
+    This endpoint allows updating conversation details like title. ``tags``
+    replaces the whole set, except the tags the server owns: ``project``
+    (change membership with the project routes), ``turn``, ``ask`` and
+    ``resolvenote`` keep their values. ``resolved`` may be set to ``user`` or
+    removed, which resolves or reopens the conversation; prefer the project
+    routes ``.../resolve`` and ``.../reopen``.
     """
-    updated = await conversation_service.update_conversation(conversation_id, request)
+    updated = await conversation_service.update_conversation_from_client(
+        conversation_id, request
+    )
     if not updated:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
