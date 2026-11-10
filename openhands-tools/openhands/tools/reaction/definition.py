@@ -81,22 +81,35 @@ class ReactionObservation(Observation):
         return Text()
 
 
-_GUIDANCE = (
-    "React when it helps the person see where things stand, for example with "
-    "eyes when you start on work that comes before your answer, or +1 for a "
-    "note that needs no reply. Do this whenever the person asks you to react. "
-    "A reaction stays on the message: unreact only to take back one that no "
-    "longer fits, or when the person asks. Reacting does not end your turn."
-)
+_REACT_DESCRIPTION = """\
+Put an emoji reaction on a message; by default the person's latest one.
+The person sees it on their message right away, while you keep working, so a
+reaction is the smallest sign that you got a message and what you make of it.
 
-_REACT_DESCRIPTION = (
-    "Put an emoji reaction on a message; by default the person's latest one. "
-    "The person sees it on their message. " + _GUIDANCE
-)
-_UNREACT_DESCRIPTION = (
-    "Take an emoji reaction you added off a message; by default the person's "
-    "latest one. " + _GUIDANCE
-)
+Use the reaction that fits:
+- +1 when the person corrects you, changes the plan or adds to it while you
+  are working ("wait, actually...", "also...", "use X instead"): react +1
+  first, then carry on with the change. No need to stop and reply. Also +1 a
+  note or go-ahead that needs no reply.
+- eyes when a message needs work before you can answer it: react when you
+  start, and answer when you have the result.
+- white_check_mark when you have done what a message asked and there is
+  nothing more to say about it.
+- thinking_face when a message raises something you need to look into
+  before you can agree with it.
+- tada when something the person cares about lands: a fix works, a release
+  is out, good news.
+- heart when the person thanks you or shares something kind.
+
+A reaction never replaces an answer: a question still gets a reply. React
+when it tells the person something, not on every message, and whenever the
+person asks you to. A reaction stays on the message. Reacting does not end
+your turn."""
+
+_UNREACT_DESCRIPTION = """\
+Take an emoji reaction you added off a message; by default the person's
+latest one. Do this only when it no longer fits (for example eyes on work you
+decided not to do) or when the person asks: a reaction is meant to stay."""
 
 
 def _annotations() -> ToolAnnotations:
