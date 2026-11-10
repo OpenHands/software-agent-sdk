@@ -12,6 +12,7 @@ import type {
   ConversationInfo,
   ConversationConfigurationChangesRequest,
   ConversationConfigurationChangesResponse,
+  ConversationToolsResponse,
   ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
@@ -357,6 +358,13 @@ export class ConversationClient {
     const response = await this.client.post<ConversationConfigurationChangesResponse>(
       `/api/conversations/${conversationId}/configuration/changes`,
       request
+    );
+    return response.data;
+  }
+
+  async getTools(conversationId: string): Promise<ConversationToolsResponse> {
+    const response = await this.client.get<ConversationToolsResponse>(
+      `/api/conversations/${conversationId}/tools`
     );
     return response.data;
   }

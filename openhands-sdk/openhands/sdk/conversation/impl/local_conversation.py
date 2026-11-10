@@ -67,7 +67,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
-from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
     MCPToolProvider,
@@ -228,6 +228,7 @@ class LocalConversation(BaseConversation):
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
     _attached_mcp_clients: dict[str, MCPClient]
+    _mcp_server_clients: dict[int, str]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
@@ -358,6 +359,7 @@ class LocalConversation(BaseConversation):
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
         self._attached_mcp_clients = {}
+        self._mcp_server_clients = {}
         self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -1541,19 +1543,52 @@ class LocalConversation(BaseConversation):
                 changed = True
                 self._state.agent = updated_agent
                 self._state.attached_mcp_servers = [*old_attached, name]
-            self.agent = updated_agent
-            self._attached_mcp_clients[name] = client
+                self.agent = updated_agent
+                self._attached_mcp_clients[name] = client
+                self._mcp_server_clients[id(client)] = name
             active = True
         except BaseException:
-            if client is not None:
-                client.sync_close()
             if changed:
                 with self._state:
                     self._state.agent = old_state_agent
                     self._state.attached_mcp_servers = old_attached
                     self._state._dirty = old_dirty
-            self.agent = old_agent
+                    self.agent = old_agent
+                    self._attached_mcp_clients.pop(name, None)
+                    if client is not None:
+                        self._mcp_server_clients.pop(id(client), None)
+            if client is not None:
+                client.sync_close()
             raise
+
+    def live_tools(self) -> list[dict[str, Any]]:
+        """Snapshot registered tools and their conversation-level provenance."""
+        if not self.agent.supports_openhands_tools:
+            return []
+        self._ensure_agent_ready()
+        with self._state:
+            attached = set(self._state.attached_mcp_servers)
+            tools = self.agent.tools_map.values()
+            result: list[dict[str, Any]] = []
+            for tool in tools:
+                item: dict[str, Any] = {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.to_mcp_tool()["inputSchema"],
+                    "source": "builtin",
+                }
+                if isinstance(tool, MCPToolDefinition):
+                    item["source"] = "global"
+                    executor = tool.executor
+                    if isinstance(executor, MCPToolExecutor):
+                        server_name = self._mcp_server_clients.get(id(executor.client))
+                        if server_name is not None:
+                            item["source"] = (
+                                "conversation" if server_name in attached else "global"
+                            )
+                            item["server_name"] = server_name
+                result.append(item)
+            return result
 
     def _runtime_mcp_tools(
         self,
@@ -1634,6 +1669,7 @@ class LocalConversation(BaseConversation):
         client = self._mcp_tool_provider.create_tools(
             {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
         )
+        self._mcp_server_clients[id(client)] = name
         return named(client.tools)
 
     def _on_mcp_tools_reconciled(
@@ -3168,6 +3204,7 @@ class LocalConversation(BaseConversation):
                 except Exception as exc:
                     logger.warning("Error closing attached MCP client: %s", exc)
             self._attached_mcp_clients.clear()
+            self._mcp_server_clients.clear()
         if isinstance(agent_error, CredentialBindingError):
             raise agent_error
         self._cleanup_complete = True

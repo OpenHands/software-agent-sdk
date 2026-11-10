@@ -47,8 +47,10 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     ConversationSortOrder,
+    ConversationToolsResponse,
     ForkConversationRequest,
     GrantConversationSecret,
+    InstallConversationMCP,
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
@@ -94,7 +96,7 @@ _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
 
 def _configuration_changes_schema() -> dict:
     schema = ConversationConfigurationChangesRequest.model_json_schema()
-    variants = schema.pop("$defs")
+    variants = schema["$defs"]
     items = schema["properties"]["operations"]["items"]
     items["oneOf"] = [
         variants[ref["$ref"].rsplit("/", 1)[-1]] for ref in items["oneOf"]
@@ -636,9 +638,43 @@ async def change_conversation_configuration(
                 status.HTTP_409_CONFLICT, "MCP server could not be attached"
             ) from exc
         applied = AppliedConfigurationChange(type="mcp.attach", ref=change.ref)
+    elif isinstance(change, InstallConversationMCP):
+        if not change.name or not change.name.strip() or not change.server.enabled:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid MCP server"
+            )
+        try:
+            await event_service.attach_mcp_server(change.name, change.server)
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "MCP server not allowed"
+            ) from exc
+        except (MCPError, RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "MCP server could not be installed"
+            ) from exc
+        applied = AppliedConfigurationChange(type="mcp.install", name=change.name)
     else:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unsupported change")
     return ConversationConfigurationChangesResponse(applied=[applied])
+
+
+@conversation_router.get(
+    "/{conversation_id}/tools",
+    response_model=ConversationToolsResponse,
+    response_model_exclude_none=True,
+    responses={404: {"description": "Conversation not found"}},
+)
+async def get_conversation_tools(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationToolsResponse:
+    """List tools currently available to this conversation's agent."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    tools = await event_service.get_live_tools()
+    return ConversationToolsResponse(tools=tools)
 
 
 @conversation_router.post(

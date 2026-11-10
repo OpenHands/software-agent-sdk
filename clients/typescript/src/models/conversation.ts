@@ -14,6 +14,7 @@ import {
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
+import type { MCPServer } from './api';
 import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
 
 export enum ConversationSortOrder {
@@ -180,15 +181,35 @@ export interface UpdateSecretsRequest {
 
 /** Secret values are sent only to the owning agent server, never returned. */
 export type ConversationConfigurationOperation =
-  { type: 'secret.grant'; name: string; value: string } | { type: 'mcp.attach'; ref: string };
+  | { type: 'secret.grant'; name: string; value: string }
+  | { type: 'mcp.attach'; ref: string }
+  | { type: 'mcp.install'; name: string; server: MCPServer };
 
 /** One operation per request until atomic multi-operation changes are supported. */
 export interface ConversationConfigurationChangesRequest {
   operations: [ConversationConfigurationOperation];
 }
 
+export type AppliedConfigurationChange =
+  | { type: 'secret.grant'; name: string }
+  | { type: 'mcp.attach'; ref: string }
+  | { type: 'mcp.install'; name: string };
+
 export interface ConversationConfigurationChangesResponse {
-  applied: [{ type: 'secret.grant'; name: string } | { type: 'mcp.attach'; ref: string }];
+  applied: [AppliedConfigurationChange];
+}
+
+/** Snapshot of tools registered on the live agent, never server configuration. */
+export interface ConversationToolInfo {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  source: 'conversation' | 'global' | 'builtin';
+  server_name?: string;
+}
+
+export interface ConversationToolsResponse {
+  tools: ConversationToolInfo[];
 }
 
 export interface ConversationSearchRequest {

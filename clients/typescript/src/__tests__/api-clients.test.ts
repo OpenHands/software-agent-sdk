@@ -191,6 +191,63 @@ describe('Auxiliary API clients', () => {
       );
     });
 
+    it('ConversationClient installs inline MCP and retrieves live tool inventory', async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ applied: [{ type: 'mcp.install', name: 'inline' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              tools: [
+                {
+                  name: 'inline_fetch',
+                  description: 'Fetch',
+                  parameters: { type: 'object' },
+                  source: 'conversation',
+                  server_name: 'inline',
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+        ) as typeof fetch;
+      const client = new ConversationClient({ host: 'http://example.com', apiKey: 'session' });
+      const request = {
+        operations: [
+          {
+            type: 'mcp.install',
+            name: 'inline',
+            server: {
+              command: 'python',
+              args: ['-m', 'mcp_server'],
+              env: { PRIVATE_TOKEN: 'sensitive' },
+            },
+          },
+        ],
+      } as const;
+      const changed = await client.changeConfiguration('conversation-1', {
+        operations: [...request.operations],
+      });
+      expect(changed.applied).toEqual([{ type: 'mcp.install', name: 'inline' }]);
+      const inventory = await client.getTools('conversation-1');
+      expect(inventory.tools[0]).toMatchObject({ source: 'conversation', server_name: 'inline' });
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        1,
+        'http://example.com/api/conversations/conversation-1/configuration/changes',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify(request) })
+      );
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        2,
+        'http://example.com/api/conversations/conversation-1/tools',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
     it('CloudClient sends bearer auth and X-Org-Id for cloud app-host requests', async () => {
       global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ items: [], current_org_id: 'org-1' }), {

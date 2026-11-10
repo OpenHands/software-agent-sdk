@@ -22,6 +22,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
+    ConversationToolInfo,
     EventPage,
     EventSortOrder,
     StoredConversation,
@@ -2198,6 +2199,13 @@ class EventService:
         if self.cipher is None and (server.env or server.headers or server.auth):
             raise RuntimeError("MCP server credentials require an encryption key")
         await asyncio.to_thread(self._conversation.attach_mcp_server, name, server)
+
+    async def get_live_tools(self) -> list[ConversationToolInfo]:
+        """Read the current agent's tools without blocking the event loop."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        tools = await asyncio.to_thread(self._conversation.live_tools)
+        return [ConversationToolInfo.model_validate(tool) for tool in tools]
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""

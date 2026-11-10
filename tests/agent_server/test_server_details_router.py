@@ -117,6 +117,8 @@ def test_server_info_reports_credential_binding_probe(client):
     assert {
         "profile_secret_scope_v1",
         "conversation_configuration_additions_v1",
+        "conversation_mcp_install_v1",
+        "conversation_live_tools_v1",
         "profile_persona_v1",
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",

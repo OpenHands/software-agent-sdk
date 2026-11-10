@@ -29,6 +29,7 @@ from openhands.sdk.llm.message import (  # re-export
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile as LaunchedAgentProfile,
 )
@@ -478,8 +479,16 @@ class AttachConversationMCP(BaseModel):
     ref: str
 
 
+class InstallConversationMCP(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["mcp.install"]
+    name: str
+    server: MCPServer
+
+
 ConversationConfigurationOperation = Annotated[
-    GrantConversationSecret | AttachConversationMCP,
+    GrantConversationSecret | AttachConversationMCP | InstallConversationMCP,
     Field(discriminator="type"),
 ]
 
@@ -493,13 +502,36 @@ class ConversationConfigurationChangesRequest(BaseModel):
 
 
 class AppliedConfigurationChange(BaseModel):
-    type: Literal["secret.grant", "mcp.attach"]
+    type: Literal["secret.grant", "mcp.attach", "mcp.install"]
     name: str | None = None
     ref: str | None = None
 
 
 class ConversationConfigurationChangesResponse(BaseModel):
     applied: list[AppliedConfigurationChange]
+
+
+type ToolParameterValue = (
+    str
+    | int
+    | float
+    | bool
+    | None
+    | list[ToolParameterValue]
+    | dict[str, ToolParameterValue]
+)
+
+
+class ConversationToolInfo(BaseModel):
+    name: str
+    description: str
+    parameters: dict[str, ToolParameterValue]
+    source: Literal["conversation", "global", "builtin"]
+    server_name: str | None = None
+
+
+class ConversationToolsResponse(BaseModel):
+    tools: list[ConversationToolInfo]
 
 
 class UpdateSecretsRequest(BaseModel):

@@ -1,5 +1,6 @@
 """Conversation configuration additions use the real API and resume path."""
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -190,6 +191,23 @@ async def test_no_cipher_or_invalid_value_never_adds_secret(tmp_path):
                     json={
                         "operations": [
                             {
+                                "type": "mcp.install",
+                                "name": "private",
+                                "server": {
+                                    "command": sys.executable,
+                                    "env": {"TOKEN": "not-persisted"},
+                                },
+                            }
+                        ]
+                    },
+                )
+            ).status_code == 409
+            assert (
+                await client.post(
+                    url,
+                    json={
+                        "operations": [
+                            {
                                 "type": "secret.grant",
                                 "name": "invalid-name",
                                 "value": "x",
@@ -289,6 +307,13 @@ async def test_attach_saved_mcp_is_live_and_conversation_only(tmp_path):
             assert response.json() == {
                 "applied": [{"type": "mcp.attach", "ref": "fetch"}],
             }
+            inventory = (await client.get(f"/api/conversations/{first}/tools")).json()
+            assert any(
+                tool["name"] == "fetch_fetch"
+                and tool["source"] == "conversation"
+                and tool["server_name"] == "fetch"
+                for tool in inventory["tools"]
+            )
             assert (
                 await client.post(
                     url, json={"operations": [{"type": "mcp.attach", "ref": "fetch"}]}
@@ -392,6 +417,19 @@ async def test_mcp_policy_is_captured_at_launch_not_from_edited_profile(tmp_path
                 json={"operations": [{"type": "mcp.attach", "ref": "fetch"}]},
             )
             assert response.status_code == 403, response.text
+            inline = await client.post(
+                f"/api/conversations/{info.id}/configuration/changes",
+                json={
+                    "operations": [
+                        {
+                            "type": "mcp.install",
+                            "name": "not-allowed",
+                            "server": {"command": sys.executable},
+                        }
+                    ]
+                },
+            )
+            assert inline.status_code == 403, inline.text
             event_service = await service.get_event_service(info.id)
             snapshot = event_service.stored.launched_agent_profile
             legacy = LaunchedAgentProfile.model_validate(
@@ -414,3 +452,204 @@ async def test_mcp_policy_is_captured_at_launch_not_from_edited_profile(tmp_path
         assert not (
             await (await service.get_event_service(info.id)).get_state()
         ).agent.mcp_config
+
+
+@pytest.mark.asyncio
+async def test_inline_mcp_install_live_inventory_isolated_encrypted_and_restored(
+    tmp_path,
+):
+    cipher = Cipher("inline-mcp-key")
+    root = tmp_path / "conversations"
+    repo = Path(__file__).resolve().parents[2]
+    server = {
+        "command": sys.executable,
+        "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+        "cwd": str(repo),
+    }
+    settings = get_settings_store(Config(secret_key=SecretStr(cipher.secret_key)))
+    settings.save(PersistedSettings(agent_settings=OpenHandsAgentSettings()))
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        first, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent=Agent(
+                    llm=LLM(model="gpt-4o", usage_id="test"),
+                    tools=[],
+                    mcp_config={"base": MCPServer.model_validate(server)},
+                ),
+                workspace=LocalWorkspace(working_dir=tmp_path / "first"),
+            )
+        )
+        second = await _start(service, tmp_path / "second")
+        async with _client(service, cipher=cipher) as client:
+            url = f"/api/conversations/{first.id}"
+            initial = await client.get(f"{url}/tools")
+            assert initial.status_code == 200, initial.text
+            assert any(
+                t["name"] == "fetch"
+                and t["source"] == "global"
+                and t["server_name"] == "base"
+                for t in initial.json()["tools"]
+            )
+            response = await client.post(
+                f"{url}/configuration/changes",
+                json={
+                    "operations": [
+                        {
+                            "type": "mcp.install",
+                            "name": "inline",
+                            "server": {
+                                **server,
+                                "env": {"PRIVATE_TOKEN": "inline-secret-value"},
+                            },
+                        }
+                    ]
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {
+                "applied": [{"type": "mcp.install", "name": "inline"}]
+            }
+            inventory = await client.get(f"{url}/tools")
+            assert inventory.status_code == 200, inventory.text
+            assert "inline-secret-value" not in inventory.text
+            assert "PRIVATE_TOKEN" not in inventory.text
+            tools = inventory.json()["tools"]
+            assert any(
+                t["name"] == "inline_fetch"
+                and t["source"] == "conversation"
+                and t["server_name"] == "inline"
+                and isinstance(t["parameters"], dict)
+                for t in tools
+            )
+            assert any(t["source"] == "builtin" for t in tools)
+            assert (
+                await client.get(f"/api/conversations/{second}/tools")
+            ).status_code == 200
+            assert not any(
+                t["name"] == "inline_fetch"
+                for t in (
+                    await client.get(f"/api/conversations/{second}/tools")
+                ).json()["tools"]
+            )
+            assert (
+                await client.post(
+                    f"{url}/configuration/changes",
+                    json={
+                        "operations": [
+                            {"type": "mcp.install", "name": "inline", "server": server}
+                        ]
+                    },
+                )
+            ).status_code == 409
+            invalid = await client.post(
+                f"{url}/configuration/changes",
+                json={
+                    "operations": [
+                        {
+                            "type": "mcp.install",
+                            "name": "other",
+                            "server": {
+                                **server,
+                                "headers": {"TOKEN": "never-reflect-me"},
+                                "unknown": True,
+                            },
+                        }
+                    ]
+                },
+            )
+            assert invalid.status_code == 422
+            assert "never-reflect-me" not in invalid.text
+        assert not settings.load().agent_settings.mcp_config
+        saved = (root / first.id.hex / "base_state.json").read_text()
+        assert "inline-secret-value" not in saved
+        fork = await service.fork_conversation(first.id)
+        fork_tools = (
+            await (await service.get_event_service(fork.id)).get_state()
+        ).agent.mcp_config
+        assert "inline" not in fork_tools
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        async with _client(service, cipher=cipher) as client:
+            response = await client.get(f"/api/conversations/{first.id}/tools")
+            assert response.status_code == 200, response.text
+            assert any(
+                t["name"] == "inline_fetch" and t["source"] == "conversation"
+                for t in response.json()["tools"]
+            )
+            assert "inline-secret-value" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_inline_mcp_install_failure_rolls_back(tmp_path):
+    cipher = Cipher("inline-mcp-failure")
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        conversation_id = await _start(service, tmp_path / "workspace")
+        url = f"/api/conversations/{conversation_id}"
+        async with _client(service, cipher=cipher) as client:
+            response = await client.post(
+                f"{url}/configuration/changes",
+                json={
+                    "operations": [
+                        {
+                            "type": "mcp.install",
+                            "name": "broken",
+                            "server": {
+                                "command": sys.executable,
+                                "args": ["-c", "import sys; sys.exit(2)"],
+                                "env": {"TOKEN": "private-failure"},
+                            },
+                        }
+                    ]
+                },
+            )
+            assert response.status_code == 409, response.text
+            assert "private-failure" not in response.text
+            assert not any(
+                t.get("server_name") == "broken"
+                for t in (await client.get(f"{url}/tools")).json()["tools"]
+            )
+        assert (
+            "broken"
+            not in (
+                await (await service.get_event_service(conversation_id)).get_state()
+            ).agent.mcp_config
+        )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_inline_installs_keep_both_servers(tmp_path):
+    cipher = Cipher("inline-concurrent-key")
+    repo = Path(__file__).resolve().parents[2]
+    server = {
+        "command": sys.executable,
+        "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+        "cwd": str(repo),
+    }
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        conversation_id = await _start(service, tmp_path / "workspace")
+        async with _client(service, cipher=cipher) as client:
+            url = f"/api/conversations/{conversation_id}"
+            responses = await asyncio.gather(
+                *(
+                    client.post(
+                        f"{url}/configuration/changes",
+                        json={
+                            "operations": [
+                                {"type": "mcp.install", "name": name, "server": server}
+                            ]
+                        },
+                    )
+                    for name in ("first", "second")
+                )
+            )
+            assert [response.status_code for response in responses] == [200, 200]
+            inventory = (await client.get(f"{url}/tools")).json()["tools"]
+            assert {t["name"] for t in inventory if t["source"] == "conversation"} == {
+                "first_fetch",
+                "second_fetch",
+            }
+        state = await (await service.get_event_service(conversation_id)).get_state()
+        assert {"first", "second"} <= set(state.agent.mcp_config)
