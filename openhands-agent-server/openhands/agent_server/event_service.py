@@ -2,7 +2,7 @@ import asyncio
 import functools
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -837,6 +837,26 @@ class EventService:
         with self._conversation._state as state:
             return admission_refusal(state, from_person=from_person)
 
+    def _send_keeping_stuck_sync(
+        self, send: Callable[[Message], None], message: Message
+    ) -> None:
+        """Save a guarded message without clearing a ``stuck`` status.
+
+        A new message resets a stuck conversation to idle, which would let the
+        guarded run that follows retry work the person has not looked at. The
+        state lock is reentrant, so ``send`` can take it again inside.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        with self._conversation._state as state:
+            held = state.execution_status
+            send(message)
+            if (
+                held == ConversationExecutionStatus.STUCK
+                and state.execution_status != held
+            ):
+                state.execution_status = held
+
     def _get_execution_status_sync(self) -> ConversationExecutionStatus:
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -994,6 +1014,8 @@ class EventService:
         send = self._conversation.send_message
         if sender is not None:
             send = functools.partial(send, sender=sender)
+        if refuse_pending_confirmation:
+            send = functools.partial(self._send_keeping_stuck_sync, send)
         await loop.run_in_executor(None, send, message)
         outcome: SendMessageRunOutcome | None = None
         if run:
@@ -1020,13 +1042,14 @@ class EventService:
                         != explicit_interrupt_generation
                     ):
                         return outcome
-                    await self.run(
+                    started = await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
                         refuse_pending_confirmation=refuse_pending_confirmation,
+                        _resuming_internal_acp_pause=True,
                     )
                     self._acp_internal_rerun_requested = False
-                    outcome = "started"
+                    outcome = "started" if started else "not_run"
                 except ValueError as e:
                     if str(e) in HELD_FOR_PERSON_STATUSES:
                         raise
@@ -1050,13 +1073,13 @@ class EventService:
                     self._unpin_run_session()
             else:
                 try:
-                    await self.run(
+                    started = await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
                         refuse_pending_confirmation=refuse_pending_confirmation,
                     )
                     self._acp_internal_rerun_requested = False
-                    outcome = "started"
+                    outcome = "started" if started else "not_run"
                 except ConversationRunLimitExceeded as exc:
                     # Nothing was interrupted here, so a capacity refusal is a
                     # clean backpressure signal. The message is already saved,
@@ -1095,13 +1118,15 @@ class EventService:
             raise ValueError("inactive_service")
         with await RunSlot.acquire(self._run_semaphore, wait=True) as run_slot:
             try:
-                await self.run(run_slot=run_slot, refuse_pending_confirmation=True)
+                started = await self.run(
+                    run_slot=run_slot, refuse_pending_confirmation=True
+                )
             except ValueError as e:
                 if str(e) != "conversation_already_running":
                     raise
                 self._rerun_requested = True
                 return "queued"
-        return "started"
+        return "started" if started else "not_run"
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -1670,7 +1695,8 @@ class EventService:
         run_slot: RunSlot | None = None,
         wait_for_capacity: bool = False,
         refuse_pending_confirmation: bool = False,
-    ):
+        _resuming_internal_acp_pause: bool = False,
+    ) -> bool:
         """Run the conversation asynchronously in the background.
 
         This method starts the conversation run in a background task and returns
@@ -1690,6 +1716,14 @@ class EventService:
                 other than the person (a coordinator steering another
                 conversation, a server wake-up) set this. The check is made
                 under the run lock, where no other run can change the status.
+            _resuming_internal_acp_pause: Set by :meth:`send_message` for the
+                run that replaces an ACP prompt it just interrupted. The pause
+                that interrupt left is the server's own, not the person's, so a
+                guarded run may resume it. Pending actions are still refused.
+
+        Returns:
+            ``True`` when a run was scheduled; ``False`` when a stop that
+            landed meanwhile, or a closing service, left nothing to run.
 
         Raises:
             ValueError: If the service is inactive, the conversation is already
@@ -1710,7 +1744,7 @@ class EventService:
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
-                return
+                return False
             # _run_task first: a live run holds the state lock across its step
             # (a tool call can last minutes), so reading execution status would
             # block this request behind it instead of answering at once.
@@ -1725,7 +1759,10 @@ class EventService:
                 loop = asyncio.get_running_loop()
                 refusal = await loop.run_in_executor(
                     None,
-                    functools.partial(self._admission_refusal_sync, from_person=False),
+                    functools.partial(
+                        self._admission_refusal_sync,
+                        from_person=_resuming_internal_acp_pause,
+                    ),
                 )
                 if refusal is not None:
                     raise ValueError(refusal)
@@ -1736,7 +1773,7 @@ class EventService:
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
-                return
+                return False
 
             # Capture conversation reference for the closure
             conversation = self._conversation
@@ -1771,7 +1808,7 @@ class EventService:
             ):
                 if new_owner:
                     owner.release()
-                return
+                return False
             if new_owner:
                 self._run_session_slot = owner
             slot = owner.share()
@@ -1934,6 +1971,7 @@ class EventService:
             # Finally, release even if the task is cancelled before its
             # coroutine enters its own try/finally.
             self._run_task.add_done_callback(settle)
+            return True
 
     async def wait_for_run_completion(
         self, timeout: float | None = None

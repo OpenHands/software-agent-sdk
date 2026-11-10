@@ -284,7 +284,8 @@ async def send_message(
     receiving agent which conversation sent it and that it approves nothing on
     the person's behalf, so UIs can show it as instructions rather than the
     person's words. A sender in a project may only message its own project's
-    conversations (422 otherwise).
+    conversations (422 otherwise). A run asked for by a sender conversation is
+    always guarded, as if ``refuse_pending_confirmation`` were set.
     """
     content = list(request.content)
     sender: str | None = None
@@ -304,7 +305,12 @@ async def send_message(
         sender = conversation_sender(request.sender_conversation_id)
     message = Message(role=request.role, content=content)
 
-    guarded = request.run and request.refuse_pending_confirmation
+    # A message from another conversation never approves or resumes on the
+    # person's behalf, whether or not its sender asked for the guard.
+    guarded = request.run and (
+        request.refuse_pending_confirmation
+        or request.sender_conversation_id is not None
+    )
     previous_status: ConversationExecutionStatus | None = None
     if guarded:
         # An unlocked read: it only spares the person an unrelated message in

@@ -755,6 +755,112 @@ async def test_send_without_run_returns_none(service, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_sender_conversation_is_always_guarded(client, service, tmp_path):
+    """Review: a message from another conversation never approves pending
+    actions, even when its sender leaves refuse_pending_confirmation off."""
+    sender = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    await _set_status(
+        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+    response = await client.post(
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("go ahead", sender.hex, refuse_pending_confirmation=False),
+    )
+
+    assert response.status_code == 409
+    assert await _user_messages(service, worker) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_guarded_message_leaves_a_stuck_conversation_stuck(service, tmp_path):
+    """Review: saving a message resets stuck to idle, which would let the
+    guarded run retry work the person has not looked at."""
+    worker = await _start(service, tmp_path)
+    await _set_status(service, worker, ConversationExecutionStatus.STUCK)
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+
+    with pytest.raises(ValueError, match="stuck"):
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text="try again")]),
+            run=True,
+            refuse_pending_confirmation=True,
+        )
+
+    assert await _user_messages(service, worker) == 1
+    state = await event_service.get_state()
+    assert state.execution_status == ConversationExecutionStatus.STUCK
+    assert event_service._run_task is None
+
+
+@pytest.mark.asyncio
+async def test_send_reports_not_run_when_a_stop_lands_first(
+    service, tmp_path, monkeypatch
+):
+    """Review: run() can return without scheduling anything; the message is
+    then not reported as started."""
+    worker = await _start(service, tmp_path)
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+    original = EventService.run
+
+    async def stopped_while_waiting(self, *args, **kwargs):
+        self._explicit_interrupt_generation += 1  # a stop won the run lock
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(EventService, "run", stopped_while_waiting)
+
+    outcome = await event_service.send_message(
+        Message(role="user", content=[TextContent(text="also")]),
+        run=True,
+        refuse_pending_confirmation=True,
+    )
+
+    assert outcome == "not_run"
+    assert event_service._run_task is None
+    assert await _user_messages(service, worker) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_guarded_acp_follow_up_resumes_its_own_interrupt(service, tmp_path):
+    """Review: a follow-up to a running ACP conversation interrupts the prompt
+    (paused) and starts a replacement run, which the guard must not refuse.
+    A pause the person made, or pending actions, still refuse."""
+    worker = await _start(service, tmp_path)
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+    conversation = event_service._conversation
+    assert conversation is not None
+    ran = asyncio.Event()
+
+    async def arun() -> None:
+        ran.set()
+
+    conversation.arun = arun  # type: ignore[method-assign]
+    await _set_status(service, worker, ConversationExecutionStatus.PAUSED)
+
+    with pytest.raises(ValueError, match="paused"):
+        await event_service.run(refuse_pending_confirmation=True)
+    started = await event_service.run(
+        refuse_pending_confirmation=True, _resuming_internal_acp_pause=True
+    )
+
+    assert started is True
+    await asyncio.wait_for(ran.wait(), 5)
+    await event_service.wait_for_run_completion(timeout=5)
+
+    await _set_status(
+        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    with pytest.raises(ValueError, match="waiting_for_confirmation"):
+        await event_service.run(
+            refuse_pending_confirmation=True, _resuming_internal_acp_pause=True
+        )
+
+
+@pytest.mark.asyncio
 async def test_failed_coordinator_tag_undoes_the_whole_patch(
     client, service, tmp_path, monkeypatch
 ):
