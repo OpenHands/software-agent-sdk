@@ -14,6 +14,8 @@ SERVER = r"""
 import json
 import sys
 
+context_updates = json.loads(sys.argv[1])
+
 def send(message):
     print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
 
@@ -34,8 +36,9 @@ for line in sys.stdin:
         for update in [
             {"sessionUpdate": "agent_message_chunk",
              "content": {"type": "text", "text": "Offline turn complete."}},
-            {"sessionUpdate": "usage_update", "used": 46000, "size": 1000000,
-             "cost": {"amount": 0.25, "currency": "USD"}},
+            *[{"sessionUpdate": "usage_update", "used": used, "size": 1000000,
+               "cost": {"amount": 0.25, "currency": "USD"}}
+              for used in context_updates],
         ]:
             send({"method": "session/update",
                   "params": {"sessionId": session_id, "update": update}})
@@ -56,8 +59,11 @@ for line in sys.stdin:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-context", type=int)
+    parser.add_argument("--context-updates", type=int, nargs="+", default=[46000])
     args = parser.parse_args()
-    agent = ACPAgent(acp_command=[sys.executable, "-u", "-c", SERVER])
+    agent = ACPAgent(
+        acp_command=[sys.executable, "-u", "-c", SERVER, json.dumps(args.context_updates)]
+    )
     with tempfile.TemporaryDirectory() as workspace:
         with closing(
             Conversation(agent=agent, workspace=workspace, visualizer=None)

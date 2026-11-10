@@ -3786,7 +3786,13 @@ class TestACPAgentTelemetry:
         assert llms[0].model == "acp-managed"
 
     def _make_step_fixtures(
-        self, tmp_path, agent=None, usage=None, cost=None, context_used=None
+        self,
+        tmp_path,
+        agent=None,
+        usage=None,
+        cost=None,
+        context_used=None,
+        context_updates=None,
     ):
         """Set up agent + client + executor for step() telemetry tests."""
         if agent is None:
@@ -3814,6 +3820,15 @@ class TestACPAgentTelemetry:
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
+            for used in context_updates or ():
+                asyncio.run(
+                    mock_client.session_update(
+                        "test-session",
+                        UsageUpdate(
+                            session_update="usage_update", used=used, size=1000000
+                        ),
+                    )
+                )
             if cost is not None or context_used is not None:
                 mock_update = UsageUpdate(
                     session_update="usage_update",
@@ -4022,6 +4037,25 @@ class TestACPAgentTelemetry:
 
         assert len(agent.llm.metrics.response_latencies) == 1
         assert agent.llm.metrics.response_latencies[0].latency >= 0.0
+
+    @pytest.mark.parametrize("used_values", [(46000, 0), (46000, 0, 12000)])
+    def test_context_fill_tracks_latest_update_after_compaction(
+        self, tmp_path, used_values
+    ):
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 1300000, "output": 1000},
+            context_updates=used_values,
+        )
+        agent.step(conversation, on_event=lambda _: None)
+
+        metrics = agent.llm.metrics
+        assert metrics.accumulated_token_usage is not None
+        for recorded in (metrics.token_usages[-1], metrics.accumulated_token_usage):
+            assert recorded.per_turn_token == used_values[-1]
+            assert recorded.context_window == 1000000
+            assert recorded.prompt_tokens == 1300000
+            assert recorded.completion_tokens == 1000
 
     @pytest.mark.asyncio
     async def test_session_update_stores_usage_update(self):
