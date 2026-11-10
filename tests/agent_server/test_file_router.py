@@ -1017,6 +1017,96 @@ async def test_download_trajectory_cleans_up_after_stream_failure(
     assert list(conversation_dir.parent.glob("*.zip")) == []
 
 
+async def test_download_trajectory_limits_concurrent_zip_builds(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, _ = _trajectory_dir(client, tmp_path)
+    create_zip = file_router_module._create_zip_from_directory
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def tracked_zip(source, destination):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        create_zip(source, destination)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", tracked_zip)
+
+    responses = await asyncio.gather(
+        *(
+            file_router_module.download_trajectory(
+                conversation_id, _app_request(client)
+            )
+            for _ in range(6)
+        )
+    )
+
+    for response in responses:
+        await _stream_trajectory(response)
+    assert 1 <= peak <= 2
+
+
+async def test_download_trajectory_removes_only_stale_orphaned_temp_zips(
+    client, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    two_hours_ago = time.time() - 2 * 60 * 60
+    # An unstreamed response leaves its temp zip, as a killed server would.
+    stale = await file_router_module.download_trajectory(
+        conversation_id, _app_request(client)
+    )
+    recent = await file_router_module.download_trajectory(
+        conversation_id, _app_request(client)
+    )
+    os.utime(stale.path, (two_hours_ago, two_hours_ago))
+    unrelated = conversation_dir.parent / ".backup.zip"
+    unrelated.touch()
+    os.utime(unrelated, (two_hours_ago, two_hours_ago))
+
+    await _stream_trajectory(
+        await file_router_module.download_trajectory(
+            conversation_id, _app_request(client)
+        )
+    )
+
+    assert not Path(stale.path).exists()
+    assert Path(recent.path).exists()
+    assert unrelated.exists()
+
+
+async def test_download_trajectory_survives_failure_removing_stale_temp_zip(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    two_hours_ago = time.time() - 2 * 60 * 60
+    stale = conversation_dir.parent / f".{conversation_id.hex}-orphan.zip"
+    stale.touch()
+    os.utime(stale, (two_hours_ago, two_hours_ago))
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self == stale:
+            raise PermissionError("in use")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    response = await file_router_module.download_trajectory(
+        conversation_id, _app_request(client)
+    )
+
+    with zipfile.ZipFile(response.path) as archive:
+        assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    assert stale.exists()
+    await _stream_trajectory(response)
+
+
 def test_download_file_with_special_characters_in_path(client, tmp_path):
     """Test download with special characters in path (via query param)."""
     test_file = tmp_path / "file with spaces.txt"

@@ -677,7 +677,9 @@ Preconditions:
   A single download is a valid zip, and every concurrent download is 200
   with a valid zip, in all five rounds: each request builds its own temp zip
   (`<conversations_path>/.<hex>-<random>.zip`) and removes only that one
-  after sending, while the download is still named `<hex>.zip`. A shared
+  after sending, while the download is still named `<hex>.zip`. At most two
+  zips build at once, and each download first removes temp zips over an hour
+  old left by a killed server. A shared
   temp path shows up here as a 500 or a truncated 200. If a download breaks,
   the burst's output names it, and each `<round>-<n>.err` holds curl's error.
 - **Conversation-scoped transfer (`F14.scoped-transfer`).** Read the file the

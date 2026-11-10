@@ -4,11 +4,14 @@ import fnmatch
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import IO, Annotated, Any, Literal
 from urllib.parse import quote
@@ -175,6 +178,27 @@ async def _download_file(path: str) -> FileResponse:
 
 
 _TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+_TRAJECTORY_TEMP_ZIP_NAME = re.compile(r"\.[0-9a-f]{32}-\w+\.zip")
+_TRAJECTORY_TEMP_ZIP_MAX_AGE_SECONDS = 60 * 60
+_TRAJECTORY_ZIP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="trajectory-zip"
+)
+
+
+def _remove_stale_trajectory_temp_zips(conversations_path: Path) -> None:
+    """Remove temp zips left behind when a server died during a download.
+
+    A younger zip may belong to a live download, possibly in another server
+    process sharing this directory, so only old ones are removed.
+    """
+    cutoff = time.time() - _TRAJECTORY_TEMP_ZIP_MAX_AGE_SECONDS
+    with contextlib.suppress(OSError):
+        for path in conversations_path.iterdir():
+            if not _TRAJECTORY_TEMP_ZIP_NAME.fullmatch(path.name):
+                continue
+            with contextlib.suppress(OSError):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
 
 
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
@@ -962,6 +986,10 @@ async def download_trajectory(
             detail="Conversation not found",
         )
 
+    await asyncio.to_thread(
+        _remove_stale_trajectory_temp_zips, config.conversations_path
+    )
+
     # Each request gets its own temp zip: a shared path would let one
     # response's cleanup, or another request's rewrite, break a download of
     # the same trajectory that is still being built or streamed.
@@ -970,8 +998,11 @@ async def download_trajectory(
     )
     os.close(fd)
     temp_file = Path(tmp_name)
-    zip_task = asyncio.create_task(
-        asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
+    zip_task = asyncio.get_running_loop().run_in_executor(
+        _TRAJECTORY_ZIP_EXECUTOR,
+        _create_zip_from_directory,
+        conversation_dir,
+        temp_file,
     )
     try:
         await asyncio.shield(zip_task)
