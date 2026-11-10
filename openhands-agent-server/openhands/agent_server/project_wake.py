@@ -297,7 +297,7 @@ async def notify_coordinator_of_stop(
     title = member.title if member else None
     paused = status == "paused"
     marker = service.conversations_dir / member_id.hex / PAUSED_BY_SHUTDOWN_MARKER
-    if paused and marker.exists():
+    if status in ("paused", "error") and marker.exists():
         member_service = await service.get_event_service(member_id)
         if member_service is None or member_service._closing:
             # The server is going down; the catch-up after it starts again

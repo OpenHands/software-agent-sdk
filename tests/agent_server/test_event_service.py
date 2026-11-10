@@ -2418,8 +2418,9 @@ class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("shut_down", [False, True])
     async def test_start_sets_error_status_when_running_from_disk(
-        self, event_service, tmp_path
+        self, event_service, tmp_path, shut_down
     ):
         """Test that start() sets ERROR status and adds AgentErrorEvent.
 
@@ -2427,7 +2428,11 @@ class TestEventServiceStartWithRunningStatus:
         the process crashed or was terminated unexpectedly. The EventService should:
         1. Set execution_status to ERROR
         2. Add an AgentErrorEvent for the first unmatched action to inform the agent
+
+        After a planned shutdown (close() left its mark), the run is paused
+        instead and the error says so, so it does not read as a crash.
         """
+        from openhands.agent_server.event_service import PAUSED_BY_SHUTDOWN_MARKER
         from openhands.sdk.event import AgentErrorEvent
         from openhands.sdk.event.llm_convertible import ActionEvent
         from openhands.sdk.llm import MessageToolCall, TextContent
@@ -2437,6 +2442,8 @@ class TestEventServiceStartWithRunningStatus:
         event_service.conversations_dir = tmp_path
         conv_dir = tmp_path / event_service.stored.id.hex
         conv_dir.mkdir(parents=True, exist_ok=True)
+        if shut_down:
+            (conv_dir / PAUSED_BY_SHUTDOWN_MARKER).touch()
 
         # Update workspace to use a valid temp directory
         event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
@@ -2482,7 +2489,11 @@ class TestEventServiceStartWithRunningStatus:
             await event_service.start()
 
             # Verify execution_status was changed to ERROR
-            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+            assert mock_state.execution_status == (
+                ConversationExecutionStatus.PAUSED
+                if shut_down
+                else ConversationExecutionStatus.ERROR
+            )
 
             # Verify AgentErrorEvent was added via _on_event
             mock_conv._on_event.assert_called()
@@ -2497,8 +2508,12 @@ class TestEventServiceStartWithRunningStatus:
             error_event = error_event_calls[0][0][0]
             assert error_event.tool_name == "terminal"
             assert error_event.tool_call_id == "call_1"
-            assert "restart occurred" in error_event.error
-            assert "fatal memory error" in error_event.error
+            if shut_down:
+                assert "server was shut down" in error_event.error
+                assert "fatal memory error" not in error_event.error
+            else:
+                assert "restart occurred" in error_event.error
+                assert "fatal memory error" in error_event.error
 
     @pytest.mark.asyncio
     async def test_start_does_not_add_error_event_when_no_unmatched_actions(

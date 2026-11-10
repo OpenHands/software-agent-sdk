@@ -1612,7 +1612,15 @@ class EventService:
         # should be surfaced back to the agent.
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
-            state.execution_status = ConversationExecutionStatus.ERROR
+            # close() marks a run it stops; then the server was shut down on
+            # purpose, not crashed, and the run is paused like one stopped
+            # between steps.
+            shut_down = self.paused_by_shutdown
+            state.execution_status = (
+                ConversationExecutionStatus.PAUSED
+                if shut_down
+                else ConversationExecutionStatus.ERROR
+            )
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
             # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
@@ -1641,9 +1649,14 @@ class EventService:
                         tool_name=first_action.tool_name,
                         tool_call_id=first_action.tool_call_id,
                         error=(
-                            "A restart occurred while this tool was in progress. "
-                            "This may indicate a fatal memory error or system crash. "
-                            "The tool execution was interrupted and did not complete."
+                            "The server was shut down while this tool was in "
+                            "progress, and the conversation was paused. The tool "
+                            "execution was interrupted and did not complete."
+                            if shut_down
+                            else "A restart occurred while this tool was in "
+                            "progress. This may indicate a fatal memory error or "
+                            "system crash. The tool execution was interrupted and "
+                            "did not complete."
                         ),
                         classification=ErrorClassification(
                             kind=FailureKind.INTERNAL, retryable=False

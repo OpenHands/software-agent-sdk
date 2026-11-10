@@ -1931,6 +1931,13 @@ async def test_a_pause_from_a_restart_is_not_the_persons(
     assert "Paused by the person" not in header
     assert runs == [True]
 
+    # An error status read while the mark is set is the same restart.
+    assert await notify_coordinator_of_stop(
+        service, worker, project["id"], "error", "x", f"conversation:{cat.hex}"
+    )
+    header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
+    assert "server restart" in header
+
     # A run clears the mark, so the person's own pause later reads as theirs.
     worker_service._mark_paused_by_shutdown(False)
     assert not worker_service.paused_by_shutdown
