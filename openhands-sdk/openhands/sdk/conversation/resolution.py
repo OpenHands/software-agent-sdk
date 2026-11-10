@@ -6,18 +6,20 @@ choice to make and nothing to try out. This is a different question from the
 critic's "did the task succeed?": a good answer to a question is resolved, and
 a finished pull request that waits for review is not.
 
-The judge asks typed questions (:data:`RESOLUTION_QUESTIONS`) of a
-:class:`~openhands.sdk.llm.decision.DecisionModel`, so any backend fits: a
-decision model such as TypeSafe's Jev, an open model served by vLLM (both
-through LiteLLM), or a chat :class:`~openhands.sdk.llm.LLM` through
-:class:`LLMDecisionModel`. The questions and the rule that turns answers into
-a verdict stay the same whichever model answers.
+The model makes judgments and code makes the decision. The judge asks narrow
+yes/no questions (:data:`RESOLUTION_QUESTIONS`): was the request handled,
+does the reply ask the person something, hand them a review, leave them a
+choice, ask them to check something, report a problem.
+:func:`verdict_from_judgments` combines the answers. Any
+:class:`~openhands.sdk.llm.decision.DecisionModel` can answer: a decision model
+such as TypeSafe's Jev, an open model served by vLLM (both through LiteLLM),
+or a chat :class:`~openhands.sdk.llm.LLM` through :class:`LLMDecisionModel`.
 """
 
 import json
 import re
 from collections.abc import Mapping
-from typing import Any, Final, Literal, cast, get_args
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field
 
@@ -47,55 +49,72 @@ __all__ = [
     "ResolutionState",
     "ResolutionVerdict",
     "judge_resolution",
+    "verdict_from_judgments",
 ]
 
 Owed = Literal["nothing", "answer", "review", "decide", "check", "unclear"]
 
 AUTO_RESOLVE_PROBABILITY: Final[float] = 0.85
-"""Probability of "nothing left" at or above which a turn counts as resolved,
-when the most likely thing the person owes is also ``nothing``."""
+"""Probability that nothing is left for the person, at or above which a turn
+counts as resolved."""
 
 _TEXT_LIMIT: Final[int] = 4000
 _ACTIONS_LIMIT: Final[int] = 20
 
+_CONTEXT = (
+    "`request` is the person's last message to a coding agent and `reply` is "
+    "the agent's final message for that turn; `actions` lists what the agent "
+    "did. "
+)
+
+# One narrow judgment per question, each answered on its own. Code combines
+# them into the verdict (:func:`verdict_from_judgments`), so a judgment can be
+# checked, tuned or replaced without touching the others.
 RESOLUTION_QUESTIONS: Final[dict[str, Question]] = {
-    "nothing_left": Noul(
-        instructions=(
-            "`request` is what the person last asked for in a conversation "
-            "with a coding agent, and `reply` is the agent's final message for "
-            "that turn. `actions` lists what the agent did, and `open_prs` "
-            "the pull requests it opened that are not merged yet. Is the "
-            "person's request fully handled, so that nothing is left for the "
-            "person to do in this conversation?"
-        ),
+    "handled": Noul(
+        instructions=_CONTEXT
+        + "Does `reply` show that what `request` asked for was done or answered?",
         criteria=NoulCriteria(
-            true=(
-                "The request is done or answered, and the reply does not ask "
-                "the person anything, wait on them, or hand them work."
-            ),
+            true="The agent did or answered what was asked, in full.",
             false=(
-                "The person still has something to do: answer a question, "
-                "review or merge a pull request, make a choice, try or check "
-                "something, or fix a problem the agent could not. Also false "
-                "when the agent stopped early, failed, or only did part of "
-                "the request."
+                "Part of the request is missing, the agent stopped early, or "
+                "it only explained what it would do."
             ),
         ),
     ),
-    "owed": Choice(
-        instructions=(
-            "What is the main thing the person still has to do in this "
-            "conversation after `reply`?"
-        ),
-        criteria={
-            "nothing": "Nothing: the request is handled.",
-            "answer": "Answer a question the agent asked, or give missing input.",
-            "review": "Review, approve or merge a pull request or other change.",
-            "decide": "Choose between options the agent laid out.",
-            "check": "Try, test or verify something by hand, or fix a failure.",
-            "unclear": "The reply does not make clear whether the work is done.",
-        },
+    "asks_person": Noul(
+        instructions=_CONTEXT
+        + "Does `reply` ask the person a question or wait for input from them, "
+        "even when worded without a question mark?",
     ),
+    "hands_off_review": Noul(
+        instructions=_CONTEXT
+        + "Does `reply` hand the person a change to review, approve or merge, "
+        "such as a pull request that is ready for review?",
+    ),
+    "offers_choice": Noul(
+        instructions=_CONTEXT
+        + "Does `reply` lay out options and leave the choice to the person?",
+    ),
+    "asks_to_check": Noul(
+        instructions=_CONTEXT
+        + "Does `reply` ask the person to try, test or verify something "
+        "themselves?",
+    ),
+    "reports_problem": Noul(
+        instructions=_CONTEXT
+        + "Does `reply` report a failure, an error or a blocker that is still "
+        "unresolved?",
+    ),
+}
+
+# What the person owes when each judgment holds.
+_OWED_BY_JUDGMENT: Final[dict[str, Owed]] = {
+    "asks_person": "answer",
+    "hands_off_review": "review",
+    "offers_choice": "decide",
+    "asks_to_check": "check",
+    "reports_problem": "check",
 }
 
 
@@ -109,17 +128,12 @@ class ResolutionState(BaseModel):
     actions: list[str] = Field(
         default_factory=list, description="Short summaries of the agent's actions."
     )
-    open_prs: list[str] = Field(
-        default_factory=list,
-        description="Pull requests the agent opened that are still open.",
-    )
 
     def as_state(self) -> dict[str, Any]:
         return {
             "request": _clip(self.request),
             "reply": _clip(self.reply),
             "actions": self.actions[-_ACTIONS_LIMIT:],
-            "open_prs": self.open_prs,
         }
 
 
@@ -130,6 +144,9 @@ class ResolutionVerdict(BaseModel):
         ge=0.0, le=1.0, description="Probability that nothing is left for the person."
     )
     owed: Owed = Field(description="Most likely thing the person still owes.")
+    judgments: dict[str, float] = Field(
+        default_factory=dict, description="Each judgment's probability, by name."
+    )
     model: str | None = Field(default=None, description="The model that answered.")
 
     @property
@@ -141,18 +158,40 @@ class ResolutionVerdict(BaseModel):
         return f"{self.probability:.2f} {self.owed}"
 
 
+def verdict_from_judgments(
+    judgments: Mapping[str, float], model: str | None = None
+) -> ResolutionVerdict:
+    """Combine the judgments into a verdict.
+
+    Nothing is left when the request was handled and no hand-off holds:
+    ``P(handled) * prod(1 - P(hand-off))``, treating the judgments as
+    independent. The person owes the likeliest hand-off when it is more likely
+    than not, else ``unclear`` (say, the request does not look handled).
+    """
+    handled = _unit(judgments.get("handled"))
+    probability = handled
+    for name in _OWED_BY_JUDGMENT:
+        probability *= 1.0 - _unit(judgments.get(name))
+    owed: Owed = "nothing"
+    if probability < AUTO_RESOLVE_PROBABILITY:
+        name = max(_OWED_BY_JUDGMENT, key=lambda n: _unit(judgments.get(n)))
+        likely = _unit(judgments.get(name)) >= 0.5
+        owed = _OWED_BY_JUDGMENT[name] if likely else "unclear"
+    return ResolutionVerdict(
+        probability=probability,
+        owed=owed,
+        judgments={name: _unit(p) for name, p in judgments.items()},
+        model=model,
+    )
+
+
 async def judge_resolution(
     model: DecisionModel, state: ResolutionState
 ) -> ResolutionVerdict:
-    """Ask ``model`` whether anything is left for the person after a turn."""
+    """Ask ``model`` the resolution judgments about a turn, then combine them."""
     result = await model.adecide(state.as_state(), RESOLUTION_QUESTIONS)
-    choice = result.choice("owed").choice
-    owed = cast(Owed, choice) if choice in get_args(Owed) else "unclear"
-    return ResolutionVerdict(
-        probability=_unit(result.noul("nothing_left").probability),
-        owed=owed,
-        model=result.model,
-    )
+    judgments = {name: result.noul(name).probability for name in RESOLUTION_QUESTIONS}
+    return verdict_from_judgments(judgments, model=result.model)
 
 
 class LLMDecisionModel(DecisionModel):
@@ -230,7 +269,8 @@ def _parse_llm_answers(
     data = json.loads(match.group(0))
     answers: dict[str, Answer] = {}
     for name, question in questions.items():
-        raw = data.get(name) or {}
+        raw = data.get(name)
+        raw = raw if isinstance(raw, dict) else {}
         if isinstance(question, Noul):
             answers[name] = NoulAnswer(probability=_unit(raw.get("probability")))
         elif isinstance(question, Choice):

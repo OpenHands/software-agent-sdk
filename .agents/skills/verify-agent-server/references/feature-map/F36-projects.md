@@ -102,8 +102,10 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   questions of `OH_RESOLUTION_MODEL` (a LiteLLM decision model such as
   `typesafe/jev-latest` or `hosted_vllm/<model>`, key in
   `OH_RESOLUTION_API_KEY` or `JEV_API_KEY`), else of the conversation's own
-  LLM; it resolves at probability >= 0.85 with `owed=nothing`
-  (`resolvenote` like `0.93 nothing`). `OH_RESOLUTION_MODEL=off` disables it;
+  LLM. The model answers six narrow yes/no judgments (handled, asks_person,
+  hands_off_review, offers_choice, asks_to_check, reports_problem) and code
+  combines them: P(handled) times P(no hand-off), resolved at >= 0.85
+  (`resolvenote` like `0.93 nothing`, else the likeliest hand-off). `OH_RESOLUTION_MODEL=off` disables it;
   without a verdict a critic score >= 0.9 still resolves (`0.95 critic`).
   The board shows the note as `resolve_note`.
   Clients resolve a conversation by setting `resolved=user` with the conversation
