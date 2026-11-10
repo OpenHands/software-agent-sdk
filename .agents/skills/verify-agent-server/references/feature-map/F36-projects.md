@@ -573,12 +573,12 @@ Preconditions:
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'Message saved to conversation' --expect-min 1 --save F36.tool-message/events
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
-  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains 'the coordinator of your project, not by the person' --expect-count 1
+  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains 'the coordinator of your project, not by the person' --expect-count 2
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 2
   control-agent-server conversation events "$CHILD" --kinds ActionEvent,MessageEvent --contains '"source": "agent"' --expect-min 2
   ```
-  The child receives a second user message, marked as the coordinator's, and
-  finishes a second run.
+  The child receives a second user message, marked as the coordinator's like
+  its brief, and finishes a second run.
 - **Model-backed: mentions (`F36.mention`).**
   Requires: `F36.tool-start-and-list`
   Needs: `llm`
