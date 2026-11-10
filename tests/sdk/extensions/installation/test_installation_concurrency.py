@@ -148,14 +148,15 @@ def test_list_cannot_load_metadata_while_another_session_is_open(
     assert entry["enabled"] is (operation == "install")
 
 
-def test_reader_thread_never_sees_partial_metadata_during_saves(
+def test_reader_thread_finds_the_extension_during_saves(
     manager: InstallationManager[MockExtension],
     source_dir: Path,
 ):
-    """Torn read: ``get()`` takes no lock, so while another thread saves it
-    must still see a complete file, never a truncated one (which loads as
-    empty). On Windows this also covers the writer: a save whose replace
-    meets a reader's open handle must retry instead of raising.
+    """``get()`` takes no lock, so while another thread saves it must still
+    find the extension: never a truncated file (which loads as empty). On
+    Windows this also covers both sides of the replace: a save that meets the
+    reader's open handle, and a read that meets the save's replace, must each
+    retry instead of failing.
     """
     manager.install(str(source_dir))
     saving = threading.Event()
@@ -178,10 +179,13 @@ def test_reader_thread_never_sees_partial_metadata_during_saves(
 
     errors = _run_threads(("writer", save_repeatedly), ("reader", read_until_done))
 
-    assert errors == []
+    missed = [info for info in reads if info is None or info.source != str(source_dir)]
+    thread_errors = [f"{type(e).__name__}: {e}" for e in errors]
+    assert (thread_errors, len(missed)) == ([], 0), (
+        f"thread errors: {thread_errors}; "
+        f"{len(missed)} of {len(reads)} reads did not find the extension"
+    )
     assert reads, "the reader never ran while the writer was saving"
-    torn = [info for info in reads if info is None or info.source != str(source_dir)]
-    assert torn == [], f"{len(torn)} of {len(reads)} reads saw partial metadata"
 
 
 def test_get_does_not_wait_for_an_open_session(

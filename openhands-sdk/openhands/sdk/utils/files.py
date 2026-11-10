@@ -1,6 +1,7 @@
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
@@ -9,13 +10,22 @@ from typing import Final
 # to ``.<name>.<random>.tmp`` next to ``path`` and then renames it to ``<name>``.
 _TEMP_SUFFIX: Final[str] = ".tmp"
 
-# On Windows, ``os.replace`` raises ``PermissionError`` while another handle
-# has the destination open, because Python opens files without delete
-# sharing. Readers hold the file only while reading it, so the replace is
-# retried after these delays (about 0.9 s in total) before the error is raised.
-# On other platforms a replace never fails that way, and it is not retried.
-_RETRY_REPLACE_ON_PERMISSION_ERROR: Final[bool] = os.name == "nt"
-_REPLACE_RETRY_DELAYS: Final[tuple[float, ...]] = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5)
+# On Windows, a file being replaced cannot be opened by anyone else for an
+# instant: ``os.replace`` holds the destination open with delete access, and
+# Python opens files without delete sharing. So a replace fails while a reader
+# has the destination open, and a read fails while a replace is in progress.
+# Both raise ``PermissionError``, and both are retried after these delays
+# (about 0.9 s in total) before the error is raised. On other platforms
+# neither fails that way, and neither is retried.
+_RETRY_ON_PERMISSION_ERROR: Final[bool] = os.name == "nt"
+_PERMISSION_ERROR_RETRY_DELAYS: Final[tuple[float, ...]] = (
+    0.01,
+    0.02,
+    0.05,
+    0.1,
+    0.2,
+    0.5,
+)
 
 
 def is_temp_file(path: Path) -> bool:
@@ -27,16 +37,24 @@ def is_temp_file(path: Path) -> bool:
     return path.suffix == _TEMP_SUFFIX
 
 
-def _replace(source: Path, destination: Path) -> None:
-    """``os.replace``, retried while a reader has ``destination`` open."""
-    if _RETRY_REPLACE_ON_PERMISSION_ERROR:
-        for delay in _REPLACE_RETRY_DELAYS:
+def _retry_on_permission_error[T](operation: Callable[[], T]) -> T:
+    """Run ``operation``, retried while a concurrent replace or read blocks it."""
+    if _RETRY_ON_PERMISSION_ERROR:
+        for delay in _PERMISSION_ERROR_RETRY_DELAYS:
             try:
-                os.replace(source, destination)
-                return
+                return operation()
             except PermissionError:
                 time.sleep(delay)
-    os.replace(source, destination)
+    return operation()
+
+
+def read_text_retrying(path: Path) -> str:
+    """Read ``path`` as UTF-8, retried while a replace is in progress.
+
+    For reading, without a lock, a file that ``atomic_write_text`` may replace
+    at any moment.
+    """
+    return _retry_on_permission_error(lambda: path.read_text(encoding="utf-8"))
 
 
 def atomic_write_text(path: Path, value: str, mode: int = 0o600) -> None:
@@ -57,7 +75,7 @@ def atomic_write_text(path: Path, value: str, mode: int = 0o600) -> None:
             file.write(value)
             file.flush()
             os.fsync(file.fileno())
-        _replace(temporary_path, path)
+        _retry_on_permission_error(lambda: os.replace(temporary_path, path))
     except BaseException:
         if fd >= 0:
             try:

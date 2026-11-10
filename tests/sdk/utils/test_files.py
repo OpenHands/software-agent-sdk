@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.utils import files
-from openhands.sdk.utils.files import atomic_write_text, is_temp_file
+from openhands.sdk.utils.files import (
+    atomic_write_text,
+    is_temp_file,
+    read_text_retrying,
+)
 
 
 def test_atomic_write_text_temp_file_is_marked_as_a_temp_file(
@@ -76,7 +80,7 @@ def _replace_failing(times: int, error: OSError, calls: list[Path]):
     return replace
 
 
-@pytest.mark.parametrize("failures", [1, len(files._REPLACE_RETRY_DELAYS)])
+@pytest.mark.parametrize("failures", [1, len(files._PERMISSION_ERROR_RETRY_DELAYS)])
 def test_atomic_write_text_retries_replace_blocked_by_an_open_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int
 ) -> None:
@@ -85,7 +89,7 @@ def test_atomic_write_text_retries_replace_blocked_by_an_open_handle(
     path.write_text("old")
     calls: list[Path] = []
     sleeps: list[float] = []
-    monkeypatch.setattr(files, "_RETRY_REPLACE_ON_PERMISSION_ERROR", True)
+    monkeypatch.setattr(files, "_RETRY_ON_PERMISSION_ERROR", True)
     monkeypatch.setattr(files.time, "sleep", sleeps.append)
     monkeypatch.setattr(
         files.os, "replace", _replace_failing(failures, PermissionError(13, "x"), calls)
@@ -95,7 +99,7 @@ def test_atomic_write_text_retries_replace_blocked_by_an_open_handle(
 
     assert path.read_text() == "new"
     assert len(calls) == failures + 1
-    assert sleeps == list(files._REPLACE_RETRY_DELAYS[:failures])
+    assert sleeps == list(files._PERMISSION_ERROR_RETRY_DELAYS[:failures])
     assert [p.name for p in tmp_path.iterdir()] == ["data.json"]
 
 
@@ -109,7 +113,7 @@ def test_atomic_write_text_raises_when_replace_stays_blocked(
     path.write_text("old")
     calls: list[Path] = []
     sleeps: list[float] = []
-    monkeypatch.setattr(files, "_RETRY_REPLACE_ON_PERMISSION_ERROR", True)
+    monkeypatch.setattr(files, "_RETRY_ON_PERMISSION_ERROR", True)
     monkeypatch.setattr(files.time, "sleep", sleeps.append)
     monkeypatch.setattr(
         files.os, "replace", _replace_failing(100, PermissionError(13, "x"), calls)
@@ -118,8 +122,8 @@ def test_atomic_write_text_raises_when_replace_stays_blocked(
     with pytest.raises(PermissionError):
         atomic_write_text(path, "new")
 
-    assert len(calls) == len(files._REPLACE_RETRY_DELAYS) + 1
-    assert sleeps == list(files._REPLACE_RETRY_DELAYS)
+    assert len(calls) == len(files._PERMISSION_ERROR_RETRY_DELAYS) + 1
+    assert sleeps == list(files._PERMISSION_ERROR_RETRY_DELAYS)
     assert path.read_text() == "old"
     assert [p.name for p in tmp_path.iterdir()] == ["data.json"]
 
@@ -144,7 +148,7 @@ def test_atomic_write_text_does_not_retry_other_replace_failures(
     path = tmp_path / "data.json"
     calls: list[Path] = []
     sleeps: list[float] = []
-    monkeypatch.setattr(files, "_RETRY_REPLACE_ON_PERMISSION_ERROR", retry_enabled)
+    monkeypatch.setattr(files, "_RETRY_ON_PERMISSION_ERROR", retry_enabled)
     monkeypatch.setattr(files.time, "sleep", sleeps.append)
     monkeypatch.setattr(files.os, "replace", _replace_failing(1, error, calls))
 
@@ -154,3 +158,51 @@ def test_atomic_write_text_does_not_retry_other_replace_failures(
     assert len(calls) == 1
     assert sleeps == []
     assert list(tmp_path.iterdir()) == []
+
+
+_MAX_RETRIES = len(files._PERMISSION_ERROR_RETRY_DELAYS)
+
+
+@pytest.mark.parametrize(
+    ("retry_enabled", "failures", "reads", "succeeds"),
+    [
+        (True, 1, 2, True),
+        (True, _MAX_RETRIES, _MAX_RETRIES + 1, True),
+        (True, _MAX_RETRIES + 1, _MAX_RETRIES + 1, False),
+        (False, 1, 1, False),
+    ],
+    ids=["one_failure", "max_failures", "too_many_failures", "off_windows"],
+)
+def test_read_text_retrying_retries_a_read_blocked_by_a_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    retry_enabled: bool,
+    failures: int,
+    reads: int,
+    succeeds: bool,
+) -> None:
+    """On Windows, a read that meets a concurrent replace fails with
+    ``PermissionError`` and is retried, up to the last delay.
+    """
+    path = tmp_path / "data.json"
+    path.write_text("content", encoding="utf-8")
+    calls: list[Path] = []
+    real_read_text = Path.read_text
+
+    def read_text(self: Path, *args, **kwargs) -> str:
+        calls.append(self)
+        if len(calls) <= failures:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(files, "_RETRY_ON_PERMISSION_ERROR", retry_enabled)
+    monkeypatch.setattr(files.time, "sleep", lambda delay: None)
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    if succeeds:
+        assert read_text_retrying(path) == "content"
+    else:
+        with pytest.raises(PermissionError):
+            read_text_retrying(path)
+
+    assert calls == [path] * reads

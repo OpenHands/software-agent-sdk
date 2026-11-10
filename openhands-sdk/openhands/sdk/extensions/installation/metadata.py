@@ -13,7 +13,7 @@ from openhands.sdk.extensions.installation.interface import (
 )
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.files import atomic_write_text
+from openhands.sdk.utils.files import atomic_write_text, read_text_retrying
 
 
 logger = get_logger(__name__)
@@ -209,14 +209,15 @@ class InstallationMetadata(BaseModel):
 
         For read-only callers. Takes no lock: a save swaps in a complete file,
         so a concurrent read sees the old or the new version, never a partial
-        one. A file that cannot be read or parsed loads as empty.
+        one. On Windows, a read that meets the swap is retried. A file that
+        cannot be read or parsed loads as empty.
         """
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
             return cls()
 
         try:
-            return cls.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+            return cls.model_validate_json(read_text_retrying(metadata_path))
         except Exception as e:
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
