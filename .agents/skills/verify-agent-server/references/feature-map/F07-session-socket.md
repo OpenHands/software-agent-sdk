@@ -2,7 +2,7 @@
 
 The session socket is the newer, resumable conversation stream. A client
 connects to one conversation, authenticates with a first frame, and receives
-JSON envelopes discriminated by `type`. A `sync` frame always comes first and
+JSON envelopes discriminated by `type`. A `sync` frame comes first (unless the client sent a frame before the subscription was ready: its `error` reply can precede it) and
 announces the replay range. Persisted events then arrive as `durable` frames
 whose `seq` is the event's index in the on-disk log, so a client can store the
 last `seq` and reconnect with `?after_seq=<seq>` without gaps or duplicates.
@@ -23,7 +23,7 @@ Routes: `WS /sockets/session/{conversation_id}`
 
 ## Sub-features
 
-- `F07.sync-first`: the first server frame is `{"type": "sync"}`; `from_seq` echoes `after_seq` (absent when live-only) and `through_seq` is the last on-disk `seq` (absent for an empty log).
+- `F07.sync-first`: once the subscription is ready the first server frame is `{"type": "sync"}` (a client that sends a frame immediately after connecting can get that frame's `error` reply first); `from_seq` echoes `after_seq` (absent when live-only) and `through_seq` is the last on-disk `seq` (absent for an empty log).
 - `F07.snapshot-transient`: every connection gets one `transient` frame with a `full_state` `ConversationStateUpdateEvent` and no `seq`, after `sync` (and after the replay when one ran); it is never persisted.
 - `F07.full-replay`: `after_seq=-1` (or any value below it) replays every persisted event as `durable` frames with `seq` 0..`through_seq`, in order, once each, with the same ids REST returns.
 - `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`.
@@ -239,14 +239,16 @@ Preconditions:
     --send '{"content":"QA_F07_AFTER_AUTH"}' --duration 5 --expect-frames 3 --expect-kind error --expect-open \
     --save "F07.auth-frame-ignored/redundant-$CID"
   control-agent-server state cat "evidence/F07.auth-frame-ignored/redundant-$CID.json" \
-    --check frames.3.frame.type eq sync --check frames.4.frame.type eq transient \
-    --check frames.5.frame.type eq error --check frames.5.frame.code eq ValidationError \
-    --check frames.5.frame.detail contains QA_F07_AFTER_AUTH --check frames.6.direction ne received
+    --check frames.3.frame.type eq error --check frames.3.frame.code eq ValidationError \
+    --check frames.3.frame.detail contains QA_F07_AFTER_AUTH \
+    --check frames.4.frame.type eq sync --check frames.5.frame.type eq transient \
+    --check frames.6.direction ne received
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq 5
   ```
-  `sync`, the snapshot and exactly one `error` frame (`ValidationError`,
-  quoting `QA_F07_AFTER_AUTH`) arrive: the reply to the invalid frame, which
-  the server reads after the auth frame. The auth frame itself got no reply
+  Exactly one `error` frame (`ValidationError`, quoting `QA_F07_AFTER_AUTH`)
+  and the `sync` and snapshot frames arrive. The server reads client frames
+  as soon as the socket is accepted, so a client that sends before the
+  subscription is ready gets the `error` reply ahead of `sync`. The auth frame itself got no reply
   (the same frame is a `ValidationError` if it reaches `Message`
   validation, as in `F07.error-frame`, which would make two `error`
   frames), and no event was added. The key inside a redundant frame is not
