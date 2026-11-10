@@ -103,6 +103,8 @@ Preconditions:
   Nothing new is saved.
 - **Model-backed: the agent reacts (`F37.tool`).**
   Needs: `llm`
+  Requires: `F37.flag-gates` (it turns the reactions flag on; without it the
+  agent has no react tool)
   ```sh
   AC=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server conversation send "$AC" --wait --timeout 300 --text 'QA_F37_TOOL Please react to this message with the eyes emoji first, then reply with the single word ok.'
