@@ -156,6 +156,7 @@ Preconditions:
 
   ```sh
   control-agent-server llm preset deepseek
+  control-agent-server api PATCH /api/settings/experimental/projects --json '{"enabled": true}' --expect 200
   PJ=home/.openhands/projects.json
   PJ_FILE="$AGENT_SERVER_VERIFY_RUN/$PJ"
   ```
