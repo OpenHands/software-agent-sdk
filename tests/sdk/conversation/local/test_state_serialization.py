@@ -1191,7 +1191,7 @@ def test_resume_with_persisted_agent_and_matching_cipher_keeps_llm_key():
             cipher=Cipher(secret_key="original-key"),
         )
 
-        assert resumed.agent.llm.api_key is not None
+        assert isinstance(resumed.agent.llm.api_key, SecretStr)
         assert resumed.agent.llm.api_key.get_secret_value() == "real-llm-key"
 
 
@@ -1217,7 +1217,7 @@ def test_resume_with_supplied_agent_and_wrong_cipher_still_loads():
             cipher=Cipher(secret_key="a-different-key"),
         )
 
-        assert resumed.agent.llm.api_key is not None
+        assert isinstance(resumed.agent.llm.api_key, SecretStr)
         assert resumed.agent.llm.api_key.get_secret_value() == "new-key"
 
 

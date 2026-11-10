@@ -61,12 +61,10 @@ def _raise_if_llm_api_key_undecryptable(
     way to proceed, so surface the real cause.
     """
     raw_api_key = ((persisted.get("agent") or {}).get("llm") or {}).get("api_key")
-    llm = getattr(state.agent, "llm", None)
     if (
         isinstance(raw_api_key, str)
         and raw_api_key.startswith(FERNET_TOKEN_PREFIX)
-        and llm is not None
-        and llm.api_key is None
+        and state.agent.llm.api_key is None
     ):
         raise SecretDecryptionError(
             f"Cannot resume conversation {state.id}: the persisted LLM api_key "
