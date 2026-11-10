@@ -51,11 +51,22 @@ def _quote(token: str) -> str:
     return f'"{token.replace(chr(34), chr(34) * 2)}"*'
 
 
+def _quote_exact(token: str) -> str:
+    """Quoted token without the prefix star: matches the stemmed word only."""
+    return f'"{token.replace(chr(34), chr(34) * 2)}"'
+
+
 def _to_fts_query(query: str) -> str:
     tokens = _tokens(query)
-    if not tokens:
-        return ""
-    return " AND ".join(_quote(t) for t in tokens)
+    if tokens:
+        return " AND ".join(_quote(t) for t in tokens)
+    return ""
+
+
+def _is_subsequence(needle: str, hay: str) -> bool:
+    """True when needle's letters appear in hay in the same order."""
+    it = iter(hay)
+    return all(ch in it for ch in needle)
 
 
 def _levenshtein(a: str, b: str, cap: int = 2) -> int:
@@ -196,6 +207,8 @@ class SearchIndex:
         # Fuzzy vocabulary, loaded lazily and cached until the next write:
         # a sorted term list plus terms bucketed by length for typo scans.
         self._vocab_cache: tuple[list[str], dict[int, list[str]]] | None = None
+        # One-row in-memory fts5 table used to porter-stem single tokens.
+        self._stem_probe: sqlite3.Connection | None = None
         self._rebuild_if_old_tokenizer()
         self._conn.executescript(self._SCHEMA)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -257,20 +270,7 @@ class SearchIndex:
         """
         if len(token) < 4:
             return []
-        if self._vocab_cache is None:
-            terms = sorted(
-                r[0]
-                for r in self._conn.execute(
-                    "SELECT term FROM messages_words_vocab"
-                ).fetchall()
-            )
-            if len(terms) > _VOCAB_FUZZY_LIMIT:
-                terms = []  # too big to scan per search; prefix queries remain
-            buckets: dict[int, list[str]] = {}
-            for term in terms:
-                buckets.setdefault(len(term), []).append(term)
-            self._vocab_cache = (terms, buckets)
-        terms, buckets = self._vocab_cache
+        terms, buckets = self._vocab()
         if not terms:
             return []
 
@@ -298,6 +298,17 @@ class SearchIndex:
         if not fuzzy and len(token) >= 5:
             for term in terms:
                 if token in term:
+                    fuzzy.append(term)
+        if not fuzzy and len(token) >= 5:
+            # Typed-too-fast fallback: every letter present, in order, but
+            # some letters were skipped ("huing" -> "hugging", "wobmt" ->
+            # "wombat"). Gap is capped at 2 letters so this stays a last
+            # resort, not a wildcard.
+            for term in terms:
+                if (
+                    0 <= len(term) - len(token) <= 2
+                    and _is_subsequence(token, term)
+                ):
                     fuzzy.append(term)
         return fuzzy[:5]
 
@@ -420,11 +431,91 @@ class SearchIndex:
             return ""
         groups = []
         for token in tokens:
-            alternatives = [token] + self._fuzzy_terms(token)
-            groups.append(
-                " OR ".join(_quote(a) for a in alternatives)
+            # _fuzzy_terms can return the token itself (substring and
+            # subsequence layers self-match); re-quoting it as a *prefix*
+            # would undo the truncated-stem guard below.
+            candidates = [w for w in self._fuzzy_terms(token) if w != token]
+            if self._stem_truncated(token):
+                # Porter ate a large chunk of the token ("huing" -> "hu",
+                # "doing" -> "do"): its prefix is too broad to trust ("hu*"
+                # grabs "hub", "do*" grabs "door"). Demote to an exact-word
+                # match when the token is a real corpus word, else rely on
+                # the fuzzy candidates alone; none at all -> no results.
+                if self._vocab_contains(token):
+                    group = [_quote_exact(token)] + [
+                        _quote(w) for w in candidates
+                    ]
+                elif candidates:
+                    group = [_quote(w) for w in candidates]
+                else:
+                    return ""
+            else:
+                group = [_quote(token)] + [_quote(w) for w in candidates]
+            groups.append("(" + " OR ".join(group) + ")")
+        return " AND ".join(groups)
+
+    def _vocab(self) -> tuple[list[str], dict[int, list[str]]]:
+        """Sorted raw-word list + length buckets, or ([], {}) if too large."""
+        if self._vocab_cache is None:
+            terms = sorted(
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT term FROM messages_words_vocab"
+                ).fetchall()
             )
-        return " AND ".join(f"({g})" for g in groups)
+            if len(terms) > _VOCAB_FUZZY_LIMIT:
+                terms = []  # too big to scan per search; prefix queries remain
+            buckets: dict[int, list[str]] = {}
+            for term in terms:
+                buckets.setdefault(len(term), []).append(term)
+            self._vocab_cache = (terms, buckets)
+        return self._vocab_cache
+
+    def _vocab_contains(self, token: str) -> bool:
+        """Exact raw-word membership. False when the vocabulary is unknown."""
+        terms, _ = self._vocab()
+        if not terms:
+            return False
+        i = bisect.bisect_left(terms, token)
+        return i < len(terms) and terms[i] == token
+
+    def _stem_truncated(self, token: str) -> bool:
+        """True when the porter stemmer deletes a large chunk of the token.
+
+        "Large" = 3+ letters and at least a third of the token: "huing" ->
+        "hu", "doing" -> "do". Such stems match far too many unrelated words
+        to be used as prefixes.
+        """
+        if len(token) < 5:
+            return False
+        stem = self._porter_stem(token)
+        removed = len(token) - len(stem)
+        return removed >= 3 and removed * 3 >= len(token)
+
+    def _porter_stem(self, word: str) -> str:
+        """Porter-stem one word via a one-row in-memory fts5 probe table.
+
+        The probe reuses the same tokenizer settings as the main index, so
+        the stem is exactly what the MATCH pipeline would produce.
+        """
+        if self._stem_probe is None:
+            conn = sqlite3.connect(":memory:")
+            conn.executescript(
+                """
+                CREATE VIRTUAL TABLE stem_probe_fts USING fts5(
+                    word, tokenize = "porter unicode61 remove_diacritics 2"
+                );
+                CREATE VIRTUAL TABLE stem_probe_vocab USING fts5vocab(
+                    "stem_probe_fts", "row"
+                );
+                """
+            )
+            self._stem_probe = conn
+        conn = self._stem_probe
+        conn.execute("DELETE FROM stem_probe_fts")
+        conn.execute("INSERT INTO stem_probe_fts(word) VALUES (?)", (word,))
+        row = conn.execute("SELECT term FROM stem_probe_vocab").fetchone()
+        return row[0] if row else word
 
     def search(self, query: str, limit: int = 50) -> list[SearchHit]:
         fts_query = self._build_fuzzy_fts_query(query)

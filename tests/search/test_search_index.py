@@ -53,6 +53,16 @@ def conv_root(tmp_path):
         "Secret keeper",
         [("user", "Store this key: sk-ABCDEFGHIJKLMNOPQRSTUV please.")],
     )
+    _write_conversation(
+        convs,
+        "ML platform",
+        [("agent", "The Hugging Face Hub hosts transformers models.")],
+    )
+    _write_conversation(
+        convs,
+        "Household chores",
+        [("user", "I was doing laundry when the door bell rang.")],
+    )
     return convs
 
 
@@ -63,7 +73,7 @@ def index(tmp_path):
 
 def test_backfill_and_content_search(index, conv_root):
     result = backfill(index, conv_root)
-    assert result["conversations_seen"] == 3
+    assert result["conversations_seen"] == 5
     hits = index.search("garage false alarms")
     assert hits, "expected content match on garage conversation"
     assert {h.title for h in hits} == {"Garage door sensor"}
@@ -126,7 +136,7 @@ def test_remove_conversation(index, conv_root):
     conv_id = index.search("Italy")[0].conversation_id
     index.remove_conversation(conv_id)
     assert index.search("Rome") == []
-    assert index.stats()["conversations"] == 2
+    assert index.stats()["conversations"] == 4
 
 
 def test_reopen_index_preserves_data(tmp_path, conv_root):
@@ -135,7 +145,7 @@ def test_reopen_index_preserves_data(tmp_path, conv_root):
     backfill(first, conv_root)
     first.close()
     second = SearchIndex(db)
-    assert second.stats()["conversations"] == 3
+    assert second.stats()["conversations"] == 5
     assert second.search("Rome"), "index must survive close/reopen"
 
 
@@ -183,6 +193,73 @@ def test_fuzzy_does_not_create_false_positives(index, conv_root):
     # A 3-letter token: below the typo/substring thresholds on purpose, so
     # short queries never fuzz into unrelated words.
     assert index.search("aaa") == []
+
+
+def test_overmatch_guard_hub_not_highlighted(index, conv_root):
+    """'huing' must find 'Hugging' but never light up unrelated 'Hub'.
+
+    The porter stem of 'huing' is 'hu' — trusted as a prefix it would match
+    every word starting with 'hu'. The guard drops the too-short stem and
+    lets only real-word candidates (here: the subsequence match 'hugging')
+    through.
+    """
+    backfill(index, conv_root)
+    hits = index.search("huing")
+    assert {h.title for h in hits} == {"ML platform"}
+    snippet = hits[0].snippet
+    assert "[Hugging]" in snippet
+    assert "[Hub]" not in snippet
+
+
+def test_overmatch_guard_door_not_highlighted_for_doing(index, conv_root):
+    """'doing' (stem 'do') must not match 'door' via the stem prefix."""
+    backfill(index, conv_root)
+    hits = index.search("doing")
+    assert hits, "'doing' is a real indexed word and must keep matching"
+    assert {h.title for h in hits} == {"Household chores"}
+    assert "[door]" not in hits[0].snippet
+    # ...while a search for the word 'door' itself still finds it
+    assert index.search("door")[0].title == "Garage door sensor"
+
+
+def test_subsequence_fallback_recovers_skipped_letters(index, conv_root):
+    """All letters present, in order, ≤2 skipped -> match.
+
+    'huing' skips both g's of 'hugging' but keeps letter order; the
+    substring layer can't see it (not contiguous), so the subsequence
+    fallback must.
+    """
+    backfill(index, conv_root)
+    hits = index.search("huing")
+    assert {h.title for h in hits} == {"ML platform"}
+
+
+def test_subsequence_fallback_gap_capped(index, conv_root):
+    """Gap > 2 skipped letters -> no match (keeps the fallback honest)."""
+    backfill(index, conv_root)
+    # 'wobmt' vs 'wombat' would need 2 skipped letters but the corpus has no
+    # wombat word; assert against a real corpus word instead: 'trasfrms' vs
+    # 'transformers' skips 4 -> rejected.
+    assert index.search("trasfrms") == []
+
+
+def test_stem_truncated_token_known_word_still_matches(index, conv_root):
+    """A correctly-typed word whose stem is short still matches itself.
+
+    'doing' stems to 'do' but exists in the corpus, so the exact-word
+    escape keeps it searchable; the too-short stem prefix is just not
+    allowed to drag in 'door'.
+    """
+    backfill(index, conv_root)
+    hits = index.search("doing laundry")
+    assert {h.title for h in hits} == {"Household chores"}
+
+
+def test_short_tokens_do_not_fuzz(index, conv_root):
+    """3-letter tokens never fuzz (would match half the dictionary)."""
+    backfill(index, conv_root)
+    assert index.search("fce") == []
+    assert index.search("hub")[0].title == "ML platform"
 
 
 def test_multiconversation_ranking_and_limit(index, conv_root):
@@ -236,7 +313,7 @@ def test_old_tokenizer_schema_is_rebuilt(tmp_path, conv_root):
     # The tables exist but are empty: dir_mtime was cleared, so the next
     # backfill rescans everything.
     assert upgraded.stats()["conversations"] == 0
-    assert backfill(upgraded, conv_root)["conversations_seen"] == 3
+    assert backfill(upgraded, conv_root)["conversations_seen"] == 5
     # Stemmed query now works on the rebuilt index.
     assert upgraded.search("doors sensors")
     assert upgraded.search("italy rome")
@@ -260,7 +337,7 @@ def test_porter_index_missing_words_twin_is_rebuilt(tmp_path, conv_root):
 
     upgraded = SearchIndex(db)
     assert upgraded.stats()["conversations"] == 0  # cleared for full rebuild
-    assert backfill(upgraded, conv_root)["conversations_seen"] == 3
+    assert backfill(upgraded, conv_root)["conversations_seen"] == 5
     # Typos and substrings need the raw-word vocabulary, which only the
     # rebuild restores.
     assert upgraded.search("rume")  # typo for Rome
