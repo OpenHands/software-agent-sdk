@@ -155,22 +155,40 @@ def extract_ask(text: str | None) -> str | None:
     return ask
 
 
-def last_sentence(text: str | None) -> str | None:
-    """The last sentence of the last paragraph outside code blocks, as one
-    short line: what a reply that asks without a question mark ends on."""
+_REQUEST_MARKERS = re.compile(
+    r"\b(let me know|tell me|please|could you|can you|would you|confirm|"
+    r"approve|sign[- ]off|review|merge|choose|pick|decide|which (one|of)|"
+    r"your call|up to you|waiting (on|for) you)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_request(text: str | None) -> str | None:
+    """The sentence in a reply that asks something of its reader, as one short
+    line: the last one ending with a question mark, else the last one that
+    reads as a request ("please review", "let me know", "which one").
+    ``None`` when no sentence does: a closing line is never the ask.
+    """
     if not text:
         return None
     prose = _CODE_BLOCK.sub("", text).strip()
-    if not prose:
+    sentences = [
+        " ".join(_MARKUP.sub("", part).split())
+        for part in _SENTENCE_BREAK.split(prose)
+        if part.strip()
+    ]
+    asking = [s for s in sentences if _QUESTION_END.search(s)]
+    requesting = [s for s in sentences if _REQUEST_MARKERS.search(s)]
+    line = (asking or requesting or [None])[-1]
+    if not line:
         return None
-    last_paragraph = re.split(r"\n\s*\n", prose)[-1]
-    parts = [p for p in _SENTENCE_BREAK.split(last_paragraph) if p.strip()]
-    if not parts:
-        return None
-    line = " ".join(_MARKUP.sub("", parts[-1]).split())
     if len(line) > ASK_MAX_LENGTH:
         line = line[: ASK_MAX_LENGTH - 1].rstrip() + "…"
-    return line or None
+    return line
+
+
+def _from_conversation(sender: str | None) -> bool:
+    return sender is not None and sender.startswith(CONVERSATION_SENDER_PREFIX)
 
 
 def _is_awareness_note(event: MessageEvent) -> bool:
@@ -471,9 +489,16 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if verdict is not None:
             # The judge decides whether the reply waits on the person, also
             # when it asks without a question mark or ends on a pleasantry.
-            if verdict.needs_person:
+            starter = sender if sender_known else await self._logged_turn_sender()
+            if verdict.needs_person and _from_conversation(starter):
+                # Asks in a turn another conversation started (a coordinator)
+                # are for that conversation, which gets the reply; the turn
+                # is neither the person's to answer nor resolved.
+                turn = "answered"
+                ask = None
+            elif verdict.needs_person:
                 turn = "asked"
-                ask = ask or extract_ask(text) or last_sentence(text)
+                ask = ask or extract_request(text)
             else:
                 turn = "answered"
                 ask = None
@@ -484,6 +509,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         # A turn that asked the person something is theirs to answer, and a
         # conversation already resolved (by the person or before) stays so.
         if turn == "asked" or RESOLVED_TAG_KEY in self.tags():
+            return
+        if verdict is not None and verdict.needs_person:
             return
         note: str | None = None
         if verdict is not None and verdict.resolved:

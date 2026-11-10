@@ -78,7 +78,9 @@ _CONTEXT = (
     "`request` is the person's last message to a coding agent and `reply` is "
     "the agent's final message for that turn; `actions` lists what the agent "
     "did. `task` is the message the conversation started with and `earlier` "
-    "the person's requests in between, oldest first. "
+    "the person's requests in between, oldest first. Something the person "
+    "already took on themselves, or said is not needed, in `request` or "
+    "`earlier`, is not left for them. "
 )
 
 # One narrow judgment per question, each answered on its own. Code combines
@@ -133,6 +135,13 @@ RESOLUTION_QUESTIONS: Final[dict[str, Question]] = {
         instructions=_CONTEXT
         + "Does `reply` hand the person a change to review, approve or merge, "
         "such as a pull request that is ready for review?",
+        criteria=NoulCriteria(
+            true="The reply waits for the person to review, approve or merge.",
+            false=(
+                "Nothing is handed over, or the person already said they will "
+                "take it from here or that nothing more is needed."
+            ),
+        ),
     ),
     "offers_choice": Noul(
         instructions=_CONTEXT

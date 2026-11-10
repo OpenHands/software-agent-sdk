@@ -20,6 +20,7 @@ from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
     classify_turn,
     extract_ask,
+    extract_request,
 )
 from openhands.agent_server.project_wake import conversation_context
 from openhands.sdk import LLM, Agent
@@ -939,3 +940,63 @@ async def test_conversation_context_of_a_first_turn():
         "Only message",
         [],
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Both PRs are ready for you to merge when you get to it. Closing out here.",
+            "Both PRs are ready for you to merge when you get to it.",
+        ),
+        (
+            "Please sign off on the plan below.\n\n- one\n- two\n\n"
+            "They're independent and can be reviewed or opened one at a time.",
+            "Please sign off on the plan below.",
+        ),
+        ("Mochi or Juniper.\n\nTell me which you prefer.", "Tell me which you prefer."),
+        ("Done. Shall I also add a test? Closing out.", "Shall I also add a test?"),
+        ("All done. Closing out here.", None),
+        (None, None),
+    ],
+)
+def test_extract_request_finds_what_the_reply_asks(text, expected):
+    assert extract_request(text) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_needs_you_reply_without_a_request_line_has_no_ask():
+    store = _Tags({"project": "p1"})
+    verdict = verdict_from_judgments(
+        {"handled": 1, "task_done": 1, "asks_to_check": 0.9}
+    )
+
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Fix it"),
+        _status("running"),
+        _message("agent", "Fixed on the branch. Closing out here."),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1", "turn": "asked"}
+
+
+@pytest.mark.asyncio
+async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
+    store = _Tags({"project": "p1"})
+    verdict = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_person": 0.9})
+
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Build piece 2", sender="conversation:cat"),
+        _status("running"),
+        _message(
+            "agent",
+            "Piece 2 is done. Want me to hand piece 3 to a new conversation, "
+            "or leave it with you?",
+        ),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1", "turn": "answered"}
