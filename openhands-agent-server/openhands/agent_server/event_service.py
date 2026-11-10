@@ -104,6 +104,8 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+PAUSED_BY_SHUTDOWN_MARKER = ".paused_by_shutdown"
+"""File in a conversation's folder while its run is paused by a shutdown."""
 
 
 logger = get_logger(__name__)
@@ -340,6 +342,24 @@ class EventService:
     @property
     def conversation_dir(self):
         return self.conversations_dir / self.stored.id.hex
+
+    @property
+    def paused_by_shutdown(self) -> bool:
+        """The last run was paused because the server shut down, not by anyone.
+
+        Set when :meth:`close` pauses a running run, cleared when a run starts.
+        """
+        return (self.conversation_dir / PAUSED_BY_SHUTDOWN_MARKER).exists()
+
+    def _mark_paused_by_shutdown(self, paused: bool) -> None:
+        marker = self.conversation_dir / PAUSED_BY_SHUTDOWN_MARKER
+        try:
+            if paused:
+                marker.touch()
+            else:
+                marker.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not update %s", marker, exc_info=True)
 
     async def load_meta(self):
         meta_file = self.conversation_dir / "meta.json"
@@ -1966,6 +1986,8 @@ class EventService:
                                 else:
                                     raise
 
+            if self.paused_by_shutdown:
+                self._mark_paused_by_shutdown(False)
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
             # Finally, release even if the task is cancelled before its
@@ -2507,6 +2529,9 @@ class EventService:
         run_task = self._run_task
         if run_task is not None and not run_task.done():
             if self._conversation is not None:
+                # Recorded first, so whoever sees the pause can tell it apart
+                # from one the person made.
+                self._mark_paused_by_shutdown(True)
                 loop = asyncio.get_running_loop()
                 try:
                     await loop.run_in_executor(None, self._conversation.pause)

@@ -109,6 +109,9 @@ def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> s
     )
 
 
+RESTART_STOP = "restart"
+"""The stop :func:`stop_header` names for a run a server shutdown paused."""
+
 _STOPS = {
     "waiting_for_confirmation": (
         "It stopped to wait for the person to approve or reject an action; the "
@@ -123,12 +126,18 @@ _STOPS = {
         "It got stuck and stopped; its last message follows. It will not run "
         "for your messages until the person restarts it. Tell the person"
     ),
+    RESTART_STOP: (
+        "A server restart interrupted it, not the person, and left it paused; "
+        "its last message follows. It will not run for your messages until the "
+        "person resumes it. Tell the person it needs resuming"
+    ),
 }
 
 
 def stop_header(title: str | None, conversation_id: UUID, *, status: str) -> str:
     """First line of the update a coordinator gets when a member it started
-    stops on the person (confirmation, error or stuck)."""
+    stops on the person (confirmation, error or stuck), or that a server
+    restart paused (:data:`RESTART_STOP`)."""
     outcome = _STOPS[status]
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "

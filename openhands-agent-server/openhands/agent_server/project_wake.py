@@ -26,7 +26,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.event_service import (
+    PAUSED_BY_SHUTDOWN_MARKER,
+    ConversationRunLimitExceeded,
+)
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.models import EventSortOrder
 from openhands.agent_server.persistence import get_projects_store
@@ -36,6 +39,7 @@ from openhands.agent_server.project_board import (
     starts_turn,
 )
 from openhands.agent_server.project_prompts import (
+    RESTART_STOP,
     SenderRole,
     paused_header,
     person_message_header,
@@ -276,7 +280,9 @@ async def notify_coordinator_of_stop(
     Only for a turn the coordinator started; the person sees their own turns
     stop. Waiting for confirmation, an error or stuck wakes the coordinator so
     it can tell the person what the member waits on. A pause is the person's
-    own act, so it is saved for the coordinator's awareness without a run.
+    own act, so it is saved for the coordinator's awareness without a run;
+    a pause a server shutdown made wakes the coordinator with that cause,
+    once the server is back (the shutdown itself sends nothing).
     Returns whether a message was saved.
     """
     if status not in HELD_FOR_PERSON_STATUSES or turn_sender is None:
@@ -290,6 +296,15 @@ async def notify_coordinator_of_stop(
     member = await service.get_conversation(member_id)
     title = member.title if member else None
     paused = status == "paused"
+    marker = service.conversations_dir / member_id.hex / PAUSED_BY_SHUTDOWN_MARKER
+    if paused and marker.exists():
+        member_service = await service.get_event_service(member_id)
+        if member_service is None or member_service._closing:
+            # The server is going down; the catch-up after it starts again
+            # delivers this with its real cause.
+            return False
+        paused = False
+        status = RESTART_STOP
     header = (
         paused_header(title, member_id)
         if paused
