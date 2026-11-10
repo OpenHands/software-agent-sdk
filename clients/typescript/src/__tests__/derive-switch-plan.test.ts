@@ -21,11 +21,11 @@ const ohBase: OpenHandsAgentProfile = {
   llm_profile_ref: 'gpt-4o',
   mcp_server_refs: null,
   agent: 'CodeActAgent',
-  skills: [],
+  disabled_skills: [],
   system_message_suffix: null,
   condenser: {},
   verification: baseVerification,
-  enable_sub_agents: false,
+  tools: null,
   tool_concurrency_limit: 1,
 };
 
@@ -129,8 +129,8 @@ describe('deriveSwitchPlan', () => {
       expect(plan.action).toBe('start-new');
     });
 
-    it('start-new when enable_sub_agents changes', () => {
-      const target: OpenHandsAgentProfile = { ...ohBase, revision: 1, enable_sub_agents: true };
+    it('start-new when tools change', () => {
+      const target: OpenHandsAgentProfile = { ...ohBase, revision: 1, tools: [{ name: 'glob' }] };
       const plan = deriveSwitchPlan(ohBase, target, null);
       expect(plan.action).toBe('start-new');
     });

@@ -62,6 +62,7 @@ _FAILURE_STATUSES: Final[frozenset[str]] = _TERMINAL_STATUSES - {
     ConversationExecutionStatus.FINISHED.value
 }
 _EXECUTION_STATUS_KEY: Final[str] = "execution_status"
+_STATS_KEY: Final[str] = "stats"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,10 @@ class TelemetrySubscriber(Subscriber[Event]):
                 self._handle_state_update(event)
 
     def _handle_state_update(self, event: ConversationStateUpdateEvent) -> None:
+        # Usage is tracked from every update that carries stats: in a live run
+        # the terminal status arrives as a bare-string ``execution_status``
+        # update, before the final ``full_state`` snapshot.
+        self._capture_usage(event)
         status = _extract_status(event)
         if status is None:
             return
@@ -132,7 +137,6 @@ class TelemetrySubscriber(Subscriber[Event]):
             self._run_observed = True
 
         if status in _TERMINAL_STATUSES:
-            self._capture_usage(event)
             self._emit_terminal(status)
 
     def emit_started(self) -> None:
@@ -187,18 +191,26 @@ class TelemetrySubscriber(Subscriber[Event]):
         )
 
     def _capture_usage(self, event: ConversationStateUpdateEvent) -> None:
-        """Pull aggregate token/cost out of the terminal state snapshot.
+        """Record aggregate token/cost from a state update carrying stats.
 
-        ``full_state`` carries ``stats.usage_to_metrics``, a map of usage id to
-        a ``MetricsSnapshot``. Summing it gives the conversation totals, which
-        are then bucketed — the raw figures are never reported. Best-effort:
-        any shape change degrades to ``unknown`` rather than raising.
+        Both a ``stats`` key update (published after each LLM call) and a
+        ``full_state`` snapshot carry ``usage_to_metrics``, a map of usage id
+        to a ``MetricsSnapshot``. Summing it gives the conversation totals,
+        which are bucketed at the terminal event — the raw figures are never
+        reported. Best-effort: any shape change degrades to ``unknown``
+        rather than raising.
         """
         try:
+            key = getattr(event, "key", None)
             value = getattr(event, "value", None)
             if not isinstance(value, dict):
                 return None
-            stats = value.get("stats")
+            if key == _STATS_KEY:
+                stats = value
+            elif key == FULL_STATE_KEY:
+                stats = value.get("stats")
+            else:
+                return None
             if not isinstance(stats, dict):
                 return None
             per_usage = stats.get("usage_to_metrics")

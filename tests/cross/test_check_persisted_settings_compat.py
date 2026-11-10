@@ -137,10 +137,10 @@ def test_collect_fixture_cases_and_validate_current_repo_fixtures() -> None:
         versions_by_surface.setdefault(case.surface_key, set()).add(case.version)
 
     assert versions_by_surface == {
-        "agent_settings": {1, 2, 3, 4, 5, 6},
-        "agent_profile": {1, 2},
+        "agent_settings": {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+        "agent_profile": {1, 2, 3, 4},
         "conversation_settings": {1},
-        "persisted_settings": {1, 2, 3},
+        "persisted_settings": {1, 2, 3, 4, 5, 6, 7},
     }
 
 
@@ -424,6 +424,10 @@ def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> 
         "--python",
         "/tmp/fake-python",
         "--quiet",
+        "--refresh-package",
+        "openhands-sdk",
+        "--refresh-package",
+        "openhands-agent-server",
         "--exclude-newer",
         "2026-01-02T00:00:00Z",
         "openhands-sdk==1.2.3",

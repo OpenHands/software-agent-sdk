@@ -385,3 +385,15 @@ def test_load_project_skills_loads_skills_directories_from_git_root(tmp_path):
     assert any(
         s.name == "root_skill" and "Loaded from root" in s.content for s in skills
     )
+
+
+def test_load_project_skills_non_utf8_agents_md_does_not_abort(tmp_path):
+    (tmp_path / "AGENTS.md").write_bytes(b"# Rules\n\xe9t\xe9 in latin-1\n")
+    (tmp_path / ".cursorrules").write_text("Use tabs.")
+    skills_dir = tmp_path / ".openhands" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "valid.md").write_text("Valid skill.")
+
+    skills = load_project_skills(tmp_path)
+
+    assert {s.name for s in skills} == {"cursorrules", "valid"}

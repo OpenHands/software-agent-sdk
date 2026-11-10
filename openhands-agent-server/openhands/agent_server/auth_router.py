@@ -29,8 +29,20 @@ auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 _COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365 * 10  # 10 years
 
 # Path scope: only sent on workspace-router URLs. Other /api/* endpoints
-# never see the cookie.
+# never see the cookie. Prefixed with the app's ``root_path`` per request.
 _COOKIE_PATH = "/api/conversations"
+
+
+def _cookie_path(request: Request) -> str:
+    """Cookie path for the URLs the browser uses, including ``root_path``.
+
+    Behind a path prefix (``OH_WEB_URL`` with a path) the browser requests
+    ``{root_path}/api/conversations/...``; a cookie scoped to the bare
+    ``/api/conversations`` would never be sent back on those URLs.
+    """
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    return f"{root_path}{_COOKIE_PATH}"
+
 
 # Hostnames the browser treats as "secure contexts" even over plain HTTP, so
 # we can issue ``Secure`` cookies against them in local development without
@@ -56,16 +68,18 @@ def _request_is_secure_context(request: Request) -> bool:
 
     forwarded_host = request.headers.get("x-forwarded-host", "")
     host = forwarded_host.split(",")[0].strip() or request.url.hostname or ""
-    # Strip an optional ``:port`` suffix; IPv6 hosts are bracketed.
+    # Strip an optional ``:port`` suffix. IPv6 hosts are bracketed in
+    # ``X-Forwarded-Host``; ``request.url.hostname`` returns them bare
+    # (``::1``), so only split on a single colon.
     if host.startswith("["):
         host = host.partition("]")[0].lstrip("[")
-    else:
+    elif host.count(":") == 1:
         host = host.split(":")[0]
     return host.lower() in _LOOPBACK_HOSTS
 
 
 def _set_workspace_cookie(
-    response: Response, *, value: str, secure: bool, max_age: int
+    response: Response, *, value: str, path: str, secure: bool, max_age: int
 ) -> None:
     """Issue the workspace session cookie.
 
@@ -85,7 +99,7 @@ def _set_workspace_cookie(
         key=WORKSPACE_SESSION_COOKIE_NAME,
         value=value,
         max_age=max_age,
-        path=_COOKIE_PATH,
+        path=path,
         secure=secure,
         httponly=True,
         samesite="none",
@@ -99,8 +113,10 @@ def _set_workspace_cookie(
         _append_partitioned_to_last_set_cookie(response)
 
 
-def _append_partitioned_to_last_set_cookie(response: Response) -> None:
-    """Append ``; Partitioned`` to the most recent Set-Cookie header.
+def _append_partitioned_to_last_set_cookie(
+    response: Response, cookie_name: str = WORKSPACE_SESSION_COOKIE_NAME
+) -> None:
+    """Append ``; Partitioned`` to the named Set-Cookie header.
 
     ``MutableHeaders`` doesn't expose an "edit by name" helper for
     duplicate-allowed headers, and we need to be careful not to clobber
@@ -110,7 +126,7 @@ def _append_partitioned_to_last_set_cookie(response: Response) -> None:
     for idx in range(len(raw) - 1, -1, -1):
         name, value = raw[idx]
         if name.lower() == b"set-cookie" and value.startswith(
-            WORKSPACE_SESSION_COOKIE_NAME.encode("latin-1") + b"="
+            cookie_name.encode("latin-1") + b"="
         ):
             if b"partitioned" not in value.lower():
                 raw[idx] = (name, value + b"; Partitioned")
@@ -137,6 +153,7 @@ async def create_workspace_session(request: Request, response: Response) -> Resp
     _set_workspace_cookie(
         response,
         value=session_api_key,
+        path=_cookie_path(request),
         secure=_request_is_secure_context(request),
         max_age=_COOKIE_MAX_AGE_SECONDS,
     )
@@ -160,6 +177,7 @@ async def delete_workspace_session(request: Request, response: Response) -> Resp
     _set_workspace_cookie(
         response,
         value="",
+        path=_cookie_path(request),
         secure=_request_is_secure_context(request),
         max_age=0,
     )

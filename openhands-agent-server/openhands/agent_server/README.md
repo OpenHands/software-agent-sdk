@@ -53,7 +53,10 @@ The server can be configured using environment variables or a JSON configuration
 |----------|-------------|---------|
 | `OPENHANDS_AGENT_SERVER_CONFIG_PATH` | Path to JSON configuration file | `workspace/openhands_agent_server_config.json` |
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
-| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
+| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** Falls back to the first session API key. | None |
+| `OH_PREVIOUS_SECRET_KEYS` | Earlier secret keys, used only to decrypt, as a JSON list (or `OH_PREVIOUS_SECRET_KEYS_0`, `_1`, ...). See [Rotating the key](#rotating-the-key). | None |
+| `OH_CONVERSATION_RUNTIME` | Conversation runtime execution mode: `local` (in-process) or `docker` (isolated per-conversation containers). | `local` |
+| `OH_CONVERSATION_IDLE_TTL_SECONDS` | Seconds an idle terminal conversation runtime stays active before suspension (Docker) or in-memory eviction (local). Set to empty/null to disable. | `1200.0` |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
 | `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
 | `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
@@ -262,11 +265,27 @@ export OH_SECRET_KEY=$(openssl rand -hex 32)
 export OH_SECRET_KEY="your-secret-key-here"
 ```
 
+
 **Important Security Notes:**
 - Use a strong, randomly generated key with at least 256 bits of entropy
 - Store this key securely (e.g., in a secrets manager or environment variable)
-- **If you change this key, previously encrypted secrets cannot be decrypted**
+- **If you change this key without listing the old one in `OH_PREVIOUS_SECRET_KEYS`, previously encrypted secrets cannot be decrypted** (see below)
 - Without `OH_SECRET_KEY`, secrets will be redacted (not encrypted) and will be lost on restart
+
+#### Rotating the key
+
+To rotate, set the new key as `OH_SECRET_KEY` and the old one in `OH_PREVIOUS_SECRET_KEYS`, then restart:
+
+```bash
+export OH_PREVIOUS_SECRET_KEYS="[\"$OLD_KEY\"]"   # or OH_PREVIOUS_SECRET_KEYS_0="$OLD_KEY"
+export OH_SECRET_KEY=$(openssl rand -hex 32)
+```
+
+The server encrypts only with `OH_SECRET_KEY` and decrypts with it first, then with each previous key in order. Values saved under a previous key are re-encrypted under the new key the next time they are saved; the settings and secrets stores are re-encrypted at startup. Other encrypted files (conversations, LLM profiles, provider connections) move to the new key when next saved, so keep the old key listed for as long as they matter.
+
+Without `OH_SECRET_KEY` the encryption key is the first session API key, so rotating the session key rotates the encryption key too: put the old session key in `OH_PREVIOUS_SECRET_KEYS`. Setting `OH_SECRET_KEY` explicitly keeps the two independent and is recommended.
+
+If a stored value cannot be decrypted with any configured key, reads return it as unset, and writes to the settings and secrets stores are refused (409 for `PATCH /api/settings`) instead of overwriting it, until the key it was saved under is restored or listed.
 
 #### What Gets Encrypted
 
@@ -292,6 +311,79 @@ Each webhook can be configured with:
 - **`num_retries`**: Number of retry attempts on failure (default: 3)
 - **`retry_delay`**: Delay between retries in seconds (default: 5)
 - **`headers`**: Custom headers to include in webhook requests
+
+### Optional Canvas App backends
+
+A schema-1 `canvas-extension.json` may add a versioned `backend` block. Apps
+without this block remain browser-only and require no lifecycle calls.
+
+```json
+{
+  "schema_version": 1,
+  "name": "managed-vscode",
+  "display_name": "Managed VS Code",
+  "version": "1.0.0",
+  "entrypoint": "dist/index.js",
+  "backend": {
+    "schema_version": 1,
+    "artifacts": {
+      "linux-amd64": {
+        "path": "backend/linux-amd64.tar.gz",
+        "sha256": "<64 lowercase hex characters>"
+      },
+      "linux-arm64": {
+        "path": "backend/linux-arm64.tar.gz",
+        "sha256": "<64 lowercase hex characters>"
+      }
+    },
+    "argv": [
+      "{artifact_dir}/bin/server",
+      "--host=127.0.0.1",
+      "--port={port}",
+      "--data-dir={data_dir}"
+    ],
+    "health": {
+      "path": "/health",
+      "timeout_seconds": 30,
+      "interval_seconds": 0.1
+    },
+    "inherit_environment": ["LANG", "PATH", "TZ"]
+  }
+}
+```
+
+The executable must be inside `{artifact_dir}`. The generic `{port}`,
+`{data_dir}`, and `{artifact_dir}` placeholders let launchers use the prepared
+artifact while the process working directory remains the installed package.
+Preparation verifies the selected platform archive's SHA-256, safely extracts
+regular files and directories into a content-addressed read-only location, and
+records approval for the exact installed revision. Updating or replacing the
+App invalidates that approval.
+
+Installation, enablement, and bundle mounting never execute backend code. A
+client must call `prepare` and then `start`, each with the revision returned by
+`GET .../backend`. The lifecycle endpoints are:
+
+- `GET /api/canvas-extensions/installed/{name}/backend`
+- `POST .../backend/prepare` with `{"revision": "..."}`
+- `POST .../backend/start` with `{"revision": "..."}`
+- `POST .../backend/stop`
+- `GET .../backend/logs?limit_bytes=65536`
+- `DELETE .../backend/data`
+
+Status is one of `missing`, `stopped`, `starting`, `ready`, `unhealthy`, or
+`unsupported`. Linux amd64 and arm64 are supported when the matching artifact
+is declared. The server runs one owned process group per installed App, drains
+bounded logs continuously, and stops it on disable, uninstall, failed startup,
+or server shutdown. Disable and uninstall preserve mutable data; only the
+separate data endpoint deletes it.
+
+Backends receive no ambient agent-server environment. A manifest may inherit
+only the supported non-credential variables (`LANG`, `LC_ALL`, `LC_CTYPE`,
+`PATH`, `TMPDIR`, and `TZ`). Backend subprocesses are owned and constrained by
+these launch rules, but they are not OS-isolated; use a sandboxed Agent Server
+when operating untrusted code. Authenticated HTTP/WebSocket routing to a ready
+backend is intentionally outside this lifecycle contract.
 
 ## API Documentation
 
@@ -358,6 +450,27 @@ workspace/
 └── project/                    # Agent workspace
     └── (agent files and outputs)
 ```
+
+## Docker Conversation Runtime Lifecycle
+
+When the agent server is configured with `OH_CONVERSATION_RUNTIME=docker`, each conversation executes in an isolated Docker container running an internal agent-server instance. This architecture ensures complete execution isolation, private workspace mounts, and dedicated credential boundaries.
+
+### Container Lifecycle & Automatic Suspension
+
+1. **On-Demand Provisioning**: Containers are not pre-warmed for every conversation in storage. Instead, `DockerConversationRegistry.get_or_create()` starts a container on-demand when the conversation is first created or accessed by an incoming request.
+2. **Active Lease Tracking**: When an HTTP request is received (such as sending a message, updating settings, or proxying workspace files) or a WebSocket subscriber connects, an active lease is acquired on the runtime. As long as any request is actively streaming or any socket is connected, the container is never suspended.
+3. **Idle Detection**: A background task periodically checks running containers against `OH_CONVERSATION_IDLE_TTL_SECONDS`. It stops a container only when the persisted execution status is terminal (`finished`, `error`, or `stuck`), the idle TTL has elapsed, and no request lease or attached WebSocket session is held. Conversations that are `running`, `idle`, `paused`, or `waiting_for_confirmation` keep their containers.
+4. **Stop coordination**: Before `docker stop`, the registry re-checks the lease, the attached session, the idle deadline, and the lease generation under its lock. A request that arrives while the status is being read keeps the container. If `docker stop` fails, the container stays tracked and the next access reuses it.
+5. **Transparent Resume**: When an interaction occurs on a suspended conversation, `get_or_create()` recreates the container, mounts the existing workspace and persistence data, and resumes seamlessly.
+
+### Runtime Suspension vs. Conversation Deletion
+
+It is essential to distinguish between **suspending a runtime** and **deleting a conversation**:
+
+| Operation | Trigger | What Happens to Docker Container | Persisted Conversation Data & Workspace | Resumable? |
+|---|---|---|---|---|
+| **Runtime Suspension** | Automatic after idle timeout (`OH_CONVERSATION_IDLE_TTL_SECONDS`) or manual runtime release | Stopped and released to reclaim CPU, RAM, and writable layers | **Preserved intact** on the host filesystem (bind-mounted events, metadata, workspace files, credentials) | **Yes** — automatically recreated on next request with same conversation ID and full history |
+| **Conversation Deletion** | `DELETE /api/conversations/{id}` | Stopped and destroyed immediately | **Permanently removed** from the host filesystem (conversation directory, metadata, and outer-owned state) | **No** — conversation is deleted from the catalog |
 
 ## Development
 
