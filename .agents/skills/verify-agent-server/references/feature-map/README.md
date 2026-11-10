@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@4db1ad742ad143ddc3411631f04efb70323f40f9 (2026-11-09). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **953 sub-features**.
+The map has **954 sub-features**.
 
 ## Baseline preconditions
 
@@ -79,7 +79,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F12 | [Conversation runtime info, sandbox pause and credential bindings](F12-runtime-and-credentials.md) | runtime info and reprovision, prepare-for-sandbox-pause, credential bindings for ACP agents, managed LLM key refresh, the Docker runtime mode's routes and contract | `GET /api/conversations/{id}/runtime`, `POST .../runtime/reprovision`, `POST /api/conversations/prepare-for-sandbox-pause`, `PUT .../credential-bindings/{name}`, Docker mode `DELETE .../runtime`, `POST .../runtime/credentials` | llm, node, network | 31 |
 | F13 | [Bash commands and bash events](F13-bash.md) | global and conversation-scoped shell commands: execute, start, stop, timeouts, large output, events search and clear, retention, the bash events socket | `/api/bash/*`, `/api/conversations/{id}/bash/*`, `WS /sockets/bash-events` | baseline | 29 |
 | F14 | [File upload, download, archive and directory helpers](F14-files.md) | upload, download, create directory, home and subdirectory search, git-delta and tar.gz archives, trajectory zips, conversation-scoped variants and their path guard | `/api/file/*`, `/api/conversations/{id}/file/*` | llm, git, node | 30 |
-| F15 | [Git changes, diffs, commits and repository search](F15-git.md) | working-tree changes and diffs, explicit refs, nested repositories, commit history and per-commit changes, scoped variants, GitHub repository search | `/api/git/*`, `/api/conversations/{id}/git/*`, `GET /api/git/repositories/search` | llm, git, node | 29 |
+| F15 | [Git changes, diffs, commits and repository search](F15-git.md) | working-tree changes and diffs, explicit refs, nested repositories, commit history and per-commit changes, scoped variants, GitHub repository search | `/api/git/*`, `/api/conversations/{id}/git/*`, `GET /api/git/repositories/search` | llm, git, node | 30 |
 | F16 | [Workspace file serving and VS Code endpoints](F16-workspace-serving-and-vscode.md) | the per-conversation static workspace server (index, content types, ranges, traversal, cookie auth) and the VS Code status and URL routes | `GET /api/conversations/{id}/workspace[/{path}]`, `/api/vscode/*`, `/api/conversations/{id}/vscode/*` | llm, git | 26 |
 | F17 | [Workspace registry and parents](F17-workspaces-registry.md) | saved workspaces and parents: add, list, delete, validation, persistence, concurrent writers, corrupted files | `GET`/`POST`/`DELETE /api/workspaces`, `/api/workspaces/parents` | git, node | 24 |
 | F18 | [Server settings, settings schemas and the secrets store](F18-settings-and-secrets.md) | persisted settings with redacted, plaintext and encrypted exposure, sparse PATCH, settings schemas, the named secrets store, encryption at rest, cipher-key changes | `GET`/`PATCH /api/settings`, `/api/settings/agent-schema`, `/conversation-schema`, `/api/settings/secrets[/{name}]` | git, node | 30 |

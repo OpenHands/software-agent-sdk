@@ -14,7 +14,7 @@ operation except repository search also exists under
 `/api/conversations/{runtime_conversation_id}/git/...`, where `path` must
 resolve inside the conversation's workspace. Repository search is not about
 local directories: it lists the repositories a GitHub token stored in the
-server's secrets can access (`missing_token` when there is none).
+server's secrets can access (`missing_token` when there is none). The same token also reads one pull request's state and combined CI result (`pull-requests/{number}`).
 
 Source: `openhands-agent-server/openhands/agent_server/git_router.py`, `openhands-agent-server/openhands/agent_server/git_provider_service.py`, `openhands-agent-server/openhands/agent_server/runtime_router.py`, `openhands-sdk/openhands/sdk/git/`, `openhands-sdk/openhands/sdk/workspace/remote/remote_workspace_mixin.py`, `clients/typescript/src/workspace/remote-workspace.ts`, `clients/typescript/src/client/git-client.ts`
 
@@ -24,7 +24,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 `GET /api/conversations/{runtime_conversation_id}/git/diff`,
 `GET /api/conversations/{runtime_conversation_id}/git/commits`,
 `GET /api/conversations/{runtime_conversation_id}/git/commits/{sha}/changes`,
-`GET /api/git/repositories/search`, `GET /api/git/changes`,
+`GET /api/git/repositories/search`, `GET /api/git/repositories/{owner}/{repo}/pull-requests/{number}`, `GET /api/git/changes`,
 `GET /api/git/diff`, `GET /api/git/commits`, `GET /api/git/commits/{sha}/changes`
 
 ## Sub-features
@@ -55,9 +55,10 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.repo-search-token`: without a stored token, GitHub search is 200 `{"items": [], "next_page_id": null, "missing_token": true}`; a secret named `github_token` or `GH_TOKEN` is picked up (a malformed `page_id` is then validated and refused with 400), and deleting it restores `missing_token`.
 - `F15.repo-search-errors`: `gitlab` and `bitbucket` are 400 (not supported), an unknown or missing `provider` is 422, and `limit` outside 1..100 is 422.
 - `F15.repo-search-unreachable`: when GitHub cannot be reached the search is 502 with the generic masked body and no token in it.
-- `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub repository search timed out` and no token in it.
+- `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub request timed out` and no token in it.
 - `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter.
 - `F15.repo-search-rejected-token`: a provider's HTTP 401 for a rejected token is passed through as 401 with a generic error, without exposing the token.
+- `F15.pr-status`: `GET /api/git/repositories/{owner}/{repo}/pull-requests/{number}?provider=github` reads one pull request live from GitHub with the stored token and returns `git_provider`, `repository`, `number`, `state` (`open`, `closed` or `merged`), `draft`, `title`, `url`, `head_sha` and `checks` (`success`, `failure`, `pending` or `none`: any failed check run or errored status wins, an unfinished run or pending status is `pending`, no runs and no statuses is `none`); without a token it is 409 `{code: missing_provider_token}`, a provider other than `github` is 400, GitHub's 404 stays 404, its rate limit is 429 with `Retry-After`, a rejected token or other provider failure is 502 with the masked body, and invalid `owner`, `repo` (including `.`/`..`), `number` or `provider` are 422 without any provider request.
 
 ## How to get to it (agent POV)
 
@@ -700,10 +701,10 @@ Preconditions:
   call to `api.github.com` fails on any machine; restore afterwards.
   ```sh
   control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f15-not-a-real-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY=http://127.0.0.1:9 --env https_proxy=http://127.0.0.1:9 \
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY=http://127.0.0.1:9 --env https_proxy=http://127.0.0.1:9 \
     --env NO_PROXY=localhost --env no_proxy=localhost
   control-agent-server api GET /api/git/repositories/search --query provider=github --expect 502 \
-    --check detail eq 'Internal Server Error' --check exception eq '502: GitHub repository search failed' \
+    --check detail eq 'Internal Server Error' --check exception eq '502: GitHub request failed' \
     --check . not-contains qa-f15-not-a-real-token --save F15.repo-search-unreachable/dead-proxy
   control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
   control-agent-server restart --reset-config
@@ -711,7 +712,7 @@ Preconditions:
   control-agent-server doctor
   ```
   502 with the server's masked 5xx body
-  (`{"detail": "Internal Server Error", "exception": "502: GitHub repository search failed"}`),
+  (`{"detail": "Internal Server Error", "exception": "502: GitHub request failed"}`),
   without the token. `restart --reset-config` drops the dead proxy again
   (the run has no launch flags to lose), and the search is back to
   `missing_token` once the secret is deleted.
@@ -727,10 +728,10 @@ Preconditions:
   for i in $(seq 50); do test -s "$F/hang-port" && break; sleep 0.1; done
   HANG="http://127.0.0.1:$(cat "$F/hang-port")"
   control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f15-not-a-real-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY="$HANG" --env https_proxy="$HANG" --env NO_PROXY=localhost --env no_proxy=localhost
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY="$HANG" --env https_proxy="$HANG" --env NO_PROXY=localhost --env no_proxy=localhost
   T0=$SECONDS
   control-agent-server api GET /api/git/repositories/search --query provider=github --expect 504 --expect-max-ms 30000 \
-    --check detail eq 'Internal Server Error' --check exception eq '504: GitHub repository search timed out' \
+    --check detail eq 'Internal Server Error' --check exception eq '504: GitHub request timed out' \
     --check . not-contains qa-f15-not-a-real-token --save F15.repo-search-timeout/silent-proxy
   test $((SECONDS - T0)) -ge 14
   kill "$HANG_PID"
@@ -739,7 +740,7 @@ Preconditions:
   control-agent-server doctor
   ```
   504 after about 15 s (between 14 and 30), with the masked 5xx body
-  `{"detail": "Internal Server Error", "exception": "504: GitHub repository search timed out"}`
+  `{"detail": "Internal Server Error", "exception": "504: GitHub request timed out"}`
   and no token in it.
 - **Live GitHub listing (`F15.repo-search-github`), blocked: needs `QA_GITHUB_TOKEN` and egress to `api.github.com`.**
   Needs: `network`
@@ -827,12 +828,12 @@ Preconditions:
   for i in $(seq 1 100); do test -s "$F/reject-port" && break; sleep 0.1; done
   REJECT_PROXY="http://127.0.0.1:$(cat "$F/reject-port")"
   control-agent-server api PUT /api/settings/secrets --json '{"name":"github_token","value":"qa-f15-rejected-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY="$REJECT_PROXY" --env https_proxy="$REJECT_PROXY" \
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY="$REJECT_PROXY" --env https_proxy="$REJECT_PROXY" \
     --env HTTP_PROXY="$REJECT_PROXY" --env http_proxy="$REJECT_PROXY" \
     --env "SSL_CERT_FILE=$F/reject-cert.pem" --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1
   control-agent-server doctor
   control-agent-server api GET /api/git/repositories/search --query provider=github --expect 401 \
-    --check detail eq 'GitHub repository search failed' --check . not-contains qa-f15-rejected-token --save F15.repo-search-rejected-token/rejected
+    --check detail eq 'GitHub request failed' --check . not-contains qa-f15-rejected-token --save F15.repo-search-rejected-token/rejected
   control-agent-server assert --json "$F/reject-observed.json" --check request eq 'GET /user/repos' \
     --check fake_token_received eq true --check returned_status eq 401
   cp "$F/reject-observed.json" "$AGENT_SERVER_VERIFY_RUN/evidence/F15.repo-search-rejected-token/provider.json"
@@ -847,6 +848,175 @@ Preconditions:
   it returned 401. The live server preserves that status and returns only its
   generic error. Source policy also preserves 403, maps other 4xx to 400 and
   5xx to 502; connection failure and timeout are covered above.
+
+- **Pull request status (`F15.pr-status`).** A local TLS fixture stands in for
+  `api.github.com` behind an owned CONNECT proxy, as in the rejected-token
+  recipe, but serves several pull requests: `1` open with passing checks, `2`
+  merged with a timed-out check run, `3` an open draft with a run in progress,
+  `4` closed with no checks, `5` open with only a pending commit status, `6`
+  with an errored commit status; `401`, `403` (rate limited, `Retry-After: 42`)
+  and `500` are provider failures and any other number is GitHub's 404. It
+  records every request path and `Authorization` header it receives. Only a
+  fake token is used and the real GitHub is never contacted.
+  `LITELLM_LOCAL_MODEL_COST_MAP=True` keeps the restarted server from fetching
+  litellm's price map through the fixture (the 502 it would get can break the
+  server's startup, see Gotchas). The run must have no `github_token` or
+  `GH_TOKEN` secret stored when the recipe starts, so the first call proves
+  `missing_provider_token`.
+  ```sh
+  cat > "$F/pr-github.py" <<'PY'
+  import datetime, json, pathlib, re, socketserver, ssl, sys
+  from cryptography import x509
+  from cryptography.hazmat.primitives import hashes, serialization
+  from cryptography.hazmat.primitives.asymmetric import rsa
+  from cryptography.x509.oid import NameOID
+  root = pathlib.Path(sys.argv[1])
+  key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+  name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'api.github.com')])
+  now = datetime.datetime.now(datetime.timezone.utc)
+  cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+      .public_key(key.public_key()).serial_number(x509.random_serial_number())
+      .not_valid_before(now - datetime.timedelta(minutes=1))
+      .not_valid_after(now + datetime.timedelta(days=1))
+      .add_extension(x509.SubjectAlternativeName([x509.DNSName('api.github.com')]), critical=False)
+      .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+      .sign(key, hashes.SHA256()))
+  (root / 'pr-cert.pem').write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+  (root / 'pr-key.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM,
+      serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+  context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+  context.load_cert_chain(root / 'pr-cert.pem', root / 'pr-key.pem')
+  # number -> (pull fields, check runs, commit statuses)
+  def sha(n): return '%040x' % n
+  PRS = {
+      1: ({'state': 'open', 'title': 'Add widget'}, [{'status': 'completed', 'conclusion': 'success'}], [{'state': 'success'}]),
+      2: ({'state': 'closed', 'merged': True, 'title': 'Fix widget'}, [{'status': 'completed', 'conclusion': 'success'}, {'status': 'completed', 'conclusion': 'timed_out'}], []),
+      3: ({'state': 'open', 'draft': True, 'title': 'WIP widget'}, [{'status': 'in_progress', 'conclusion': None}], []),
+      4: ({'state': 'closed', 'title': 'Dropped widget'}, [], []),
+      5: ({'state': 'open', 'title': 'Legacy status only'}, [], [{'state': 'pending'}]),
+      6: ({'state': 'open', 'title': 'Status error'}, [{'status': 'completed', 'conclusion': 'success'}], [{'state': 'error'}]),
+  }
+  def reply(conn, status, body, extra=''):
+      data = json.dumps(body).encode()
+      conn.sendall(f'HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\n{extra}\r\n'.encode() + data)
+  def read_headers(conn):
+      value = b''
+      while b'\r\n\r\n' not in value:
+          chunk = conn.recv(4096)
+          if not chunk: return None
+          value += chunk
+      return value.decode('latin1')
+  seen = {'requests': [], 'authorization': []}
+  def log(line):
+      seen['requests'].append(line['path'])
+      if line['authorization'] not in seen['authorization']: seen['authorization'].append(line['authorization'])
+      (root / 'pr-observed.json').write_text(json.dumps(seen))
+  def route(conn, path, auth):
+      log({'path': path, 'authorization': auth})
+      m = re.match(r'^/repos/acme/widgets/pulls/(\d+)$', path)
+      if m:
+          n = int(m.group(1))
+          if n == 401: return reply(conn, 401, {'message': 'Bad credentials'})
+          if n == 403: return reply(conn, 403, {'message': 'API rate limit exceeded'}, 'x-ratelimit-remaining: 0\r\nretry-after: 42\r\n')
+          if n == 500: return reply(conn, 500, {'message': 'boom'})
+          if n not in PRS: return reply(conn, 404, {'message': 'Not Found'})
+          f = PRS[n][0]
+          return reply(conn, 200, {'number': n, 'state': f['state'], 'merged': f.get('merged', False), 'draft': f.get('draft', False),
+              'title': f['title'], 'html_url': f'https://github.com/acme/widgets/pull/{n}', 'head': {'sha': sha(n)}})
+      m = re.match(r'^/repos/acme/widgets/commits/([0-9a-f]{40})/check-runs', path)
+      if m:
+          runs = PRS[int(m.group(1), 16)][1]
+          return reply(conn, 200, {'total_count': len(runs), 'check_runs': runs})
+      m = re.match(r'^/repos/acme/widgets/commits/([0-9a-f]{40})/status', path)
+      if m:
+          return reply(conn, 200, {'statuses': PRS[int(m.group(1), 16)][2]})
+      reply(conn, 404, {'message': 'Not Found'})
+  class Handler(socketserver.BaseRequestHandler):
+      def handle(self):
+          head = read_headers(self.request)
+          if not head or not head.startswith('CONNECT api.github.com:443 '):
+              self.request.sendall(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); return
+          self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+          with context.wrap_socket(self.request, server_side=True) as conn:
+              while True:
+                  req = read_headers(conn)
+                  if req is None: return
+                  lines = req.split('\r\n')
+                  auth = next((l.split(':', 1)[1].strip() for l in lines if l.lower().startswith('authorization:')), '')
+                  route(conn, lines[0].split(' ')[1], auth)
+  with socketserver.ThreadingTCPServer(('127.0.0.1', 0), Handler) as server:
+      server.daemon_threads = True
+      (root / 'pr-observed.json').write_text(json.dumps(seen))
+      (root / 'pr-port').write_text(str(server.server_address[1]))
+      server.serve_forever()
+  PY
+  rm -f "$F/pr-port" "$F/pr-observed.json"
+  uv run --quiet python "$F/pr-github.py" "$F" > "$F/pr-log" 2>&1 &
+  PR_PID=$!
+  trap 'kill "$PR_PID" 2>/dev/null || true; control-agent-server api DELETE /api/settings/secrets/github_token >/dev/null 2>&1 || true; control-agent-server restart --reset-config >/dev/null 2>&1 || true' EXIT
+  for i in $(seq 1 100); do test -s "$F/pr-port" && break; sleep 0.1; done
+  PRS=/api/git/repositories/acme/widgets/pull-requests
+  control-agent-server api GET "$PRS/1" --query provider=github --expect 409 \
+    --check detail.code eq missing_provider_token --save F15.pr-status/no-token
+  control-agent-server api PUT /api/settings/secrets --json '{"name":"github_token","value":"qa-f15-pr-token"}' --expect 200
+  PR_PROXY="http://127.0.0.1:$(cat "$F/pr-port")"
+  control-agent-server restart --env HTTPS_PROXY="$PR_PROXY" --env https_proxy="$PR_PROXY" \
+    --env HTTP_PROXY="$PR_PROXY" --env http_proxy="$PR_PROXY" \
+    --env "SSL_CERT_FILE=$F/pr-cert.pem" --env LITELLM_LOCAL_MODEL_COST_MAP=True --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1
+  control-agent-server doctor
+  control-agent-server api GET "$PRS/1" --query provider=github --expect 200 \
+    --check state eq open --check draft eq false --check checks eq success --check title eq 'Add widget' \
+    --check url eq https://github.com/acme/widgets/pull/1 --check repository eq acme/widgets --check git_provider eq github \
+    --check number eq 1 --check head_sha eq 0000000000000000000000000000000000000001 --save F15.pr-status/open-success
+  control-agent-server api GET "$PRS/2" --query provider=github --expect 200 \
+    --check state eq merged --check checks eq failure --save F15.pr-status/merged-failure
+  control-agent-server api GET "$PRS/3" --query provider=github --expect 200 \
+    --check state eq open --check draft eq true --check checks eq pending --save F15.pr-status/draft-pending
+  control-agent-server api GET "$PRS/4" --query provider=github --expect 200 \
+    --check state eq closed --check checks eq none --save F15.pr-status/closed-none
+  control-agent-server api GET "$PRS/5" --query provider=github --expect 200 --check checks eq pending
+  control-agent-server api GET "$PRS/6" --query provider=github --expect 200 --check checks eq failure
+  control-agent-server api GET "$PRS/99" --query provider=github --expect 404 \
+    --check detail eq 'GitHub did not find it' --save F15.pr-status/not-found
+  control-agent-server api GET "$PRS/403" --query provider=github --expect 429 \
+    --check detail eq 'GitHub rate limit reached' --check-header retry-after eq 42 --save F15.pr-status/rate-limited
+  control-agent-server api GET "$PRS/401" --query provider=github --expect 502 \
+    --check exception contains 'rejected the configured token' --check . not-contains qa-f15-pr-token --save F15.pr-status/token-rejected
+  control-agent-server api GET "$PRS/500" --query provider=github --expect 502 --check . not-contains qa-f15-pr-token
+  control-agent-server api GET "$PRS/1" --query provider=gitlab --expect 400 \
+    --check detail eq "Pull requests are not supported for provider 'gitlab'" --save F15.pr-status/gitlab
+  control-agent-server api GET "$PRS/1" --expect 422 --check detail.0.loc contains provider
+  control-agent-server api GET "$PRS/1" --query provider=qa-nope --expect 422 --check detail.0.loc contains provider
+  control-agent-server api GET "$PRS/0" --query provider=github --expect 422 --check detail.0.loc contains number
+  control-agent-server api GET "$PRS/abc" --query provider=github --expect 422 --check detail.0.loc contains number
+  control-agent-server api GET /api/git/repositories/%2e%2e/widgets/pull-requests/1 --query provider=github --expect 422 \
+    --check detail contains "must not be" --save F15.pr-status/dot-segment
+  control-agent-server api GET /api/git/repositories/ac%20me/widgets/pull-requests/1 --query provider=github --expect 422
+  control-agent-server api GET "$PRS/1" --query provider=github --auth none --expect 401
+  control-agent-server assert --json "$F/pr-observed.json" \
+    --check requests contains /repos/acme/widgets/pulls/1 \
+    --check requests contains /repos/acme/widgets/commits/0000000000000000000000000000000000000001/status \
+    --check requests contains 'check-runs?per_page=100&page=1' \
+    --check requests not-contains /pulls/0 --check requests not-contains '..' --check requests not-contains gitlab \
+    --check authorization len-eq 1 --check authorization contains 'Bearer qa-f15-pr-token'
+  cp "$F/pr-observed.json" "$AGENT_SERVER_VERIFY_RUN/evidence/F15.pr-status/provider.json"
+  control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  kill "$PR_PID"
+  wait "$PR_PID" || true
+  control-agent-server restart --reset-config
+  control-agent-server doctor
+  trap - EXIT
+  ```
+  Each pull request's `state`, `draft` and `checks` follow the fixture's rows
+  above; the merged pull request is `merged`, not `closed`, even though
+  GitHub reports `state: closed` for it. The fixture's record shows one
+  `GET /repos/acme/widgets/pulls/N`, one `commits/<head>/check-runs` and one
+  `commits/<head>/status` per pull request, only the fake `Bearer` token, and
+  no request for the rejected inputs (`pulls/0`, the `..` owner, `gitlab`).
+  Provider failures are 404, 429 (with `Retry-After: 42`) or the masked 502
+  (`detail: Internal Server Error`, reason in `exception`); a provider 401 is
+  502, not 401, because a 401 would read as the caller's own session key
+  being wrong. There is no conversation-scoped variant of this route.
 
 ## Gotchas
 
@@ -901,3 +1071,13 @@ Preconditions:
 - `restart --env` values persist for later restarts of the run; clear them
   with `restart --reset-config` as `F15.repo-search-unreachable` does (that
   also drops `Launch:` flags, which this family has none of).
+- Pull request status (`F15.pr-status`) is GitHub-only: other known providers
+  are 400. It calls three GitHub endpoints (pull, check runs with up to 5
+  pages of 100, commit status); more than 500 check runs without a failure is
+  reported as `pending`, never `success`. Unlike repository search it does not
+  pass a provider 401 or 403 through (502), keeps 404, and turns a rate limit
+  (429, or 403 with `x-ratelimit-remaining: 0`) into 429 with the provider's
+  `Retry-After`. A fixture that proxies `api.github.com` makes the restarted
+  server's litellm price-map fetch fail through the same proxy; without
+  `LITELLM_LOCAL_MODEL_COST_MAP=True` that can make the server exit during
+  startup ("cannot import name 'LoggerContext' ... circular import").
