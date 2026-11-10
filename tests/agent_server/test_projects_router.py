@@ -21,7 +21,10 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+)
 from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
@@ -29,6 +32,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import reset_stores
 from openhands.agent_server.project_wake import (
     notify_coordinator,
+    notify_coordinator_of_stop,
     relay_person_message,
 )
 from openhands.agent_server.projects_router import projects_router
@@ -1440,3 +1444,148 @@ async def test_a_coordinator_that_cannot_start_leaves_no_project(
     assert "No agent profile" in response.json()["detail"]
     assert both.status_code == 422
     assert (await client.get("/api/projects")).json()["projects"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "held",
+    [
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    ],
+)
+async def test_message_does_not_resume_work_the_person_stopped(
+    client, service, tmp_path, held
+):
+    """Review S3: a coordinator's follow-up used to resume a paused worker
+    (and run any actions left over from its interrupted batch)."""
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    worker = await _start(service, tmp_path)
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _set_status(service, worker, held)
+
+    response = await client.post(
+        f"/api/conversations/{worker.hex}/events", json=_send("carry on")
+    )
+
+    assert response.status_code == 409
+    assert await _user_messages(service, worker) == 0
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+    assert (await event_service.get_state()).execution_status == held
+
+
+@pytest.mark.asyncio
+async def test_guarded_send_keeps_the_message_of_a_paused_conversation(
+    service, tmp_path
+):
+    worker = await _start(service, tmp_path)
+    await _set_status(service, worker, ConversationExecutionStatus.PAUSED)
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+
+    with pytest.raises(ValueError, match="paused"):
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text="carry on")]),
+            run=True,
+            refuse_pending_confirmation=True,
+        )
+
+    assert await _user_messages(service, worker) == 1
+    assert event_service._run_task is None
+
+
+@pytest.mark.asyncio
+async def test_a_member_stopped_on_the_person_wakes_its_coordinator(
+    client, service, tmp_path, monkeypatch
+):
+    """Review S1: the coordinator learns that a worker it started waits on the
+    person, and runs to tell them; a pause is only noted."""
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path, title="worker")
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    runs = _record_runs(monkeypatch)
+    by_cat = f"conversation:{cat.hex}"
+
+    assert await notify_coordinator_of_stop(
+        service,
+        worker,
+        project["id"],
+        "waiting_for_confirmation",
+        "terminal: push the release tag",
+        by_cat,
+    )
+    event = await _last_user_message(service, cat)
+    header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
+    assert header.startswith("[Update from ") and "approve or reject" in header
+    assert text == "terminal: push the release tag"
+
+    assert await notify_coordinator_of_stop(
+        service, worker, project["id"], "paused", "Halfway.", by_cat
+    )
+    event = await _last_user_message(service, cat)
+    assert event.llm_message.content[0].text.startswith("[Paused by the person: ")  # type: ignore[union-attr]
+    assert runs == [True, False]
+
+    # The person's own turns, and stops that are not on the person, stay quiet.
+    assert not await notify_coordinator_of_stop(
+        service, worker, project["id"], "error", "boom", None
+    )
+    assert not await notify_coordinator_of_stop(
+        service, worker, project["id"], "finished", "done", by_cat
+    )
+    assert await _user_messages(service, cat) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_update_waits_for_a_run_slot_instead_of_being_dropped(
+    client, service, tmp_path, monkeypatch
+):
+    """Review S2: with every run slot taken, an update was saved but nothing
+    ever ran the coordinator on it."""
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    original = EventService.send_message
+
+    async def full(self, message, run=False, **kwargs):
+        kwargs.pop("refuse_pending_confirmation", None)
+        await original(self, message, False, **kwargs)
+        if run:
+            raise ConversationRunLimitExceeded("full")
+
+    freed = asyncio.Event()
+    ran: list[UUID] = []
+
+    async def run_when_free(self):
+        await freed.wait()
+        ran.append(self.stored.id)
+        return "started"
+
+    monkeypatch.setattr(EventService, "send_message", full)
+    monkeypatch.setattr(EventService, "run_saved_message_when_free", run_when_free)
+
+    assert await notify_coordinator(
+        service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
+    )
+    await asyncio.sleep(0)
+    assert ran == []
+    freed.set()
+    for _ in range(10):
+        if ran:
+            break
+        await asyncio.sleep(0.01)
+
+    assert ran == [cat]
+    assert await _user_messages(service, cat) == 1

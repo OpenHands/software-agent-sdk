@@ -52,6 +52,17 @@ The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
 the person wrote the message."""
 
 
+HELD_FOR_PERSON_STATUSES = frozenset(
+    {"waiting_for_confirmation", "paused", "error", "stuck"}
+)
+"""Execution statuses in which a conversation waits on the person.
+
+A message from anyone but the person (a coordinator, another conversation, a
+server wake-up) is saved but never runs a conversation in one of these: running
+it would approve pending actions, resume work the person paused, or retry a
+failure the person has not seen. Project boards show them as needs-you."""
+
+
 CONVERSATION_MENTION_SCHEME = "conversation:"
 """Link scheme of a conversation mention: ``[Title](conversation:<id hex>)``.
 UIs render such a link as a way to open that conversation; anywhere else it

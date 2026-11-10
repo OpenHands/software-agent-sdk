@@ -45,7 +45,10 @@ from openhands.agent_server.persistence import PersistedSettings, get_settings_s
 from openhands.agent_server.project_wake import SenderError, sender_message_header
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import conversation_sender
+from openhands.sdk.conversation.types import (
+    HELD_FOR_PERSON_STATUSES,
+    conversation_sender,
+)
 from openhands.sdk.event import Event, ReactionEvent
 
 
@@ -57,6 +60,13 @@ event_write_router = APIRouter(
 )
 logger = logging.getLogger(__name__)
 _GATEWAY_RUN_TIMEOUT_SECONDS = 120.0
+
+_HELD_DETAIL = {
+    "waiting_for_confirmation": "Conversation is waiting for confirmation",
+    "paused": "Conversation is paused",
+    "error": "Conversation stopped on an error",
+    "stuck": "Conversation is stuck",
+}
 
 
 # Read methods
@@ -261,11 +271,13 @@ async def send_message(
     conversation's /run endpoint instead of resending the message.
 
     With ``run``, a conversation waiting for confirmation is normally run, which
-    approves its pending actions. ``refuse_pending_confirmation`` prevents that:
-    a conversation already waiting answers 409 and nothing is saved, and one
-    that reaches a confirmation while the message is delivered keeps the
-    message and is not run (``run: "waiting_for_confirmation"``). The refusal
-    is decided under the conversation's run lock.
+    approves its pending actions, and a paused, errored or stuck one is resumed.
+    ``refuse_pending_confirmation`` prevents both, for senders other than the
+    person: a conversation already in one of those states answers 409 and
+    nothing is saved, and one that reaches one while the message is delivered
+    keeps the message and is not run (``run`` is that status, such as
+    ``"waiting_for_confirmation"`` or ``"paused"``). The refusal is decided
+    under the conversation's run lock.
 
     With ``sender_conversation_id``, the saved message records
     ``sender: "conversation:<id hex>"`` and opens with a line telling the
@@ -298,10 +310,10 @@ async def send_message(
         # An unlocked read: it only spares the person an unrelated message in
         # a conversation already waiting. The guarded run is the safeguard.
         previous_status = (await event_service.get_state()).execution_status
-        if previous_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION:
+        if previous_status.value in HELD_FOR_PERSON_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Conversation is waiting for confirmation",
+                detail=_HELD_DETAIL[previous_status.value],
             )
     outcome: MessageRunOutcome | None
     try:
@@ -312,9 +324,10 @@ async def send_message(
             sender=sender,
         )
     except ValueError as e:
-        if not guarded or str(e) != "waiting_for_confirmation":
+        held = str(e)
+        if not guarded or held not in HELD_FOR_PERSON_STATUSES:
             raise
-        outcome = "waiting_for_confirmation"
+        outcome = cast(MessageRunOutcome, held)
     if request.run and outcome is None:
         outcome = "not_run"
     return SendMessageResponse(run=outcome, previous_status=previous_status)

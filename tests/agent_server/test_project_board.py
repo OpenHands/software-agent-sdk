@@ -23,9 +23,11 @@ from openhands.sdk.event import (
     ConversationStateUpdateEvent,
     MessageEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import FULL_STATE_KEY
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.tool.builtins.think import ThinkAction
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -610,3 +612,104 @@ async def test_a_goal_loop_nudge_keeps_the_turn_starter_and_is_not_relayed():
     )
 
     assert calls == [("finished", "conversation:cat")]
+
+
+def _action(tool: str, summary: str) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=ThinkAction(thought="plan"),
+        tool_name=tool,
+        tool_call_id="call-1",
+        tool_call=MessageToolCall(
+            id="call-1", name=tool, arguments="{}", origin="completion"
+        ),
+        llm_response_id="resp-2",
+        summary=summary,
+    )
+
+
+def _stop_subscriber(store: _Tags, stops: list, lookup=None):
+    async def on_stopped(project, status, text, sender):
+        stops.append((project, status, text, sender))
+
+    return ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_stopped=on_stopped,
+        turn_sender_lookup=lookup,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_stops_on_the_person_reports_each_stop_once():
+    """Review S1: the coordinator heard only about finished runs, so a worker
+    waiting for approval or failing was invisible to it."""
+    store = _Tags({"project": "p1"})
+    stops: list = []
+    subscriber = _stop_subscriber(store, stops)
+
+    await _feed(
+        subscriber,
+        _message("user", "Deploy it", sender="conversation:cat"),
+        _action("terminal", "push the release tag"),
+        _status("waiting_for_confirmation"),
+        _status("waiting_for_confirmation", full=True),
+        _status("running"),
+        ConversationErrorEvent(source="environment", code="LLMError", detail="quota"),
+        _status("error"),
+    )
+
+    assert stops == [
+        (
+            "p1",
+            "waiting_for_confirmation",
+            "terminal: push the release tag",
+            "conversation:cat",
+        ),
+        ("p1", "error", "LLMError: quota", "conversation:cat"),
+    ]
+    # Stops leave the board's turn tags alone; the status shows them.
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_already_stopped_when_watched_reports_nothing():
+    store = _Tags({"project": "p1"})
+    stops: list = []
+    subscriber = _stop_subscriber(store, stops)
+
+    await _feed(subscriber, _status("error", full=True), _status("paused"))
+
+    assert stops == []
+
+
+@pytest.mark.asyncio
+async def test_after_a_restart_the_turn_starter_is_read_from_the_log():
+    """Review S2: a subscriber that did not see the turn begin took the turn
+    for the person's, so the coordinator was never woken."""
+    store = _Tags({"project": "p1"})
+    stops: list = []
+    finishes: list = []
+
+    async def lookup():
+        return "conversation:cat"
+
+    async def on_finished(project, turn, text, sender):
+        finishes.append((turn, text, sender))
+
+    subscriber = _stop_subscriber(store, stops, lookup)
+    subscriber.on_finished = on_finished
+
+    await _feed(
+        subscriber,
+        _action("terminal", "rerun the build"),
+        _status("stuck"),
+        _status("running"),
+        _finish("Built."),
+        _status("finished"),
+    )
+
+    assert stops == [("p1", "stuck", None, "conversation:cat")]
+    assert finishes == [("answered", "Built.", "conversation:cat")]

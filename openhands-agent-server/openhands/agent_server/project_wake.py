@@ -7,10 +7,13 @@ conversations finishes a run the coordinator asked for.
 
 The coordinator gets the member's final message, not its events: one user
 message that records the member as ``sender`` and opens with
-:func:`~openhands.agent_server.project_prompts.update_header`. It is delivered
-like a message sent with ``refuse_pending_confirmation``, so it never runs a
-coordinator that is waiting for confirmation (the message is kept and seen on
-its next run). The coordinator reads more with ``read_project_conversation``.
+:func:`~openhands.agent_server.project_prompts.update_header`. A member the
+coordinator started that stops on the person instead (confirmation, error,
+stuck) sends :func:`~openhands.agent_server.project_prompts.stop_header`, and a
+pause is saved for awareness (:func:`notify_coordinator_of_stop`). Updates are
+delivered like a message sent with ``refuse_pending_confirmation``, so they
+never run a coordinator that waits on the person (the message is kept and seen
+on its next run). The coordinator reads more with ``read_project_conversation``.
 """
 
 import asyncio
@@ -23,15 +26,18 @@ from openhands.agent_server.persistence import get_projects_store
 from openhands.agent_server.project_board import TurnOutcome
 from openhands.agent_server.project_prompts import (
     SenderRole,
+    paused_header,
     person_message_header,
     person_turn_header,
     sender_header,
+    stop_header,
     update_header,
     update_text,
 )
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.types import (
     CONVERSATION_SENDER_PREFIX,
+    HELD_FOR_PERSON_STATUSES,
     PROJECT_TAG_KEY,
     conversation_sender,
 )
@@ -44,6 +50,11 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+_DELIVERY_ATTEMPTS = 3
+_DELIVERY_RETRY_SECONDS = (1.0, 5.0)
+# Runs waiting for a free slot, kept so they are not garbage collected.
+_waiting_runs: set[asyncio.Task] = set()
 
 
 class SenderError(ValueError):
@@ -122,21 +133,69 @@ async def _deliver(
     *,
     run: bool,
 ) -> None:
-    try:
-        await coordinator.send_message(
-            Message(role="user", content=list(content)),
-            run=run,
-            refuse_pending_confirmation=run,
-            sender=conversation_sender(member_id),
-            keep_goal_loop=True,
-        )
-    except ValueError as exc:
-        if str(exc) != "waiting_for_confirmation":
-            raise
-    except ConversationRunLimitExceeded:
+    """Save a message in the coordinator and, with ``run``, run it.
+
+    The run is guarded like any message not from the person: a coordinator
+    that waits on the person keeps the message for its next run. When every
+    run slot is taken, a background task waits for one instead of leaving the
+    update unread. A failed save is retried before the update is given up.
+    """
+    message = Message(role="user", content=list(content))
+    for attempt in range(_DELIVERY_ATTEMPTS):
+        last = attempt == _DELIVERY_ATTEMPTS - 1
+        try:
+            await coordinator.send_message(
+                message,
+                run=run,
+                refuse_pending_confirmation=run,
+                sender=conversation_sender(member_id),
+                keep_goal_loop=True,
+            )
+            return
+        except ConversationRunLimitExceeded:
+            _run_when_free(coordinator_id, coordinator)
+            return
+        except ValueError as exc:
+            if str(exc) in HELD_FOR_PERSON_STATUSES:
+                return
+            if str(exc) == "inactive_service" or last:
+                raise
+        except Exception:
+            if last:
+                raise
+        delay = _DELIVERY_RETRY_SECONDS[min(attempt, len(_DELIVERY_RETRY_SECONDS) - 1)]
         logger.info(
-            "Coordinator %s got an update but no run slot is free", coordinator_id
+            "Delivering to coordinator %s failed; retrying in %.0fs",
+            coordinator_id,
+            delay,
         )
+        await asyncio.sleep(delay)
+
+
+def _run_when_free(coordinator_id: UUID, coordinator: "EventService") -> None:
+    """Run the coordinator for a saved update once a run slot frees."""
+
+    async def wait_and_run() -> None:
+        try:
+            await coordinator.run_saved_message_when_free()
+        except ValueError as exc:
+            if str(exc) not in HELD_FOR_PERSON_STATUSES:
+                logger.warning(
+                    "Coordinator %s did not run for an update: %s",
+                    coordinator_id,
+                    exc,
+                )
+        except Exception:
+            logger.warning(
+                "Coordinator %s did not run for an update",
+                coordinator_id,
+                exc_info=True,
+            )
+
+    logger.info("Coordinator %s got an update; waiting for a run slot", coordinator_id)
+    task = asyncio.create_task(wait_and_run())
+    _waiting_runs.add(task)
+    task.add_done_callback(_waiting_runs.discard)
 
 
 async def notify_coordinator(
@@ -183,6 +242,48 @@ async def notify_coordinator(
         member_id,
         [TextContent(text=header), TextContent(text=update_text(text))],
         run=not by_person,
+    )
+    return True
+
+
+async def notify_coordinator_of_stop(
+    service: "ConversationService",
+    member_id: UUID,
+    project_hex: str,
+    status: str,
+    text: str | None,
+    turn_sender: str | None,
+) -> bool:
+    """Tell the coordinator that a member it started stopped on the person.
+
+    Only for a turn the coordinator started; the person sees their own turns
+    stop. Waiting for confirmation, an error or stuck wakes the coordinator so
+    it can tell the person what the member waits on. A pause is the person's
+    own act, so it is saved for the coordinator's awareness without a run.
+    Returns whether a message was saved.
+    """
+    if status not in HELD_FOR_PERSON_STATUSES or turn_sender is None:
+        return False
+    found = await _coordinator(service, member_id, project_hex)
+    if found is None:
+        return False
+    coordinator_id, coordinator = found
+    if turn_sender != conversation_sender(coordinator_id):
+        return False
+    member = await service.get_conversation(member_id)
+    title = member.title if member else None
+    paused = status == "paused"
+    header = (
+        paused_header(title, member_id)
+        if paused
+        else stop_header(title, member_id, status=status)
+    )
+    await _deliver(
+        coordinator_id,
+        coordinator,
+        member_id,
+        [TextContent(text=header), TextContent(text=update_text(text))],
+        run=not paused,
     )
     return True
 

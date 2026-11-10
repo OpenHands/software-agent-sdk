@@ -202,8 +202,9 @@ class MessageProjectConversationObservation(Observation):
     run: str | None = Field(
         default=None,
         description=(
-            "started, queued, waiting_for_confirmation or not_run, as the "
-            "server reported it."
+            "started, queued, not_run, or the state that kept it from running "
+            "(waiting_for_confirmation, paused, error, stuck), as the server "
+            "reported it."
         ),
     )
 
@@ -226,12 +227,14 @@ _MESSAGE_DESCRIPTION = (
     "ask it to run: to correct, resume or extend its task. Only conversations that "
     "list_project_conversations reports can be messaged; start a new conversation with "
     "start_child_conversation for a distinct task.\n\n"
-    "A running conversation receives the message in its current run; a paused, "
-    "finished or idle conversation is run to handle it. A conversation waiting for the "
-    "person to approve an action is never run by this tool, since that would "
-    "approve the action: it is refused, and you should tell the person what "
-    "it waits on. A successful result means the message was saved and a run "
-    "was requested, not that the conversation acted on it; check "
+    "A running conversation receives the message in its current run; a finished "
+    "or idle conversation is run to handle it. A conversation that waits on the "
+    "person is never run by this tool: waiting for them to approve an action "
+    "(running would approve it), paused by them, or stopped on an error or stuck "
+    "(running would resume or retry what they have not seen). It is refused, and "
+    "you should tell the person what it waits on. A successful result means "
+    "the message was saved and a run was requested, not that the conversation "
+    "acted on it; check "
     "list_project_conversations or read the conversation before reporting "
     "progress. After an error that says the message may still be delivered, "
     "do not resend it."

@@ -30,11 +30,13 @@ class SendMessageRequest(BaseModel):
     refuse_pending_confirmation: bool = Field(
         default=False,
         description=(
-            "With `run`, never run a conversation that is waiting for "
-            "confirmation, since that run would approve its pending actions. "
-            "A conversation already waiting answers 409 and nothing is saved; "
-            "one that reaches a confirmation while the message is delivered "
-            "keeps the message and is not run (`run: waiting_for_confirmation`)."
+            "With `run`, never run a conversation that waits on the person: "
+            "waiting for confirmation (the run would approve its pending "
+            "actions), paused, error or stuck (it would resume or retry work "
+            "the person stopped or has not seen). A conversation already in "
+            "one of these answers 409 and nothing is saved; one that reaches "
+            "one while the message is delivered keeps the message and is not "
+            "run (`run` is that status). For senders other than the person."
         ),
     )
 

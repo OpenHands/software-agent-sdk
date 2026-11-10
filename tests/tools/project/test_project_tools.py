@@ -191,8 +191,6 @@ def test_list_reports_server_errors(tmp_path):
     [
         ("finished", "finished"),
         ("idle", "idle"),
-        ("paused", "needs_you"),
-        ("error", "needs_you"),
         ("running", "working"),
     ],
 )
@@ -296,8 +294,19 @@ def test_message_timeout_says_not_to_resend(tmp_path):
     assert "Do not send it again" in observation.text
 
 
-def test_message_refuses_conversation_waiting_for_confirmation(tmp_path):
-    conversation = _conversation("waiting_for_confirmation", "needs_you")
+@pytest.mark.parametrize(
+    ("status", "says"),
+    [
+        ("waiting_for_confirmation", "would approve that action"),
+        ("paused", "Sending would resume it"),
+        ("error", "Sending would retry it"),
+        ("stuck", "Sending would restart it"),
+    ],
+)
+def test_message_refuses_conversation_waiting_on_the_person(tmp_path, status, says):
+    """Review S3: a paused, failed or stuck worker is the person's to resume,
+    so the coordinator's message must not run it (nor approve an action)."""
+    conversation = _conversation(status, "needs_you")
     server = _Server([conversation])
     executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
@@ -310,8 +319,28 @@ def test_message_refuses_conversation_waiting_for_confirmation(tmp_path):
     )
 
     assert observation.is_error
-    assert "would approve that action" in observation.text
+    assert says in observation.text
     assert server.posts() == []
+
+
+def test_message_maps_a_409_for_a_pause_to_its_refusal(tmp_path):
+    conversation = _conversation("running", "working")
+    server = _Server(
+        [conversation],
+        message_response=httpx.Response(409, json={"detail": "Conversation is paused"}),
+    )
+    executor = MessageProjectConversationExecutor(
+        _conv_state(tmp_path), transport=httpx.MockTransport(server)
+    )
+
+    observation = executor(
+        MessageProjectConversationAction(
+            conversation_id=conversation["conversation_id"], message="x"
+        )
+    )
+
+    assert observation.is_error
+    assert "Sending would resume it" in observation.text
 
 
 def test_message_refuses_conversation_outside_project(tmp_path):

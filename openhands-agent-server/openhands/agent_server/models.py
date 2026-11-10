@@ -484,7 +484,15 @@ class Success(BaseModel):
     success: bool = True
 
 
-MessageRunOutcome = Literal["started", "queued", "waiting_for_confirmation", "not_run"]
+MessageRunOutcome = Literal[
+    "started",
+    "queued",
+    "waiting_for_confirmation",
+    "paused",
+    "error",
+    "stuck",
+    "not_run",
+]
 
 
 class SendMessageResponse(Success):
@@ -496,10 +504,10 @@ class SendMessageResponse(Success):
             "Set when the request asked to run. `started`: a run was started "
             "for the message. `queued`: a run was already active; it takes the "
             "message, or the conversation runs again when it ends. "
-            "`waiting_for_confirmation` (only with "
-            "`refuse_pending_confirmation`): the conversation reached a "
-            "confirmation while the message was delivered, so it was not run "
-            "and the message waits for the person's decision. `not_run`: a "
+            "`waiting_for_confirmation`, `paused`, `error` or `stuck` (only "
+            "with `refuse_pending_confirmation`): the conversation reached that "
+            "state while the message was delivered, so it was not run and the "
+            "message waits for the person. `not_run`: a "
             "stop arrived meanwhile and the conversation was left as it is."
         ),
     )

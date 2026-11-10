@@ -33,6 +33,7 @@ from openhands.sdk.conversation.types import (
     BOARD_TAG_KEYS,
     CONVERSATION_SENDER_PREFIX,
     GOAL_LOOP_SENDER,
+    HELD_FOR_PERSON_STATUSES,
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
@@ -43,6 +44,7 @@ from openhands.sdk.event import (
     Event,
     MessageEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import FULL_STATE_KEY
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.logger import get_logger
@@ -74,6 +76,16 @@ user message that started the turn (None when the person sent it)."""
 
 
 OnPersonMessage = Callable[[str, str], Awaitable[object]]
+
+OnStopped = Callable[[str, str, str | None, str | None], Awaitable[object]]
+"""``(project, status, text, turn_sender)`` when a run stops on the person:
+waiting for confirmation, paused, error or stuck (see
+:data:`~openhands.sdk.conversation.types.HELD_FOR_PERSON_STATUSES`). ``text``
+says what it waits on: the pending action, the error, or the last message."""
+
+TurnSenderLookup = Callable[[], Awaitable[str | None]]
+"""Reads who started the current turn from the event log, for a subscriber
+that did not see the turn's first message (a server restart in between)."""
 """Called when the person writes in a project member, with the project id
 (hex) and the message text."""
 
@@ -139,6 +151,17 @@ def _is_awareness_note(event: MessageEvent) -> bool:
     return isinstance(first, TextContent) and first.text.startswith(AWARENESS_PREFIXES)
 
 
+def starts_turn(event: Event) -> bool:
+    """A user message that starts a turn: not a ``/goal`` nudge, not a copy
+    saved for a coordinator's awareness."""
+    return (
+        isinstance(event, MessageEvent)
+        and event.source == "user"
+        and event.sender != GOAL_LOOP_SENDER
+        and not _is_awareness_note(event)
+    )
+
+
 def _is_stop_hook_feedback(event: MessageEvent) -> bool:
     if event.source != "environment":
         return False
@@ -146,7 +169,7 @@ def _is_stop_hook_feedback(event: MessageEvent) -> bool:
     return text.startswith(STOP_HOOK_FEEDBACK_PREFIX)
 
 
-def _finished(event: ConversationStateUpdateEvent) -> bool:
+def _status(event: ConversationStateUpdateEvent) -> str | None:
     key: Any = getattr(event, "key", None)
     value: Any = getattr(event, "value", None)
     if key == _EXECUTION_STATUS_KEY:
@@ -154,8 +177,23 @@ def _finished(event: ConversationStateUpdateEvent) -> bool:
     elif key == FULL_STATE_KEY and isinstance(value, dict):
         status = value.get(_EXECUTION_STATUS_KEY)
     else:
-        return False
-    return status == ConversationExecutionStatus.FINISHED.value
+        return None
+    if isinstance(status, ConversationExecutionStatus):
+        return status.value
+    return status if isinstance(status, str) else None
+
+
+def _finished(event: ConversationStateUpdateEvent) -> bool:
+    return _status(event) == ConversationExecutionStatus.FINISHED.value
+
+
+_ACTION_SUMMARY_MAX = 300
+
+
+def _describe_action(event: ActionEvent) -> str:
+    summary = (event.summary or "").strip()
+    text = f"{event.tool_name}: {summary}" if summary else event.tool_name
+    return text[:_ACTION_SUMMARY_MAX]
 
 
 @dataclass
@@ -173,6 +211,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     set_tag: SetTag
     on_finished: OnFinished | None = None
     on_person_message: OnPersonMessage | None = None
+    on_stopped: OnStopped | None = None
+    turn_sender_lookup: TurnSenderLookup | None = None
     _last_text: str | None = field(default=None, init=False)
     _last_score: float | None = field(default=None, init=False)
     _seen_agent_output: bool = field(default=False, init=False)
@@ -186,6 +226,17 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     # ``sender`` of the latest user message: who started the current turn and
     # so who waits for its final message (None for the person).
     _turn_sender: str | None = field(default=None, init=False)
+    # Whether this subscriber saw the current turn's first message. After a
+    # server restart it did not, and the starter is read from the event log.
+    _turn_known: bool = field(default=False, init=False)
+    # A run that may stop on the person: set by a user message or by agent
+    # output, cleared once a stop or a finish is reported.
+    _turn_open: bool = field(default=False, init=False)
+    # The held status last reported for this turn, so repeated state pushes
+    # of the same stop are told once.
+    _reported_hold: str | None = field(default=None, init=False)
+    _last_action: str | None = field(default=None, init=False)
+    _last_error: str | None = field(default=None, init=False)
     _tail: asyncio.Task | None = field(default=None, init=False)
     # Messages to the coordinator, delivered one after another in event order
     # and apart from the tag writes.
@@ -203,19 +254,21 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
     def _handle(self, event: Event) -> None:
         if isinstance(event, MessageEvent):
-            if event.source == "user" and event.sender == GOAL_LOOP_SENDER:
-                # A /goal loop's nudge continues the current turn: the person
-                # did not write it and its starter stays the same.
-                return
-            if event.source == "user" and _is_awareness_note(event):
-                # A copy for the coordinator's awareness, saved without a run:
-                # it neither answers the coordinator nor starts a turn.
+            if event.source == "user" and not starts_turn(event):
+                # A /goal nudge continues the current turn, and a copy saved
+                # for a coordinator's awareness neither answers it nor starts
+                # one.
                 return
             if event.source == "user":
                 self._reset()
                 self._asked_since_user = False
                 self._ask = None
                 self._turn_sender = event.sender
+                self._turn_known = True
+                self._turn_open = True
+                self._reported_hold = None
+                self._last_action = None
+                self._last_error = None
                 if event.sender is None and self.on_person_message is not None:
                     project = self.tags().get(PROJECT_TAG_KEY)
                     text = extract_message_text(event)
@@ -240,7 +293,21 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if isinstance(event, ActionEvent):
             if event.source == "agent" and isinstance(event.action, FinishAction):
                 self._note_agent_output(event.action.message, event)
+            elif event.source == "agent":
+                self._turn_open = True
+                self._last_action = _describe_action(event)
             return
+        if isinstance(event, ConversationErrorEvent):
+            self._last_error = f"{event.code}: {event.detail}"[:_ACTION_SUMMARY_MAX]
+            return
+        if isinstance(event, ConversationStateUpdateEvent):
+            status = _status(event)
+            if status == ConversationExecutionStatus.RUNNING.value:
+                # Resumed: a later stop in the same turn is news again.
+                self._reported_hold = None
+            elif status in HELD_FOR_PERSON_STATUSES:
+                self._stopped(status)
+                return
         if isinstance(event, ConversationStateUpdateEvent) and _finished(event):
             # The initial full-state push of an already finished conversation
             # also reads as finished; only a run this subscriber saw counts.
@@ -256,17 +323,50 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             score = self._last_score
             text = self._last_text
             sender = self._turn_sender
+            known = self._turn_known
             self._reset()
+            self._turn_open = False
+            self._reported_hold = None
             project = self.tags().get(PROJECT_TAG_KEY)
             if project:
                 self._enqueue(
-                    lambda: self._record(project, turn, score, text, sender, ask)
+                    lambda: self._record(project, turn, score, text, sender, ask, known)
                 )
+
+    def _stopped(self, status: str) -> None:
+        """Tell the coordinator, once, that a turn stopped on the person."""
+        if not self._turn_open or self._reported_hold == status:
+            return
+        self._reported_hold = status
+        project = self.tags().get(PROJECT_TAG_KEY)
+        if not project or self.on_stopped is None:
+            return
+        if status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value:
+            text = self._last_action
+        elif status == ConversationExecutionStatus.ERROR.value:
+            text = self._last_error or self._last_text
+        else:
+            text = self._last_text
+        sender = self._turn_sender
+        known = self._turn_known
+        callback = self.on_stopped
+
+        async def notify() -> None:
+            starter = sender if known else await self._logged_turn_sender()
+            await callback(project, status, text, starter)
+
+        self._notify_later(notify)
+
+    async def _logged_turn_sender(self) -> str | None:
+        if self.turn_sender_lookup is None:
+            return None
+        return await self.turn_sender_lookup()
 
     def _note_agent_output(
         self, text: str | None, event: MessageEvent | ActionEvent
     ) -> None:
         self._seen_agent_output = True
+        self._turn_open = True
         if text:
             self._last_text = text
         if event.critic_result is not None:
@@ -308,6 +408,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         text: str | None,
         sender: str | None,
         ask: str | None = None,
+        sender_known: bool = True,
     ) -> None:
         await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
         if ask is not None or ASK_TAG_KEY in self.tags():
@@ -324,7 +425,12 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             # Delivering to the coordinator can wait for its whole agent step;
             # keep it off the tag-write chain.
             callback = self.on_finished
-            self._notify_later(lambda: callback(project, turn, text, sender))
+
+            async def notify() -> None:
+                starter = sender if sender_known else await self._logged_turn_sender()
+                await callback(project, turn, text, starter)
+
+            self._notify_later(notify)
 
     def _notify_later(self, step: Callable[[], Awaitable[object]]) -> None:
         previous = self._notify_tail

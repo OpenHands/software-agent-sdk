@@ -68,6 +68,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.conversation.types import (
     GOAL_LOOP_SENDER,
+    HELD_FOR_PERSON_STATUSES,
     ConversationCallbackType,
 )
 from openhands.sdk.credential import (
@@ -930,9 +931,9 @@ class EventService:
         ``sender`` is recorded on the saved event; see
         :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
 
-        With ``refuse_pending_confirmation`` a conversation waiting for
-        confirmation keeps the message but is not run, and this raises
-        ``ValueError("waiting_for_confirmation")`` (see :meth:`run`).
+        With ``refuse_pending_confirmation`` a conversation that waits on the
+        person keeps the message but is not run, and this raises
+        ``ValueError(<status>)``, such as ``"paused"`` (see :meth:`run`).
 
         ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
         messages the server delivers rather than the person writes.
@@ -989,7 +990,7 @@ class EventService:
                     self._acp_internal_rerun_requested = False
                     outcome = "started"
                 except ValueError as e:
-                    if str(e) == "waiting_for_confirmation":
+                    if str(e) in HELD_FOR_PERSON_STATUSES:
                         raise
                     # run() refused. If a run is still wrapping up (its
                     # wait_for_pending tail), the message we just appended won't
@@ -1028,7 +1029,7 @@ class EventService:
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
                 except ValueError as e:
-                    if str(e) == "waiting_for_confirmation":
+                    if str(e) in HELD_FOR_PERSON_STATUSES:
                         raise
                     if str(e) == "conversation_already_running":
                         outcome = "queued"
@@ -1038,6 +1039,31 @@ class EventService:
                     ):
                         self._rerun_requested = True
         return outcome
+
+    async def run_saved_message_when_free(self) -> SendMessageRunOutcome:
+        """Run for a message already saved, waiting for a free run slot.
+
+        For server deliveries that :meth:`send_message` saved but could not run
+        because every slot was taken (``ConversationRunLimitExceeded``): the
+        sender was told nothing and nobody would retry, so this waits for
+        capacity instead. The run is guarded like a delivery
+        (``refuse_pending_confirmation``), and a run that started meanwhile
+        takes the message or is re-armed for it.
+
+        Raises ``ValueError(<status>)`` when the conversation now waits on the
+        person; the message stays for its next run.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        with await RunSlot.acquire(self._run_semaphore, wait=True) as run_slot:
+            try:
+                await self.run(run_slot=run_slot, refuse_pending_confirmation=True)
+            except ValueError as e:
+                if str(e) != "conversation_already_running":
+                    raise
+                self._rerun_requested = True
+                return "queued"
+        return "started"
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -1618,17 +1644,19 @@ class EventService:
         in the thread pool as before.
 
         Args:
-            refuse_pending_confirmation: Refuse to run a conversation that is
-                waiting for confirmation. Running it would approve its pending
-                actions, so callers acting for someone other than the person
-                (a coordinator steering another conversation) set this. The
-                check is made under the run lock, where no other run can
-                change the status.
+            refuse_pending_confirmation: Refuse to run a conversation that
+                waits on the person (:data:`HELD_FOR_PERSON_STATUSES`: waiting
+                for confirmation, paused, error or stuck). Running it would
+                approve pending actions, resume work the person paused, or retry
+                a failure the person has not seen, so callers acting for someone
+                other than the person (a coordinator steering another
+                conversation, a server wake-up) set this. The check is made
+                under the run lock, where no other run can change the status.
 
         Raises:
             ValueError: If the service is inactive, the conversation is already
-                running, or (with ``refuse_pending_confirmation``) it is waiting
-                for confirmation (``"waiting_for_confirmation"``).
+                running, or (with ``refuse_pending_confirmation``) it waits on
+                the person (the status value, e.g. ``"paused"``).
             ConversationRunLimitExceeded: If all server run slots are occupied.
         """
         if not self._conversation or self._closing:
@@ -1653,11 +1681,10 @@ class EventService:
             status = await self._get_execution_status()
             if status == ConversationExecutionStatus.RUNNING:
                 raise ValueError("conversation_already_running")
-            if (
-                refuse_pending_confirmation
-                and status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-            ):
-                raise ValueError("waiting_for_confirmation")
+            if refuse_pending_confirmation and status.value in HELD_FOR_PERSON_STATUSES:
+                # Raised as the status itself: "waiting_for_confirmation",
+                # "paused", "error" or "stuck".
+                raise ValueError(status.value)
             if self._closing:
                 raise ValueError("inactive_service")
             # Re-check: the status read above can yield to a late stop too.

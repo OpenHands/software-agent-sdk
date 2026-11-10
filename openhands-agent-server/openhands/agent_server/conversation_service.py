@@ -49,6 +49,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    EventSortOrder,
     LaunchedAgentProfile,
     StartChildConversationRequest,
     StartChildConversationResponse,
@@ -57,7 +58,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import FileSecretsStore, get_projects_store
-from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_board import (
+    ConversationOutcomeSubscriber,
+    starts_turn,
+)
 from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
 from openhands.agent_server.project_prompts import (
     memory_note,
@@ -66,6 +70,7 @@ from openhands.agent_server.project_prompts import (
 )
 from openhands.agent_server.project_wake import (
     notify_coordinator,
+    notify_coordinator_of_stop,
     relay_person_message,
 )
 from openhands.agent_server.pub_sub import Subscriber
@@ -615,6 +620,25 @@ PROJECT_COORDINATOR_TOOLS = (
     *PROJECT_WORKER_TOOLS,
 )
 """Tools the server adds to a coordinator it starts with a new project."""
+
+
+_TURN_LOOKBACK = 50
+
+
+async def _logged_turn_sender(event_service: EventService) -> str | None:
+    """``sender`` of the latest message that started a turn, from the log.
+
+    For an outcome subscriber that did not see the turn begin (the server
+    restarted in between); ``None`` means the person, or no turn found.
+    """
+    page = await event_service.search_events(
+        kind="MessageEvent",
+        source="user",
+        sort_order=EventSortOrder.TIMESTAMP_DESC,
+        limit=_TURN_LOOKBACK,
+    )
+    starter = next((e for e in page.items if starts_turn(e)), None)
+    return starter.sender if isinstance(starter, MessageEvent) else None
 
 
 def _active_agent_profile_id() -> UUID | None:
@@ -2964,6 +2988,12 @@ class ConversationService:
                     on_finished=functools.partial(notify_coordinator, self, stored.id),
                     on_person_message=functools.partial(
                         relay_person_message, self, stored.id
+                    ),
+                    on_stopped=functools.partial(
+                        notify_coordinator_of_stop, self, stored.id
+                    ),
+                    turn_sender_lookup=functools.partial(
+                        _logged_turn_sender, event_service
                     ),
                 )
             )
