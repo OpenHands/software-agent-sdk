@@ -6,6 +6,7 @@ Background: https://github.com/OpenHands/software-agent-sdk/issues/2523
 from __future__ import annotations
 
 import io
+import logging
 import os
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -179,6 +180,31 @@ class TestBuildInitializedConfig:
         )
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "s1"
+
+    def test_boot_secret_key_kept_and_warned_when_not_supplied(self, caplog):
+        # A warm-pool pod boots with a secret_key (its throwaway SESSION_API_KEY),
+        # so the first-session-key fallback never applies. The boot key stays the
+        # cipher key, which must not happen silently.
+        base = Config(deferred_init=True, secret_key=SecretStr("boot-key"))
+        with caplog.at_level(logging.WARNING):
+            merged = _build_initialized_config(
+                base, InitRequest(session_api_keys=["per-user-key"])
+            )
+        assert merged.secret_key is not None
+        assert merged.secret_key.get_secret_value() == "boot-key"
+        assert "without secret_key" in caplog.text
+
+    def test_no_warning_when_secret_key_supplied(self, caplog):
+        base = Config(deferred_init=True, secret_key=SecretStr("boot-key"))
+        with caplog.at_level(logging.WARNING):
+            _build_initialized_config(
+                base,
+                InitRequest(
+                    session_api_keys=["per-user-key"],
+                    secret_key=SecretStr("stable-key"),
+                ),
+            )
+        assert "without secret_key" not in caplog.text
 
 
 class TestRouterMounting:

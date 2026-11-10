@@ -1140,6 +1140,87 @@ def test_conversation_state_save_with_cipher_load_without():
         assert api_key_value is not None  # It's the encrypted value
 
 
+def _persist_agent_state_with_cipher(temp_dir: str, conv_id: uuid.UUID, cipher):
+    persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("real-llm-key"), usage_id="llm")
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persist_path,
+        agent=Agent(llm=llm, tools=[]),
+        id=conv_id,
+        cipher=cipher,
+    )
+    return persist_path
+
+
+def test_resume_with_persisted_agent_and_wrong_cipher_raises():
+    """A cipher mismatch must not silently become ``llm.api_key = None``, which
+    later surfaces as a misleading 'invalid API key' provider error."""
+    from openhands.sdk.utils.cipher import Cipher, SecretDecryptionError
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890c1")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        persist_path = _persist_agent_state_with_cipher(
+            temp_dir, conv_id, Cipher(secret_key="original-key")
+        )
+
+        with pytest.raises(SecretDecryptionError, match="LLM api_key"):
+            ConversationState.create(
+                workspace=LocalWorkspace(working_dir="/tmp"),
+                persistence_dir=persist_path,
+                agent=None,
+                id=conv_id,
+                cipher=Cipher(secret_key="a-different-key"),
+            )
+
+
+def test_resume_with_persisted_agent_and_matching_cipher_keeps_llm_key():
+    from openhands.sdk.utils.cipher import Cipher
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890c2")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        persist_path = _persist_agent_state_with_cipher(
+            temp_dir, conv_id, Cipher(secret_key="original-key")
+        )
+
+        resumed = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=None,
+            id=conv_id,
+            cipher=Cipher(secret_key="original-key"),
+        )
+
+        assert resumed.agent.llm.api_key is not None
+        assert resumed.agent.llm.api_key.get_secret_value() == "real-llm-key"
+
+
+def test_resume_with_supplied_agent_and_wrong_cipher_still_loads():
+    """When the caller supplies the agent, the persisted LLM key is not needed."""
+    from openhands.sdk.utils.cipher import Cipher
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890c3")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        persist_path = _persist_agent_state_with_cipher(
+            temp_dir, conv_id, Cipher(secret_key="original-key")
+        )
+        fresh_agent = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("new-key"), usage_id="llm"),
+            tools=[],
+        )
+
+        resumed = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=fresh_agent,
+            id=conv_id,
+            cipher=Cipher(secret_key="a-different-key"),
+        )
+
+        assert resumed.agent.llm.api_key is not None
+        assert resumed.agent.llm.api_key.get_secret_value() == "new-key"
+
+
 def test_conversation_state_save_without_cipher_load_with():
     """Test loading state saved without cipher but with cipher provided.
 
