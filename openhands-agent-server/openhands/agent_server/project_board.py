@@ -509,10 +509,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             return None
         try:
             return await self.judge(state)
-        except Exception:
+        except Exception as e:
+            # The error goes in the message too: some log handlers drop
+            # tracebacks.
             logger.warning(
-                "Resolution judge failed for conversation %s",
+                "Resolution judge failed for conversation %s: %s: %s",
                 self.conversation_id,
+                type(e).__name__,
+                e,
                 exc_info=True,
             )
             return None
