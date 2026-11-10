@@ -219,11 +219,17 @@ class TmuxPanePool:
         logger.debug(f"Created pooled pane #{len(self._all_panes)}: {active_pane}")
         return terminal
 
-    def checkout(self, timeout: float | None = None) -> PooledTmuxTerminal:
+    def checkout(
+        self,
+        timeout: float | None = None,
+        prefer: PooledTmuxTerminal | None = None,
+    ) -> PooledTmuxTerminal:
         """Check out a pane from the pool, blocking if all are busy.
 
         Args:
             timeout: Max seconds to wait. None means wait forever.
+            prefer: A pane to hand out if it is available, e.g. the pane a
+                still-running command lives in, for a follow-up input.
 
         Returns:
             A PooledTmuxTerminal ready for use.
@@ -243,6 +249,10 @@ class TmuxPanePool:
             )
 
         with self._lock:
+            if prefer is not None and prefer in self._available:
+                self._available.remove(prefer)
+                logger.debug(f"Checked out preferred pane: {prefer.pane}")
+                return prefer
             if self._available:
                 terminal = self._available.popleft()
                 logger.debug(f"Checked out existing pane: {terminal.pane}")
@@ -302,14 +312,18 @@ class TmuxPanePool:
         return new_terminal
 
     @contextmanager
-    def pane(self, timeout: float | None = None) -> Iterator[PaneHandle]:
+    def pane(
+        self,
+        timeout: float | None = None,
+        prefer: PooledTmuxTerminal | None = None,
+    ) -> Iterator[PaneHandle]:
         """Context manager: checkout a pane, yield a handle, checkin on exit.
 
         The yielded :class:`PaneHandle` is mutable — callers that call
         :meth:`replace` should assign the new terminal back to
         ``handle.terminal`` so that the correct pane is checked in.
         """
-        handle = PaneHandle(self.checkout(timeout=timeout))
+        handle = PaneHandle(self.checkout(timeout=timeout, prefer=prefer))
         try:
             yield handle
         finally:

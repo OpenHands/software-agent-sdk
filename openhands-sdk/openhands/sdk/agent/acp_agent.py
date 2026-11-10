@@ -154,9 +154,6 @@ from openhands.sdk.utils.redact import redact_text_secrets
 
 logger = get_logger(__name__)
 
-_codex_auth_file = codex_auth_file
-_codex_auth_file_is_chatgpt = codex_auth_file_is_chatgpt
-_write_secret_file = write_secret_file
 maybe_init_laminar()
 
 
@@ -3054,11 +3051,6 @@ class ACPAgent(AgentBase):
                     if self._file_credential_lifecycles.get(name) is lifecycle:
                         self._file_credential_lifecycles.pop(name)
         return failures
-
-    def _release_file_credentials(self) -> None:
-        """Release scoped ACP file credential sources."""
-        failures = self._release_file_credentials_collect()
-        self._raise_first_file_credential_failure("release", failures)
 
     def _startup_timeout_message(self) -> str:
         return (
