@@ -87,7 +87,9 @@ PROJECT_TOOL_NAMES: tuple[str, ...] = (
     "list_project_conversations",
     "message_project_conversation",
     "read_project_conversation",
-    "save_project_artifact",
+    "write_artifact",
+    "read_artifact",
+    "list_artifacts",
     "read_project_memory",
     "update_project_memory",
 )

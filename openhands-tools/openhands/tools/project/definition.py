@@ -74,6 +74,13 @@ class ListProjectConversationsObservation(Observation):
         return content
 
 
+ARTIFACT_COPY_DIR = ".agent_tmp/artifacts"
+"""Where read_artifact copies a file in the workspace when no path is given."""
+
+ARTIFACT_TEXT_MAX_BYTES = 32 * 1024
+"""Largest text artifact read_artifact returns inline."""
+
+
 COORDINATOR_PROMPT_GUIDANCE = """\
 <PROJECT_COORDINATOR>
 You coordinate a project: the cat who presides over a herd of worker conversations. The person talks with you here; the herd does most of the work.
@@ -289,10 +296,10 @@ class MessageProjectConversationTool(
         ]
 
 
-# save_project_artifact
+# write_artifact
 
 
-class SaveProjectArtifactAction(Action):
+class WriteArtifactAction(Action):
     """Save a file from this conversation's workspace as a project artifact."""
 
     path: str = Field(
@@ -319,7 +326,7 @@ class SaveProjectArtifactAction(Action):
         return content
 
 
-class SaveProjectArtifactObservation(Observation):
+class WriteArtifactObservation(Observation):
     project_id: UnmaskedID | None = None
     name: str | None = None
     size: int | None = None
@@ -338,7 +345,7 @@ class SaveProjectArtifactObservation(Observation):
         return content
 
 
-_SAVE_ARTIFACT_DESCRIPTION = (
+_WRITE_ARTIFACT_DESCRIPTION = (
     "Save a file you made as an artifact of this conversation's project, so "
     "the person finds it on the project board. Use it for deliverables that "
     "do not belong in a source repository: reports, write-ups, images, "
@@ -347,9 +354,7 @@ _SAVE_ARTIFACT_DESCRIPTION = (
 )
 
 
-class SaveProjectArtifactTool(
-    ToolDefinition[SaveProjectArtifactAction, SaveProjectArtifactObservation]
-):
+class WriteArtifactTool(ToolDefinition[WriteArtifactAction, WriteArtifactObservation]):
     """Tool that copies a workspace file into the caller's project artifacts."""
 
     user_selectable: ClassVar[bool] = False
@@ -371,18 +376,173 @@ class SaveProjectArtifactTool(
         """
         if params:
             raise ValueError(
-                f"SaveProjectArtifactTool does not accept parameters: {sorted(params)}"
+                f"WriteArtifactTool does not accept parameters: {sorted(params)}"
             )
-        from openhands.tools.project.impl import SaveProjectArtifactExecutor
+        from openhands.tools.project.impl import WriteArtifactExecutor
 
         return [
             cls(
-                description=_SAVE_ARTIFACT_DESCRIPTION,
-                action_type=SaveProjectArtifactAction,
-                observation_type=SaveProjectArtifactObservation,
-                executor=SaveProjectArtifactExecutor(conv_state, server_url),
+                description=_WRITE_ARTIFACT_DESCRIPTION,
+                action_type=WriteArtifactAction,
+                observation_type=WriteArtifactObservation,
+                executor=WriteArtifactExecutor(conv_state, server_url),
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# read_artifact
+
+
+class ReadArtifactAction(Action):
+    """Read one of this project's artifacts."""
+
+    name: str = Field(description="The artifact's name, as list_artifacts shows it.")
+    path: str | None = Field(
+        default=None,
+        description=(
+            "Where to put a copy in your workspace, relative to the working "
+            "directory or absolute inside it. Leave it out to get a small text "
+            f"file's contents directly; other files are copied to "
+            f"{ARTIFACT_COPY_DIR}/<name>."
+        ),
+    )
+
+    @property
+    def visualize(self) -> Text:
+        content = Text()
+        content.append("Read artifact", style="bold cyan")
+        content.append(f" {self.name}")
+        if self.path:
+            content.append(f" to {self.path}")
+        return content
+
+
+class ReadArtifactObservation(Observation):
+    project_id: UnmaskedID | None = None
+    name: str | None = None
+    path: str | None = Field(
+        default=None, description="Where the copy was written, when one was."
+    )
+
+    @property
+    def visualize(self) -> Text:
+        content = Text()
+        if self.is_error:
+            content.append("Reading artifact failed", style="bold red")
+            content.append("\n")
+            content.append(self.text)
+            return content
+        content.append("Artifact read", style="bold green")
+        if self.name:
+            content.append(f": {self.name}")
+        return content
+
+
+_READ_ARTIFACT_DESCRIPTION = (
+    "Read a file from this conversation's project artifacts: one the person "
+    "uploaded or another conversation of the project wrote. A small text file "
+    "is returned directly; give a path to copy any file into your workspace "
+    "instead. Use list_artifacts to see what there is."
+)
+
+
+class ReadArtifactTool(ToolDefinition[ReadArtifactAction, ReadArtifactObservation]):
+    """Tool that reads one of the caller's project artifacts."""
+
+    user_selectable: ClassVar[bool] = False
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        **params,
+    ) -> Sequence[Self]:
+        if params:
+            raise ValueError(
+                f"ReadArtifactTool does not accept parameters: {sorted(params)}"
+            )
+        from openhands.tools.project.impl import ReadArtifactExecutor
+
+        return [
+            cls(
+                description=_READ_ARTIFACT_DESCRIPTION,
+                action_type=ReadArtifactAction,
+                observation_type=ReadArtifactObservation,
+                executor=ReadArtifactExecutor(conv_state, server_url),
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# list_artifacts
+
+
+class ListArtifactsAction(Action):
+    """List this project's artifacts."""
+
+    @property
+    def visualize(self) -> Text:
+        return Text("List artifacts", style="bold cyan")
+
+
+class ListArtifactsObservation(Observation):
+    project_id: UnmaskedID | None = None
+
+    @property
+    def visualize(self) -> Text:
+        content = Text()
+        if self.is_error:
+            content.append("Listing artifacts failed", style="bold red")
+            content.append("\n")
+        content.append(self.text)
+        return content
+
+
+_LIST_ARTIFACTS_DESCRIPTION = (
+    "List the files in this conversation's project artifacts, with their size, "
+    "who added them (the person, or which conversation) and when. Read one "
+    "with read_artifact."
+)
+
+
+class ListArtifactsTool(ToolDefinition[ListArtifactsAction, ListArtifactsObservation]):
+    """Tool that lists the caller's project artifacts."""
+
+    user_selectable: ClassVar[bool] = False
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        **params,
+    ) -> Sequence[Self]:
+        if params:
+            raise ValueError(
+                f"ListArtifactsTool does not accept parameters: {sorted(params)}"
+            )
+        from openhands.tools.project.impl import ListArtifactsExecutor
+
+        return [
+            cls(
+                description=_LIST_ARTIFACTS_DESCRIPTION,
+                action_type=ListArtifactsAction,
+                observation_type=ListArtifactsObservation,
+                executor=ListArtifactsExecutor(conv_state, server_url),
+                annotations=ToolAnnotations(
+                    readOnlyHint=True,
                     destructiveHint=False,
                     idempotentHint=True,
                     openWorldHint=False,
@@ -632,7 +792,9 @@ class UpdateProjectMemoryTool(
 
 register_tool(ListProjectConversationsTool.name, ListProjectConversationsTool)
 register_tool(ReadProjectConversationTool.name, ReadProjectConversationTool)
-register_tool(SaveProjectArtifactTool.name, SaveProjectArtifactTool)
+register_tool(WriteArtifactTool.name, WriteArtifactTool)
+register_tool(ReadArtifactTool.name, ReadArtifactTool)
+register_tool(ListArtifactsTool.name, ListArtifactsTool)
 register_tool(MessageProjectConversationTool.name, MessageProjectConversationTool)
 register_tool(ReadProjectMemoryTool.name, ReadProjectMemoryTool)
 register_tool(UpdateProjectMemoryTool.name, UpdateProjectMemoryTool)

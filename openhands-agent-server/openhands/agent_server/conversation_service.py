@@ -604,7 +604,9 @@ class _ConversationRecord:
 
 
 PROJECT_WORKER_TOOLS = (
-    "save_project_artifact",
+    "write_artifact",
+    "read_artifact",
+    "list_artifacts",
     "read_project_memory",
     "update_project_memory",
 )

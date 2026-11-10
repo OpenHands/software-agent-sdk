@@ -395,20 +395,20 @@ def test_message_reads_project_at_call_time(tmp_path):
     assert not after.is_error
 
 
-# save_project_artifact
+# write_artifact
 
 
 def _save(tmp_path, handler, tags=None, **action):
     from openhands.tools.project import (
-        SaveProjectArtifactAction,
-        SaveProjectArtifactExecutor,
+        WriteArtifactAction,
+        WriteArtifactExecutor,
     )
 
     state = _conv_state(tmp_path, tags)
-    executor = SaveProjectArtifactExecutor(
+    executor = WriteArtifactExecutor(
         state, server_url="http://server", transport=httpx.MockTransport(handler)
     )
-    return state, executor(SaveProjectArtifactAction(**action))
+    return state, executor(WriteArtifactAction(**action))
 
 
 def test_save_artifact_posts_the_callers_id_and_path(tmp_path):
@@ -451,6 +451,153 @@ def test_save_artifact_needs_a_project(tmp_path):
 
     assert observation.is_error
     assert "not part of a project" in observation.text
+
+
+# read_artifact and list_artifacts
+
+
+def _read_artifact(tmp_path, body: bytes, tags=None, **action):
+    from openhands.tools.project import ReadArtifactAction, ReadArtifactExecutor
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=body)
+
+    executor = ReadArtifactExecutor(
+        _conv_state(tmp_path, tags),
+        server_url="http://server",
+        transport=httpx.MockTransport(handler),
+    )
+    return seen, executor(ReadArtifactAction(**action))
+
+
+def test_read_artifact_returns_small_text_inline(tmp_path):
+    seen, observation = _read_artifact(tmp_path, b"# Plan\n", name="plan v2.md")
+
+    assert not observation.is_error
+    assert "# Plan" in observation.text and observation.path is None
+    assert seen[0].method == "GET"
+    assert seen[0].url.raw_path.decode() == (
+        f"/api/projects/{PROJECT_ID}/artifacts/plan%20v2.md"
+    )
+    assert not (tmp_path / ".agent_tmp").exists()
+
+
+def test_read_artifact_copies_to_the_path_asked_for(tmp_path):
+    _, observation = _read_artifact(
+        tmp_path, b"a,b\n1,2\n", name="data.csv", path="in/data.csv"
+    )
+
+    assert not observation.is_error
+    copy = tmp_path / "in" / "data.csv"
+    assert copy.read_bytes() == b"a,b\n1,2\n"
+    assert observation.path == str(copy.resolve())
+    assert list((tmp_path / "in").iterdir()) == [copy]
+
+
+def test_read_artifact_copies_binary_to_the_artifacts_folder(tmp_path):
+    _, observation = _read_artifact(tmp_path, b"\x89PNG\0\x01", name="chart.png")
+
+    assert not observation.is_error
+    copy = tmp_path / ".agent_tmp" / "artifacts" / "chart.png"
+    assert copy.read_bytes() == b"\x89PNG\0\x01"
+    assert "Copied artifact" in observation.text
+
+
+def test_read_artifact_copies_large_text_instead_of_inlining_it(tmp_path):
+    body = b"x" * (32 * 1024 + 1)
+
+    _, observation = _read_artifact(tmp_path, body, name="big.txt")
+
+    assert observation.path is not None
+    assert (tmp_path / ".agent_tmp" / "artifacts" / "big.txt").stat().st_size == len(
+        body
+    )
+
+
+@pytest.mark.parametrize("path", ["../escape.txt", "/etc/passwd", "."])
+def test_read_artifact_refuses_a_path_outside_the_workspace(tmp_path, path):
+    seen, observation = _read_artifact(tmp_path, b"x", name="a.txt", path=path)
+
+    assert observation.is_error
+    assert "outside your working directory" in observation.text
+    assert seen == []
+
+
+def test_read_artifact_needs_a_project(tmp_path):
+    seen, observation = _read_artifact(tmp_path, b"x", tags={}, name="a.txt")
+
+    assert observation.is_error
+    assert "not part of a project" in observation.text
+    assert seen == []
+
+
+def _list_artifacts(tmp_path, response: httpx.Response, tags=None):
+    from openhands.tools.project import ListArtifactsAction, ListArtifactsExecutor
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return response
+
+    executor = ListArtifactsExecutor(
+        _conv_state(tmp_path, tags),
+        server_url="http://server",
+        transport=httpx.MockTransport(handler),
+    )
+    return seen, executor(ListArtifactsAction())
+
+
+def test_list_artifacts_names_who_added_each(tmp_path):
+    saver = uuid4()
+    artifacts = [
+        {
+            "name": "brief.pdf",
+            "size": 2048,
+            "source": "user",
+            "conversation_id": None,
+            "created_at": "2026-11-10T09:00:00Z",
+            "updated_at": "2026-11-10T09:00:00Z",
+        },
+        {
+            "name": "report.md",
+            "size": 12,
+            "source": "agent",
+            "conversation_id": saver.hex,
+            "created_at": "2026-11-10T10:00:00Z",
+            "updated_at": "2026-11-10T11:00:00Z",
+        },
+    ]
+
+    seen, observation = _list_artifacts(
+        tmp_path, httpx.Response(200, json={"artifacts": artifacts})
+    )
+
+    assert not observation.is_error
+    assert seen[0].url.path == f"/api/projects/{PROJECT_ID}/artifacts"
+    assert "2 project artifact(s)" in observation.text
+    assert "brief.pdf (2048 bytes), added by the person" in observation.text
+    assert "report.md (12 bytes), added by" in observation.text
+    assert saver.hex in observation.text
+
+
+def test_list_artifacts_says_when_there_are_none(tmp_path):
+    _, observation = _list_artifacts(
+        tmp_path, httpx.Response(200, json={"artifacts": []})
+    )
+
+    assert observation.text == "The project has no artifacts yet."
+
+
+def test_list_artifacts_needs_a_project(tmp_path):
+    seen, observation = _list_artifacts(
+        tmp_path, httpx.Response(200, json={"artifacts": []}), tags={}
+    )
+
+    assert observation.is_error and seen == []
 
 
 def test_read_reports_the_latest_messages(tmp_path):

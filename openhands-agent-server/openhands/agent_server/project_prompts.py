@@ -110,8 +110,10 @@ def worker_guidance(title: str | None, conversation_id: UUID) -> str:
         "in the turn you learn it, one file per subject, keeping what is "
         "still true.\n"
         "- When you make something the person will want to keep, such as a "
-        "report, a design or a script, save it with save_project_artifact so "
-        "it shows in the project, and name it in your report."
+        "report, a design or a script, save it with write_artifact so "
+        "it shows in the project, and name it in your report. Files the "
+        "person or other conversations added are there too: list_artifacts "
+        "and read_artifact."
     )
 
 

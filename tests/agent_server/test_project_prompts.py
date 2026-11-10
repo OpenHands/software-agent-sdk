@@ -70,7 +70,7 @@ def test_guidance_names_the_worker_tools_and_the_coordinator():
     for tool in (
         "read_project_memory",
         "update_project_memory",
-        "save_project_artifact",
+        "write_artifact",
     ):
         assert tool in text
     # Coordinator-only tools are not offered to workers.

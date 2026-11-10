@@ -866,7 +866,12 @@ async def test_upload_list_download_delete_artifact(client, persistence_dir):
     downloaded = await client.get(f"{base}/notes.md")
     assert downloaded.status_code == 200
     assert downloaded.content == b"# Notes\n"
-    assert downloaded.headers["content-type"].startswith("text/markdown")
+    # Sent like a workspace file download: saved, never rendered or sniffed.
+    assert downloaded.headers["content-type"] == "application/octet-stream"
+    assert downloaded.headers["content-disposition"] == (
+        'attachment; filename="notes.md"'
+    )
+    assert downloaded.headers["x-content-type-options"] == "nosniff"
 
     assert (await client.delete(f"{base}/notes.md")).status_code == 200
     assert (await client.get(base)).json()["artifacts"] == []
@@ -1401,7 +1406,11 @@ async def test_creating_a_project_can_start_its_coordinator(
         "/api/projects",
         json={
             "name": "P",
-            "coordinator": {"working_dir": str(workspace), "title": "Cat"},
+            "coordinator": {
+                "working_dir": str(workspace),
+                "title": "Cat",
+                "max_iterations": 42,
+            },
         },
     )
 
@@ -1414,7 +1423,7 @@ async def test_creating_a_project_can_start_its_coordinator(
     assert kwargs == {
         "agent_profile_id": None,
         "title": "Cat",
-        "options": {"tags": {}},
+        "options": {"tags": {}, "max_iterations": 42},
     }
     listed = (await client.get(f"/api/projects/{project['id']}")).json()
     assert (

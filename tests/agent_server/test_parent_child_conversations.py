@@ -985,6 +985,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
                     "agent_launch_additions": AgentLaunchAdditions(
                         system_message_suffix_append="<INSIDER_CONTROLLER/>"
                     ),
+                    "max_iterations": 7,
                 },
             )
             with pytest.raises(ValueError, match="already exists"):
@@ -1001,5 +1002,6 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
     assert request.agent_launch_additions.system_message_suffix_append == (
         "<INSIDER_CONTROLLER/>"
     )
+    assert request.max_iterations == 7
     agent = services[info.id].get_conversation().agent
     assert [tool.name for tool in agent.tools] == list(PROJECT_COORDINATOR_TOOLS)

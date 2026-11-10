@@ -13,7 +13,6 @@ starts with ``start_child_conversation`` join its project without another call.
 """
 
 import asyncio
-import mimetypes
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
@@ -68,6 +67,7 @@ from openhands.agent_server.project_memory import (
     ProjectMemoryStore,
     valid_memory_name,
 )
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -185,6 +185,11 @@ class NewProjectCoordinator(BaseModel):
     security_analyzer: SecurityAnalyzerBase | None = Field(
         default=None, description="As in a conversation start request."
     )
+    max_iterations: int | None = Field(
+        default=None,
+        gt=0,
+        description="As in a conversation start request. Unset, the default.",
+    )
 
     def start_options(self) -> dict[str, Any]:
         """The fields passed on to the coordinator's start request."""
@@ -195,6 +200,7 @@ class NewProjectCoordinator(BaseModel):
             "agent_launch_additions",
             "confirmation_policy",
             "security_analyzer",
+            "max_iterations",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -1068,23 +1074,40 @@ async def save_conversation_artifact(
 @projects_router.get(
     "/{project_id}/artifacts/{name}",
     response_class=FileResponse,
-    responses={404: {"description": "Project or artifact not found"}},
+    responses={
+        200: {
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            }
+        },
+        404: {"description": "Project or artifact not found"},
+    },
 )
 async def download_project_artifact(
     project_id: UUID, name: str, request: Request
 ) -> FileResponse:
-    """Download an artifact."""
+    """Download an artifact as an attachment.
+
+    Like the workspace file and trajectory downloads, it is sent as
+    ``application/octet-stream`` with ``Content-Disposition: attachment``, so
+    an uploaded HTML or SVG file is saved, never rendered from the server's
+    origin.
+    """
+    update_last_execution_time()
     _find(await _load(_store(request)), project_id)
     found = await asyncio.to_thread(
         _artifacts(request).get, project_id, _artifact_name(name)
     )
     if found is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    _, path = found
+    artifact, path = found
     return FileResponse(
         path=path,
-        filename=name,
-        media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
+        filename=artifact.name,
+        media_type="application/octet-stream",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 

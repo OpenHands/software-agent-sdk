@@ -7,7 +7,10 @@ conversation can only see and message conversations of its own project.
 """
 
 import json
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -26,19 +29,25 @@ from openhands.tools.child_conversation.impl import (
     session_api_key_headers,
 )
 from openhands.tools.project.definition import (
+    ARTIFACT_COPY_DIR,
+    ARTIFACT_TEXT_MAX_BYTES,
+    ListArtifactsAction,
+    ListArtifactsObservation,
     ListProjectConversationsAction,
     ListProjectConversationsObservation,
     MessageProjectConversationAction,
     MessageProjectConversationObservation,
     ProjectConversationSummary,
+    ReadArtifactAction,
+    ReadArtifactObservation,
     ReadProjectConversationAction,
     ReadProjectConversationObservation,
     ReadProjectMemoryAction,
     ReadProjectMemoryObservation,
-    SaveProjectArtifactAction,
-    SaveProjectArtifactObservation,
     UpdateProjectMemoryAction,
     UpdateProjectMemoryObservation,
+    WriteArtifactAction,
+    WriteArtifactObservation,
 )
 
 
@@ -455,8 +464,8 @@ class MessageProjectConversationExecutor(
         )
 
 
-class SaveProjectArtifactExecutor(
-    ToolExecutor[SaveProjectArtifactAction, SaveProjectArtifactObservation]
+class WriteArtifactExecutor(
+    ToolExecutor[WriteArtifactAction, WriteArtifactObservation]
 ):
     """Copy a workspace file into the caller's project artifacts.
 
@@ -475,9 +484,9 @@ class SaveProjectArtifactExecutor(
 
     def __call__(
         self,
-        action: SaveProjectArtifactAction,
+        action: WriteArtifactAction,
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> SaveProjectArtifactObservation:
+    ) -> WriteArtifactObservation:
         try:
             project_id = self._client.project_id()
             payload: dict[str, Any] = {
@@ -498,15 +507,149 @@ class SaveProjectArtifactExecutor(
             except (ValueError, KeyError, TypeError) as exc:
                 raise ProjectToolError(f"Unexpected artifact response: {exc}") from exc
         except ProjectToolError as exc:
-            return SaveProjectArtifactObservation.from_text(
-                text=str(exc), is_error=True
-            )
-        return SaveProjectArtifactObservation.from_text(
+            return WriteArtifactObservation.from_text(text=str(exc), is_error=True)
+        return WriteArtifactObservation.from_text(
             text=f"Saved {action.path} as project artifact {name!r} ({size} bytes).",
             project_id=project_id,
             name=name,
             size=size,
         )
+
+
+def _workspace_target(conv_state: "ConversationState", path: str) -> Path:
+    """``path`` resolved inside the conversation's working directory.
+
+    Symlinks are followed before the check, so a link out of the workspace
+    is refused like ``..``.
+    """
+    root = Path(conv_state.workspace.working_dir).resolve()
+    target = (root / path).resolve()
+    if target == root or not target.is_relative_to(root):
+        raise ProjectToolError(
+            f"{path!r} is outside your working directory {str(root)!r}."
+        )
+    return target
+
+
+def _write_copy(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.part")
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _as_small_text(data: bytes) -> str | None:
+    if len(data) > ARTIFACT_TEXT_MAX_BYTES or b"\0" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+class ReadArtifactExecutor(ToolExecutor[ReadArtifactAction, ReadArtifactObservation]):
+    """Read one of the caller's project artifacts, inline or as a workspace copy."""
+
+    def __init__(
+        self,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        timeout: float = PROJECT_TOOL_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self._client = _ProjectClient(conv_state, server_url, timeout, transport)
+
+    def __call__(
+        self,
+        action: ReadArtifactAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> ReadArtifactObservation:
+        name = action.name.strip()
+        try:
+            project_id = self._client.project_id()
+            target = (
+                _workspace_target(self._client.conv_state, action.path)
+                if action.path
+                else None
+            )
+            data = self._client.request(
+                "GET", f"/api/projects/{project_id}/artifacts/{quote(name)}"
+            ).content
+            text = None if target else _as_small_text(data)
+            if text is not None:
+                return ReadArtifactObservation.from_text(
+                    text=f"Artifact {name!r} ({len(data)} bytes):\n{text}",
+                    project_id=project_id,
+                    name=name,
+                )
+            if target is None:
+                target = _workspace_target(
+                    self._client.conv_state, f"{ARTIFACT_COPY_DIR}/{name}"
+                )
+            try:
+                _write_copy(target, data)
+            except OSError as exc:
+                raise ProjectToolError(f"Could not write {str(target)!r}: {exc}")
+        except ProjectToolError as exc:
+            return ReadArtifactObservation.from_text(text=str(exc), is_error=True)
+        return ReadArtifactObservation.from_text(
+            text=f"Copied artifact {name!r} ({len(data)} bytes) to {str(target)!r}.",
+            project_id=project_id,
+            name=name,
+            path=str(target),
+        )
+
+
+class ListArtifactsExecutor(
+    ToolExecutor[ListArtifactsAction, ListArtifactsObservation]
+):
+    """List the caller's project artifacts."""
+
+    def __init__(
+        self,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        timeout: float = PROJECT_TOOL_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self._client = _ProjectClient(conv_state, server_url, timeout, transport)
+
+    def __call__(
+        self,
+        action: ListArtifactsAction,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> ListArtifactsObservation:
+        try:
+            project_id = self._client.project_id()
+            response = self._client.request(
+                "GET", f"/api/projects/{project_id}/artifacts"
+            )
+            try:
+                artifacts = list(response.json()["artifacts"])
+                lines = [_artifact_line(item) for item in artifacts]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProjectToolError(f"Unexpected artifacts response: {exc}") from exc
+        except ProjectToolError as exc:
+            return ListArtifactsObservation.from_text(text=str(exc), is_error=True)
+        if not lines:
+            text = "The project has no artifacts yet."
+        else:
+            text = f"{len(lines)} project artifact(s):\n" + "\n".join(lines)
+        return ListArtifactsObservation.from_text(text=text, project_id=project_id)
+
+
+def _artifact_line(item: dict[str, Any]) -> str:
+    if item["source"] == "user":
+        who = "the person"
+    else:
+        who = conversation_mention(None, str(item["conversation_id"]))
+    return (
+        f"- {item['name']} ({int(item['size'])} bytes), added by {who}, "
+        f"updated {item['updated_at']}"
+    )
 
 
 def _memory_listing(client: _ProjectClient, project_id: str) -> str:

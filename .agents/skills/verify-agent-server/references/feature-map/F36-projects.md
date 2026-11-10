@@ -68,7 +68,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`), and an `asked` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
-- `F36.artifacts-tool`: a member with `save_project_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused.
+- `F36.artifacts-tool`: a member with `write_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused. With `list_artifacts` and `read_artifact` it sees the project's files and reads one: small UTF-8 text inline, anything else copied into its workspace (`.agent_tmp/artifacts/<name>` unless it names a path inside the workspace).
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
 - `F36.memory-tool`: an agent with `read_project_memory` and `update_project_memory` reads `MEMORY.md` and adds a line to it with the revision it read; a child a project member starts gets `MEMORY.md` in its first message, marked as data.
 - `F36.persist-restart`: projects and membership survive a server restart.
@@ -104,7 +104,10 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   first; `POST` there uploads (multipart `file`, optional `name` form field);
   `POST .../artifacts/from-conversation` with `{conversation_id, path, name?}`
   copies a member's workspace file; `GET`/`DELETE .../artifacts/{name}`
-  download and delete. Names are flat (letters, digits, spaces, `._()+-`,
+  download and delete. A download is sent like a workspace file or
+  trajectory download: `application/octet-stream`, `Content-Disposition:
+  attachment`, plus `X-Content-Type-Options: nosniff`, so an uploaded HTML
+  or SVG file is saved, never rendered from the server's origin. Names are flat (letters, digits, spaces, `._()+-`,
   no leading dot, no trailing dot or space, no Windows device names), and a
   name differing from another only in case is 409. Files live in
   `<persistence dir>/projects/<project id>/artifacts/`, up to 100 MiB each.
@@ -123,8 +126,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   422 when the sender is unknown, is the target, or is in a project the
   target is not in.
 - Agent tools (registered by the agent-server, not part of the default
-  preset): `list_project_conversations`, `message_project_conversation` and
-  `save_project_artifact` from
+  preset): `list_project_conversations`, `message_project_conversation`,
+  `write_artifact`, `list_artifacts` and `read_artifact` from
   `openhands.tools.project`, alongside `start_child_conversation`. They read
   the project from the calling conversation's `project` tag and call this
   server through `OH_INTERNAL_SERVER_URL` with its session key. Name them in
@@ -377,15 +380,18 @@ Preconditions:
   Needs: `llm`
   ```sh
   ART=$(control-agent-server conversation start --no-run --title qa-f36-art --tag "project=$P2" \
-    --tools file_editor,save_project_artifact --print-id)
-  control-agent-server conversation send "$ART" --wait --timeout 300 --text 'Create the file qa-f36-report.md in the working directory containing the line f36 report. Then save it with save_project_artifact, then try save_project_artifact with path /etc/hostname, then finish.'
+    --tools file_editor,write_artifact,list_artifacts,read_artifact --print-id)
+  control-agent-server conversation send "$ART" --wait --timeout 300 --text 'Create the file qa-f36-report.md in the working directory containing the line f36 report. Then save it with write_artifact, then try write_artifact with path /etc/hostname. Then use list_artifacts, and read_artifact for qa-f36-report.md with path copies/report.md, then finish.'
   control-agent-server api GET "/api/projects/$P2/artifacts" --check artifacts len-eq 1 --check artifacts.0.name eq qa-f36-report.md \
     --check artifacts.0.source eq agent --check artifacts.0.conversation_id eq "$(printf %s "$ART" | tr -d -)" \
     --save F36.artifacts-tool/list
   control-agent-server conversation events "$ART" --kinds ObservationEvent --contains "outside the conversation's workspace" --expect-min 1
+  control-agent-server conversation events "$ART" --kinds ObservationEvent --contains "1 project artifact(s)" --expect-min 1
+  control-agent-server conversation events "$ART" --kinds ObservationEvent --contains "Copied artifact 'qa-f36-report.md'" --expect-min 1
   ```
   The file is copied in as an agent artifact; the path outside the workspace
-  is refused.
+  is refused; the agent lists the artifact and copies it back to the path it
+  named.
 - **Project memory over REST (`F36.memory-rest`).**
   Requires: `F36.coordinator`
   ```sh
