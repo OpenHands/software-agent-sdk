@@ -81,7 +81,9 @@ def test_endpoint_returns_snippets(client):
     assert body["capped"] is False
     hit = body["results"][0]
     assert hit["title"] == "Garage door sensor"
-    assert "false alarms" in hit["snippet"]
+    # Snippets wrap matched words in [ ] for UI emphasis; multi-word
+    # queries mark each matched word.
+    assert "triggering [false] [alarms]" in hit["snippet"]
     assert hit["conversation_id"]
 
 

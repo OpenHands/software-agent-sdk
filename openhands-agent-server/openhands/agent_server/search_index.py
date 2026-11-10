@@ -11,10 +11,16 @@ Design notes:
   observations and other event kinds are deliberately excluded (noise and
   secret-exposure risk).
 - High-signal secret patterns are masked before text enters the index.
+- Search is fuzzy: the porter tokenizer stems queries and text alike
+  (plurals/verb forms match), tokens not found as prefixes are expanded via
+  the raw-word vocabulary with typo tolerance (Damerau-Levenshtein) and a
+  substring fallback. An index file built by an older, non-fuzzy schema is
+  detected and transparently rebuilt.
 """
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import re
@@ -26,17 +32,73 @@ from pathlib import Path
 _EVENTS_DIR = "events"
 _META_FILE = "meta.json"
 
+# Tokenizer mirror: the index's unicode61 tokenizer splits text on any
+# non-alphanumeric character, so the query is split the same way. Pasted
+# punctuation ("(door", "garage!") then never becomes part of a token, and
+# every remaining token is still quoted below, neutralizing FTS syntax.
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _tokens(query: str) -> list[str]:
+    return [t for t in _TOKEN_RE.findall(query) if t]
+
+
 # FTS5 query syntax is user input; quoting every token makes it a safe
 # prefix query ("tok*") and neutralizes operators, quotes and parens.
+# The porter tokenizer stems both indexed text and MATCH queries, so
+# plural/verb variants match in both directions without extra work.
+def _quote(token: str) -> str:
+    return f'"{token.replace(chr(34), chr(34) * 2)}"*'
+
+
 def _to_fts_query(query: str) -> str:
-    tokens = [t for t in re.split(r"\s+", query.strip()) if t]
+    tokens = _tokens(query)
     if not tokens:
         return ""
-    quoted = []
-    for t in tokens:
-        inner = t.replace('"', '""')
-        quoted.append(f'"{inner}"*')
-    return " AND ".join(quoted)
+    return " AND ".join(_quote(t) for t in tokens)
+
+
+def _levenshtein(a: str, b: str, cap: int = 2) -> int:
+    """Damerau-Levenshtein-lite: adjacent transposition counts as one edit.
+
+    Swapped letters ("wobmat" for "wombat") are among the most common typing
+    slips, so ignoring them (plain Levenshtein) would miss the typo class
+    users actually make; full Damerau handles the rest of the classic set
+    (insert / delete / substitute) in the same pass.
+    """
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev2: list[int] | None = None
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        best = i
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            d = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (
+                prev2 is not None
+                and i > 1
+                and j > 1
+                and ca == b[j - 2]
+                and a[i - 2] == cb
+            ):
+                d = min(d, prev2[j - 2] + 1)
+            cur.append(d)
+            best = min(best, d)
+        if best > cap:
+            return cap + 1
+        prev2 = prev
+        prev = cur
+    return prev[-1]
+
+
+# Above this many distinct indexed words the in-memory vocabulary scan stops
+# being "fast enough" on every search, so fuzzy expansion degrades to
+# prefix-only (stemmed prefix queries still work; typos stop being corrected).
+_VOCAB_FUZZY_LIMIT = 250_000
 
 
 _SECRET_PATTERNS = [
@@ -111,7 +173,18 @@ class SearchIndex:
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
         text,
         conv_id UNINDEXED,
+        tokenize = "porter unicode61 remove_diacritics 2"
+    );
+    -- Raw-word twin of messages_fts, same rows, plain unicode61 tokenizer.
+    -- Serves only as the fuzzy vocabulary: typo and substring discovery
+    -- needs unstemmed words (see _fuzzy_terms).
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_words_fts USING fts5(
+        text,
+        conv_id UNINDEXED,
         tokenize = "unicode61 remove_diacritics 2"
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_words_vocab USING fts5vocab(
+        "messages_words_fts", "row"
     );
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id);
     """
@@ -120,11 +193,113 @@ class SearchIndex:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path))
+        # Fuzzy vocabulary, loaded lazily and cached until the next write:
+        # a sorted term list plus terms bucketed by length for typo scans.
+        self._vocab_cache: tuple[list[str], dict[int, list[str]]] | None = None
+        self._rebuild_if_old_tokenizer()
         self._conn.executescript(self._SCHEMA)
         self._conn.execute("PRAGMA journal_mode=WAL")
 
+    def _rebuild_if_old_tokenizer(self) -> None:
+        """Drop pre-fuzzy indexes so the next backfill rebuilds them.
+
+        The index is a disposable artifact; an FTS table built with the old
+        unicode61 tokenizer cannot answer stemmed or fuzzy queries, and an
+        index missing its raw-words twin cannot expand typos, so either
+        mismatch triggers a full rebuild (titles, messages, everything).
+        Deleting the rows also clears ``dir_mtime``, which the incremental
+        backfill uses to skip unchanged conversations.
+        """
+        fts_sql = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_fts'"
+        ).fetchone()
+        if fts_sql is None:
+            return  # fresh database
+        words_sql = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_words_fts'"
+        ).fetchone()
+        if (
+            fts_sql[0] is not None
+            and "porter" in fts_sql[0]
+            and words_sql is not None
+        ):
+            return  # already current
+        self._conn.executescript(
+            """
+            DROP TABLE IF EXISTS messages_vocab;
+            DROP TABLE IF EXISTS messages_words_vocab;
+            DROP TABLE IF EXISTS messages_words_fts;
+            DROP TABLE IF EXISTS messages_fts;
+            DELETE FROM messages;
+            DELETE FROM conversations;
+            """
+        )
+        self._conn.commit()
+
     def close(self) -> None:
         self._conn.close()
+
+    def _fuzzy_terms(self, token: str) -> list[str]:
+        """Expand a user token into real indexed words.
+
+        ``messages_words_fts`` stores the same text with the plain unicode61
+        tokenizer, so its vocabulary holds RAW words. Stemming a typo with
+        the porter tokenizer is unreliable (``garage`` stems to ``garag`` but
+        its typo ``grage`` stems to itself), so typo/substring discovery
+        compares raw words instead; the discovered candidates are quoted into
+        the stemmed MATCH query, which stems them on its side. In order:
+        nothing if no indexed word relates to the token; raw words that
+        start with the token (the plain prefix query is NOT enough there:
+        porter stems ``huggin`` and ``hugging`` to different prefixes, so
+        the raw word itself is quoted in); typo matches (Damerau distance
+        1-2) for tokens of 4+ chars; substring matches for tokens of 5+
+        chars (``brella`` -> ``umbrellas``).
+        """
+        if len(token) < 4:
+            return []
+        if self._vocab_cache is None:
+            terms = sorted(
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT term FROM messages_words_vocab"
+                ).fetchall()
+            )
+            if len(terms) > _VOCAB_FUZZY_LIMIT:
+                terms = []  # too big to scan per search; prefix queries remain
+            buckets: dict[int, list[str]] = {}
+            for term in terms:
+                buckets.setdefault(len(term), []).append(term)
+            self._vocab_cache = (terms, buckets)
+        terms, buckets = self._vocab_cache
+        if not terms:
+            return []
+
+        # Prefix block: raw words starting with the token sit contiguously in
+        # the sorted list. Quoting them matters when stemming rewrites the
+        # word's prefix ("huggin" prefixes raw "hugging", but their porter
+        # stems are "huggin" vs "hug", so the bare prefix query misses).
+        i = bisect.bisect_left(terms, token)
+        prefix_terms: list[str] = []
+        while i < len(terms) and terms[i].startswith(token):
+            if terms[i] != token:
+                prefix_terms.append(terms[i])
+            i += 1
+            if len(prefix_terms) >= 5:
+                break
+        if prefix_terms:
+            return prefix_terms
+
+        max_typos = 1 if len(token) < 7 else 2
+        fuzzy: list[str] = []
+        for length in range(len(token) - max_typos, len(token) + max_typos + 1):
+            for term in buckets.get(length, []):
+                if _levenshtein(token, term, max_typos) <= max_typos:
+                    fuzzy.append(term)
+        if not fuzzy and len(token) >= 5:
+            for term in terms:
+                if token in term:
+                    fuzzy.append(term)
+        return fuzzy[:5]
 
     # -- writes ---------------------------------------------------------
 
@@ -148,6 +323,7 @@ class SearchIndex:
         return self._fts_rowid_assign(conv_id, event_id)
 
     def index_conversation(self, conv_id: str, title: str | None) -> None:
+        self._vocab_cache = None
         self._conn.execute(
             "INSERT INTO conversations(conv_id, title) VALUES(?, ?) "
             "ON CONFLICT(conv_id) DO UPDATE SET title=excluded.title",
@@ -162,6 +338,11 @@ class SearchIndex:
         )
         self._conn.execute(
             "INSERT OR REPLACE INTO messages_fts(rowid, text, conv_id) VALUES(?,?,?)",
+            (rowid, mask_secrets(title or ""), conv_id),
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO messages_words_fts(rowid, text, conv_id) "
+            "VALUES(?,?,?)",
             (rowid, mask_secrets(title or ""), conv_id),
         )
         self._conn.commit()
@@ -194,6 +375,11 @@ class SearchIndex:
             "INSERT OR REPLACE INTO messages_fts(rowid, text, conv_id) VALUES(?,?,?)",
             (rowid, mask_secrets(text), conv_id),
         )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO messages_words_fts(rowid, text, conv_id) "
+            "VALUES(?,?,?)",
+            (rowid, mask_secrets(text), conv_id),
+        )
 
         ts = event.get("timestamp")
         if ts:
@@ -203,28 +389,51 @@ class SearchIndex:
                 (ts, conv_id, ts),
             )
         self._conn.commit()
+        self._vocab_cache = None  # new words may have entered the vocabulary
         return True
 
     def remove_conversation(self, conv_id: str) -> None:
+        self._vocab_cache = None
         rows = self._conn.execute(
             "SELECT fts_rowid FROM messages WHERE conv_id=?", (conv_id,)
         ).fetchall()
         for (rowid,) in rows:
             self._conn.execute("DELETE FROM messages_fts WHERE rowid=?", (rowid,))
+            self._conn.execute(
+                "DELETE FROM messages_words_fts WHERE rowid=?", (rowid,)
+            )
         self._conn.execute("DELETE FROM messages WHERE conv_id=?", (conv_id,))
         self._conn.execute("DELETE FROM conversations WHERE conv_id=?", (conv_id,))
         self._conn.commit()
 
     # -- reads ----------------------------------------------------------
 
+    def _build_fuzzy_fts_query(self, query: str) -> str:
+        """Turn user input into a fuzzy FTS5 MATCH expression.
+
+        Each token becomes a group of OR-ed quoted prefixes: the token itself
+        plus its typo/substring expansions. Groups are AND-ed so every word
+        the user typed must still appear, fuzzily, in a matching row.
+        """
+        tokens = _tokens(query)
+        if not tokens:
+            return ""
+        groups = []
+        for token in tokens:
+            alternatives = [token] + self._fuzzy_terms(token)
+            groups.append(
+                " OR ".join(_quote(a) for a in alternatives)
+            )
+        return " AND ".join(f"({g})" for g in groups)
+
     def search(self, query: str, limit: int = 50) -> list[SearchHit]:
-        fts_query = _to_fts_query(query)
+        fts_query = self._build_fuzzy_fts_query(query)
         if not fts_query:
             return []
         rows = self._conn.execute(
             """
             SELECT f.conv_id, c.title, m.event_id, m.source, m.ts,
-                   snippet(messages_fts, 0, '', '', '…', 12) AS snip,
+                   snippet(messages_fts, 0, '[', ']', '…', 12) AS snip,
                    rank
             FROM messages_fts f
             JOIN messages m ON m.fts_rowid = f.rowid
