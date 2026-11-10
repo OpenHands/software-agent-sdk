@@ -1374,6 +1374,7 @@ def cmd_api(args: argparse.Namespace) -> dict[str, Any]:
                     "content-length",
                     "cache-control",
                     "etag",
+                    "x-content-type-options",
                     "access-control-allow-origin",
                     "access-control-allow-credentials",
                     "access-control-expose-headers",
