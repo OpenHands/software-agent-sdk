@@ -495,6 +495,41 @@ MessageRunOutcome = Literal[
 ]
 
 
+class ConversationMessageRequest(SendMessageRequest):
+    """A message posted to a running conversation's events.
+
+    The sender fields live here, not on :class:`SendMessageRequest`, because
+    that model is also a new conversation's ``initial_message``, where they
+    would mean nothing.
+    """
+
+    sender_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The conversation sending this message, such as a project's "
+            "coordinator. The saved message then records it as its `sender` "
+            "(`conversation:<id hex>`) and starts with a line telling the "
+            "receiving agent who sent it and that it approves nothing on the "
+            "person's behalf. A sender in a project may only message "
+            "conversations of the same project. Its runs are always guarded "
+            "as with `refuse_pending_confirmation`. Leave it out for the "
+            "person's own messages."
+        ),
+    )
+    refuse_pending_confirmation: bool = Field(
+        default=False,
+        description=(
+            "With `run`, never run a conversation that waits on the person: "
+            "waiting for confirmation (the run would approve its pending "
+            "actions), paused, error or stuck (it would resume or retry work "
+            "the person stopped or has not seen). A conversation already in "
+            "one of these answers 409 and nothing is saved; one that reaches "
+            "one while the message is delivered keeps the message and is not "
+            "run (`run` is that status). For senders other than the person."
+        ),
+    )
+
+
 class SendMessageResponse(Success):
     """What became of a message sent with ``run``."""
 
@@ -505,7 +540,8 @@ class SendMessageResponse(Success):
             "for the message. `queued`: a run was already active; it takes the "
             "message, or the conversation runs again when it ends. "
             "`waiting_for_confirmation`, `paused`, `error` or `stuck` (only "
-            "with `refuse_pending_confirmation`): the conversation reached that "
+            "for a guarded run: `refuse_pending_confirmation` or "
+            "`sender_conversation_id`): the conversation reached that "
             "state while the message was delivered, so it was not run and the "
             "message waits for the person. `not_run`: a "
             "stop arrived meanwhile and the conversation was left as it is."
@@ -515,7 +551,7 @@ class SendMessageResponse(Success):
         default=None,
         description=(
             "The conversation's execution status just before the message; "
-            "set with `refuse_pending_confirmation`."
+            "set for a guarded run."
         ),
     )
 

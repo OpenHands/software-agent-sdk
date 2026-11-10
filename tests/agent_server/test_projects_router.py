@@ -773,6 +773,17 @@ async def test_a_sender_conversation_is_always_guarded(client, service, tmp_path
     assert await _user_messages(service, worker) == 0
 
 
+def test_sender_fields_belong_to_the_events_route_only():
+    """Review: a new conversation's initial_message does not offer the sender
+    fields, which only the events route honors."""
+    from openhands.agent_server.models import ConversationMessageRequest
+    from openhands.sdk.conversation.message_request import SendMessageRequest
+
+    for field in ("sender_conversation_id", "refuse_pending_confirmation"):
+        assert field not in SendMessageRequest.model_fields
+        assert field in ConversationMessageRequest.model_fields
+
+
 @pytest.mark.asyncio
 async def test_a_guarded_message_leaves_a_stuck_conversation_stuck(service, tmp_path):
     """Review: saving a message resets stuck to idle, which would let the

@@ -33,6 +33,7 @@ from openhands.agent_server.experimental_features import (
 )
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
+    ConversationMessageRequest,
     EventSortOrder,
     MessageRunOutcome,
     ReactionRequest,
@@ -261,7 +262,7 @@ async def batch_get_conversation_events(
 )
 async def send_message(
     conversation_id: UUID,
-    request: SendMessageRequest,
+    request: ConversationMessageRequest,
     http_request: Request,
     event_service: EventService = Depends(get_event_service),
 ) -> SendMessageResponse:
