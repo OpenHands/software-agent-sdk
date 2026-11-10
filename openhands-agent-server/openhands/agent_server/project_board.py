@@ -202,7 +202,7 @@ def _finished(event: ConversationStateUpdateEvent) -> bool:
 _ACTION_SUMMARY_MAX = 300
 
 
-def _describe_action(event: ActionEvent) -> str:
+def describe_action(event: ActionEvent) -> str:
     summary = (event.summary or "").strip()
     text = f"{event.tool_name}: {summary}" if summary else event.tool_name
     return text[:_ACTION_SUMMARY_MAX]
@@ -314,7 +314,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 self._note_agent_output(event.action.message, event)
             elif event.source == "agent":
                 self._turn_open = True
-                self._last_action = _describe_action(event)
+                self._last_action = describe_action(event)
                 self._turn_actions.append(self._last_action)
                 del self._turn_actions[:-_TURN_ACTIONS_KEPT]
             return

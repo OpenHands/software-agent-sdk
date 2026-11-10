@@ -49,7 +49,6 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
-    EventSortOrder,
     LaunchedAgentProfile,
     StartChildConversationRequest,
     StartChildConversationResponse,
@@ -60,7 +59,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import FileSecretsStore, get_projects_store
 from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
-    starts_turn,
 )
 from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
 from openhands.agent_server.project_prompts import (
@@ -69,8 +67,10 @@ from openhands.agent_server.project_prompts import (
     worker_guidance,
 )
 from openhands.agent_server.project_wake import (
+    latest_turn_start,
     notify_coordinator,
     notify_coordinator_of_stop,
+    reconcile_coordinator_updates,
     relay_person_message,
 )
 from openhands.agent_server.pub_sub import Subscriber
@@ -625,23 +625,14 @@ PROJECT_COORDINATOR_TOOLS = (
 """Tools the server adds to a coordinator it starts with a new project."""
 
 
-_TURN_LOOKBACK = 50
-
-
 async def _logged_turn_sender(event_service: EventService) -> str | None:
     """``sender`` of the latest message that started a turn, from the log.
 
     For an outcome subscriber that did not see the turn begin (the server
     restarted in between); ``None`` means the person, or no turn found.
     """
-    page = await event_service.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP_DESC,
-        limit=_TURN_LOOKBACK,
-    )
-    starter = next((e for e in page.items if starts_turn(e)), None)
-    return starter.sender if isinstance(starter, MessageEvent) else None
+    start = await latest_turn_start(event_service)
+    return start.sender if start is not None else None
 
 
 def _active_agent_profile_id() -> UUID | None:
@@ -718,6 +709,10 @@ class ConversationService:
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
+    # Set by get_instance(), once the projects store has its config: catch up
+    # on coordinator updates a restart left undelivered.
+    reconcile_projects_on_start: bool = False
+    _reconcile_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
@@ -2753,8 +2748,21 @@ class ConversationService:
             self._eviction_task = asyncio.create_task(
                 self._evict_idle_conversations_loop()
             )
+        if self.reconcile_projects_on_start:
+            self._reconcile_task = asyncio.create_task(
+                self._reconcile_coordinator_updates()
+            )
 
         return self
+
+    async def _reconcile_coordinator_updates(self) -> None:
+        try:
+            delivered = await reconcile_coordinator_updates(self)
+        except Exception:
+            logger.warning("Catching up on coordinator updates failed", exc_info=True)
+            return
+        if delivered:
+            logger.info("Delivered %d missed coordinator update(s)", delivered)
 
     async def _renew_all_leases_loop(self) -> None:
         """Single background task that renews leases for all active conversations.
@@ -2842,6 +2850,11 @@ class ConversationService:
                         pending.setdefault(secret_name, binding)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._reconcile_task is not None:
+            self._reconcile_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reconcile_task
+            self._reconcile_task = None
         if self._eviction_task is not None:
             self._eviction_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -2945,6 +2958,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            reconcile_projects_on_start=True,
         )
 
     async def _start_event_service(

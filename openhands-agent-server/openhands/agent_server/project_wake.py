@@ -14,16 +14,27 @@ pause is saved for awareness (:func:`notify_coordinator_of_stop`). Updates are
 delivered like a message sent with ``refuse_pending_confirmation``, so they
 never run a coordinator that waits on the person (the message is kept and seen
 on its next run). The coordinator reads more with ``read_project_conversation``.
+
+:func:`reconcile_coordinator_updates` catches up after a restart: a member
+whose coordinator-started turn ended while no update reached the coordinator
+(the server stopped first, or every delivery attempt failed) is delivered
+then, from its event log.
 """
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.experimental_features import feature_enabled_now
+from openhands.agent_server.models import EventSortOrder
 from openhands.agent_server.persistence import get_projects_store
-from openhands.agent_server.project_board import TurnOutcome
+from openhands.agent_server.project_board import (
+    TurnOutcome,
+    describe_action,
+    starts_turn,
+)
 from openhands.agent_server.project_prompts import (
     SenderRole,
     paused_header,
@@ -35,13 +46,18 @@ from openhands.agent_server.project_prompts import (
     update_text,
 )
 from openhands.sdk import Message, TextContent
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     CONVERSATION_SENDER_PREFIX,
     HELD_FOR_PERSON_STATUSES,
     PROJECT_TAG_KEY,
+    TURN_TAG_KEY,
     conversation_sender,
 )
+from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.builtins.finish import FinishAction
 
 
 if TYPE_CHECKING:
@@ -321,3 +337,148 @@ async def relay_person_message(
         run=False,
     )
     return True
+
+
+_TURN_LOOKBACK = 50
+_ENDED = HELD_FOR_PERSON_STATUSES | {ConversationExecutionStatus.FINISHED.value}
+
+
+async def latest_turn_start(event_service: "EventService") -> MessageEvent | None:
+    """The latest user message that started a turn, from the event log."""
+    page = await event_service.search_events(
+        kind="MessageEvent",
+        source="user",
+        sort_order=EventSortOrder.TIMESTAMP_DESC,
+        limit=_TURN_LOOKBACK,
+    )
+    start = next((e for e in page.items if starts_turn(e)), None)
+    return start if isinstance(start, MessageEvent) else None
+
+
+def _since(timestamp: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+
+
+def _final_text(event: Event) -> str | None:
+    if isinstance(event, MessageEvent):
+        return extract_message_text(event)
+    if isinstance(event, ActionEvent):
+        if isinstance(event.action, FinishAction):
+            return event.action.message
+        return describe_action(event)
+    return None
+
+
+async def _reconcile_member(
+    service: "ConversationService",
+    project_hex: str,
+    coordinator_id: UUID,
+    coordinator: "EventService",
+    member_id: UUID,
+    status: str,
+    tags: dict[str, str],
+) -> bool:
+    member = await service.get_event_service(member_id)
+    if member is None:
+        return False
+    start = await latest_turn_start(member)
+    if start is None or start.sender != conversation_sender(coordinator_id):
+        return False
+    since = _since(start.timestamp)
+    output = await member.search_events(
+        source="agent",
+        sort_order=EventSortOrder.TIMESTAMP_DESC,
+        timestamp__gte=since,
+        limit=_TURN_LOOKBACK,
+    )
+    last = next(
+        (e for e in output.items if isinstance(e, (MessageEvent, ActionEvent))),
+        None,
+    )
+    if last is None:
+        return False
+    # Delivered when the coordinator holds a message from the member saved
+    # after the member's last output of this turn.
+    sent = await coordinator.search_events(
+        kind="MessageEvent",
+        source="user",
+        sort_order=EventSortOrder.TIMESTAMP_DESC,
+        timestamp__gte=_since(last.timestamp),
+        limit=_TURN_LOOKBACK,
+    )
+    if any(
+        isinstance(e, MessageEvent) and e.sender == conversation_sender(member_id)
+        for e in sent.items
+    ):
+        return False
+    text = next(
+        (t for t in (_final_text(e) for e in output.items) if t),
+        None,
+    )
+    logger.info(
+        "Delivering a missed update from %s to coordinator %s",
+        member_id,
+        coordinator_id,
+    )
+    if status == ConversationExecutionStatus.FINISHED.value:
+        turn: TurnOutcome = "asked" if tags.get(TURN_TAG_KEY) == "asked" else "answered"
+        return await notify_coordinator(
+            service, member_id, project_hex, turn, text, start.sender
+        )
+    if status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value:
+        text = _final_text(last) or text
+    return await notify_coordinator_of_stop(
+        service, member_id, project_hex, status, text, start.sender
+    )
+
+
+async def reconcile_coordinator_updates(service: "ConversationService") -> int:
+    """Deliver updates a coordinator should have had but never got.
+
+    For each project member whose latest turn the coordinator started and
+    that has ended (finished, or stopped on the person) with no message from
+    it in the coordinator since its last output, the update is delivered now,
+    as it would have been when the turn ended. Turns the person started are
+    not replayed: the person saw those. Returns how many were delivered.
+    """
+    if not await feature_enabled_now("projects"):
+        return 0
+    persisted = await asyncio.to_thread(get_projects_store().load)
+    if persisted is None:
+        return 0
+    delivered = 0
+    for project in persisted.projects:
+        coordinator_id = project.coordinator_conversation_id
+        if coordinator_id is None:
+            continue
+        project_hex = project.id.hex
+        members = await service.list_tagged_conversations(PROJECT_TAG_KEY, project_hex)
+        for stored, execution_status in members:
+            status = str(getattr(execution_status, "value", execution_status))
+            if stored.id == coordinator_id or status not in _ENDED:
+                continue
+            target = await _coordinator(service, stored.id, project_hex)
+            if target is None:
+                break
+            try:
+                if await _reconcile_member(
+                    service,
+                    project_hex,
+                    target[0],
+                    target[1],
+                    stored.id,
+                    status,
+                    dict(stored.tags),
+                ):
+                    delivered += 1
+            except Exception:
+                logger.warning(
+                    "Catching up on %s for coordinator %s failed",
+                    stored.id,
+                    coordinator_id,
+                    exc_info=True,
+                )
+    return delivered

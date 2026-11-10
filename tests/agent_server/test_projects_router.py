@@ -33,6 +33,7 @@ from openhands.agent_server.persistence import reset_stores
 from openhands.agent_server.project_wake import (
     notify_coordinator,
     notify_coordinator_of_stop,
+    reconcile_coordinator_updates,
     relay_person_message,
 )
 from openhands.agent_server.projects_router import projects_router
@@ -1602,3 +1603,115 @@ async def test_an_update_waits_for_a_run_slot_instead_of_being_dropped(
 
     assert ran == [cat]
     assert await _user_messages(service, cat) == 1
+
+
+async def _agent_says(
+    service: ConversationService,
+    conversation_id: UUID,
+    text: str,
+    status: ConversationExecutionStatus,
+) -> None:
+    """Append the agent's last message and end the run, as if before a restart
+    that left no subscriber to deliver it."""
+    event_service = await service.get_event_service(conversation_id)
+    assert event_service is not None
+    state = await event_service.get_state()
+    with state:
+        state.events.append(
+            MessageEvent(
+                source="agent",
+                llm_message=Message(role="assistant", content=[TextContent(text=text)]),
+            )
+        )
+        state.execution_status = status
+
+
+@pytest.mark.asyncio
+async def test_a_restart_delivers_the_updates_it_missed(
+    client, service, tmp_path, monkeypatch
+):
+    """Review S2/F3: a turn the coordinator started that ended while no update
+    reached it (the server stopped first) is delivered on the next start,
+    once; turns the person started are not replayed."""
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path, title="worker")
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    runs = _record_runs(monkeypatch)
+    worker_service = await service.get_event_service(worker)
+    assert worker_service is not None
+    # As after a restart: no live subscriber saw these turns end.
+    from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+
+    async def unseen(self, event) -> None:
+        return None
+
+    monkeypatch.setattr(ConversationOutcomeSubscriber, "__call__", unseen)
+
+    await worker_service.send_message(
+        Message(role="user", content=[TextContent(text="Pick a database.")]),
+        sender=f"conversation:{cat.hex}",
+    )
+    await _agent_says(
+        service,
+        worker,
+        "Postgres, for the joins.",
+        ConversationExecutionStatus.FINISHED,
+    )
+    runs.clear()
+
+    assert await reconcile_coordinator_updates(service) == 1
+    event = await _last_user_message(service, cat)
+    assert event.sender == f"conversation:{worker.hex}"
+    header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
+    assert header.startswith("[Update from ") and worker.hex in header
+    assert text == "Postgres, for the joins."
+    assert runs == [True]
+
+    # Delivered once: a second start finds nothing missing.
+    assert await reconcile_coordinator_updates(service) == 0
+
+    # A later coordinator turn that stopped on an error is reported as a stop.
+    await worker_service.send_message(
+        Message(role="user", content=[TextContent(text="Now migrate it.")]),
+        sender=f"conversation:{cat.hex}",
+    )
+    await _agent_says(
+        service, worker, "Migration failed.", ConversationExecutionStatus.ERROR
+    )
+    runs.clear()
+    assert await reconcile_coordinator_updates(service) == 1
+    header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
+    assert header.startswith("[Update from ") and "error" in header
+    assert runs == [True]
+
+    # The person's own turn is theirs; it is not replayed to the coordinator.
+    await worker_service.send_message(
+        Message(role="user", content=[TextContent(text="Thanks, I'll take it.")])
+    )
+    await _agent_says(service, worker, "Sure.", ConversationExecutionStatus.FINISHED)
+    copies = await _user_messages(service, cat)
+    assert await reconcile_coordinator_updates(service) == 0
+    assert await _user_messages(service, cat) == copies
+
+
+@pytest.mark.asyncio
+async def test_the_server_catches_up_on_updates_when_it_starts(tmp_path, monkeypatch):
+    from openhands.agent_server import conversation_service as module
+
+    started = asyncio.Event()
+
+    async def reconcile(service) -> int:
+        started.set()
+        return 0
+
+    monkeypatch.setattr(module, "reconcile_coordinator_updates", reconcile)
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        reconcile_projects_on_start=True,
+    ):
+        await asyncio.wait_for(started.wait(), timeout=5)
