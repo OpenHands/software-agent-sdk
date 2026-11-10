@@ -1327,8 +1327,8 @@ def test_start_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1350,8 +1350,8 @@ def test_start_goal_in_conversation_not_found(
     """/goal returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1370,8 +1370,8 @@ def test_start_goal_in_conversation_rejects_busy_loop(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1390,8 +1390,8 @@ def test_stop_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.stop_goal_loop.return_value = True
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1408,8 +1408,8 @@ def test_stop_goal_in_conversation_not_found(
     """/goal/stop returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1425,8 +1425,8 @@ def test_resume_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1445,8 +1445,8 @@ def test_resume_goal_in_conversation_not_found(
     """/goal/resume returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1464,8 +1464,8 @@ def test_resume_goal_in_conversation_no_resumable(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.side_effect = ValueError("no_resumable_goal")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(

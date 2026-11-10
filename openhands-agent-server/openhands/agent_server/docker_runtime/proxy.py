@@ -58,10 +58,6 @@ _HOP_BY_HOP_HEADERS = frozenset(
 # without de-duplicating, so copying the upstream's would send two of each.
 _RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
 
-# Stream chunk size for request/response bodies. Set it explicitly so proxy
-# behavior does not depend on an httpx implementation default.
-_CHUNK_SIZE = 64 * 1024
-
 
 def _filter_headers(headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}

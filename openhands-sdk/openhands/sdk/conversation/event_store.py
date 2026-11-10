@@ -5,6 +5,8 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from typing import Final, SupportsIndex, overload
 
+from pydantic import ValidationError
+
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
@@ -12,6 +14,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event import Event, EventID
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
@@ -19,6 +22,9 @@ from openhands.sdk.utils.path import posix_path_name
 
 
 logger = get_logger(__name__)
+
+# ``code`` of the stand-in event for an event file that cannot be read.
+UNREADABLE_EVENT_FILE_CODE: Final[str] = "UnreadableEventFile"
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
@@ -66,6 +72,7 @@ class EventLog(EventsListBase):
         self._next_disk_idx = 0
         self._reported_lost = 0
         self._reported_missing: set[EventID] = set()
+        self._reported_unreadable: set[str] = set()
         self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
@@ -214,12 +221,58 @@ class EventLog(EventsListBase):
             if i >= self._length:
                 raise IndexError("Event index out of range")
             path = self._path(i)
-        txt = self._fs.read(path)
-        if not txt:
-            raise FileNotFoundError(f"Missing event file: {path}")
-        evt = Event.model_validate_json(txt)
+        evt = self._read_event(i, path)
         self._event_cache[i] = evt
         return evt
+
+    def _read_event(self, i: int, path: str) -> Event:
+        """Read event ``i`` from ``path``, or a stand-in if it is unreadable."""
+        try:
+            txt = self._fs.read(path)
+        except FileNotFoundError:
+            txt, reason = None, "missing"
+        except UnicodeDecodeError:
+            txt, reason = None, "not UTF-8"
+        else:
+            reason = "empty"
+        if txt:
+            try:
+                return Event.model_validate_json(txt)
+            except ValidationError as exc:
+                first = exc.errors()[0] if exc.errors() else {}
+                reason = f"unreadable ({first.get('msg', 'invalid event')})"
+        return self._unreadable_stand_in(i, path, reason)
+
+    def _unreadable_stand_in(self, i: int, path: str, reason: str) -> Event:
+        """A placeholder for an event file a crash or a bad copy damaged.
+
+        Failing every read over one empty or truncated file would make the
+        whole conversation unopenable. The stand-in keeps the event's id and
+        its place in the log (so indexes, seqs and the tree stay intact; its
+        parent falls back to the previous event), is not sent to the LLM, and
+        says what was lost. The file itself is left as it is.
+        """
+        if path not in self._reported_unreadable:
+            self._reported_unreadable.add(path)
+            logger.warning(
+                "Event file %s is %s; using a stand-in, the other events stay "
+                "readable.",
+                path,
+                reason,
+            )
+        stand_in = ConversationErrorEvent(
+            source="environment",
+            code=UNREADABLE_EVENT_FILE_CODE,
+            detail=(
+                f"Event file {posix_path_name(path)} is {reason}; its event is lost."
+            ),
+        )
+        update: dict[str, str] = {}
+        if (evt_id := self._idx_to_id.get(i)) is not None:
+            update["id"] = evt_id
+        if (previous := self._event_cache.get(i - 1)) is not None:
+            update["timestamp"] = previous.timestamp
+        return stand_in.model_copy(update=update) if update else stand_in
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
@@ -227,10 +280,7 @@ class EventLog(EventsListBase):
             if cached is not None:
                 yield cached
                 continue
-            txt = self._fs.read(self._path(i))
-            if not txt:
-                continue
-            evt = Event.model_validate_json(txt)
+            evt = self._read_event(i, self._path(i))
             evt_id = evt.id
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id

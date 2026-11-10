@@ -1545,8 +1545,8 @@ class LocalConversation(BaseConversation):
             create_kwargs["on_tools_changed"] = lambda tools: on_changed(named(tools))
         on_reconciled = create_kwargs.get("on_tools_reconciled")
         if on_reconciled is not None:
-            create_kwargs["on_tools_reconciled"] = lambda client, tools: (
-                on_reconciled(client, named(tools))
+            create_kwargs["on_tools_reconciled"] = lambda client, tools: on_reconciled(
+                client, named(tools)
             )
         client = self._mcp_tool_provider.create_tools(
             {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs

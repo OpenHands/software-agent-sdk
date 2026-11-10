@@ -125,7 +125,7 @@ Preconditions:
     --check steps.prompt.exit_code eq -1 --check steps.answer.text contains "hello bob" \
     --check steps.more.is_error eq false --check steps.ctrl_c.exit_code eq 130
   ```
-  Expected: as on the subprocess backend, `is_input` answers the prompt, `""` shows more output and `C-c` stops the idle command. Known failure (reproduced 2026-10-13, not yet filed): on the default tmux backend every one of these calls returns `is_error` with "No previous running command to interact with." (or "... to retrieve logs from."). `TerminalExecutor._prepare_pooled_session` interrupts a still-running command whenever a pane is checked out, so the follow-up the observation itself recommends ("You may wait longer ... by sending empty command '', ... send keys ("C-c", ...)") can never reach the process.
+  Expected: as on the subprocess backend, `is_input` answers the prompt, `""` shows more output and `C-c` stops the idle command. Before #6651, on the default tmux backend every one of these calls returned `is_error` with "No previous running command to interact with." (or "... to retrieve logs from."): `TerminalExecutor._prepare_pooled_session` interrupted a still-running command whenever a pane was checked out. A follow-up (input, an empty command, or a `C-x` key) now gets the pane whose command is still running, and that command is left alone.
 - **Terminal query sequences under tmux (`S14.terminal-input-encoding`).** A command prints a DSR cursor-position query, then the agent runs `echo next`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

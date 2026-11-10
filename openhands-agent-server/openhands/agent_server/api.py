@@ -927,10 +927,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
             return JSONResponse(
                 status_code=exc.status_code,
                 content=content,
+                headers=exc.headers,
             )
 
-        # Return clean JSON response for all non-5xx HTTP exceptions
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
+        # exception's headers (e.g. Retry-After, WWW-Authenticate).
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
 
 def create_app(config: Config | None = None) -> FastAPI:

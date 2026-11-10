@@ -401,6 +401,14 @@ async def session_socket(
     writer.start()
     subscriber = _SessionSubscriber(writer=writer, events=events)
 
+    # Read the client's frames from the start. Subscribing waits for the
+    # conversation's state lock, which a running step holds until it ends:
+    # a message sent meanwhile must be taken (and saved once the lock frees)
+    # even if the client leaves before the snapshot is ready.
+    inbound = asyncio.ensure_future(
+        _inbound_loop(conversation_id, websocket, event_service, writer)
+    )
+
     # Subscribe FIRST (buffering), then read the mark: no lock needed, since
     # anything appended before subscribe is on disk before the mark is read,
     # and anything after lands in the buffer and is deduped by seq.
@@ -408,6 +416,7 @@ async def session_socket(
         subscriber_id = await event_service.subscribe_to_events(subscriber)
     except MaxSubscribersError:
         logger.warning("session_socket_subscriber_limit: %s", conversation_id)
+        await _stop_inbound(inbound)
         await writer.aclose()
         await _safe_close_websocket(
             websocket, code=1013, reason="Too many connections for this conversation"
@@ -417,6 +426,7 @@ async def session_socket(
         # subscribe_to_events registers before it can fail, and this lands
         # before the try/finally below, so clean up the writer and socket here.
         logger.exception("session_socket_subscribe_failed: %s", conversation_id)
+        await _stop_inbound(inbound)
         await writer.aclose()
         await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
         return
@@ -452,8 +462,9 @@ async def session_socket(
         # whatever the mark would discard.
         subscriber.go_live(through_seq if replayed else None)
 
-        await _inbound_loop(conversation_id, websocket, event_service, writer)
+        await inbound
     finally:
+        await _stop_inbound(inbound)
         if progress_id is not None:
             await event_service.unsubscribe_from_stream_progress(progress_id)
         await event_service.unsubscribe_from_events(subscriber_id)
@@ -463,6 +474,40 @@ async def session_socket(
         logger.info(
             "session_socket_closed: %s reason=%s", conversation_id, writer.drop_reason
         )
+
+
+_pending_sends: set[asyncio.Future] = set()
+"""Messages taken from a socket that is gone, still waiting to be saved."""
+
+
+async def _stop_inbound(inbound: asyncio.Future) -> None:
+    """Stop reading frames; a message already taken is still saved."""
+    if not inbound.done():
+        inbound.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await inbound
+
+
+def _log_orphaned_send(send: asyncio.Future) -> None:
+    _pending_sends.discard(send)
+    if not send.cancelled() and send.exception() is not None:
+        logger.warning(
+            "session_socket_send_after_close_failed: %s",
+            send.exception(),
+        )
+
+
+async def _deliver(event_service, message: Message) -> None:
+    """Save and run ``message``, even if this socket's reader is cancelled.
+
+    The send waits for the conversation's state lock, which a running step
+    holds; the reader may be cancelled meanwhile (the socket closed), but the
+    person sent this message, so it is kept and saved when the lock frees.
+    """
+    send = asyncio.ensure_future(event_service.send_message(message, True))
+    _pending_sends.add(send)
+    send.add_done_callback(_log_orphaned_send)
+    await asyncio.shield(send)
 
 
 async def _inbound_loop(
@@ -483,21 +528,20 @@ async def _inbound_loop(
             done, _ = await asyncio.wait(
                 {receiver, closed_waiter}, return_when=asyncio.FIRST_COMPLETED
             )
-            if closed_waiter in done:
+            if receiver not in done:
                 receiver.cancel()
-                if receiver in done:
-                    # Both finished at once: cancel() is a no-op on a done
-                    # future, so consume the outcome or asyncio logs
-                    # "Task exception was never retrieved" on GC.
-                    with contextlib.suppress(Exception, asyncio.CancelledError):
-                        receiver.result()
                 return
+            # A frame that arrived with the close is still the client's: read
+            # it, and stop after handling it.
+            closing = closed_waiter in done
             try:
                 data = receiver.result()
             except WebSocketDisconnect:
                 logger.info("session_socket_disconnected: %s", conversation_id)
                 return
             except Exception as e:
+                if closing:
+                    return
                 # receive_json decodes with json.loads, so a non-JSON frame
                 # raises here, not at validation below. Keep the connection,
                 # as the legacy endpoint's one broad handler does.
@@ -513,14 +557,19 @@ async def _inbound_loop(
                 continue
 
             if _is_auth_control_message(data):
+                if closing:
+                    return
                 continue
 
             try:
                 message = Message.model_validate(data)
-                await event_service.send_message(message, True)
+                await _deliver(event_service, message)
             except WebSocketDisconnect:
                 return
             except Exception as e:
+                if closing:
+                    logger.exception("session_socket_inbound_error", stack_info=True)
+                    return
                 # About this socket, not the conversation, so an ErrorFrame
                 # rather than a durable event — and not worth dropping over.
                 logger.exception("session_socket_inbound_error", stack_info=True)
@@ -528,5 +577,7 @@ async def _inbound_loop(
                     ErrorFrame(code=e.__class__.__name__, detail=str(e))
                 ):
                     return
+            if closing:
+                return
     finally:
         closed_waiter.cancel()
