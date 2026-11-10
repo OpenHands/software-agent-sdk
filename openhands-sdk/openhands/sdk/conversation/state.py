@@ -310,7 +310,8 @@ class ConversationState(OpenHandsModel):
 
         artifacts = (ConversationStateUpdateEvent, ConversationErrorEvent)
         for i in range(len(self._events) - 1, -1, -1):
-            if not isinstance(self._events[i], artifacts):
+            event, _ = self._events._read_branch_node(i)
+            if event is not None and not isinstance(event, artifacts):
                 return self._events.get_id(i)
         return None
 
@@ -405,9 +406,9 @@ class ConversationState(OpenHandsModel):
                 cur_id: EventID | None = leaf
                 while cur_id is not None and cur_id != self._view_branch_leaf:
                     idx = self._events.get_index(cur_id)
-                    evt = self._events[idx]
-                    tail.append(evt)
-                    cur_id = self._events._effective_parent_id(idx, evt)
+                    evt, cur_id = self._events._read_branch_node(idx)
+                    if evt is not None:
+                        tail.append(evt)
                 if cur_id == self._view_branch_leaf:
                     for evt in reversed(tail):
                         self._view.append_event(evt)
