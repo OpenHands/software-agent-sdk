@@ -41,10 +41,11 @@ describe('conversation create options', () => {
     bodies.length = 0;
   });
 
-  it('ConversationManager.createConversation sends maxIterations and stuckDetection', async () => {
+  it('ConversationManager.createConversation sends execution limits', async () => {
     const manager = new ConversationManager({ host });
     await manager.createConversation(agent, {
       maxIterations: 7,
+      maxBudgetPerRun: 2.5,
       stuckDetection: false,
       stuckDetectionThresholds: { actionObservation: 6 },
     });
@@ -52,23 +53,26 @@ describe('conversation create options', () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({
       max_iterations: 7,
+      max_budget_per_run: 2.5,
       stuck_detection: false,
       stuck_detection_thresholds: { action_observation: 6 },
     });
   });
 
-  it('ConversationManager.createConversation keeps the defaults when both are omitted', async () => {
+  it('ConversationManager.createConversation keeps the defaults when options are omitted', async () => {
     const manager = new ConversationManager({ host });
     await manager.createConversation(agent);
 
     expect(bodies[0]).toMatchObject({ max_iterations: 500, stuck_detection: true });
     expect(bodies[0]).not.toHaveProperty('stuck_detection_thresholds');
+    expect(bodies[0]).not.toHaveProperty('max_budget_per_run');
   });
 
   it('RemoteConversation uses its constructor options, overridden by start() options', async () => {
     const workspace = new RemoteWorkspace({ host, workingDir: '/workspace' });
     const options = {
       maxIterations: 7,
+      maxBudgetPerRun: 2.5,
       stuckDetection: false,
       stuckDetectionThresholds: {
         actionObservation: 6,
@@ -81,11 +85,17 @@ describe('conversation create options', () => {
     await new RemoteConversation(agent, workspace, options).start();
     await new RemoteConversation(agent, workspace, options).start({
       maxIterations: 9,
+      maxBudgetPerRun: 4,
       stuckDetection: true,
       stuckDetectionThresholds: { actionObservation: 2 },
     });
+    await new RemoteConversation(agent, workspace, options).start({ maxBudgetPerRun: null });
 
-    expect(bodies[0]).toMatchObject({ max_iterations: 7, stuck_detection: false });
+    expect(bodies[0]).toMatchObject({
+      max_iterations: 7,
+      max_budget_per_run: 2.5,
+      stuck_detection: false,
+    });
     expect(bodies[0]?.stuck_detection_thresholds).toEqual({
       action_observation: 6,
       action_error: 2,
@@ -94,8 +104,17 @@ describe('conversation create options', () => {
     });
     expect(bodies[1]).toMatchObject({
       max_iterations: 9,
-      stuck_detection: true,
+      max_budget_per_run: 4,
       stuck_detection_thresholds: { action_observation: 2 },
+      stuck_detection: true,
     });
+    expect(bodies[2]).toHaveProperty('max_budget_per_run', null);
+  });
+
+  it('ACP creation forwards the budget through the manager namespace', async () => {
+    const manager = new ConversationManager({ host });
+    await manager.acp.createConversation({ kind: 'ACPAgent' }, { maxBudgetPerRun: 3 });
+
+    expect(bodies[0]).toHaveProperty('max_budget_per_run', 3);
   });
 });

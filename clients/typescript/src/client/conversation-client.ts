@@ -44,6 +44,8 @@ export interface CreateConversationPayload {
   agent_profile_id?: string;
   agent?: unknown;
   agent_settings?: unknown;
+  /** Positive USD limit on accumulated conversation cost; a step may overshoot. */
+  max_budget_per_run?: number | null;
   [key: string]: unknown;
 }
 

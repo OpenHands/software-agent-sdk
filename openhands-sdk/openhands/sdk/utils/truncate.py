@@ -29,7 +29,6 @@ def _save_full_content(content: str, save_dir: str, tool_prefix: str) -> str | N
     """Save full content to the specified directory and return the file path."""
 
     save_dir_path = Path(save_dir)
-    save_dir_path.mkdir(parents=True, exist_ok=True)
 
     # Generate hash-based filename for deduplication
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
@@ -37,12 +36,13 @@ def _save_full_content(content: str, save_dir: str, tool_prefix: str) -> str | N
     file_path = save_dir_path / filename
 
     # Only write if file doesn't exist (deduplication)
-    if not file_path.exists():
-        try:
+    try:
+        save_dir_path.mkdir(parents=True, exist_ok=True)
+        if not file_path.exists():
             file_path.write_text(content, encoding="utf-8")
-        except Exception as e:
-            logger.debug(f"Failed to save full content to {file_path}: {e}")
-            return None
+    except Exception as e:
+        logger.debug(f"Failed to save full content to {file_path}: {e}")
+        return None
 
     return str(file_path)
 
@@ -59,6 +59,7 @@ def maybe_truncate(
 
     Keeps the head and tail of the content to preserve context at both ends.
     Optionally saves the full content to a file for later investigation.
+    If saving fails, returns clipped content without a saved-file reference.
 
     Args:
         content: The text content to potentially truncate

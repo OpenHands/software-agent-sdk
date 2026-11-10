@@ -38,14 +38,14 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.misc-settings-merge`: `misc_settings_diff` deep-merges nested objects, replaces lists, removes a nested key on `null`, and stores a top-level `null` as `null`.
 - `F18.patch-validation`: an empty or unknown-keys-only PATCH is 400, an invalid value is 422 `Settings validation failed` without echoing the posted secret, malformed pointers are 422, and nothing is stored.
 - `F18.active-profile-pointer`: PATCH `active_profile` applies that LLM profile to `agent_settings.llm`, an unknown profile is 404, an explicit `llm` diff wins over the profile, and `null` clears only the pointer.
-- `F18.agent-kind-switch`: switching `agent_kind` to `acp` rebuilds from a fresh ACP base (no `llm`, no key); switching back gives fresh OpenHands defaults.
+- `F18.agent-kind-switch`: switching `agent_kind` to `acp` rebuilds from a fresh ACP base (no `llm`, no key); switching back gives fresh OpenHands defaults. The server-wide `mcp_config`, `agent_context.load_memory` and `verification.critic_api_key` survive both switches.
 - `F18.secret-put-list-get`: `PUT /api/settings/secrets` answers `{name, description}`, the list shows names and descriptions but never values, GET by name returns the raw value as `text/plain`, and a second PUT overwrites value and description.
 - `F18.secret-delete`: DELETE answers `{"deleted": true}`; afterwards GET and a second DELETE are 404 `Secret not found` and the list omits the name.
 - `F18.secret-name-validation`: names that do not match `^[a-zA-Z][a-zA-Z0-9_]{0,63}$` are 422 on GET, PUT and DELETE (64 characters are accepted, 65 are not); a PUT without `value` is 422; an unknown valid name is 404.
 - `F18.encrypted-at-rest`: `settings.json` and `secrets.json` hold Fernet tokens, never the raw values, with mode `0600`.
 - `F18.secret-scope-agent-profile`: `?agent_profile_id=` limits the list to that agent profile's `secret_refs` (`[]` lists nothing, no `secret_refs` lists everything); an unknown id is 404 `Agent profile not found`.
 - `F18.sdk-remote-workspace`: the SDK's `RemoteWorkspace.get_secrets()` returns `LookupSecret`s whose URLs resolve to the stored values, and `get_llm()` returns the stored model and key.
-- `F18.sdk-clone-repos`: with the server secret `github_token` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/github_token` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`gitlab_token`) clones anonymously, and `get_repos_context()` names both clones.
+- `F18.sdk-clone-repos`: with the server secret `GITHUB_TOKEN` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/GITHUB_TOKEN` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`GITLAB_TOKEN`) clones anonymously, and `get_repos_context()` names both clones.
 - `F18.ts-client`: the TypeScript `SettingsClient` reads both schemas, reads settings redacted, `plaintext` and `encrypted`, applies a sparse `updateSettings` that a second read shows, upserts, lists (also with `agentProfileId`), reads as text and deletes a secret, and rejects an unknown secret (404), a bad name (422) and a wrong key (401) with an `HttpError`.
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
@@ -81,7 +81,8 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
   `RemoteWorkspace.get_secrets(names=None, agent_profile_id=None)` lists names
   and returns `LookupSecret(url=<host>/api/settings/secrets/<name>)`, which the
   server or the client resolves later; `clone_repos(repos, target_dir)` reads
-  `github_token`, `gitlab_token` or `bitbucket_token` through
+  `GITHUB_TOKEN`, `GITLAB_TOKEN` or `BITBUCKET_TOKEN` (falling back to the
+  lowercase name) through
   `_get_secret_value` (`GET /api/settings/secrets/{name}`, `None` on a 404)
   and runs `git clone` on the client's machine, and `get_repos_context()`
   describes the clones (`openhands-sdk/openhands/sdk/workspace/remote/base.py`,
@@ -185,8 +186,8 @@ Preconditions:
       api_key=os.environ["SESSION_API_KEY"],
       working_dir=str(target),
   )
-  assert ws._get_secret_value("github_token") == "qa-f18-gh-token"
-  assert ws._get_secret_value("gitlab_token") is None
+  assert ws._get_secret_value("GITHUB_TOKEN") == "qa-f18-gh-token"
+  assert ws._get_secret_value("GITLAB_TOKEN") is None
   result = ws.clone_repos(
       [
           "https://github.com/qa-owner/qa-gh-repo",
@@ -449,19 +450,34 @@ Preconditions:
 
   Requires: `F18.get-defaults`
   ```sh
+  control-agent-server api POST /api/settings/mcp/qa-f18-switch --expect 201 \
+    --json '{"transport": "http", "url": "https://example.invalid/mcp"}'
+  control-agent-server api PATCH /api/settings --expect 200 \
+    --json '{"agent_settings_diff": {"agent_context": {"load_memory": true}, "verification": {"critic_api_key": "qa-f18-critic"}}}'
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "acp", "acp_server": "claude-code"}}' \
     --expect 200 --check agent_settings.agent_kind eq acp --check agent_settings.acp_server eq claude-code \
-    --check agent_settings.llm missing --check llm_api_key_is_set eq false --save F18.agent-kind-switch/to-acp
+    --check agent_settings.llm missing --check llm_api_key_is_set eq false \
+    --check agent_settings.mcp_config.qa-f18-switch.url eq https://example.invalid/mcp \
+    --check agent_settings.agent_context.load_memory eq true --check agent_settings.verification.critic_api_key exists \
+    --save F18.agent-kind-switch/to-acp
   control-agent-server api GET /api/settings --check agent_settings.agent_kind eq acp --check conversation_settings.max_iterations eq 77
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "openhands"}}' --expect 200 \
     --check agent_settings.agent_kind eq openhands --check agent_settings.llm.model eq "$DEFAULT_MODEL" \
-    --check llm_api_key_is_set eq false --save F18.agent-kind-switch/back
+    --check llm_api_key_is_set eq false \
+    --check agent_settings.mcp_config.qa-f18-switch.url eq https://example.invalid/mcp \
+    --check agent_settings.agent_context.load_memory eq true --check agent_settings.verification.critic_api_key exists \
+    --save F18.agent-kind-switch/back
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key missing
   control-agent-server api PATCH /api/settings --json "{\"agent_settings_diff\": {\"llm\": {\"model\": \"openai/qa-f18-model\", \"api_key\": \"$QA_F18_LLM_KEY\"}}}" \
     --expect 200 --check llm_api_key_is_set eq true
+  control-agent-server api DELETE /api/settings/mcp/qa-f18-switch --expect 200
+  control-agent-server api PATCH /api/settings --expect 200 \
+    --json '{"agent_settings_diff": {"agent_context": {"load_memory": false}, "verification": {"critic_api_key": null}}}'
   ```
   ACP settings have no `llm`, so the key is gone; switching back starts from
   fresh OpenHands defaults (the default model, no key), not from the old LLM.
+  The MCP catalog, the memory flag and the critic key are not variant state
+  and survive both switches.
   Conversation settings are untouched. The last PATCH restores the LLM.
 - **Upsert, list and read a secret (`F18.secret-put-list-get`).** Create,
   list, read, overwrite, restore.
@@ -573,7 +589,7 @@ Preconditions:
   `https://qa-f18-gh-token@github.com/` and the anonymous
   `https://gitlab.com/` to them, so the GitHub clone succeeds only if the URL
   carries the token the server stored, and the GitLab clone only if it
-  carries none. Store `github_token` (arrange), run the program, delete it.
+  carries none. Store `GITHUB_TOKEN` (arrange), run the program, delete it.
   ```sh
   G="$F18/git"
   rm -rf "$G" "$F18/clones"
@@ -585,18 +601,18 @@ Preconditions:
   git clone -q --bare "$G/src" "$G/gh/qa-owner/qa-gh-repo"
   git clone -q --bare "$G/src" "$G/gl/qa-owner/qa-gl-repo.git"
   printf '[url "file://%s/gh/"]\n\tinsteadOf = https://qa-f18-gh-token@github.com/\n[url "file://%s/gl/"]\n\tinsteadOf = https://gitlab.com/\n' "$G" "$G" > "$F18/gitconfig"
-  control-agent-server api GET /api/settings/secrets --check secrets not-contains github_token --check secrets not-contains gitlab_token
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f18-gh-token"}' --expect 200
+  control-agent-server api GET /api/settings/secrets --check secrets not-contains GITHUB_TOKEN --check secrets not-contains GITLAB_TOKEN
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "GITHUB_TOKEN", "value": "qa-f18-gh-token"}' --expect 200
   control-agent-server exec --env GIT_CONFIG_GLOBAL="$F18/gitconfig" --env GIT_CONFIG_NOSYSTEM=1 --env GIT_TERMINAL_PROMPT=0 \
     --env QA_F18_CLONES="$F18/clones" --env OPENHANDS_SUPPRESS_BANNER=1 --timeout 120 \
     --expect-output QA_F18_CLONE_OK --save F18.sdk-clone-repos/program -- .venv/bin/python "$F18/sdk_clone.py"
   test "$(git -C "$F18/clones/qa-gl-repo" log -1 --format=%s)" = 'qa f18 clone fixture'
-  control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  control-agent-server api DELETE /api/settings/secrets/GITHUB_TOKEN --expect 200
   control-agent-server api GET /api/settings/secrets --check secrets len-eq 1 --check secrets.0.name eq QA_F18_TOKEN
   ```
   The program prints `QA_F18_CLONE_OK ['qa-gh-repo', 'qa-gl-repo']`:
-  `_get_secret_value` returns the stored `github_token` and `None` for the
-  missing `gitlab_token`, both clones succeed into directories named after
+  `_get_secret_value` returns the stored `GITHUB_TOKEN` and `None` for the
+  missing `GITLAB_TOKEN`, both clones succeed into directories named after
   the repositories (the short `owner/repo` form with `provider: gitlab` gets
   `.git` appended), and `get_repos_context()` names both. The secret is gone
   again afterwards.
@@ -935,8 +951,11 @@ Preconditions:
   key). The `update_settings` docstring ("three diffs deep-merged") and the
   `SettingsUpdateRequest` docstring ("same semantics as
   `agent_settings_diff`") both overstate this.
-- Changing `agent_kind` starts from a fresh base of the target variant, so a
-  switch to ACP and back drops the LLM and its key.
+- Changing `agent_kind` starts from a fresh base of the target variant that
+  keeps only `mcp_config`, `agent_context.load_memory` and
+  `verification.critic_api_key`, so a switch to ACP and back drops the LLM and
+  its key but not those. ACP settings hold only the critic key under
+  `verification` and do not list that section in the agent schema.
 - A corrupted `settings.json` is indistinguishable from "never configured" on
   GET; only a PATCH (409) reveals it. A corrupted `secrets.json` lists as
   empty; PUT and DELETE answer 500.
@@ -953,7 +972,7 @@ Preconditions:
   threads, so other requests remain responsive while those locks are held.
 - `RemoteWorkspace.clone_repos` runs `git` on the client's machine, not on
   the server, and leaves the token in the clone's `remote.origin.url`
-  (`https://<github_token>@github.com/...`). A local stand-in therefore
+  (`https://<GITHUB_TOKEN>@github.com/...`). A local stand-in therefore
   needs a git config on the client side (`exec --env GIT_CONFIG_GLOBAL=...`);
   the short `owner/repo` form gets `.git` appended, full URLs do not.
 - The known-bug bullets stop at their `# bug` line under `set -e`, so the

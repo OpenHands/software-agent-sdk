@@ -64,6 +64,7 @@ export class ACPConversationNamespace {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       workingDir?: string;
@@ -210,6 +211,7 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       workingDir?: string;
@@ -224,6 +226,7 @@ export class ConversationManager {
 
     const conversation = new RemoteConversation(agent, workspace, {
       maxIterations: options.maxIterations,
+      maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       stuckDetectionThresholds: options.stuckDetectionThresholds,
       userId: options.userId,
@@ -232,6 +235,7 @@ export class ConversationManager {
     await conversation.start({
       initialMessage: options.initialMessage,
       maxIterations: options.maxIterations,
+      maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       stuckDetectionThresholds: options.stuckDetectionThresholds,
       userId: options.userId,
@@ -344,6 +348,7 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       workingDir?: string;
@@ -362,6 +367,7 @@ export class ConversationManager {
       agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
+      max_budget_per_run: options.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? true,
       stuck_detection_thresholds: serializeStuckDetectionThresholds(
         options.stuckDetectionThresholds

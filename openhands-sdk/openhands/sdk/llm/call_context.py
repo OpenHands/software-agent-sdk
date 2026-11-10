@@ -70,6 +70,7 @@ def apply_llm_call_context(
     *,
     supports_prompt_cache_key: bool = False,
     openrouter: bool = False,
+    codex_subscription: bool = False,
 ) -> None:
     """Apply SDK-owned call context to provider request options in one place.
 
@@ -82,6 +83,10 @@ def apply_llm_call_context(
     to the endpoint holding the warm prompt cache. Without it OpenRouter derives
     the routing key by hashing the opening messages, which agent conversations
     rewrite as they compact, so affinity is lost mid-run.
+
+    ``codex_subscription`` sends the ``session-id`` and ``thread-id`` headers the
+    Codex CLI sends. The ChatGPT Codex backend needs them to hold a conversation
+    on one cache: with ``prompt_cache_key`` alone most calls start cold.
     """
     if context.prompt_cache_key and supports_prompt_cache_key:
         options["prompt_cache_key"] = context.prompt_cache_key
@@ -91,6 +96,9 @@ def apply_llm_call_context(
             **existing,
             "x-litellm-session-id": context.session_id,
         }
+        if codex_subscription:
+            options["extra_headers"]["session-id"] = context.session_id
+            options["extra_headers"]["thread-id"] = context.session_id
         if openrouter:
             # Merge rather than replace: extra_body may already carry caller
             # routing (e.g. provider.only) that must survive. An explicit
