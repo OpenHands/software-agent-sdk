@@ -1193,3 +1193,37 @@ def test_without_a_run_errors_are_one_json_object(tmp_path, monkeypatch, capsys)
     assert code == 3
     assert payload["ok"] is False
     assert "launch --new --print-run" in payload["hint"]
+
+
+def test_map_check_validates_twin_links_with_the_sdk_map(tmp_path, monkeypatch, capsys):
+    """`Same promise:` and the SDK map's `Server:` must name each other."""
+    skills = tmp_path / "skills"
+    server = skills / "verify-agent-server" / "references" / "feature-map"
+    sdk = skills / "verify-sdk" / "references" / "feature-map"
+    server.mkdir(parents=True)
+    sdk.mkdir(parents=True)
+    (server / "F98-demo.md").write_text(
+        "# Demo\n\n## Sub-features\n\n"
+        "- `F98.pause`: pauses. Same promise: `S98.pause`.\n"
+        "- `F98.run`: runs. Same promise: `S98.gone`.\n"
+    )
+    (sdk / "S98-demo.md").write_text(
+        "# Demo\n\n## Sub-features\n\n"
+        "- `S98.pause`: pauses. Server: `F98.pause`, `F98.run`.\n"
+    )
+    monkeypatch.setattr(cas, "FEATURE_MAP_DIR", server)
+    assert cas.twin_link_problems("F") == {
+        "F98-demo.md": [
+            "line 6: F98.run: `Same promise:` names S98.gone, not in the other map"
+        ],
+        "S98-demo.md": [
+            "line 5: S98.pause: `Server:` names F98.run, whose `Same promise:`"
+            " does not name it back (F98-demo.md line 6)"
+        ],
+    }
+    code, out = _run(capsys, "map", "links", "--file", "F98")
+    assert code == 0
+    assert json.loads(out)["pairs"] == [
+        {"sdk": "S98.pause", "server": "F98.pause"},
+        {"sdk": "S98.pause", "server": "F98.run"},
+    ]

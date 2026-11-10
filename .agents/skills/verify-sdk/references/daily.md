@@ -59,6 +59,14 @@ the weekly pass.
    and its note updated, and every open `bug` issue opened since `BASE` that
    names a mapped feature is reproduced and gets its note. Model-backed blocks
    run only inside the budget; without a key they are `blocked`.
+3. **Twins.** For every family step 2 replayed, `sdk-map links --file Snn`
+   lists its agent-server twins (`Server:` links). Drive each through the
+   server too (`control-agent-server map run --file Fnn --only Fnn.x --fresh
+   --record`) unless its family is driven anyway. Put each pair side by side:
+   a pair whose results disagree is a finding, usually at the seam between the
+   SDK and the server (serialization, the async path, persistence, restart),
+   unless the difference is already a known bug on one side. Drive each
+   bullet once.
 
 ## Reading the result
 

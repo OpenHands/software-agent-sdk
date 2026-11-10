@@ -4072,6 +4072,139 @@ def parse_index() -> list[dict[str, Any]]:
     return rows
 
 
+# --------------------------------------------------------------------------
+# Twin links between the SDK map and the agent-server map
+# --------------------------------------------------------------------------
+
+# An SDK bullet whose promise an agent-server bullet also proves (through the
+# server's routes, sockets or the SDK's remote client) ends with
+# `Server: `Fnn.x`, ...`; each of those bullets ends with
+# `Same promise: `Snn.y`, ...` naming it back. Both map tools check both
+# directions, so a link is never one-sided. The other map is the sibling
+# skill's, found next to this one under .agents/skills/.
+TWIN_LINKS = {
+    "S": ("verify-sdk", "Server", "F"),
+    "F": ("verify-agent-server", "Same promise", "S"),
+}
+
+
+def twin_map_dir(side: str) -> Path:
+    skills = FEATURE_MAP_DIR.parents[2]
+    return skills / TWIN_LINKS[side][0] / "references" / "feature-map"
+
+
+TWIN_SUB_FEATURE_RE = re.compile(r"^- `([SF]\d{2}\.[a-z0-9][a-z0-9-]*)`: ")
+
+
+def read_twin_links(side: str) -> dict[str, dict[str, Any]] | None:
+    """Every sub-feature of one map with the twin IDs its link names.
+
+    None when that map is not in this checkout.
+    """
+    _, label, other = TWIN_LINKS[side]
+    directory = twin_map_dir(side)
+    if not directory.is_dir():
+        return None
+    one = rf"`{other}\d{{2}}\.[a-z0-9-]+`"
+    link_re = re.compile(rf" {label}: ({one}(?:, {one})*)\.$")
+    rows: dict[str, dict[str, Any]] = {}
+    for path in sorted(directory.glob(f"{side}[0-9][0-9]-*.md")):
+        section = None
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if line.startswith("## "):
+                section = line[3:].strip()
+                continue
+            match = (
+                TWIN_SUB_FEATURE_RE.match(line) if section == "Sub-features" else None
+            )
+            if not match or not match.group(1).startswith(side):
+                continue
+            row: dict[str, Any] = {
+                "file": path.name,
+                "line": number,
+                "links": [],
+                "error": None,
+            }
+            if f" {label}:" in line:
+                found = link_re.search(line)
+                if found:
+                    row["links"] = re.findall(r"`([^`]+)`", found.group(1))
+                else:
+                    row["error"] = (
+                        f"`{label}:` must end the line as "
+                        f"`{label}: `{other}nn.id`, `{other}nn.id`.`"
+                    )
+            rows[match.group(1)] = row
+    return rows
+
+
+def twin_link_problems(side: str, ids: set[str] | None = None) -> dict[str, list[str]]:
+    """Link problems keyed by file name, checked from both maps.
+
+    `side` is this tool's map ("S" or "F"); `ids` limits the check to links
+    that touch those sub-features of it.
+    """
+    other = TWIN_LINKS[side][2]
+    maps = {side: read_twin_links(side), other: read_twin_links(other)}
+    if maps[side] is None or maps[other] is None:
+        return {}
+    problems: dict[str, list[str]] = {}
+
+    def add(row: dict[str, Any], message: str) -> None:
+        problems.setdefault(row["file"], []).append(message)
+
+    for here_side, there_side in ((side, other), (other, side)):
+        here, there = maps[here_side], maps[there_side]
+        label, back = TWIN_LINKS[here_side][1], TWIN_LINKS[there_side][1]
+        for twin_id, row in here.items():
+            where = f"line {row['line']}: {twin_id}"
+            if ids is None or twin_id in ids:
+                if row["error"]:
+                    add(row, f"{where}: {row['error']}")
+                if len(set(row["links"])) != len(row["links"]):
+                    add(row, f"{where}: `{label}:` names an ID twice")
+            for other_id in row["links"]:
+                if ids is not None and twin_id not in ids and other_id not in ids:
+                    continue
+                if other_id not in there:
+                    add(
+                        row,
+                        f"{where}: `{label}:` names {other_id}, not in the other map",
+                    )
+                elif twin_id not in there[other_id]["links"]:
+                    at = f"{there[other_id]['file']} line {there[other_id]['line']}"
+                    add(
+                        row,
+                        f"{where}: `{label}:` names {other_id}, whose `{back}:`"
+                        f" does not name it back ({at})",
+                    )
+    return problems
+
+
+def twin_pairs(side: str, ids: set[str] | None = None) -> list[dict[str, str]]:
+    """The SDK/server pairs that touch `ids` of this tool's map (all when None)."""
+    sdk = read_twin_links("S") or {}
+    pairs = []
+    for sdk_id, row in sdk.items():
+        for server_id in row["links"]:
+            mine = sdk_id if side == "S" else server_id
+            if ids is None or mine in ids:
+                pairs.append({"sdk": sdk_id, "server": server_id})
+    return pairs
+
+
+def cmd_map_links(args: argparse.Namespace) -> dict[str, Any]:
+    ids = (
+        {row["id"] for row in collect_ids(family_files(args.file))}
+        if args.file
+        else None
+    )
+    if args.id:
+        ids = (ids or set()) | set(args.id)
+    pairs = twin_pairs("F", ids)
+    return {"ok": True, "count": len(pairs), "pairs": pairs}
+
+
 def cmd_map_check(args: argparse.Namespace) -> dict[str, Any]:
     files = family_files(args.file)
     routes = None if args.no_routes else route_templates()
@@ -4088,6 +4221,9 @@ def cmd_map_check(args: argparse.Namespace) -> dict[str, Any]:
                 f"duplicate ID {row['id']} (also in {seen[row['id']]})"
             )
         seen[row["id"]] = row["file"]
+    checked = {row["id"] for row in collect_ids(files)} if args.file else None
+    for name, found in twin_link_problems("F", checked).items():
+        problems.setdefault(name, []).extend(found)
     counts: dict[str, int] = {}
     for row in all_ids:
         counts[row["file"]] = counts.get(row["file"], 0) + 1
@@ -6450,6 +6586,16 @@ reported and not executed. Transcripts are saved under <run>/evidence/map-run/."
     )
     mi.set_defaults(func=cmd_map_ids)
     mi.add_argument("--file")
+    ml = mp_sub.add_parser(
+        "links",
+        help="SDK/agent-server twin pairs (`Same promise:` and `Server:` links)",
+        formatter_class=Formatter,
+        epilog=f"Examples:\n  {CLI} map links\n  {CLI} map links --file F05\n"
+        f"  {CLI} map links --id F05.pause-idle",
+    )
+    ml.set_defaults(func=cmd_map_links)
+    ml.add_argument("--file")
+    ml.add_argument("--id", action="append", help="a sub-feature ID (repeatable)")
     mr = mp_sub.add_parser(
         "routes",
         help="every HTTP and WebSocket route of the app",

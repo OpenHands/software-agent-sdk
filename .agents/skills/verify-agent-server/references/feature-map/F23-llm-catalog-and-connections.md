@@ -28,8 +28,8 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 
 ## Sub-features
 
-- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure; `ACPClient.discoverModels` exposes the same structured errors and rejects unauthorized calls.
-- `F23.acp-discovery-live`: the real Claude Code ACP adapter reports its default and offered models through REST and TypeScript `ACPClient.discoverModels`; a repeated request and `refresh: true` return the same catalog without persisting any conversation or probe directory.
+- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure; `ACPClient.discoverModels` exposes the same structured errors and rejects unauthorized calls. Same promise: `S21.model-discovery`.
+- `F23.acp-discovery-live`: the real Claude Code ACP adapter reports its default and offered models through REST and TypeScript `ACPClient.discoverModels`; a repeated request and `refresh: true` return the same catalog without persisting any conversation or probe directory. Same promise: `S21.model-discovery`.
 - `F23.auth-required`: all seven routes answer 401 `{"detail": "Unauthorized"}` without a valid `X-Session-API-Key`, and nothing is created.
 - `F23.providers`: `GET /api/llm/providers` returns LiteLLM's provider names, sorted and unique, including `deepseek`, `openai` and `anthropic`.
 - `F23.models`: `GET /api/llm/models` returns every LiteLLM model, sorted and unique, with no `bedrock`-prefixed id, including `deepseek/deepseek-flash`.
@@ -42,7 +42,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - `F23.no-cipher`: on a server with neither `OH_SECRET_KEY` nor a session key (no cipher), a connection's key is stored in plaintext in the `600` file, the list still never returns it, and activating a linked profile applies it.
 - `F23.conn-create-validation`: a missing or empty `api_key` or `display_name`, an empty `provider`, a 129-character `display_name`, and any extra field (`extra_headers`, a client-chosen `id`) are 422 and create nothing.
 - `F23.conn-create-blank-key`: a whitespace-only or redacted-placeholder (`**********`) `api_key` is refused like an empty one instead of creating a keyless connection.
-- `F23.linked-run`: a profile saved with `provider_connection_id` stores no inline key; activating it writes the connection's key into `agent_settings.llm`, and a conversation started from those settings runs on the connection's DeepSeek key and finishes.
+- `F23.linked-run`: a profile saved with `provider_connection_id` stores no inline key; activating it writes the connection's key into `agent_settings.llm`, and a conversation started from those settings runs on the connection's DeepSeek key and finishes. Same promise: `S03.provider-connections`.
 - `F23.conn-update`: `PATCH` renames a connection and sets or clears (`null`) its `base_url`, keeping `id`, `created_at` and the key; the list shows the change, and the next activation of a linked profile applies the connection's `base_url` (and clears it).
 - `F23.conn-update-validation`: an empty body, `api_key: null` ("cannot be cleared"), a `null` `display_name` or `provider`, an empty `display_name` and extra fields are 422, an unknown id is 404, and none of them changes the stored connections.
 - `F23.conn-patch-blank-key`: a `PATCH` whose `api_key` is empty, whitespace-only or the redacted placeholder never replaces the stored key: the next activation of a linked profile still applies the previous key.

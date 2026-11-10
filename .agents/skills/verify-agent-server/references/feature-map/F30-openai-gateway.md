@@ -28,7 +28,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
 - `F30.chat-basic`: `POST /v1/chat/completions` on a real model returns a `chat.completion` whose single choice carries the agent's final answer with `finish_reason` `stop`, echoes the model, reports usage, and names a new finished conversation in `X-OpenHands-ServerConversation-ID`.
 - `F30.inner-gateway-run`: the inner gateway route runs a new user turn on an existing conversation and returns its final text and token use.
 - `F30.active-agent-profile`: new gateway conversations keep the active Agent Profile's identity, tools and system suffix, override its LLM only for the launch, append gateway instructions without changing the stored profile, reject oversized instructions with 400, and fall back to default after active-profile deletion.
-- `F30.chat-system-suffix`: `system` and `developer` messages become the new conversation's `agent_context.system_message_suffix` (in the system prompt) and never appear as user messages.
+- `F30.chat-system-suffix`: `system` and `developer` messages become the new conversation's `agent_context.system_message_suffix` (in the system prompt) and never appear as user messages. Same promise: `S06.context-suffixes`.
 - `F30.chat-latest-user-only`: a new conversation receives only the last user message of `messages[]`; earlier user and assistant turns are dropped and stored nowhere.
 - `F30.chat-stream`: `stream: true` answers `text/event-stream` with the conversation header and the frames role, whole content, `finish_reason` `stop`, usage (only with `stream_options.include_usage`) and `[DONE]`; a failing streaming request is a plain JSON error, not an SSE frame.
 - `F30.chat-reuse-header`: sending `X-OpenHands-ServerConversation-ID` back appends the new user message to that conversation, reruns it (live on its events socket) and returns the same id.
@@ -39,7 +39,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
 - `F30.chat-reuse-concurrent`: two overlapping requests on one conversation each get the answer to their own turn (reproduces a real bug: the first request returns the second request's answer).
 - `F30.chat-agent-tools`: the agent runs its own tools in the server workspace (a file appears there), the answer carries no `tool_calls`, and the client's `tools`/`tool_choice` are ignored.
 - `F30.chat-input-errors`: bad chat input fails before any conversation exists: 400 without a user message or with a bad content part, 404 for a model without the `openhands_` prefix or an unknown profile, 400 for an invalid profile name, 422 for schema errors.
-- `F30.observability-headers`: `X-OpenHands-Observability-*` headers are stored on the new conversation (chat and responses); invalid values are 422 before anything runs.
+- `F30.observability-headers`: `X-OpenHands-Observability-*` headers are stored on the new conversation (chat and responses); invalid values are 422 before anything runs. Same promise: `S20.automation-headers`.
 - `F30.chat-run-error-500`: a run that ends in `error` answers 500 with the rewritten body (`exception` `500: Agent run ended with status: error`), without the conversation header, and leaves the conversation in `error`.
 - `F30.chat-confirmation-409`: with confirmation mode saved in the settings, a new conversation that stops `waiting_for_confirmation` answers 409 at once.
 - `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` also answers 409 within seconds, like a new one.

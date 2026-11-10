@@ -23,33 +23,33 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
 
 ## Sub-features
 
-- `F05.run-queued`: a message appended with `run: false` leaves the conversation `idle`; `POST /run` returns 200 at once and the agent runs on DeepSeek flash through `running` to `finished`, both transitions pushed on the events socket.
-- `F05.run-finished-noop`: `POST /run` on a `finished` conversation without new input returns 200 and the run ends at once: no `execution_status` change on the socket, still `finished`, no new events (no model call).
-- `F05.run-new-input`: a new user message moves a `finished` conversation back to `idle`, and `POST /run` runs it to `finished` again.
-- `F05.pause-idle`: pausing an idle conversation returns 200, reports `paused` on GET, the status search and count and the events socket, and persists one `PauseEvent`.
-- `F05.pause-repeat`: pausing a `paused` conversation again returns 200 and adds no second `PauseEvent`.
-- `F05.run-resume-paused`: `POST /run` resumes a `paused` conversation through `running` to `finished`.
-- `F05.interrupt-idle`: interrupt with nothing running falls back to pause: `paused`, one `PauseEvent`, no `InterruptEvent`.
-- `F05.run-error`: a run whose model provider is unreachable ends in `error` with a `ConversationErrorEvent` (also pushed on the events socket) and is listed by `status=error`.
+- `F05.run-queued`: a message appended with `run: false` leaves the conversation `idle`; `POST /run` returns 200 at once and the agent runs on DeepSeek flash through `running` to `finished`, both transitions pushed on the events socket. Same promise: `S01.run-to-finish`.
+- `F05.run-finished-noop`: `POST /run` on a `finished` conversation without new input returns 200 and the run ends at once: no `execution_status` change on the socket, still `finished`, no new events (no model call). Same promise: `S01.run-to-finish`.
+- `F05.run-new-input`: a new user message moves a `finished` conversation back to `idle`, and `POST /run` runs it to `finished` again. Same promise: `S01.run-to-finish`.
+- `F05.pause-idle`: pausing an idle conversation returns 200, reports `paused` on GET, the status search and count and the events socket, and persists one `PauseEvent`. Same promise: `S04.pause`.
+- `F05.pause-repeat`: pausing a `paused` conversation again returns 200 and adds no second `PauseEvent`. Same promise: `S04.pause`.
+- `F05.run-resume-paused`: `POST /run` resumes a `paused` conversation through `running` to `finished`. Same promise: `S04.pause`.
+- `F05.interrupt-idle`: interrupt with nothing running falls back to pause: `paused`, one `PauseEvent`, no `InterruptEvent`. Same promise: `S04.arun-interrupt`.
+- `F05.run-error`: a run whose model provider is unreachable ends in `error` with a `ConversationErrorEvent` (also pushed on the events socket) and is listed by `status=error`. Same promise: `S04.run-error`.
 - `F05.pause-terminal`: pause and interrupt on a `finished` or `error` conversation return 200 and change neither the status nor the event log.
 - `F05.run-error-responsive`: a run that fails does not stall the server: other requests keep answering while the error is handled.
 - `F05.unknown-id-run`: `POST /run` on an unknown id returns 404.
 - `F05.unknown-id-pause`: `POST /pause` and `POST /interrupt` on an unknown id return the documented 404.
 - `F05.control-errors`: all three routes answer 401 without or with a wrong session key and 422 for a malformed id, and the idle conversation they targeted is untouched (still `idle`, no `PauseEvent`).
 - `F05.run-conflict`: `POST /run` while a run is active returns 409 `Conversation already running...`, and the active run keeps going without a second model call.
-- `F05.pause-running`: pause during a long model call returns 200 at once; the events socket, status search and event log say `paused`, and `/run` stays 409 while the step is still in flight.
+- `F05.pause-running`: pause during a long model call returns 200 at once; the events socket, status search and event log say `paused`, and `/run` stays 409 while the step is still in flight. Same promise: `S04.pause`.
 - `F05.pause-running-get`: after a pause during a long model call, `GET /api/conversations/{id}` and `base_state.json` report `paused` like every other view.
 - `F05.pause-running-release`: interrupting a paused conversation whose step is still in flight cancels it (`InterruptEvent`), GET catches up to `paused`, and the run slot is free again (a create that needs the slot succeeds).
-- `F05.interrupt-running`: interrupt cancels a hanging model call well within the server's 5 s wait: 200, `paused`, an `InterruptEvent` and no `PauseEvent`, pushed on the events socket.
-- `F05.run-after-interrupt`: after an interrupt, `POST /run` is accepted at once and the resumed run reaches `finished`.
-- `F05.pause-tool-step`: pause while a tool call runs lets that step finish (its observation is recorded), then stops the loop before the next model call: `paused`, one `PauseEvent`, one model request.
-- `F05.interrupt-tool-call`: interrupt while a tool call runs returns at once: `paused`, an `InterruptEvent`, an `AgentErrorEvent` for the unfinished call (same `tool_call_id`) and no observation; the resumed run sends that error to the model as the tool result and finishes.
+- `F05.interrupt-running`: interrupt cancels a hanging model call well within the server's 5 s wait: 200, `paused`, an `InterruptEvent` and no `PauseEvent`, pushed on the events socket. Same promise: `S04.arun-interrupt`.
+- `F05.run-after-interrupt`: after an interrupt, `POST /run` is accepted at once and the resumed run reaches `finished`. Same promise: `S04.arun-interrupt`.
+- `F05.pause-tool-step`: pause while a tool call runs lets that step finish (its observation is recorded), then stops the loop before the next model call: `paused`, one `PauseEvent`, one model request. Same promise: `S04.pause`.
+- `F05.interrupt-tool-call`: interrupt while a tool call runs returns at once: `paused`, an `InterruptEvent`, an `AgentErrorEvent` for the unfinished call (same `tool_call_id`) and no observation; the resumed run sends that error to the model as the tool result and finishes. Same promise: `S04.cancel-token`.
 - `F05.run-capacity`: with `max_concurrent_runs` 1, `POST /run` on a second conversation returns 429 while the first holds the slot, leaves it `idle`, and succeeds once the first is interrupted.
-- `F05.stuck-detected`: with `stuck_detection` on (the default), a run whose model repeats the same tool call ends `stuck` after four identical action/observation pairs (four model calls), with no `ConversationErrorEvent`; GET, `status=stuck` search and count and the events socket say `stuck`.
-- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call. The SDK reports the same behavior as a known failure ([#6648](https://github.com/OpenHands/software-agent-sdk/issues/6648), `S01.stuck-recover`): if that is fixed, this bullet changes with it.
-- `F05.stuck-new-input`: a new user message moves a `stuck` conversation to `idle`, and `POST /run` runs it again to `finished`.
-- `F05.max-iterations-stop`: a conversation created with `max_iterations: 6` and `stuck_detection: false` whose model never finishes makes exactly six model calls (past the stuck threshold) and ends `error` with exactly one `ConversationErrorEvent` `code: MaxIterationsReached` naming the limit, on REST and the events socket, never `stuck`.
-- `F05.max-iterations-resume`: `POST /run` after `MaxIterationsReached` is accepted and gets a fresh budget of six model calls (a second `MaxIterationsReached`), and once the model calls `finish` the next run ends `finished`.
+- `F05.stuck-detected`: with `stuck_detection` on (the default), a run whose model repeats the same tool call ends `stuck` after four identical action/observation pairs (four model calls), with no `ConversationErrorEvent`; GET, `status=stuck` search and count and the events socket say `stuck`. Same promise: `S01.stuck-detect`.
+- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call. The SDK reports the same behavior as a known failure ([#6648](https://github.com/OpenHands/software-agent-sdk/issues/6648), `S01.stuck-recover`): if that is fixed, this bullet changes with it. Same promise: `S01.stuck-recover`.
+- `F05.stuck-new-input`: a new user message moves a `stuck` conversation to `idle`, and `POST /run` runs it again to `finished`. Same promise: `S01.stuck-recover`.
+- `F05.max-iterations-stop`: a conversation created with `max_iterations: 6` and `stuck_detection: false` whose model never finishes makes exactly six model calls (past the stuck threshold) and ends `error` with exactly one `ConversationErrorEvent` `code: MaxIterationsReached` naming the limit, on REST and the events socket, never `stuck`. Same promise: `S01.max-iterations`.
+- `F05.max-iterations-resume`: `POST /run` after `MaxIterationsReached` is accepted and gets a fresh budget of six model calls (a second `MaxIterationsReached`), and once the model calls `finish` the next run ends `finished`. Same promise: `S01.max-iterations`.
 - `F05.restart-running-graceful`: a conversation running at a graceful restart comes back `paused`, with a `PauseEvent` and an `InterruptEvent`.
 - `F05.restart-keeps-status`: `finished`, `paused` and `error` statuses survive a restart unchanged.
 - `F05.restart-hard-running`: a conversation running when the server is SIGKILLed comes back `error` on the next start, and `/run` resumes it.

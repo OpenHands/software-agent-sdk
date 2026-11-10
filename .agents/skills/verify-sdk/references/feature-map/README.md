@@ -30,6 +30,10 @@ Every sub-feature bullet ends with three links:
   b01-b05 behavior, c01-c05 condenser, a01-a08 API compliance), which run
   only on labels or dispatch.
 
+A bullet whose promise the agent server also keeps ends with a fourth link,
+`Server:`, naming its twins in the agent-server map (see
+[Twin links](#twin-links-with-the-agent-server-map)).
+
 So a row with a `Unit:` link is checked on every PR, and a row with only an
 `Example:` or `Real-LLM:` link is checked only when someone adds a label. The
 map's own recipes are a third, independent proof: programs that use the SDK
@@ -66,6 +70,33 @@ gone, or a `control-sdk` call does not parse or names a missing program.
 
 Bullets that need Docker, Apptainer, a cloud account, a Kubernetes cluster or
 an interactive login are labeled **blocked**.
+
+## Twin links with the agent-server map
+
+Many SDK promises are also kept by the agent server: a server conversation
+runs the same `LocalConversation`, and the SDK's `RemoteWorkspace` and
+`RemoteConversation` drive the server from a Python program. When an
+agent-server bullet proves the same promise through the server (a route, a
+socket, or the SDK's remote client in F33), the two bullets are twins and
+link each other at the end of their lines:
+
+- here: `` Server: `F05.pause-idle`, `F33.conversation-pause`. ``
+- there: `` Same promise: `S04.pause`. ``
+
+A twin is the same promise seen from another surface, not a related feature:
+link only when a pass that drives both bullets would expect the same answer.
+One SDK bullet may have several twins and one server bullet may serve several
+SDK bullets. A bullet that runs inside the server but that no agent-server
+bullet drives has no link; a bullet that only exists in-process (local
+workspaces, visualizers, logging, LLM internals) has none either.
+
+`sdk-map check` and `control-agent-server map check` both validate the links
+in both directions: every named ID exists in the other map and names this
+bullet back, and the link ends the line in exactly that form. `sdk-map links
+[--file Snn] [--id Snn.x]` lists the pairs; a daily pass uses it to drive the
+twins of the bullets a change touched (see [daily.md](../daily.md)). When a
+pass adds, splits, renames or removes a linked bullet, it updates the twin's
+link in the same commit.
 
 ## Families
 

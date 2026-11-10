@@ -7,7 +7,8 @@ description: >
   of what the OpenHands SDK does in-process (agent loop, LLMs, conversations,
   events, condensers, skills, plugins, MCP, hooks, sub-agents, critic,
   security, tools, workspaces, settings, observability, ACP), the control-sdk
-  driver its recipes use, and sdk-map (check, owners, baseline, run, report).
+  driver its recipes use, and sdk-map (check, links, owners, baseline, run,
+  report).
 triggers:
 - /verify-sdk
 - sdk feature map
@@ -44,8 +45,9 @@ when a model is called; without it they exit 3 and report `blocked`.
 ## Doctor
 
 `sdk-map check` is the read-only health check: it validates the map's
-structure and IDs, the index counts, the baseline line, and that every path
-the map cites still exists. Run it first and whenever a recipe surprises you.
+structure and IDs, the index counts, the baseline line, that every path
+the map cites still exists, and that every `Server:` link to the agent-server
+map names a bullet that links back (`sdk-map links` lists the pairs). Run it first and whenever a recipe surprises you.
 For the environment, `uv run python -c "import openhands.sdk, openhands.tools,
 openhands.workspace"` must succeed.
 

@@ -38,13 +38,13 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.batch-get`: `GET .../events` with a JSON array of ids as the body returns those events in request order; no body is a 422.
 - `F06.not-found-auth`: every event route returns 404 for an unknown conversation, 422 for a malformed conversation id and 401 without a valid session key.
 - `F06.send-validation`: a missing body, a message with an unknown role, string content or an unknown content type is rejected with 422 and nothing is appended.
-- `F06.send-image`: a message with a text part and an `image` part (a `data:` URL) is persisted with its `image_urls` intact and returned the same by search, get-one and the socket replay; an `image` part without `image_urls` is a 422 and appends nothing.
+- `F06.send-image`: a message with a text part and an `image` part (a `data:` URL) is persisted with its `image_urls` intact and returned the same by search, get-one and the socket replay; an `image` part without `image_urls` is a 422 and appends nothing. Same promise: `S01.image-input`.
 - `F06.send-non-user-role`: a message with a schema-valid non-user role (`assistant`) is rejected as a client error (4xx), not a 500, and leaves no event behind (not even the system prompt of an empty log).
 - `F06.send-run`: `POST .../events` with `run: true` drives a real agent turn to `finished`, persisting the kinds of a normal run (user message, `execution_status` running and finished, `ActionEvent`/`ObservationEvent` pairs, `stats`).
 - `F06.ws-live`: a socket opened before the run receives each durable event live, durable frame IDs match the persisted log, and a transient closing `full_state` snapshot follows the run.
-- `F06.ws-streaming-deltas`: a streamed real-model reply emits transient `StreamingDeltaEvent` frames live; REST history and socket replay omit them.
+- `F06.ws-streaming-deltas`: a streamed real-model reply emits transient `StreamingDeltaEvent` frames live; REST history and socket replay omit them. Same promise: `S02.streaming`, `S05.streaming-delta`.
 - `F06.search-timestamp-order`: after a tool-using run, `sort_order=TIMESTAMP` lists events in timestamp order, so a `timestamp__gte` or `resend_mode=since` cut at a listed event keeps every event listed after it.
-- `F06.send-resets-finished`: a message appended to a `finished` conversation sets it back to `idle` with a persisted `execution_status` update.
+- `F06.send-resets-finished`: a message appended to a `finished` conversation sets it back to `idle` with a persisted `execution_status` update. Same promise: `S01.run-to-finish`.
 - `F06.ws-snapshot`: the first frame after authentication is a transient `full_state` `ConversationStateUpdateEvent` that never appears in search; without `resend_mode` nothing else is replayed.
 - `F06.ws-handshake`: the socket accepts first-frame, deprecated query and deprecated header keys; a wrong first-frame key, a first frame that is not an auth frame, or no auth frame within 10 s closes with 4001, a wrong deprecated query or header key is refused at the upgrade (HTTP 403), and an unknown conversation closes with 4004.
 - `F06.ws-delete-close`: deleting a conversation closes the sockets that follow it.
@@ -52,9 +52,9 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.ws-replay-since`: `resend_mode=since` with `after_timestamp` replays exactly the events at or after that timestamp; without `after_timestamp` it replays nothing.
 - `F06.ws-bad-frame`: an invalid inbound frame returns a `ServerErrorEvent` (`ValidationError`, `AssertionError`, `JSONDecodeError` for text that is not JSON), appends nothing and leaves the socket open; a redundant auth frame is ignored.
 - `F06.ws-send`: a user message frame sent on the socket is persisted and runs the agent to `finished`, streaming the run on the same socket.
-- `F06.restart-persist`: event ids, order and count survive a server restart, the socket replays the same log, and new messages append after it.
+- `F06.restart-persist`: event ids, order and count survive a server restart, the socket replays the same log, and new messages append after it. Same promise: `S04.resume`.
 - `F06.send-run-limit`: with every run slot taken, `POST .../events` with `run: true` returns 429 `Message saved...` and the message is persisted; a socket send gets a `ConversationRunLimitExceeded` `ServerErrorEvent`.
-- `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run.
+- `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run. Same promise: `S01.message-while-running`.
 
 ## How to get to it (agent POV)
 

@@ -24,7 +24,7 @@ Routes: none
 - `F31.lease-renewed`: while the server lives, the lease's `expires_at` moves forward within 15 s, with the same owner and generation.
 - `F31.lease-released-graceful`: a graceful restart deletes the lease of every loaded conversation, catalog reads do not claim it again, and the next load claims generation 1 under the new pid.
 - `F31.lease-dead-owner-takeover`: after a SIGKILL the lease still names the dead pid; the restarted server takes it over on first load with generation 2 and logs the takeover.
-- `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` answering the interrupted call and no observation, and the resumed run hands that error to the model.
+- `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` answering the interrupted call and no observation, and the resumed run hands that error to the model. Same promise: `S05.unmatched-actions`.
 - `F31.state-survives-restarts`: a conversation's title, tags and events, the settings, a stored secret and the LLM profiles read back unchanged after a graceful restart and after a SIGKILL.
 - `F31.no-plaintext-at-rest`: after a real model run, the provider key, a stored secret and a conversation secret appear nowhere in the run's persisted files or the server log, while the server still hands out the provider key and the stored secret and keeps the conversation secret encrypted in its registry.
 - `F31.second-instance-catalog`: a second server sharing the conversations directory lists, counts and reads conversations that existed when it started, without claiming their leases.

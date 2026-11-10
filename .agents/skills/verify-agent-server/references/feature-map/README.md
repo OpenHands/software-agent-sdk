@@ -61,6 +61,29 @@ sections in this order: `Sub-features`, `How to get to it (agent POV)`,
 How to write and prove new entries: [../mapping.md](../mapping.md). How to keep
 them honest: [../maintenance.md](../maintenance.md).
 
+## Twin links with the SDK map
+
+The in-process SDK map
+([`verify-sdk`](../../../verify-sdk/references/feature-map/README.md))
+proves many of the same promises without a server: a server conversation runs
+the SDK's `LocalConversation`, and family F33 drives the server through the
+SDK's own remote client. When a bullet here proves the same promise as an SDK
+bullet, the two are twins and link each other at the end of their lines:
+
+- here: `` Same promise: `S04.pause`. ``
+- there: `` Server: `F05.pause-idle`, `F33.conversation-pause`. ``
+
+Link only the same promise (a pass driving both bullets expects the same
+answer), not a related feature. Server-only contract (status codes, auth,
+stores, sockets, webhooks) has no twin. `map check` (and `sdk-map check`)
+validate both directions: every named ID exists in the other map and links
+back. `map links [--file Fnn] [--id Fnn.x]` lists the pairs. Twins that
+disagree, one passing and the other failing, usually point at the seam
+between the SDK and the server (serialization, the async path, persistence,
+restart). When a pass adds, splits, renames or removes a linked bullet, it
+updates the twin's link in the same commit; see
+[mapping.md](../mapping.md#3-write-each-entry).
+
 ## Families
 
 | ID | Family | What it covers | Entry points | Needs | Sub-features |
