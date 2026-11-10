@@ -242,6 +242,19 @@ export class ProjectsClient {
     return response.data;
   }
 
+  /**
+   * Resolve a member conversation for the person (`resolved=user`). Idempotent.
+   * Use this rather than a tag PATCH: the server owns the board tags.
+   */
+  async resolveConversation(projectId: string, conversationId: string): Promise<void> {
+    await this.client.post(conversationPath(projectId, conversationId, '/resolve'));
+  }
+
+  /** Reopen a resolved member conversation. Idempotent. */
+  async reopenConversation(projectId: string, conversationId: string): Promise<void> {
+    await this.client.post(conversationPath(projectId, conversationId, '/reopen'));
+  }
+
   /** A member's latest messages and `finish` texts, oldest first. */
   async readConversation(
     projectId: string,

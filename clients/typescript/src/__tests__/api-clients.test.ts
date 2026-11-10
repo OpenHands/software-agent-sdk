@@ -2437,6 +2437,8 @@ describe('Auxiliary API clients', () => {
       () => json({ project_id: 'p-1', coordinator: null, conversations: [] }),
       () => new Response(null, { status: 204 }),
       () => json({ conversation_id: 'c-2', messages: [] }),
+      () => new Response(null, { status: 204 }),
+      () => new Response(null, { status: 204 }),
       () => json({ deleted: true }),
       () => json({ artifacts: [artifact] }),
       () => json(artifact, 201),
@@ -2464,6 +2466,8 @@ describe('Auxiliary API clients', () => {
     });
     await expect(client.addConversation('p-1', 'c-2')).resolves.toBeUndefined();
     await client.readConversation('p-1', 'c-2', { limit: 5 });
+    await expect(client.resolveConversation('p-1', 'c-2')).resolves.toBeUndefined();
+    await expect(client.reopenConversation('p-1', 'c-2')).resolves.toBeUndefined();
     await client.removeConversation('p-1', 'c-2');
     await expect(client.listArtifacts('p-1')).resolves.toEqual([artifact]);
     await client.uploadArtifact('p-1', new File(['hello'], 'notes.md'));
@@ -2484,6 +2488,8 @@ describe('Auxiliary API clients', () => {
       'GET http://example.com/api/projects/p-1/conversations',
       'PUT http://example.com/api/projects/p-1/conversations/c-2',
       'GET http://example.com/api/projects/p-1/conversations/c-2/messages?limit=5',
+      'POST http://example.com/api/projects/p-1/conversations/c-2/resolve',
+      'POST http://example.com/api/projects/p-1/conversations/c-2/reopen',
       'DELETE http://example.com/api/projects/p-1/conversations/c-2',
       'GET http://example.com/api/projects/p-1/artifacts',
       'POST http://example.com/api/projects/p-1/artifacts',
@@ -2493,9 +2499,9 @@ describe('Auxiliary API clients', () => {
       'DELETE http://example.com/api/projects/p-1/memory/topic.md?base_revision=r2',
     ]);
     expect(JSON.parse(calls[1][2])).toEqual({ name: 'Launch', coordinator: { working_dir: '/w' } });
-    expect(calls[8][2]).toBeInstanceOf(FormData);
-    expect((calls[8][2] as FormData).get('file')).toBeInstanceOf(File);
-    expect(JSON.parse(calls[11][2])).toEqual({ content: '- a\n', base_revision: 'r1' });
+    expect(calls[10][2]).toBeInstanceOf(FormData);
+    expect((calls[10][2] as FormData).get('file')).toBeInstanceOf(File);
+    expect(JSON.parse(calls[13][2])).toEqual({ content: '- a\n', base_revision: 'r1' });
     expect(projectIdKey('AB-CD')).toBe('abcd');
   });
 
