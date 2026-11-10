@@ -187,6 +187,14 @@ const tools = await manager.tools.listTools();
 const acpCount = await manager.acp.countConversations();
 ```
 
+### Loading hooks with diagnostics
+
+Use `RemoteConversation.loadHooksWithErrors()` or `HooksClient.loadHooks()` to
+inspect both `hook_config` and `errors`. If one hooks file cannot be loaded, the
+server can still return hooks from the other source. Check the diagnostics
+before applying that configuration and decide how to handle any errors. Older
+agent servers may omit `errors`.
+
 ### Updating MCP settings
 
 Persisted MCP servers use their settings-map key as stable identity. Create,

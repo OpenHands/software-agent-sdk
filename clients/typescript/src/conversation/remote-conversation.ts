@@ -37,6 +37,7 @@ import {
 import { IConversation, BaseConversationOptions } from './base';
 import { Success } from '../types/base';
 import type { HookConfig } from '../hooks';
+import type { HooksResponse } from '../models/api';
 
 /**
  * Options for creating a RemoteConversation instance.
@@ -219,17 +220,25 @@ export class RemoteConversation implements IConversation {
   /**
    * Load hooks configuration from the server workspace.
    *
-   * This calls the server's hooks endpoint to read `.openhands/hooks.json`
-   * from the project directory.
+   * Use loadHooksWithErrors to inspect per-source load failures before
+   * applying the hook configuration.
    *
    * @param projectDir - Optional project directory path. Defaults to the workspace working dir.
-   * @returns The hook configuration, or null if no hooks are configured.
+   * @returns The hook configuration, or null if no hooks were loaded.
    */
   async loadHooks(projectDir?: string): Promise<HookConfig | null> {
-    const response = await this.client.post<{ hook_config: HookConfig | null }>('/api/hooks', {
+    return (await this.loadHooksWithErrors(projectDir)).hook_config ?? null;
+  }
+
+  /**
+   * Load the available project and user hooks together with any source errors.
+   * Older agent servers may omit the errors field.
+   */
+  async loadHooksWithErrors(projectDir?: string): Promise<HooksResponse> {
+    const response = await this.client.post<HooksResponse>('/api/hooks', {
       project_dir: projectDir ?? this.workspace.workingDir,
     });
-    return response.data.hook_config;
+    return response.data;
   }
 
   /**

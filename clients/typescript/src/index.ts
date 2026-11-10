@@ -420,6 +420,7 @@ export type {
   FileSearchSubdirsOptions,
   HooksRequest,
   HooksResponse,
+  HooksSourceError,
   StdioMCPServerSpec,
   RemoteMCPServerType,
   RemoteMCPServerSpec,
