@@ -476,8 +476,8 @@ elif mode == "interactive":
     out["repl"] = session(
         [
             term("python3"),
-            term("print(6 * 7)"),
-            term("exit()"),
+            term("print(6 * 7)", is_input=True),
+            term("exit()", is_input=True),
             term("echo back-in-shell"),
         ]
     )

@@ -101,7 +101,7 @@ Preconditions:
     --check ask_prompt_tokens_delta eq 100 \
     --check ask_cost_delta eq 0.05 --check ask_warnings len-eq 0 --check ask_seconds lt 1.5
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): the fork's cost is lost and every `ask_agent` call stalls. The client bridge (`_OpenHandsACPBridge.session_update`) routes every update for the fork session to the fork branch, which keeps only message chunks and `return`s before the `UsageUpdate` branch. As a result:
+  Known failure (reproduced 2026-10-13, [#6646](https://github.com/OpenHands/software-agent-sdk/issues/6646)): the fork's cost is lost and every `ask_agent` call stalls. The client bridge (`_OpenHandsACPBridge.session_update`) routes every update for the fork session to the fork branch, which keeps only message chunks and `return`s before the `UsageUpdate` branch. As a result:
   - `ask_agent` waits the full `ACP_USAGE_UPDATE_TIMEOUT` and logs `UsageUpdate not received within 2.0s for fork session ...`.
   - It records no cost: `ask_cost_delta` is 0.0, `ask_seconds` is 2.01, and `ask_warnings` holds that line.
   - Token usage from the prompt response is still recorded.
@@ -156,7 +156,7 @@ Preconditions:
     --check cases.hang.prompts_sent eq 1 --check cases.hang.cancel_sent eq 1 --check cases.hang.status eq error \
     --check cases.hang.seconds lt 5
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
+  Known failure (reproduced 2026-10-13, [#6645](https://github.com/OpenHands/software-agent-sdk/issues/6645)): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
 - **Cancel a running turn (`S21.cancel-pause`).** `arun()` runs as a task. The server starts a long tool call and waits, and the program cancels the task. Then it runs another turn.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

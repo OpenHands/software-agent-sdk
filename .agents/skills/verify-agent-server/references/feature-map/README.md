@@ -8,7 +8,7 @@ consumers). Read this
 index before driving the server, then use the matching family file as the
 recipe.
 
-Maintenance baseline: main@4db1ad742ad143ddc3411631f04efb70323f40f9 (2026-11-09). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@79844cebdce44ac4b27dcd2929436cb6c363174a (2026-11-10). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
 The map has **954 sub-features**.
 
