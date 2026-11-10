@@ -32,6 +32,8 @@ import {
   MetaProfilesClient,
   PluginsClient,
   ProfilesClient,
+  ProjectsClient,
+  projectIdKey,
   ServerClient,
   SettingsClient,
   SharedClient,
@@ -2396,6 +2398,105 @@ describe('Auxiliary API clients', () => {
       removed: true,
     });
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
+  });
+
+  it('ProjectsClient covers projects, membership, artifacts and memory', async () => {
+    const project = {
+      id: 'p-1',
+      name: 'Launch',
+      description: '',
+      coordinator_conversation_id: 'c-1',
+      worker_agent_profile_id: null,
+      created_at: '2026-11-10T00:00:00Z',
+      updated_at: '2026-11-10T00:00:00Z',
+    };
+    const artifact = {
+      name: 'notes.md',
+      size: 5,
+      source: 'user',
+      conversation_id: null,
+      created_at: '2026-11-10T00:00:00Z',
+      updated_at: '2026-11-10T00:00:00Z',
+    };
+    const memory = {
+      name: 'MEMORY.md',
+      size: 4,
+      revision: 'r2',
+      updated_at: '2026-11-10T00:00:00Z',
+      content: '- a\n',
+    };
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      });
+    const responses: Array<() => Response> = [
+      () => json({ projects: [project] }),
+      () => json(project, 201),
+      () => json({ ...project, name: 'Renamed' }),
+      () => json({ project_id: 'p-1', coordinator: null, conversations: [] }),
+      () => new Response(null, { status: 204 }),
+      () => json({ conversation_id: 'c-2', messages: [] }),
+      () => json({ deleted: true }),
+      () => json({ artifacts: [artifact] }),
+      () => json(artifact, 201),
+      () =>
+        new Response('hello', {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        }),
+      () => json({ files: [memory] }),
+      () => json(memory),
+      () => json({ deleted: true }),
+    ];
+    global.fetch = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(responses.shift()!())) as typeof fetch;
+
+    const client = new ProjectsClient({ host: 'http://example.com/' });
+    await expect(client.listProjects()).resolves.toEqual([project]);
+    await client.createProject({ name: 'Launch', coordinator: { working_dir: '/w' } });
+    await client.updateProject('p-1', { name: 'Renamed' });
+    await expect(client.listConversations('p-1')).resolves.toEqual({
+      project_id: 'p-1',
+      coordinator: null,
+      conversations: [],
+    });
+    await expect(client.addConversation('p-1', 'c-2')).resolves.toBeUndefined();
+    await client.readConversation('p-1', 'c-2', { limit: 5 });
+    await client.removeConversation('p-1', 'c-2');
+    await expect(client.listArtifacts('p-1')).resolves.toEqual([artifact]);
+    await client.uploadArtifact('p-1', new File(['hello'], 'notes.md'));
+    await expect(client.readArtifactText('p-1', 'my notes.md')).resolves.toBe('hello');
+    await expect(client.listMemory('p-1')).resolves.toEqual([memory]);
+    await client.writeMemory('p-1', 'MEMORY.md', '- a\n', { baseRevision: 'r1' });
+    await client.deleteMemory('p-1', 'topic.md', { baseRevision: 'r2' });
+
+    const calls = (global.fetch as Mock).mock.calls.map(([url, init]) => [
+      init.method,
+      url,
+      init.body,
+    ]);
+    expect(calls.map(([method, url]) => `${method} ${url}`)).toEqual([
+      'GET http://example.com/api/projects',
+      'POST http://example.com/api/projects',
+      'PATCH http://example.com/api/projects/p-1',
+      'GET http://example.com/api/projects/p-1/conversations',
+      'PUT http://example.com/api/projects/p-1/conversations/c-2',
+      'GET http://example.com/api/projects/p-1/conversations/c-2/messages?limit=5',
+      'DELETE http://example.com/api/projects/p-1/conversations/c-2',
+      'GET http://example.com/api/projects/p-1/artifacts',
+      'POST http://example.com/api/projects/p-1/artifacts',
+      'GET http://example.com/api/projects/p-1/artifacts/my%20notes.md',
+      'GET http://example.com/api/projects/p-1/memory',
+      'PUT http://example.com/api/projects/p-1/memory/MEMORY.md',
+      'DELETE http://example.com/api/projects/p-1/memory/topic.md?base_revision=r2',
+    ]);
+    expect(JSON.parse(calls[1][2])).toEqual({ name: 'Launch', coordinator: { working_dir: '/w' } });
+    expect(calls[8][2]).toBeInstanceOf(FormData);
+    expect((calls[8][2] as FormData).get('file')).toBeInstanceOf(File);
+    expect(JSON.parse(calls[11][2])).toEqual({ content: '- a\n', base_revision: 'r1' });
+    expect(projectIdKey('AB-CD')).toBe('abcd');
   });
 
   it('SettingsClient fetches and updates settings and secrets', async () => {
