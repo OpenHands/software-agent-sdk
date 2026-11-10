@@ -548,9 +548,27 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     # Navigation & Browser Control Methods
     @recording_aware
     async def navigate(self, url: str, new_tab: bool = False) -> str:
-        """Navigate to a URL."""
+        """Navigate to a URL.
+
+        browser-use's MCP ``_navigate`` awaits the navigation event but never
+        reads its handler results, so a navigation its security watchdog refused
+        (``allowed_domains``) still reported success. Read the results here and
+        raise, so the observation is an error that names the blocked URL.
+        """
         await self._ensure_initialized()
-        return await self._server._navigate(url, new_tab)
+        session = self._server.browser_session
+        if session is None:
+            return await self._server._navigate(url, new_tab)
+
+        from browser_use.browser.events import NavigateToUrlEvent
+
+        self._server._update_session_activity(session.id)
+        event = session.event_bus.dispatch(NavigateToUrlEvent(url=url, new_tab=new_tab))
+        await event
+        await event.event_result(raise_if_any=True, raise_if_none=False)
+        if new_tab:
+            return f"Opened new tab with URL: {url}"
+        return f"Navigated to: {url}"
 
     @recording_aware
     async def go_back(self) -> str:
