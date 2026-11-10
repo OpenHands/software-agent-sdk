@@ -182,22 +182,6 @@ class InstallationMetadata(BaseModel):
             lock.release()
             raise
 
-    @classmethod
-    def read(cls, installed_dir: Path) -> InstallationMetadata:
-        """Load metadata under the session lock, without saving.
-
-        For read-only callers. Holding the lock keeps the read from overlapping
-        a save, whose atomic replace fails on Windows while another handle has
-        the file open.
-        """
-        if not cls.get_metadata_path(installed_dir).exists():
-            return cls()
-        lock = cls._acquire_lock(installed_dir)
-        try:
-            return cls.load_from_dir(installed_dir)
-        finally:
-            lock.release()
-
     @staticmethod
     def _acquire_lock(installed_dir: Path) -> BaseFileLock:
         lock = FileLock(installed_dir / ".metadata.lock")
@@ -221,7 +205,12 @@ class InstallationMetadata(BaseModel):
 
     @classmethod
     def load_from_dir(cls, installed_dir: Path) -> InstallationMetadata:
-        """Load metadata from the installed extensions directory."""
+        """Load metadata from the installed extensions directory.
+
+        For read-only callers. Takes no lock: a save swaps in a complete file,
+        so a concurrent read sees the old or the new version, never a partial
+        one. A file that cannot be read or parsed loads as empty.
+        """
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
             return cls()

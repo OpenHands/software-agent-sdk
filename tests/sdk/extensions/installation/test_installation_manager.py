@@ -629,3 +629,30 @@ def test_list_installed_keeps_unreadable_metadata(
     assert info is not None
     assert info.source == str(mock_extension_dir)
     assert info.enabled is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses file permissions",
+)
+def test_get_reads_a_read_only_installation_dir(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+    mock_extension: MockExtension,
+):
+    """get() is read-only, so it must not need to create the lock file."""
+    manager.install(str(mock_extension_dir))
+    manager.disable(mock_extension.name)
+    lock_path = manager.installation_dir / ".metadata.lock"
+    lock_path.unlink(missing_ok=True)
+    manager.installation_dir.chmod(0o555)
+    try:
+        info = manager.get(mock_extension.name)
+    finally:
+        manager.installation_dir.chmod(0o755)
+
+    assert info is not None
+    assert info.source == str(mock_extension_dir)
+    assert info.enabled is False
+    assert not lock_path.exists()

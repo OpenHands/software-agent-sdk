@@ -61,3 +61,96 @@ def test_is_temp_file_matches_tmp_names(name: str) -> None:
 )
 def test_is_temp_file_ignores_other_names(name: str) -> None:
     assert not is_temp_file(Path(name))
+
+
+def _replace_failing(times: int, error: OSError, calls: list[Path]):
+    """An ``os.replace`` that raises ``error`` on its first ``times`` calls."""
+    real_replace = os.replace
+
+    def replace(src, dst):
+        calls.append(Path(dst))
+        if len(calls) <= times:
+            raise error
+        real_replace(src, dst)
+
+    return replace
+
+
+@pytest.mark.parametrize("failures", [1, len(files._REPLACE_RETRY_DELAYS)])
+def test_atomic_write_text_retries_replace_blocked_by_an_open_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int
+) -> None:
+    """On Windows, a replace that meets a reader's open handle is retried."""
+    path = tmp_path / "data.json"
+    path.write_text("old")
+    calls: list[Path] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(files, "_RETRY_REPLACE_ON_PERMISSION_ERROR", True)
+    monkeypatch.setattr(files.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        files.os, "replace", _replace_failing(failures, PermissionError(13, "x"), calls)
+    )
+
+    atomic_write_text(path, "new")
+
+    assert path.read_text() == "new"
+    assert len(calls) == failures + 1
+    assert sleeps == list(files._REPLACE_RETRY_DELAYS[:failures])
+    assert [p.name for p in tmp_path.iterdir()] == ["data.json"]
+
+
+def test_atomic_write_text_raises_when_replace_stays_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry is bounded: past the last delay the error is raised, the
+    destination is unchanged, and the temp file is removed.
+    """
+    path = tmp_path / "data.json"
+    path.write_text("old")
+    calls: list[Path] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(files, "_RETRY_REPLACE_ON_PERMISSION_ERROR", True)
+    monkeypatch.setattr(files.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        files.os, "replace", _replace_failing(100, PermissionError(13, "x"), calls)
+    )
+
+    with pytest.raises(PermissionError):
+        atomic_write_text(path, "new")
+
+    assert len(calls) == len(files._REPLACE_RETRY_DELAYS) + 1
+    assert sleeps == list(files._REPLACE_RETRY_DELAYS)
+    assert path.read_text() == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["data.json"]
+
+
+@pytest.mark.parametrize(
+    ("retry_enabled", "error"),
+    [
+        (False, PermissionError(13, "x")),
+        (True, OSError(28, "No space left on device")),
+    ],
+    ids=["permission_error_off_windows", "other_os_error_on_windows"],
+)
+def test_atomic_write_text_does_not_retry_other_replace_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    retry_enabled: bool,
+    error: OSError,
+) -> None:
+    """Only a ``PermissionError`` on Windows is retried; anything else, which
+    a retry cannot fix, is raised at once.
+    """
+    path = tmp_path / "data.json"
+    calls: list[Path] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(files, "_RETRY_REPLACE_ON_PERMISSION_ERROR", retry_enabled)
+    monkeypatch.setattr(files.time, "sleep", sleeps.append)
+    monkeypatch.setattr(files.os, "replace", _replace_failing(1, error, calls))
+
+    with pytest.raises(type(error)):
+        atomic_write_text(path, "new")
+
+    assert len(calls) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []

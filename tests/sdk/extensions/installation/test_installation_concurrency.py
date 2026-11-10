@@ -1,7 +1,6 @@
 """Concurrency regression tests for installation metadata"""
 
 import json
-import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -10,13 +9,17 @@ import pytest
 from pydantic import BaseModel
 
 from openhands.sdk.extensions.installation import (
+    InstallationInfo,
     InstallationInterface,
     InstallationManager,
     InstallationMetadata,
     MetadataSession,
     metadata as metadata_module,
 )
-from openhands.sdk.utils import files as files_module
+
+
+# Disable/enable pairs the writer runs while the reader reads.
+_SAVES = 100
 
 
 class MockExtension(BaseModel):
@@ -145,57 +148,64 @@ def test_list_cannot_load_metadata_while_another_session_is_open(
     assert entry["enabled"] is (operation == "install")
 
 
-def test_unlocked_reader_never_sees_partial_metadata_during_save(
+def test_reader_thread_never_sees_partial_metadata_during_saves(
     manager: InstallationManager[MockExtension],
-    installation_dir: Path,
     source_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    """Torn read: a reader that does not take the lock (such as code reading
-    ``.installed.json`` directly) must never see a truncated file, so a save
-    must swap in a complete file rather than rewrite it in place.
+    """Torn read: ``get()`` takes no lock, so while another thread saves it
+    must still see a complete file, never a truncated one (which loads as
+    empty). On Windows this also covers the writer: a save whose replace
+    meets a reader's open handle must retry instead of raising.
     """
     manager.install(str(source_dir))
-    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
-    seen_mid_save = []
-    real_replace = os.replace
+    saving = threading.Event()
+    done = threading.Event()
+    reads: list[InstallationInfo | None] = []
 
-    def replace(src, dst) -> None:
-        if Path(dst) == metadata_path:
-            loaded = InstallationMetadata.load_from_dir(installation_dir)
-            seen_mid_save.append(loaded.extensions.get("magic-test"))
-        real_replace(src, dst)
+    def save_repeatedly() -> None:
+        try:
+            for _ in range(_SAVES):
+                manager.disable("magic-test")
+                saving.set()
+                manager.enable("magic-test")
+        finally:
+            done.set()
 
-    monkeypatch.setattr(files_module.os, "replace", replace)
+    def read_until_done() -> None:
+        assert saving.wait(5)
+        while not done.is_set():
+            reads.append(manager.get("magic-test"))
 
-    manager.install(str(source_dir), force=True)
+    errors = _run_threads(("writer", save_repeatedly), ("reader", read_until_done))
 
-    assert seen_mid_save, "save_to_dir did not write through an atomic replace"
-    info = seen_mid_save[0]
-    assert info is not None
-    assert info.source == str(source_dir)
+    assert errors == []
+    assert reads, "the reader never ran while the writer was saving"
+    torn = [info for info in reads if info is None or info.source != str(source_dir)]
+    assert torn == [], f"{len(torn)} of {len(reads)} reads saw partial metadata"
 
 
-def test_get_waits_for_an_open_session(
+def test_get_does_not_wait_for_an_open_session(
     manager: InstallationManager[MockExtension],
     installation_dir: Path,
     source_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """``get()`` reads under the lock, so it can never hold the file open
-    while a save replaces it (``os.replace`` fails on Windows in that case).
+    """``get()`` is read-only and takes no lock, so a session held open by
+    another caller must not block it or make it time out.
     """
     manager.install(str(source_dir))
     monkeypatch.setattr(metadata_module, "_LOCK_TIMEOUT_SECONDS", 0.2)
+    results: list[InstallationInfo | None] = []
 
     with InstallationMetadata.open(installation_dir):
-        errors = _run_threads(("get", lambda: manager.get("magic-test")))
+        errors = _run_threads(
+            ("get", lambda: results.append(manager.get("magic-test")))
+        )
 
-    assert len(errors) == 1
-    assert isinstance(errors[0], TimeoutError)
-    info = manager.get("magic-test")
-    assert info is not None
-    assert info.source == str(source_dir)
+    assert errors == []
+    assert len(results) == 1
+    assert results[0] is not None
+    assert results[0].source == str(source_dir)
 
 
 def test_session_lock_times_out_instead_of_blocking_forever(
