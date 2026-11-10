@@ -155,6 +155,24 @@ def extract_ask(text: str | None) -> str | None:
     return ask
 
 
+def last_sentence(text: str | None) -> str | None:
+    """The last sentence of the last paragraph outside code blocks, as one
+    short line: what a reply that asks without a question mark ends on."""
+    if not text:
+        return None
+    prose = _CODE_BLOCK.sub("", text).strip()
+    if not prose:
+        return None
+    last_paragraph = re.split(r"\n\s*\n", prose)[-1]
+    parts = [p for p in _SENTENCE_BREAK.split(last_paragraph) if p.strip()]
+    if not parts:
+        return None
+    line = " ".join(_MARKUP.sub("", parts[-1]).split())
+    if len(line) > ASK_MAX_LENGTH:
+        line = line[: ASK_MAX_LENGTH - 1].rstrip() + "…"
+    return line or None
+
+
 def _is_awareness_note(event: MessageEvent) -> bool:
     if event.sender is None or not event.sender.startswith(CONVERSATION_SENDER_PREFIX):
         return False
@@ -337,6 +355,9 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             turn = classify_turn(self._last_text)
             if turn == "asked":
                 self._ask = extract_ask(self._last_text) or self._ask
+            # Asked in an earlier message of this turn, which the final one
+            # does not repeat: the judge sees only the final one.
+            carried = self._asked_since_user and turn == "answered"
             if self._asked_since_user:
                 turn = "asked"
             self._asked_since_user = turn == "asked"
@@ -355,7 +376,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if project:
                 self._enqueue(
                     lambda: self._record(
-                        project, turn, score, text, sender, ask, known, judged
+                        project,
+                        turn,
+                        score,
+                        text,
+                        sender,
+                        ask,
+                        known,
+                        None if carried else judged,
                     )
                 )
 
@@ -437,6 +465,18 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         sender_known: bool = True,
         judged: ResolutionState | None = None,
     ) -> None:
+        verdict = None
+        if judged is not None and RESOLVED_TAG_KEY not in self.tags():
+            verdict = await self._judge(judged)
+        if verdict is not None:
+            # The judge decides whether the reply waits on the person, also
+            # when it asks without a question mark or ends on a pleasantry.
+            if verdict.needs_person:
+                turn = "asked"
+                ask = ask or extract_ask(text) or last_sentence(text)
+            else:
+                turn = "answered"
+                ask = None
         await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
         if ask is not None or ASK_TAG_KEY in self.tags():
             await self.set_tag(self.conversation_id, ASK_TAG_KEY, ask)
@@ -446,7 +486,6 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if turn == "asked" or RESOLVED_TAG_KEY in self.tags():
             return
         note: str | None = None
-        verdict = await self._judge(judged) if judged is not None else None
         if verdict is not None and verdict.resolved:
             note = verdict.note()
         elif verdict is None and score is not None and score >= AUTO_RESOLVE_THRESHOLD:

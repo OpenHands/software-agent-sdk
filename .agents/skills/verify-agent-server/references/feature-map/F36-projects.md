@@ -102,10 +102,16 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   questions of `OH_RESOLUTION_MODEL` (a LiteLLM decision model such as
   `typesafe/jev-latest` or `hosted_vllm/<model>`, key in
   `OH_RESOLUTION_API_KEY` or `JEV_API_KEY`), else of the conversation's own
-  LLM. The model answers six narrow yes/no judgments (handled, asks_person,
-  hands_off_review, offers_choice, asks_to_check, reports_problem) and code
-  combines them: P(handled) times P(no hand-off), resolved at >= 0.85
-  (`resolvenote` like `0.93 nothing`, else the likeliest hand-off). `OH_RESOLUTION_MODEL=off` disables it;
+  LLM. It sees the turn plus the conversation's first message and earlier
+  requests. The model answers seven narrow yes/no judgments (handled,
+  task_done, asks_person, hands_off_review, offers_choice, asks_to_check,
+  reports_problem) and code decides: resolved when handled and task_done are
+  >= 0.85 and every hand-off < 0.2 (`resolvenote` like `0.93 nothing`). A
+  substantive question, choice, review or check (>= 0.5) makes the turn
+  `asked` (Needs you) even without a question mark, with the reply's last
+  sentence as `ask`; work left that waits on no one stays `answered` and
+  unresolved (Done). A question asked earlier in the turn and not repeated is
+  not judged. `OH_RESOLUTION_MODEL=off` disables it;
   without a verdict a critic score >= 0.9 still resolves (`0.95 critic`).
   The board shows the note as `resolve_note`.
   Clients resolve a conversation by setting `resolved=user` with the conversation
@@ -387,15 +393,30 @@ Preconditions:
   control-agent-server conversation wait "$A2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$A1" --check tags.resolved eq auto --check tags.resolvenote matches '^(0\.(8[5-9]|9\d)|1\.00) nothing$' --until-ok 30 \
     --save F36.auto-resolve/answer
-  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq answered --check tags not-contains resolved --until-ok 10 \
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask eq 'Tell me which one you prefer.' --check tags not-contains resolved --until-ok 30 \
     --save F36.auto-resolve/handoff
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolve_note": "' --save F36.auto-resolve/board
   ```
   The judge runs on the conversation's own LLM (no `OH_RESOLUTION_MODEL`).
   A plain answer resolves as `auto` with a note such as `1.00 nothing`. A
   hand-off that ends without a question mark (`Tell me which one you prefer.`)
-  reads as `answered` to the turn heuristic, but the judge sees the person owes
-  a choice and leaves it open. Verified 2026-11-10 with deepseek-flash.
+  becomes `turn=asked` with that sentence as `ask` (Needs you).
+- **Unfinished work stays open (`F36.needs-you`).**
+  Requires: `F36.auto-resolve`
+  Needs: `llm`
+  ```sh
+  A3=$(control-agent-server conversation start --no-run --title qa-f36-two-haiku --print-id)
+  control-agent-server api PUT "/api/projects/$P2/conversations/$A3" --expect 204
+  control-agent-server api POST "/api/conversations/$A3/events" --json '{"role": "user", "content": [{"type": "text", "text": "In this conversation we will write two haiku: one about rain, then one about snow. Write only the rain haiku now, and finish. Do not use tools."}], "run": true}' --expect 200
+  control-agent-server conversation wait "$A3" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$A3" --check tags.turn eq answered --check tags not-contains resolved --until-ok 30 --save F36.needs-you/unfinished
+  control-agent-server api POST "/api/conversations/$A3/events" --json '{"role": "user", "content": [{"type": "text", "text": "Now the snow one. Do not use tools."}], "run": true}' --expect 200
+  control-agent-server conversation wait "$A3" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$A3" --check tags.resolved eq auto --until-ok 30 --save F36.needs-you/finished
+  ```
+  With half the task left and no question, the turn is `answered` and not
+  resolved (Done). Once the second haiku is written, the judge reads the first
+  message as context and resolves. Verified 2026-11-10 with deepseek-flash.
 - **Artifacts over REST (`F36.artifacts-rest`).**
   Requires: `F36.coordinator`
   ```sh

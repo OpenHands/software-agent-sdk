@@ -15,7 +15,7 @@ still resolves a conversation then.
 """
 
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Final
 
 from openhands.agent_server.project_board import ResolutionJudge
@@ -53,12 +53,24 @@ def decision_model_from_env() -> DecisionModel | None:
     )
 
 
-def make_resolution_judge(agent_llm: Callable[[], LLM | None]) -> ResolutionJudge:
-    """A judge for one conversation; ``agent_llm`` returns its live LLM."""
+ConversationContext = Callable[[], Awaitable[tuple[str | None, list[str]]]]
+"""Reads a conversation's first message and the person's requests since,
+oldest first, for :attr:`ResolutionState.task` and ``earlier``."""
+
+
+def make_resolution_judge(
+    agent_llm: Callable[[], LLM | None],
+    context: ConversationContext | None = None,
+) -> ResolutionJudge:
+    """A judge for one conversation; ``agent_llm`` returns its live LLM and
+    ``context`` what the conversation was asked to do before this turn."""
 
     async def judge(state: ResolutionState) -> ResolutionVerdict | None:
         if os.getenv(MODEL_ENV, "").strip() == OFF:
             return None
+        if context is not None:
+            task, earlier = await context()
+            state = state.model_copy(update={"task": task, "earlier": earlier})
         model = decision_model_from_env()
         if model is None:
             llm = agent_llm()

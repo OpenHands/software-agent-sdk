@@ -7,9 +7,10 @@ critic's "did the task succeed?": a good answer to a question is resolved, and
 a finished pull request that waits for review is not.
 
 The model makes judgments and code makes the decision. The judge asks narrow
-yes/no questions (:data:`RESOLUTION_QUESTIONS`): was the request handled,
-does the reply ask the person something, hand them a review, leave them a
-choice, ask them to check something, report a problem.
+yes/no questions (:data:`RESOLUTION_QUESTIONS`): was the request handled, is
+the conversation's whole task done, does the reply ask the person something,
+hand them a review, leave them a choice, ask them to check something, report
+a problem.
 :func:`verdict_from_judgments` combines the answers. Any
 :class:`~openhands.sdk.llm.decision.DecisionModel` can answer: a decision model
 such as TypeSafe's Jev, an open model served by vLLM (both through LiteLLM),
@@ -43,6 +44,8 @@ logger = get_logger(__name__)
 
 __all__ = [
     "AUTO_RESOLVE_PROBABILITY",
+    "HAND_OFF_CEILING",
+    "EARLIER_REQUESTS_KEPT",
     "LLMDecisionModel",
     "Owed",
     "RESOLUTION_QUESTIONS",
@@ -52,19 +55,30 @@ __all__ = [
     "verdict_from_judgments",
 ]
 
-Owed = Literal["nothing", "answer", "review", "decide", "check", "unclear"]
+Owed = Literal[
+    "nothing", "answer", "review", "decide", "check", "unfinished", "unclear"
+]
 
 AUTO_RESOLVE_PROBABILITY: Final[float] = 0.85
-"""Probability that nothing is left for the person, at or above which a turn
-counts as resolved."""
+"""How sure the judge must be that the work is done (``handled`` and
+``task_done``) for a turn to count as resolved."""
+
+HAND_OFF_CEILING: Final[float] = 0.2
+"""Every hand-off judgment must stay below this for a turn to resolve."""
+
+LIKELY: Final[float] = 0.5
+"""A judgment at or above this probability counts as holding."""
 
 _TEXT_LIMIT: Final[int] = 4000
+_CONTEXT_TEXT_LIMIT: Final[int] = 1000
 _ACTIONS_LIMIT: Final[int] = 20
+EARLIER_REQUESTS_KEPT: Final[int] = 5
 
 _CONTEXT = (
     "`request` is the person's last message to a coding agent and `reply` is "
     "the agent's final message for that turn; `actions` lists what the agent "
-    "did. "
+    "did. `task` is the message the conversation started with and `earlier` "
+    "the person's requests in between, oldest first. "
 )
 
 # One narrow judgment per question, each answered on its own. Code combines
@@ -82,10 +96,38 @@ RESOLUTION_QUESTIONS: Final[dict[str, Question]] = {
             ),
         ),
     ),
+    "task_done": Noul(
+        instructions=_CONTEXT
+        + "`task` and `earlier` say what the conversation as a whole is for. "
+        "Is all of it done now, including parts planned for later, with no "
+        "step the agent promised still pending?",
+        criteria=NoulCriteria(
+            true=(
+                "Nothing from the task or earlier requests is left undone, or "
+                "the person dropped what is left."
+            ),
+            false=(
+                "A part of the task, even one planned for later, an earlier "
+                "request, or a step the agent said it would take next is "
+                "still open."
+            ),
+        ),
+    ),
     "asks_person": Noul(
         instructions=_CONTEXT
-        + "Does `reply` ask the person a question or wait for input from them, "
-        "even when worded without a question mark?",
+        + "Does `reply` ask the person a substantive question, one the agent "
+        "needs answered to go on, even when worded without a question mark?",
+        criteria=NoulCriteria(
+            true=(
+                "It asks for information, a preference or a decision the "
+                "agent cannot make on its own."
+            ),
+            false=(
+                "It asks nothing, or only offers more help or to continue "
+                '("Anything else?", "Tell me when you\'re ready for the '
+                'next one").'
+            ),
+        ),
     ),
     "hands_off_review": Noul(
         instructions=_CONTEXT
@@ -108,7 +150,7 @@ RESOLUTION_QUESTIONS: Final[dict[str, Question]] = {
     ),
 }
 
-# What the person owes when each judgment holds.
+# What the person owes when each hand-off judgment holds.
 _OWED_BY_JUDGMENT: Final[dict[str, Owed]] = {
     "asks_person": "answer",
     "hands_off_review": "review",
@@ -116,6 +158,12 @@ _OWED_BY_JUDGMENT: Final[dict[str, Owed]] = {
     "asks_to_check": "check",
     "reports_problem": "check",
 }
+
+# Hand-offs that wait on the person, so the conversation needs them. A report
+# of a problem alone does not ask anything of the person.
+_NEEDS_PERSON: Final[frozenset[str]] = frozenset(
+    {"asks_person", "hands_off_review", "offers_choice", "asks_to_check"}
+)
 
 
 class ResolutionState(BaseModel):
@@ -128,9 +176,21 @@ class ResolutionState(BaseModel):
     actions: list[str] = Field(
         default_factory=list, description="Short summaries of the agent's actions."
     )
+    task: str | None = Field(
+        default=None, description="The message the conversation started with."
+    )
+    earlier: list[str] = Field(
+        default_factory=list,
+        description="The person's requests between `task` and `request`.",
+    )
 
     def as_state(self) -> dict[str, Any]:
         return {
+            "task": _clip(self.task, _CONTEXT_TEXT_LIMIT),
+            "earlier": [
+                _clip(text, _CONTEXT_TEXT_LIMIT)
+                for text in self.earlier[-EARLIER_REQUESTS_KEPT:]
+            ],
             "request": _clip(self.request),
             "reply": _clip(self.reply),
             "actions": self.actions[-_ACTIONS_LIMIT:],
@@ -143,7 +203,12 @@ class ResolutionVerdict(BaseModel):
     probability: float = Field(
         ge=0.0, le=1.0, description="Probability that nothing is left for the person."
     )
-    owed: Owed = Field(description="Most likely thing the person still owes.")
+    owed: Owed = Field(
+        description=(
+            "Most likely thing the person still owes; `unfinished` when work "
+            "is left but nothing waits on the person."
+        )
+    )
     judgments: dict[str, float] = Field(
         default_factory=dict, description="Each judgment's probability, by name."
     )
@@ -151,7 +216,13 @@ class ResolutionVerdict(BaseModel):
 
     @property
     def resolved(self) -> bool:
-        return self.owed == "nothing" and self.probability >= AUTO_RESOLVE_PROBABILITY
+        return self.owed == "nothing"
+
+    @property
+    def needs_person(self) -> bool:
+        """The reply waits on the person: a question, a choice, a review or a
+        check of theirs."""
+        return any(self.judgments.get(name, 0.0) >= LIKELY for name in _NEEDS_PERSON)
 
     def note(self) -> str:
         """One short line for the board: ``0.93 nothing`` style."""
@@ -161,26 +232,32 @@ class ResolutionVerdict(BaseModel):
 def verdict_from_judgments(
     judgments: Mapping[str, float], model: str | None = None
 ) -> ResolutionVerdict:
-    """Combine the judgments into a verdict.
+    """Combine the judgments into a verdict, in code.
 
-    Nothing is left when the request was handled and no hand-off holds:
-    ``P(handled) * prod(1 - P(hand-off))``, treating the judgments as
-    independent. The person owes the likeliest hand-off when it is more likely
-    than not, else ``unclear`` (say, the request does not look handled).
+    A turn is resolved when the request and the whole task are done (both at
+    least :data:`AUTO_RESOLVE_PROBABILITY`) and every hand-off stays below
+    :data:`HAND_OFF_CEILING`. ``probability`` is the weakest of those
+    signals: ``min(handled, task_done, 1 - strongest hand-off)``. Otherwise
+    the person owes the strongest hand-off when it holds; ``unfinished`` when
+    work is left that waits on no one; ``unclear`` when only a weak hand-off
+    stands in the way.
     """
-    handled = _unit(judgments.get("handled"))
-    probability = handled
-    for name in _OWED_BY_JUDGMENT:
-        probability *= 1.0 - _unit(judgments.get(name))
-    owed: Owed = "nothing"
-    if probability < AUTO_RESOLVE_PROBABILITY:
-        name = max(_OWED_BY_JUDGMENT, key=lambda n: _unit(judgments.get(n)))
-        likely = _unit(judgments.get(name)) >= 0.5
-        owed = _OWED_BY_JUDGMENT[name] if likely else "unclear"
+    done = min(_unit(judgments.get("handled")), _unit(judgments.get("task_done")))
+    name = max(_OWED_BY_JUDGMENT, key=lambda n: _unit(judgments.get(n)))
+    hand_off = _unit(judgments.get(name))
+    owed: Owed
+    if hand_off >= LIKELY:
+        owed = _OWED_BY_JUDGMENT[name]
+    elif done < AUTO_RESOLVE_PROBABILITY:
+        owed = "unfinished"
+    elif hand_off >= HAND_OFF_CEILING:
+        owed = "unclear"
+    else:
+        owed = "nothing"
     return ResolutionVerdict(
-        probability=probability,
+        probability=min(done, 1.0 - hand_off),
         owed=owed,
-        judgments={name: _unit(p) for name, p in judgments.items()},
+        judgments={n: _unit(p) for n, p in judgments.items()},
         model=model,
     )
 
@@ -299,8 +376,8 @@ def _unit(value: Any) -> float:
     return min(max(number, 0.0), 1.0)
 
 
-def _clip(text: str | None) -> str | None:
-    if text is None or len(text) <= _TEXT_LIMIT:
+def _clip(text: str | None, limit: int = _TEXT_LIMIT) -> str | None:
+    if text is None or len(text) <= limit:
         return text
-    # Keep the end of a long reply: it says how the turn ended.
-    return "…" + text[-(_TEXT_LIMIT - 1) :]
+    # Keep the end of a long text: a reply says there how the turn ended.
+    return "…" + text[-(limit - 1) :]

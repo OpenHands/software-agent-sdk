@@ -16,7 +16,11 @@ from openhands.agent_server.project_board import (
     extract_ask,
 )
 from openhands.sdk import LLM, Agent
-from openhands.sdk.conversation.resolution import ResolutionState, ResolutionVerdict
+from openhands.sdk.conversation.resolution import (
+    ResolutionState,
+    ResolutionVerdict,
+    verdict_from_judgments,
+)
 from openhands.sdk.conversation.types import BOARD_TAG_KEYS, GOAL_LOOP_SENDER
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
@@ -762,8 +766,10 @@ async def test_judge_resolves_when_nothing_is_left_for_the_person():
 @pytest.mark.parametrize(
     "verdict",
     [
-        ResolutionVerdict(probability=0.95, owed="review"),
-        ResolutionVerdict(probability=0.6, owed="nothing"),
+        verdict_from_judgments(
+            {"handled": 0.95, "task_done": 0.95, "reports_problem": 0.9}
+        ),
+        verdict_from_judgments({"handled": 0.95, "task_done": 0.6}),
     ],
 )
 @pytest.mark.asyncio
@@ -783,19 +789,80 @@ async def test_judge_leaves_open_when_the_person_owes_something(verdict):
 
 
 @pytest.mark.asyncio
-async def test_judge_is_not_asked_about_a_question_turn():
+async def test_judge_sends_a_question_without_a_question_mark_to_the_person():
     store = _Tags({"project": "p1"})
-    seen: list[ResolutionState] = []
+    verdict = verdict_from_judgments(
+        {"handled": 0.99, "task_done": 0.9, "asks_person": 0.97, "offers_choice": 0.9}
+    )
 
     await _feed(
-        _judging(store, ResolutionVerdict(probability=1.0, owed="nothing"), seen),
+        _judging(store, verdict, []),
+        _message("user", "Suggest two names for my cat"),
+        _status("running"),
+        _message("agent", "**Mochi** or **Juniper**.\n\nTell me which you prefer."),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asked",
+        "ask": "Tell me which you prefer.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_lets_a_pleasantry_question_resolve():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    verdict = verdict_from_judgments({"handled": 0.98, "task_done": 0.98})
+
+    await _feed(
+        _judging(store, verdict, seen),
+        _message("user", "What is 17 times 23?"),
+        _status("running"),
+        _message("agent", "391. Anything else?"),
+        _status("finished"),
+    )
+
+    assert len(seen) == 1
+    assert store.tags["turn"] == "answered"
+    assert "ask" not in store.tags
+    assert store.tags["resolved"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_unfinished_work_with_no_ask_is_neither_resolved_nor_needs_you():
+    store = _Tags({"project": "p1"})
+    verdict = verdict_from_judgments({"handled": 0.95, "task_done": 0.1})
+
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Step 1 of the migration, then step 2"),
+        _status("running"),
+        _message("agent", "Step 1 is done. I'll start step 2 next."),
+        _status("finished"),
+    )
+
+    assert verdict.owed == "unfinished"
+    assert store.tags == {"project": "p1", "turn": "answered"}
+
+
+@pytest.mark.asyncio
+async def test_a_question_from_earlier_in_the_turn_is_not_judged_away():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    await _feed(
+        _judging(store, verdict_from_judgments({"handled": 1, "task_done": 1}), seen),
         _message("user", "Fix the bug"),
         _status("running"),
-        _message("agent", "Fixed. Should I also add a test?"),
+        _message("agent", "Should I also add a test?"),
+        _stop_hook_feedback(),
+        _finish("Fixed the bug."),
         _status("finished"),
     )
 
     assert seen == []
+    assert store.tags["turn"] == "asked"
     assert "resolved" not in store.tags
 
 
