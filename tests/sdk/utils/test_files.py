@@ -116,7 +116,13 @@ def test_atomic_write_text_raises_when_replace_stays_blocked(
     monkeypatch.setattr(files, "_RETRY_ON_PERMISSION_ERROR", True)
     monkeypatch.setattr(files.time, "sleep", sleeps.append)
     monkeypatch.setattr(
-        files.os, "replace", _replace_failing(100, PermissionError(13, "x"), calls)
+        files.os,
+        "replace",
+        _replace_failing(
+            len(files._PERMISSION_ERROR_RETRY_DELAYS) + 1,
+            PermissionError(13, "x"),
+            calls,
+        ),
     )
 
     with pytest.raises(PermissionError):

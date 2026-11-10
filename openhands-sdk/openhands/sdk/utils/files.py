@@ -14,18 +14,13 @@ _TEMP_SUFFIX: Final[str] = ".tmp"
 # instant: ``os.replace`` holds the destination open with delete access, and
 # Python opens files without delete sharing. So a replace fails while a reader
 # has the destination open, and a read fails while a replace is in progress.
-# Both raise ``PermissionError``, and both are retried after these delays
-# (about 0.9 s in total) before the error is raised. On other platforms
-# neither fails that way, and neither is retried.
+# Both raise ``PermissionError``, and both are retried every 10 ms for about
+# 1 s before the error is raised. Readers hold the file only for one read, so
+# under a steady stream of reads many short attempts get through where a few
+# spaced-out ones can each land on a read. On other platforms neither fails
+# that way, and neither is retried.
 _RETRY_ON_PERMISSION_ERROR: Final[bool] = os.name == "nt"
-_PERMISSION_ERROR_RETRY_DELAYS: Final[tuple[float, ...]] = (
-    0.01,
-    0.02,
-    0.05,
-    0.1,
-    0.2,
-    0.5,
-)
+_PERMISSION_ERROR_RETRY_DELAYS: Final[tuple[float, ...]] = (0.01,) * 100
 
 
 def is_temp_file(path: Path) -> bool:
