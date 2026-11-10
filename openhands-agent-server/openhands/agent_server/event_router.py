@@ -26,7 +26,7 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_event_service,
 )
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, admission_refusal
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
@@ -309,11 +309,13 @@ async def send_message(
     if guarded:
         # An unlocked read: it only spares the person an unrelated message in
         # a conversation already waiting. The guarded run is the safeguard.
-        previous_status = (await event_service.get_state()).execution_status
-        if previous_status.value in HELD_FOR_PERSON_STATUSES:
+        state = await event_service.get_state()
+        previous_status = state.execution_status
+        refusal = admission_refusal(state, from_person=False)
+        if refusal in HELD_FOR_PERSON_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=_HELD_DETAIL[previous_status.value],
+                detail=_HELD_DETAIL[refusal],
             )
     outcome: MessageRunOutcome | None
     try:

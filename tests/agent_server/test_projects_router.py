@@ -1797,3 +1797,57 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     )
     tags = await _tags(service, member)
     assert "resolved" not in tags and "resolvenote" not in tags
+
+
+@pytest.mark.parametrize(
+    "status, unconfirmed, from_person, refusal",
+    [
+        ("idle", False, False, None),
+        ("finished", False, False, None),
+        ("running", False, False, "conversation_already_running"),
+        ("waiting_for_confirmation", False, False, "waiting_for_confirmation"),
+        ("paused", False, False, "paused"),
+        ("error", False, False, "error"),
+        ("stuck", False, False, "stuck"),
+        # Actions left unconfirmed would run, which approves them.
+        ("paused", True, True, "waiting_for_confirmation"),
+        ("idle", True, False, "waiting_for_confirmation"),
+        # The person's own words (Voice) may resume their paused conversation.
+        ("paused", False, True, None),
+        ("error", False, True, "error"),
+    ],
+)
+def test_one_admission_rule_for_senders_that_are_not_watching(
+    tmp_path, status, unconfirmed, from_person, refusal
+):
+    """Review S3/F2: the guard for other conversations and Voice's
+    send_message_if_idle are one rule, differing only in who may resume."""
+    from openhands.agent_server.event_service import admission_refusal
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.event import ActionEvent
+    from openhands.sdk.llm import MessageToolCall
+    from openhands.sdk.tool.builtins.finish import FinishAction
+
+    state = ConversationState.create(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        persistence_dir=str(tmp_path / "state"),
+    )
+    state.execution_status = ConversationExecutionStatus(status)
+    if unconfirmed:
+        state.events.append(
+            ActionEvent(
+                source="agent",
+                thought=[],
+                action=FinishAction(message="done"),
+                tool_name="finish",
+                tool_call_id="call-1",
+                tool_call=MessageToolCall(
+                    id="call-1", name="finish", arguments="{}", origin="completion"
+                ),
+                llm_response_id="response-1",
+            )
+        )
+
+    assert admission_refusal(state, from_person=from_person) == refusal

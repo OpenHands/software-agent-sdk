@@ -228,6 +228,38 @@ def _without_agent_context_secret(
     )
 
 
+def admission_refusal(state: ConversationState, *, from_person: bool) -> str | None:
+    """Why a message may not start a run of this conversation now, or ``None``.
+
+    One rule for every sender that runs a conversation it does not watch:
+
+    - A running conversation refuses with ``"conversation_already_running"``.
+    - Pending actions refuse with ``"waiting_for_confirmation"``: whether the
+      conversation waits for confirmation or was paused or interrupted with
+      actions unconfirmed, the next run would execute them, which approves
+      them on the person's behalf.
+    - Another conversation (the project tools, coordinator updates) may run
+      only an idle or finished one; ``paused``, ``error`` and ``stuck`` are
+      the person's to look at, refused with the status value.
+    - The person's own words through another channel (Voice's
+      ``send_message_if_idle``) may also resume a paused conversation.
+
+    The caller holds the state lock, and should hold the run lock so the
+    answer cannot change before the run starts.
+    """
+    status = state.execution_status
+    if status == ConversationExecutionStatus.RUNNING:
+        return "conversation_already_running"
+    if status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION or (
+        ConversationState.get_unmatched_actions(state.active_branch())
+    ):
+        return ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value
+    admitted = {ConversationExecutionStatus.IDLE, ConversationExecutionStatus.FINISHED}
+    if from_person:
+        admitted.add(ConversationExecutionStatus.PAUSED)
+    return None if status in admitted else status.value
+
+
 @dataclass
 class EventService:
     """
@@ -798,6 +830,12 @@ class EventService:
             timestamp__gte,
             timestamp__lt,
         )
+
+    def _admission_refusal_sync(self, *, from_person: bool) -> str | None:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        with self._conversation._state as state:
+            return admission_refusal(state, from_person=from_person)
 
     def _get_execution_status_sync(self) -> ConversationExecutionStatus:
         if not self._conversation:
@@ -1681,10 +1719,16 @@ class EventService:
             status = await self._get_execution_status()
             if status == ConversationExecutionStatus.RUNNING:
                 raise ValueError("conversation_already_running")
-            if refuse_pending_confirmation and status.value in HELD_FOR_PERSON_STATUSES:
+            if refuse_pending_confirmation:
                 # Raised as the status itself: "waiting_for_confirmation",
                 # "paused", "error" or "stuck".
-                raise ValueError(status.value)
+                loop = asyncio.get_running_loop()
+                refusal = await loop.run_in_executor(
+                    None,
+                    functools.partial(self._admission_refusal_sync, from_person=False),
+                )
+                if refusal is not None:
+                    raise ValueError(refusal)
             if self._closing:
                 raise ValueError("inactive_service")
             # Re-check: the status read above can yield to a late stop too.

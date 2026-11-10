@@ -646,7 +646,10 @@ Preconditions:
   delivered, the message is kept and `run` is `waiting_for_confirmation`;
   a run that was already active answers `queued`. The same guard keeps a
   `paused`, `error` or `stuck` conversation from running (409, or `run` is
-  that status): those are the person's to resume. Delivery to a running conversation waits for its state lock,
+  that status): those are the person's to resume. Actions left unconfirmed
+  (say, a pause during a confirmation) count as `waiting_for_confirmation`.
+  The rule is `admission_refusal()` in `event_service.py`, shared with
+  Voice, which differs only in letting the person resume a pause. Delivery to a running conversation waits for its state lock,
   which a long tool call holds, so the tool waits up to 300 seconds and, on a
   timeout, tells the agent not to resend.
 - The tools read the project from the caller's tags on every call, so adding
