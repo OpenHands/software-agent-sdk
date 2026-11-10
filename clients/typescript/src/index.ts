@@ -224,6 +224,7 @@ export type {
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
 export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
 export type {
+  ACPEffortOption,
   ACPModelDiscovery,
   ACPModelDiscoveryError,
   ACPModelDiscoveryRequest,
