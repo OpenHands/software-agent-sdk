@@ -315,7 +315,9 @@ async def set_canvas_extension_enabled_endpoint(
     async with lock:
         if not request.enabled:
             await _revoke_and_stop_backend(http_request, extension_name)
-            if not disable_canvas_extension(name=extension_name):
+            if not await asyncio.to_thread(
+                disable_canvas_extension, name=extension_name
+            ):
                 raise HTTPException(404, "Canvas App is not installed")
             return UpdateCanvasExtensionStateResponse(
                 name=extension_name, enabled=False
@@ -363,13 +365,13 @@ async def set_canvas_extension_enabled_endpoint(
                     )
             except (ValueError, RuntimeError, OSError) as exc:
                 await _revoke_and_stop_backend(http_request, extension_name)
-                disable_canvas_extension(name=extension_name)
+                await asyncio.to_thread(disable_canvas_extension, name=extension_name)
                 raise HTTPException(409, str(exc)) from exc
             except BaseException:
                 await _revoke_and_stop_backend(http_request, extension_name)
-                disable_canvas_extension(name=extension_name)
+                await asyncio.to_thread(disable_canvas_extension, name=extension_name)
                 raise
-        if not enable_canvas_extension(name=extension_name):
+        if not await asyncio.to_thread(enable_canvas_extension, name=extension_name):
             raise HTTPException(404, "Canvas App is not installed")
         return UpdateCanvasExtensionStateResponse(name=extension_name, enabled=True)
 
@@ -385,7 +387,7 @@ async def uninstall_canvas_extension_endpoint(
 ) -> UninstallCanvasExtensionResponse:
     """Uninstall a canvas extension by name while retaining backend data."""
     await _revoke_and_stop_backend(request, extension_name)
-    if not uninstall_canvas_extension(name=extension_name):
+    if not await asyncio.to_thread(uninstall_canvas_extension, name=extension_name):
         raise HTTPException(
             status_code=404,
             detail=f"Canvas extension '{extension_name}' is not installed",
@@ -576,6 +578,6 @@ async def revoke_canvas_extension_backend_secrets_endpoint(
 ) -> BackendStatus:
     """Revoke consent, terminate the process group and invalidate bridge sessions."""
     async with _lifecycle_lock(request, extension_name):
-        disable_canvas_extension(name=extension_name)
+        await asyncio.to_thread(disable_canvas_extension, name=extension_name)
         await _backend_manager(request).revoke_secrets(extension_name)
         return await _revoke_and_stop_backend(request, extension_name)
