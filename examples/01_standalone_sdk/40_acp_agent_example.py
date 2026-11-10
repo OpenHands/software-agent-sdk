@@ -8,7 +8,11 @@ text to verify multimodal (vision) input support.
 
 Prerequisites:
     - Node.js / npx available
-    - ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set (can point to LiteLLM proxy)
+    - ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set. When pointing at the
+      OpenHands LiteLLM proxy, use the dedicated ACP key (ACP_LLM_API_KEY)
+      whose LiteLLM alias bypasses the proxy's identity guardrail — Claude
+      Code sends its own system prompt, which the guardrail would 403.
+      Against api.anthropic.com directly, any Anthropic API key works.
 
 Usage:
     uv run python examples/01_standalone_sdk/40_acp_agent_example.py

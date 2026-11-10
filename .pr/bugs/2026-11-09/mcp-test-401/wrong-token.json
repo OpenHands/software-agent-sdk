@@ -1,0 +1,34 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/mcp/test",
+    "query": [],
+    "auth": "header",
+    "body": {
+      "server": {
+        "transport": "http",
+        "url": "http://127.0.0.1:44183/mcp",
+        "auth": {
+          "strategy": "bearer",
+          "value": "qa-f19-wrong"
+        }
+      },
+      "timeout": 20
+    },
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-length": "89",
+      "content-type": "application/json"
+    },
+    "body": {
+      "ok": false,
+      "error": "MCPError: Server returned an error response",
+      "error_kind": "unknown"
+    },
+    "truncated": false
+  },
+  "elapsed_ms": 840
+}

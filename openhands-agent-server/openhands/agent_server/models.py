@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
@@ -326,6 +326,23 @@ class _ConversationInfoBase(BaseModel):
             "entries are opaque aliases whose human identity lives in "
             '``description`` (e.g. claude-agent-acp\'s ``"default"`` -> '
             '``"Opus 4.7 with 1M context · ..."``).'
+        ),
+    )
+    current_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort the ACP session reports for its current model "
+            "(the server's own default when none was requested). ``None`` when "
+            "the model offers no effort setting, the server doesn't report one, "
+            "or the agent is not ACP."
+        ),
+    )
+    available_efforts: list[ACPEffortOption] = Field(
+        default_factory=list,
+        description=(
+            "Reasoning-effort levels the ACP session offers for its current "
+            "model, verbatim from the server. Pass a ``value`` to "
+            "``switch_acp_effort``. Empty when the model offers none."
         ),
     )
     supports_runtime_model_switch: bool = Field(

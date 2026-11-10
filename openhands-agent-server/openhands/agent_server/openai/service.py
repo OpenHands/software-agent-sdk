@@ -58,6 +58,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import Metrics
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
@@ -588,6 +589,7 @@ async def _run_agent(
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
+    usage_baseline = Metrics()
 
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
@@ -596,6 +598,7 @@ async def _run_agent(
         if event_service is not None:
             state_before = await event_service.get_state()
             min_event_count = len(state_before.events) + 1
+            usage_baseline = state_before.stats.get_combined_metrics().deep_copy()
             # Claim capacity before saving the message: a 429 must leave
             # nothing behind so an OpenAI client can retry the same request.
             run_slot = await event_service.reserve_run_slot()
@@ -646,7 +649,8 @@ async def _run_agent(
     _raise_for_terminal_error(status_value)
     state = await event_service.get_state()
     final_response = await event_service.get_agent_final_response()
-    usage = state.stats.get_combined_metrics().accumulated_token_usage
+    metrics = state.stats.get_combined_metrics()
+    usage = metrics.diff(usage_baseline).accumulated_token_usage
     assert conversation_id is not None
     return OpenAIAgentRunResult(
         conversation_id=conversation_id,
