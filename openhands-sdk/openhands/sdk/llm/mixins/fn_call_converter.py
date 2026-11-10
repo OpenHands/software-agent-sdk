@@ -341,21 +341,6 @@ def _append_to_content(content: Content, suffix: str) -> Content:
     )
 
 
-def _prepend_to_content(content: Content, prefix: str) -> Content:
-    """Prepend text to content (string or list format)."""
-    if isinstance(content, str):
-        return prefix + content
-    if isinstance(content, list):
-        if content and content[0]["type"] == "text":
-            content[0]["text"] = prefix + content[0]["text"]
-        else:
-            content = [cast(TextPart, {"type": "text", "text": prefix})] + content
-        return content
-    raise FunctionCallConversionError(
-        f"Unexpected content type {type(content)}. Expected str or list."
-    )
-
-
 def _wrap_content_with_example(
     content: Content,
     prefix: str,
@@ -513,6 +498,20 @@ def convert_fncall_messages_to_non_fncall_messages(
     return converted_messages
 
 
+def _unframe_param_value(raw: str) -> str:
+    """Undo the newline framing of ``convert_tool_call_to_string``.
+
+    Single-line content is stripped. Content that is still multiline once
+    stripped keeps its own indentation and trailing newline and loses only the
+    frame on each side: one newline (LF or CRLF) and any spaces or tabs
+    between it and the tag.
+    """
+    unframed = re.sub(r"\A[ \t]*\r?\n", "", raw)
+    unframed = re.sub(r"\r?\n[ \t]*\Z", "", unframed)
+    stripped = unframed.strip()
+    return unframed if "\n" in stripped else stripped
+
+
 def _extract_and_validate_params(
     matching_tool: ChatCompletionToolParamFunctionChunk,
     param_matches: Iterable[re.Match],
@@ -528,7 +527,7 @@ def _extract_and_validate_params(
 
     for param_match in param_matches:
         param_name = param_match.group(1)
-        param_value: Any = param_match.group(2).strip()
+        param_value: Any = _unframe_param_value(param_match.group(2))
 
         # security_risk is excluded here for the same reason it's excluded from
         # missing_params below: read-only tools (e.g. finish) never declare it

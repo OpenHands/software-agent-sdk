@@ -1,5 +1,6 @@
 """Tests for basic file editor operations."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -509,6 +510,19 @@ def test_str_replace_error_multiple_multiline_occurrences(editor):
     assert "[1, 7]" in error_msg  # Should show correct starting line numbers
 
 
+def test_str_replace_rejects_overlapping_occurrences(editor, tmp_path):
+    editor, _ = editor
+    # "aa" occurs at offsets 0 and 1 of "aaa", so it does not identify a single
+    # location and the replacement must be refused.
+    path = tmp_path / "overlap.txt"
+    path.write_text("aaa\n")
+
+    with pytest.raises(ToolError, match="Multiple occurrences"):
+        editor(command="str_replace", path=str(path), old_str="aa", new_str="b")
+
+    assert path.read_text() == "aaa\n"
+
+
 def test_str_replace_nonexistent_string(editor):
     editor, test_file = editor
     with pytest.raises(ToolError) as exc_info:
@@ -982,3 +996,15 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         new_str="Inserted line at 500",
     )
     assert "   500\tInserted line at 500" in result.text
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="text-mode writes emit CRLF natively on Windows"
+)
+def test_str_replace_preserves_crlf_line_endings(tmp_path):
+    path = tmp_path / "crlf.txt"
+    path.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    FileEditor()(command="str_replace", path=str(path), old_str="two", new_str="TWO")
+
+    assert path.read_bytes() == b"one\r\nTWO\r\nthree\r\n"

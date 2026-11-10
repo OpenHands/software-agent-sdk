@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "echo runtime >> order.log", "timeout": 5}]}
+    ],
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "echo start-runtime >> order.log", "timeout": 5}]}
+    ]
+  }
+}

@@ -16,8 +16,13 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
 from openhands.sdk.utils.path import get_user_persistence_dir
-from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from openhands.sdk.utils.pydantic_secrets import (
+    REDACTED_SECRET_VALUE,
+    STRICT_DECRYPT_CONTEXT_KEY,
+    SecretDecryptionError,
+)
 
 
 if TYPE_CHECKING:
@@ -56,6 +61,33 @@ def _api_key_present(llm: LLM) -> bool:
         return False
     value = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
     return bool(value.strip()) and value != REDACTED_SECRET_VALUE
+
+
+def _raise_if_undecryptable(profile_path: Path, cipher: Cipher) -> None:
+    """Refuse to overwrite a profile holding secrets ``cipher`` cannot decrypt.
+
+    After a key change the stored token is still recoverable with the original
+    key; overwriting the file would replace it with whatever the caller loaded
+    under the new key (``null``). An unreadable file is left to ``save``.
+    """
+    try:
+        data = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    for value in data.values():
+        if (
+            isinstance(value, str)
+            and value.startswith(FERNET_TOKEN_PREFIX)
+            and cipher.try_decrypt_str(value) is None
+        ):
+            raise SecretDecryptionError(
+                f"Profile `{profile_path.stem}` holds a secret that cannot be "
+                "decrypted with any configured key. Restore the key it was "
+                "saved under as OH_SECRET_KEY, add it to OH_PREVIOUS_SECRET_KEYS, "
+                "or delete the profile."
+            )
 
 
 @runtime_checkable
@@ -204,6 +236,9 @@ class LLMProfileStore:
 
         Raises:
             ProfileLimitExceeded: If ``max_profiles`` would be exceeded.
+            SecretDecryptionError: If ``cipher`` is given and the existing
+                profile holds a secret it cannot decrypt (a key change), so
+                overwriting it would lose that secret.
             TimeoutError: If the lock cannot be acquired.
         """
         profile_path = self._get_profile_path(name)
@@ -223,6 +258,8 @@ class LLMProfileStore:
                     )
 
             if profile_path.exists():
+                if cipher is not None:
+                    _raise_if_undecryptable(profile_path, cipher)
                 logger.info(
                     f"[Profile Store] Profile `{name}` already exists. Overwriting."
                 )
@@ -262,6 +299,7 @@ class LLMProfileStore:
         *,
         cipher: Cipher | None = None,
         resolve_provider: bool = True,
+        strict: bool = False,
     ) -> LLM:
         """Load an LLM instance from the given profile name.
 
@@ -274,6 +312,9 @@ class LLMProfileStore:
                 applied to the returned LLM (read-at-use). Set False to inspect
                 the profile as stored without touching the provider store — used
                 by display paths so a dangling reference never fails a read.
+            strict: A secret ``cipher`` cannot decrypt loads as ``None`` by
+                default. With ``strict=True`` (paths that write the loaded LLM
+                elsewhere) the load raises ``SecretDecryptionError`` instead.
 
         Returns:
             An LLM instance constructed from the profile configuration, with
@@ -282,6 +323,8 @@ class LLMProfileStore:
         Raises:
             FileNotFoundError: If the profile name does not exist.
             ValueError: If the profile file is corrupted or invalid.
+            SecretDecryptionError: With ``strict``, if a stored secret cannot
+                be decrypted with ``cipher``.
             ProviderConnectionNotFound: If the profile references a provider
                 connection that no longer exists and carries no inline key.
             TimeoutError: If the lock cannot be acquired.
@@ -299,9 +342,15 @@ class LLMProfileStore:
             try:
                 from openhands.sdk.llm.llm import LLM
 
-                context: dict[str, Any] | None = {"cipher": cipher} if cipher else None
+                context: dict[str, Any] | None = (
+                    {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
+                    if cipher
+                    else None
+                )
 
                 llm_instance = LLM.load_from_json(str(profile_path), context=context)
+            except SecretDecryptionError:
+                raise
             except Exception as e:
                 # Re-raise as ValueError for clearer error handling
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e
