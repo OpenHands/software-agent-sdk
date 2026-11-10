@@ -364,14 +364,36 @@ Preconditions:
     --check conversations contains '"attention": "resolved"' --save F36.resolved/conversations
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word reopened and finish."}], "run": true, "refuse_pending_confirmation": true}' --expect 200
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags not-contains resolved --check tags.turn eq answered --until-ok 10 \
+  control-agent-server api GET "/api/conversations/$W2" --check tags.resolved ne user --check tags.turn eq answered --until-ok 10 \
     --save F36.resolved/reopened
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
   ```
   The person's resolve shows as `resolved: "user"`; a new message reopens the
-  conversation. (`resolved=auto` needs a working judge model: with a real LLM, ask a plain
-  question in a member and expect `resolved: "auto"` and a `resolve_note`;
-  with an open PR left for review expect no resolve.)
+  conversation. The reply to that message is judged again, so a trivial turn
+  may come back as `resolved: "auto"`, never `user`.
+- **Resolved automatically (`F36.auto-resolve`).**
+  Requires: `F36.message-rest`
+  Needs: `llm`
+  ```sh
+  A1=$(control-agent-server conversation start --no-run --title qa-f36-answer --print-id)
+  A2=$(control-agent-server conversation start --no-run --title qa-f36-handoff --print-id)
+  control-agent-server api PUT "/api/projects/$P2/conversations/$A1" --expect 204
+  control-agent-server api PUT "/api/projects/$P2/conversations/$A2" --expect 204
+  control-agent-server api POST "/api/conversations/$A1/events" --json '{"role": "user", "content": [{"type": "text", "text": "What is 17 times 23? Answer in one sentence and finish. Do not use tools."}], "run": true}' --expect 200
+  control-agent-server api POST "/api/conversations/$A2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Suggest two names for my new cat, with one line on each. End your final message with exactly: Tell me which one you prefer. Do not use tools."}], "run": true}' --expect 200
+  control-agent-server conversation wait "$A1" --until finished --timeout 180
+  control-agent-server conversation wait "$A2" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$A1" --check tags.resolved eq auto --check tags.resolvenote matches '^(0\.(8[5-9]|9\d)|1\.00) nothing$' --until-ok 30 \
+    --save F36.auto-resolve/answer
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq answered --check tags not-contains resolved --until-ok 10 \
+    --save F36.auto-resolve/handoff
+  control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolve_note": "' --save F36.auto-resolve/board
+  ```
+  The judge runs on the conversation's own LLM (no `OH_RESOLUTION_MODEL`).
+  A plain answer resolves as `auto` with a note such as `1.00 nothing`. A
+  hand-off that ends without a question mark (`Tell me which one you prefer.`)
+  reads as `answered` to the turn heuristic, but the judge sees the person owes
+  a choice and leaves it open. Verified 2026-11-10 with deepseek-flash.
 - **Artifacts over REST (`F36.artifacts-rest`).**
   Requires: `F36.coordinator`
   ```sh
