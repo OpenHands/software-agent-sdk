@@ -24,12 +24,22 @@ from openhands.tools.terminal import TerminalTool
 @pytest.fixture(autouse=True)
 def isolated_registry_and_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _reset_registry_for_tests()
-    # Do not pass the developer's credentials or shell startup files to bash.
+    # Do not pass the developer's credentials or shell startup files to the terminal.
     for name in list(os.environ):
-        if name not in {"PATH", "LANG", "LC_ALL"}:
+        if name.upper() not in {
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "SYSTEMROOT",
+            "COMSPEC",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+        }:
             monkeypatch.delenv(name)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("HISTFILE", "/dev/null")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HISTFILE", os.devnull)
     yield
     _reset_registry_for_tests()
 
@@ -64,6 +74,12 @@ def test_task_secret_delivery_and_masking(
         "else echo PROBE_ABSENT; fi; "
         'printf "MASK_PROBE=%s\\n" "$TASK_PROBE_TOKEN"'
     )
+    if os.name == "nt":
+        command = (
+            'if ($env:TASK_PROBE_TOKEN) { Write-Output "PROBE_PRESENT" } '
+            'else { Write-Output "PROBE_ABSENT" }; '
+            'Write-Output "MASK_PROBE=$env:TASK_PROBE_TOKEN"'
+        )
     script: list[Message | Exception] = [
         _call("terminal", command=command),
         _call("finish", message="done"),
@@ -76,7 +92,14 @@ def test_task_secret_delivery_and_masking(
         lambda llm: Agent(
             llm=llm,
             tools=[
-                Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"})
+                Tool(
+                    name=TerminalTool.name,
+                    params={
+                        "terminal_type": "powershell"
+                        if os.name == "nt"
+                        else "subprocess"
+                    },
+                )
             ],
         ),
         "Probe inherited secrets with a real terminal",
@@ -98,7 +121,7 @@ def test_task_secret_delivery_and_masking(
             first = executor(
                 TaskAction(prompt="probe", subagent_type="secret-probe"), parent
             )
-            assert first.status == "completed"
+            assert first.status == "completed", first
             if resume:
                 result = executor(
                     TaskAction(
@@ -108,7 +131,7 @@ def test_task_secret_delivery_and_masking(
                     ),
                     parent,
                 )
-                assert result.status == "completed"
+                assert result.status == "completed", result
                 assert result.task_id == first.task_id
             assert parent.state.persistence_dir is not None
             subagents = Path(parent.state.persistence_dir) / "subagents"
