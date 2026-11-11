@@ -475,15 +475,8 @@ class EventService:
             return
 
         def _update() -> None:
-            state = conversation._state
-            with state:
-                registry = state.secret_registry.model_copy(
-                    update={
-                        "secret_sources": dict(state.secret_registry.secret_sources)
-                    }
-                )
-                registry.update_secrets(secrets)
-                state.secret_registry = registry
+            with conversation._state:
+                conversation.update_secrets(secrets)
                 agent = conversation.agent
                 if isinstance(agent, ACPAgent):
                     agent.restart_for_updated_credentials(secrets)
