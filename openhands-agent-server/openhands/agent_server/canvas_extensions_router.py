@@ -196,6 +196,7 @@ class UninstallCanvasExtensionResponse(BaseModel):
         400: {"description": "Could not read canvas extension source"},
         409: {"description": "Canvas extension already installed (use force=true)"},
         422: {"description": "Invalid canvas extension (bad manifest, etc.)"},
+        503: {"description": "Another extension operation is in progress"},
     },
 )
 async def install_canvas_extension_endpoint(
@@ -262,7 +263,9 @@ async def install_canvas_extension_endpoint(
 
 
 @canvas_extensions_router.get(
-    "/installed", response_model=InstalledCanvasExtensionsListResponse
+    "/installed",
+    response_model=InstalledCanvasExtensionsListResponse,
+    responses={503: {"description": "Another extension operation is in progress"}},
 )
 def list_installed_canvas_extensions_endpoint() -> (
     InstalledCanvasExtensionsListResponse
@@ -302,7 +305,10 @@ def get_installed_canvas_extension_endpoint(
 @canvas_extensions_router.patch(
     "/installed/{extension_name}",
     response_model=UpdateCanvasExtensionStateResponse,
-    responses={404: {"description": "Canvas extension not installed"}},
+    responses={
+        404: {"description": "Canvas extension not installed"},
+        503: {"description": "Another extension operation is in progress"},
+    },
 )
 async def set_canvas_extension_enabled_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -379,7 +385,10 @@ async def set_canvas_extension_enabled_endpoint(
 @canvas_extensions_router.delete(
     "/installed/{extension_name}",
     response_model=UninstallCanvasExtensionResponse,
-    responses={404: {"description": "Canvas extension not installed"}},
+    responses={
+        404: {"description": "Canvas extension not installed"},
+        503: {"description": "Another extension operation is in progress"},
+    },
 )
 async def uninstall_canvas_extension_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -571,6 +580,7 @@ async def grant_canvas_extension_backend_secrets_endpoint(
 @canvas_extensions_router.delete(
     "/installed/{extension_name}/backend/secret-grant",
     response_model=BackendStatus,
+    responses={503: {"description": "Another extension operation is in progress"}},
 )
 async def revoke_canvas_extension_backend_secrets_endpoint(
     extension_name: CanvasExtensionNamePath,

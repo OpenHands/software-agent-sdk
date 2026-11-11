@@ -10,6 +10,7 @@ from openhands.sdk.extensions.installation.manager import (
 from openhands.sdk.extensions.installation.metadata import (
     InstallationMetadata,
     InstallationMetadataLoadError,
+    InstallationMetadataLockTimeoutError,
     MetadataSession,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "InstallationManager",
     "InstallationMetadata",
     "InstallationMetadataLoadError",
+    "InstallationMetadataLockTimeoutError",
     "InstallationOutcome",
     "MetadataSession",
 ]

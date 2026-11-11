@@ -15,6 +15,7 @@ from openhands.sdk.extensions.installation import (
     InstallationInterface,
     InstallationManager,
     InstallationMetadata,
+    InstallationMetadataLockTimeoutError,
     MetadataSession,
     manager as manager_module,
     metadata as metadata_module,
@@ -227,7 +228,11 @@ def test_session_lock_times_out_instead_of_blocking_forever(
         )
 
     assert len(errors) == 1
-    assert isinstance(errors[0], TimeoutError)
+    assert isinstance(errors[0], InstallationMetadataLockTimeoutError)
+    # Not an OSError: the Canvas install endpoint maps OSError to 422
+    # "Invalid canvas extension".
+    assert not isinstance(errors[0], OSError)
+    assert errors[0].installed_dir == installation_dir
 
 
 def _raise_runtime_error(*args, **kwargs):

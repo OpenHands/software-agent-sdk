@@ -37,6 +37,23 @@ class InstallationMetadataLoadError(Exception):
         self.metadata_path = metadata_path
 
 
+class InstallationMetadataLockTimeoutError(Exception):
+    """The installation metadata lock was not acquired in time.
+
+    Another operation (an install, update, uninstall or listing) held it for
+    the whole timeout. Retrying later can succeed. Deliberately not a
+    ``TimeoutError``: that is an ``OSError``, which callers already map to
+    unrelated errors (an invalid extension, for one).
+    """
+
+    def __init__(self, installed_dir: Path, timeout: float) -> None:
+        super().__init__(
+            f"Timed out after {timeout}s waiting for the installation "
+            f"metadata lock in {installed_dir}"
+        )
+        self.installed_dir = installed_dir
+
+
 class MetadataSession:
     """Context manager that binds ``InstallationMetadata`` to its directory.
 
@@ -165,6 +182,8 @@ class InstallationMetadata(BaseModel):
                 session will call ``sync()``.
 
         Raises:
+            InstallationMetadataLockTimeoutError: Another session held the
+                lock for the whole timeout.
             InstallationMetadataLoadError: The metadata file exists but cannot
                 be read or parsed. The lock is released and the file is left
                 unchanged.
@@ -187,15 +206,14 @@ class InstallationMetadata(BaseModel):
         lock = FileLock(installed_dir / ".metadata.lock")
         try:
             lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS)
-        except Timeout:
+        except Timeout as e:
             logger.error(
                 f"Failed to acquire installation metadata lock in "
                 f"{_LOCK_TIMEOUT_SECONDS}s: {installed_dir}"
             )
-            raise TimeoutError(
-                "Installation metadata lock acquisition timed out after "
-                f"{_LOCK_TIMEOUT_SECONDS}s"
-            )
+            raise InstallationMetadataLockTimeoutError(
+                installed_dir, _LOCK_TIMEOUT_SECONDS
+            ) from e
         return lock
 
     @classmethod

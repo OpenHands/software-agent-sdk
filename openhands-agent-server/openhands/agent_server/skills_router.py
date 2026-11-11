@@ -378,6 +378,7 @@ def sync_skills() -> SyncResponse:
         400: {"description": "Failed to fetch skill source"},
         409: {"description": "Skill already installed (use force=true)"},
         422: {"description": "Invalid skill (missing SKILL.md, etc.)"},
+        503: {"description": "Another extension operation is in progress"},
     },
 )
 def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillResponse:
@@ -422,7 +423,11 @@ def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillRespon
         )
 
 
-@skills_router.get("/installed", response_model=InstalledSkillsListResponse)
+@skills_router.get(
+    "/installed",
+    response_model=InstalledSkillsListResponse,
+    responses={503: {"description": "Another extension operation is in progress"}},
+)
 def list_installed_skills_endpoint() -> InstalledSkillsListResponse:
     """List all installed skills.
 
@@ -467,7 +472,10 @@ def get_installed_skill_endpoint(skill_name: SkillNamePath) -> InstalledSkillRes
 @skills_router.patch(
     "/installed/{skill_name}",
     response_model=UpdateSkillStateResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses={
+        404: {"description": "Skill not installed"},
+        503: {"description": "Another extension operation is in progress"},
+    },
 )
 def set_skill_enabled_endpoint(
     skill_name: SkillNamePath, request: UpdateSkillStateRequest
@@ -500,7 +508,10 @@ def set_skill_enabled_endpoint(
 @skills_router.delete(
     "/installed/{skill_name}",
     response_model=UninstallSkillResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses={
+        404: {"description": "Skill not installed"},
+        503: {"description": "Another extension operation is in progress"},
+    },
 )
 def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillResponse:
     """Uninstall a skill by name.
@@ -533,6 +544,7 @@ def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillRespons
     responses={
         400: {"description": "Failed to fetch the skill's recorded source"},
         404: {"description": "Skill not installed"},
+        503: {"description": "Another extension operation is in progress"},
     },
 )
 def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
@@ -581,7 +593,11 @@ def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
     )
 
 
-@skills_router.get("/marketplace", response_model=MarketplaceCatalogResponse)
+@skills_router.get(
+    "/marketplace",
+    response_model=MarketplaceCatalogResponse,
+    responses={503: {"description": "Another extension operation is in progress"}},
+)
 def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     """Get the marketplace catalog with installation status.
 

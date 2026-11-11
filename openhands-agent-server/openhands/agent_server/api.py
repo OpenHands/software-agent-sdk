@@ -119,6 +119,9 @@ from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
+from openhands.sdk.extensions.installation import (
+    InstallationMetadataLockTimeoutError,
+)
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
@@ -799,6 +802,23 @@ def _add_exception_handlers(api: FastAPI) -> None:
             content={
                 "detail": str(exc),
                 "retryable": True,
+            },
+        )
+
+    @api.exception_handler(InstallationMetadataLockTimeoutError)
+    async def _installation_lock_timeout_handler(
+        _request: Request, _exc: InstallationMetadataLockTimeoutError
+    ) -> JSONResponse:
+        # Another plugin, skill or Canvas extension operation held the
+        # installation metadata lock for the whole timeout: busy, not broken.
+        # The message stays generic because the exception names a local path.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": (
+                    "Another plugin, skill or extension operation is in "
+                    "progress. Please retry."
+                )
             },
         )
 
