@@ -1498,8 +1498,6 @@ class ConversationService:
         )
         fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
         if managed_codex_credential or fallback_secret is not None:
-            # Pass the fallback secret directly to the EventService; the stored
-            # record no longer carries secrets.
             injected_secrets: dict[str, SecretSource] | None = None
             if not managed_codex_credential and fallback_secret is not None:
                 injected_secrets = {CODEX_AUTH_SECRET_NAME: fallback_secret}

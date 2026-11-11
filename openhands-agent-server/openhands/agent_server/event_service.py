@@ -238,9 +238,10 @@ class EventService:
 
     stored: StoredConversation
     conversations_dir: Path
-    # Init-only fields for NEW conversations — base_state.json is the single
-    # source of truth after creation. On resume these are unused (the guard
-    # ``if not base_state_exists:`` in start() skips seeding from here).
+    # What a NEW conversation starts with. base_state.json owns these from
+    # then on: a resume loads the agent, policy and analyzer from it and
+    # ignores the values here. ``secrets`` are added on every start, which is
+    # how a resume receives a credential its caller just supplied.
     agent: AgentBase | None = None
     confirmation_policy: ConfirmationPolicyBase = field(default_factory=NeverConfirm)
     security_analyzer: SecurityAnalyzerBase | None = field(default=None)
