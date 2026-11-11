@@ -1043,9 +1043,8 @@ class EventService:
             # conversation's synchronous FIFOLock cannot block the server event loop.
             log_length: int | None = None
             if self._conversation:
-                loop = asyncio.get_running_loop()
-                state_update_event, log_length = await loop.run_in_executor(
-                    None, self._create_initial_state_sync
+                state_update_event, log_length = await self._run_state_op(
+                    self._create_initial_state_sync
                 )
             else:
                 state_update_event = ConversationStateUpdateEvent(
@@ -2269,8 +2268,7 @@ class EventService:
         """
         if self._conversation is None:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.switch_acp_effort, effort)
+        await self._run_state_op(self._conversation.switch_acp_effort, effort)
 
     async def close(self):
         if self.bash_event_service is not None:

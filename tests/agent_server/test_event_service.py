@@ -2797,8 +2797,20 @@ class TestEventServiceConcurrentSubscriptions:
         return conversation
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "wait_on_state_lock",
+        [
+            pytest.param(
+                lambda service: service._get_execution_status(), id="execution-status"
+            ),
+            pytest.param(
+                lambda service: service.subscribe_to_events(AsyncMock()),
+                id="websocket-subscribe",
+            ),
+        ],
+    )
     async def test_state_lock_waiters_leave_default_executor_free(
-        self, event_service, mock_conversation_with_real_lock
+        self, event_service, mock_conversation_with_real_lock, wait_on_state_lock
     ):
         """A run holds the state lock across whole tool steps. Requests waiting
         on it must not park default-executor threads: lock-free work (event
@@ -2818,7 +2830,7 @@ class TestEventServiceConcurrentSubscriptions:
         holder = threading.Thread(target=hold_lock)
         holder.start()
         held.wait()
-        waiter = asyncio.create_task(event_service._get_execution_status())
+        waiter = asyncio.create_task(wait_on_state_lock(event_service))
         try:
             await asyncio.sleep(0.05)
             free = await asyncio.wait_for(
@@ -2828,8 +2840,7 @@ class TestEventServiceConcurrentSubscriptions:
         finally:
             release.set()
             holder.join()
-        status = await asyncio.wait_for(waiter, timeout=2)
-        assert status == ConversationExecutionStatus.IDLE
+        await asyncio.wait_for(waiter, timeout=2)
         event_service._state_executor.shutdown()
 
     @pytest.mark.asyncio
