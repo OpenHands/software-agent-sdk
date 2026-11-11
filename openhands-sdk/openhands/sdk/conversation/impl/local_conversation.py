@@ -9,8 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
-from pydantic import BaseModel
-
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamProgressCallbackType
@@ -116,6 +114,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import copy_keeping_secrets
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -198,18 +197,6 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
     context = {"expose_secrets": True}
     return a.model_dump(mode="json", context=context) == b.model_dump(
         mode="json", context=context
-    )
-
-
-def _own_copy[ModelT: BaseModel](model: ModelT) -> ModelT:
-    """A copy that shares nothing with ``model`` and keeps its credentials.
-
-    A dump/validate round trip rather than ``model_copy(deep=True)``: a deep
-    copy carries private runtime state along (an analyzer's history) and fails
-    on members that cannot be copied (a lock, an open client).
-    """
-    return type(model).model_validate(
-        model.model_dump(context={"expose_secrets": True})
     )
 
 
@@ -920,7 +907,7 @@ class LocalConversation(BaseConversation):
         # per-conversation call context on the LLM (#2917, #3443): a
         # shared/aliased agent would clobber the source conversation's
         # context.
-        fork_agent = _own_copy(agent if agent is not None else self.agent)
+        fork_agent = copy_keeping_secrets(agent if agent is not None else self.agent)
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
@@ -932,10 +919,12 @@ class LocalConversation(BaseConversation):
             # Copied before the fork exists too, for the same reason.
             source_analyzer = self._state.security_analyzer
             fork_analyzer = (
-                _own_copy(source_analyzer) if source_analyzer is not None else None
+                copy_keeping_secrets(source_analyzer)
+                if source_analyzer is not None
+                else None
             )
             fork_secrets = {
-                name: _own_copy(source)
+                name: copy_keeping_secrets(source)
                 for name, source in self._state.secret_registry.secret_sources.items()
             }
 
