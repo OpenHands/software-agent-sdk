@@ -1,6 +1,8 @@
 """Conversation router for OpenHands SDK."""
 
+import asyncio
 import json
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -75,8 +77,15 @@ from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 
 
+logger = logging.getLogger(__name__)
+
+
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
+# Only mounted when the app actually has a content search service, so
+# hosted deployments have no route, no schema entry, and no 404
+# fingerprint for this feature at all.
+conversation_search_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 _OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
 _OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
 _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
@@ -204,8 +213,7 @@ async def search_conversations(
     return page
 
 
-@conversation_catalog_router.get("/search-content", include_in_schema=False)
-@conversation_router.get("/search-content")
+@conversation_search_router.get("/search-content")
 async def search_conversation_content(
     request: Request,
     query: Annotated[
@@ -214,6 +222,9 @@ async def search_conversation_content(
             title="Full-text query matched against conversation titles and message "
             "text (FTS5 prefix match per token, AND across tokens)",
             min_length=1,
+            # Keeps a hostile query from expanding into an unbounded FTS
+            # MATCH expression (every token adds a fuzzy expansion group).
+            max_length=256,
         ),
     ],
     limit: Annotated[int, Query(title="Max hits to return", gt=0, le=100)] = 50,
@@ -222,11 +233,12 @@ async def search_conversation_content(
 
     Returns matching message rows with snippets. ``capped`` tells the caller
     when the limit cut results off so the UI can show an honest hint.
-    Returns 404 on hosted deployments, where the feature is not mounted.
+    The router is only mounted on deployments that constructed the service.
     """
     service = getattr(request.app.state, "content_search_service", None)
     if service is None:
-        raise HTTPException(status_code=404, detail="not found")
+        # Unreachable when mounted correctly; kept as a hard stop.
+        raise HTTPException(status_code=404, detail="Not Found")
     hits, capped = service.search(query, limit)
     return ContentSearchResponse(
         results=[ContentSearchHit(**h) for h in hits],
@@ -434,6 +446,7 @@ async def interrupt_conversation(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
 async def delete_conversation(
+    request: Request,
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
@@ -441,6 +454,18 @@ async def delete_conversation(
     deleted = await conversation_service.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # Keep the search index honest: deleted conversations must stop
+    # matching immediately, not linger until the next backfill prune.
+    search_service = getattr(request.app.state, "content_search_service", None)
+    if search_service is not None:
+        try:
+            await asyncio.to_thread(
+                search_service.remove_conversation, str(conversation_id)
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to prune search index for conversation {conversation_id}: {e}"
+            )
     return Success()
 
 

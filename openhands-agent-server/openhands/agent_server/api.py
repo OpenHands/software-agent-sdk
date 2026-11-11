@@ -53,6 +53,7 @@ from openhands.agent_server.conversation_registry import (
 from openhands.agent_server.conversation_router import (
     conversation_catalog_router,
     conversation_router,
+    conversation_search_router,
 )
 from openhands.agent_server.conversation_service import (
     ConversationService,
@@ -662,6 +663,12 @@ def _add_api_routes(app: FastAPI) -> None:
     # Collection routes must precede runtime catch-alls such as
     # ``/conversations/{conversation_id}``.
     api_router.include_router(conversation_catalog_router)
+    # Static collection routes must precede the ``/{conversation_id}``
+    # catch-alls added by the registry and ``conversation_router`` below,
+    # and the search router only exists when the service does (hosted
+    # deployments get no route, schema entry, or 404 fingerprint).
+    if hasattr(app.state, "content_search_service"):
+        api_router.include_router(conversation_search_router)
     conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
     api_router.include_router(credential_binding_router)
@@ -972,10 +979,11 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.conversation_registry = create_conversation_registry(config)
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
     app.state.app_backend_session_store = AppBackendSessionStore()
-    app.state.config = config
-    # Content search indexes local conversation files; hosted deployments
-    # must not expose it (multi-tenant conversation storage).
-    if config.telemetry.deployment_kind == "local":
+    # Content search indexes local conversation files. Opt-in flag plus
+    # local deployment kind: hosted deployments never construct the service,
+    # so the router below is never mounted and the feature leaves no
+    # route, schema entry, or 404 fingerprint.
+    if config.content_search_enabled and config.telemetry.deployment_kind == "local":
         app.state.content_search_service = ContentSearchService(config)
 
     _add_api_routes(app)

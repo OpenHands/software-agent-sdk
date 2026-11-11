@@ -1,11 +1,16 @@
 """Tests for the /conversations/search-content endpoint and service wiring."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from conftest import write_conversation
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config, TelemetrySpec
+from openhands.agent_server.conversation_router import conversation_router
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.search_service import ContentSearchService
 
 
@@ -28,6 +33,23 @@ def conv_root(tmp_path):
 
 
 @pytest.fixture
+def client_factory(conv_root, tmp_path, monkeypatch):
+    """App factory for configs that differ from the default ``client`` fixture."""
+
+    def _make(*, content_search_enabled: bool = True) -> TestClient:
+        monkeypatch.setenv("OH_SESSION_API_KEYS_0", "test-key")
+        config = Config(
+            session_api_keys=["test-key"],
+            conversations_path=conv_root,
+            workspace_path=tmp_path / "workspace",
+            content_search_enabled=content_search_enabled,
+        )
+        return TestClient(create_app(config))
+
+    return _make
+
+
+@pytest.fixture
 def client(conv_root, tmp_path, monkeypatch):
     monkeypatch.setenv("OH_SESSION_API_KEYS_0", "test-key")
     monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(conv_root))
@@ -35,6 +57,7 @@ def client(conv_root, tmp_path, monkeypatch):
         session_api_keys=["test-key"],
         conversations_path=conv_root,
         workspace_path=tmp_path / "workspace",
+        content_search_enabled=True,
     )
     app = create_app(config)
     return TestClient(app)
@@ -49,6 +72,7 @@ def remote_client(conv_root, tmp_path, monkeypatch):
         conversations_path=conv_root,
         workspace_path=tmp_path / "workspace",
         telemetry=TelemetrySpec(deployment_kind="remote"),
+        content_search_enabled=True,
     )
     app = create_app(config)
     return TestClient(app)
@@ -57,12 +81,60 @@ def remote_client(conv_root, tmp_path, monkeypatch):
 def test_remote_deployment_hides_content_search(remote_client):
     """Hosted deployments must not serve content search at all."""
     assert not hasattr(remote_client.app.state, "content_search_service")
+    # The route is not mounted, so the path falls through to the
+    # ``/{conversation_id}`` catch-all exactly like any other unknown
+    # ``/conversations/`` path: no fingerprint for the feature.
     resp = remote_client.get(
         "/api/conversations/search-content",
         params={"query": "garage"},
         headers={"X-Session-API-Key": "test-key"},
     )
-    assert resp.status_code == 404
+    unknown = remote_client.get(
+        "/api/conversations/definitely-not-a-route",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    assert resp.status_code == unknown.status_code
+    assert resp.json() == unknown.json()
+    # And no OpenAPI schema entry may advertise it.
+    schema = remote_client.get("/api/openapi.json")
+    assert "/api/conversations/search-content" not in schema.json().get("paths", {})
+
+
+def test_remote_schema_has_no_search_entry(remote_client):
+    """The OpenAPI schema must not advertise the endpoint on hosted deployments."""
+    schema = remote_client.get("/api/openapi.json").json()
+    assert "/api/conversations/search-content" not in schema.get("paths", {})
+    assert not hasattr(remote_client.app.state, "content_search_service")
+
+
+def test_disabled_by_default_locally(client_factory):
+    """Without an explicit opt-in, local deployments get no service or route."""
+    app = client_factory(content_search_enabled=False)
+    assert not hasattr(app.app.state, "content_search_service")
+    schema = app.get("/api/openapi.json").json()
+    assert "/api/conversations/search-content" not in schema.get("paths", {})
+    # Fallthrough parity: identical to any unknown /conversations/ path.
+    resp = app.get(
+        "/api/conversations/search-content",
+        params={"query": "garage"},
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    unknown = app.get(
+        "/api/conversations/definitely-not-a-route",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    assert resp.status_code == unknown.status_code
+    assert resp.json() == unknown.json()
+
+
+def test_overlong_query_is_rejected(client):
+    """Queries beyond the cap are rejected before hitting the index."""
+    resp = client.get(
+        "/api/conversations/search-content",
+        params={"query": "garage " * 60},
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    assert resp.status_code == 422
 
 
 def test_endpoint_returns_snippets(client):
@@ -153,3 +225,67 @@ def test_new_message_found_after_incremental_sync(conv_root, tmp_path):
     )
     hits, _ = svc.search("kubernetes")
     assert hits and hits[0]["title"] == "K8s migration"
+
+
+def test_delete_conversation_prunes_search_index(conv_root, tmp_path, monkeypatch):
+    """Deleting a conversation removes it from the search index immediately.
+
+    The service's delete machinery is stubbed (covered by its own tests);
+    the prune hook itself — service lookup, thread offload, index removal —
+    runs against a real index.
+    """
+    import shutil
+
+    conv_id = write_conversation(
+        conv_root, "Prune me", [("user", "This one gets deleted soon.")]
+    )
+    config = Config(
+        session_api_keys=["k"],
+        conversations_path=conv_root,
+        workspace_path=tmp_path / "w",
+        content_search_enabled=True,
+    )
+    service = ContentSearchService(config)
+    service.sync()
+    hits, _ = service.search("deleted")
+    assert conv_id in {h["conversation_id"] for h in hits}
+
+    app = FastAPI()
+    app.state.content_search_service = service
+    app.include_router(conversation_router, prefix="/api")
+    stub_service = MagicMock()
+
+    # Every search re-syncs from disk, so the stub must actually remove the
+    # directory — like the real service — or backfill would re-index it.
+    def _delete(conv_id):
+        shutil.rmtree(conv_root / str(conv_id), ignore_errors=True)
+        return True
+
+    stub_service.delete_conversation = AsyncMock(side_effect=_delete)
+    app.dependency_overrides[get_conversation_service] = lambda: stub_service
+    with TestClient(app) as client:
+        resp = client.delete(f"/api/conversations/{conv_id}")
+        assert resp.status_code == 200, resp.text
+    hits, _ = service.search("deleted")
+    assert conv_id not in {h["conversation_id"] for h in hits}
+
+
+def test_backfill_prunes_orphaned_conversations(conv_root, tmp_path):
+    """Backfill drops index rows for conversations whose directory is gone."""
+    import shutil
+
+    from openhands.agent_server.search_index import SearchIndex, backfill
+
+    index_path = conv_root.parent / "search-index.db"
+    index = SearchIndex(index_path)
+    stats = backfill(index, conv_root)
+    assert stats["pruned_orphans"] == 0
+    before = index.conversation_ids()
+    assert len(before) == 2
+    # Simulate a conversation deleted while the server was down.
+    victim = sorted(conv_root.iterdir())[0]
+    conv_id = victim.name
+    shutil.rmtree(victim)
+    stats = backfill(index, conv_root)
+    assert stats["pruned_orphans"] == 1
+    assert index.conversation_ids() == before - {conv_id}

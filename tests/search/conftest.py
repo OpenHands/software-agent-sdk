@@ -14,7 +14,14 @@ def write_conversation(root: Path, title: str, messages: list) -> str:
     events_dir = conv_dir / "events"
     events_dir.mkdir(parents=True, exist_ok=True)
     (conv_dir / "meta.json").write_text(
-        json.dumps({"conversation_id": conv_id, "title": title})
+        json.dumps(
+            {
+                "conversation_id": conv_id,
+                "id": conv_id,
+                "title": title,
+                "workspace": {"working_dir": str(conv_dir)},
+            }
+        )
     )
     for i, (source, text) in enumerate(messages):
         event = {

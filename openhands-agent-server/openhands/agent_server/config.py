@@ -484,6 +484,15 @@ class Config(BaseModel):
             "Can be configured with OH_REGISTERED_MARKETPLACES as a JSON list."
         ),
     )
+    content_search_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt-in for the local-only /api/conversations/search-content "
+            "endpoint. Hosted deployments must never set this: the endpoint "
+            "stays unmounted (no route, no OpenAPI schema entry) unless it "
+            "is explicitly enabled AND the deployment kind is local."
+        ),
+    )
     deferred_init: bool = Field(
         default=False,
         description=(

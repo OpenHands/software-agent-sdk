@@ -187,7 +187,10 @@ class SearchIndex:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+        # Shared across threads (request-thread pruning, event-loop sync):
+        # every access is serialized by ContentSearchService's lock, so the
+        # single connection stays safe.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         # Fuzzy vocabulary, loaded lazily and cached until the next write:
         # a sorted term list plus terms bucketed by length for typo scans.
         self._vocab_cache: tuple[list[str], dict[int, list[str]]] | None = None
@@ -239,6 +242,15 @@ class SearchIndex:
             "SELECT dir_mtime FROM conversations WHERE conv_id=?", (conv_id,)
         ).fetchone()
         return row[0] if row is not None else None
+
+    def conversation_ids(self) -> set[str]:
+        """IDs of all conversations currently indexed."""
+        return {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT conv_id FROM conversations"
+            ).fetchall()
+        }
 
     def note_conversation_sync(self, conv_id: str, dir_mtime: float) -> None:
         """Record that a conversation was fully re-indexed at this mtime."""
@@ -543,11 +555,13 @@ def backfill(
     indexed_events = 0
     conv_count = 0
     skipped = 0
+    seen_ids: set[str] = set()
     for conv_dir in sorted(conversations_path.glob("*/")):
         meta_file = conv_dir / _META_FILE
         if not meta_file.is_file():
             continue
         conv_id = conv_dir.name
+        seen_ids.add(conv_id)
         dir_mtime = conv_dir.stat().st_mtime
         if incremental:
             if index.conversation_mtime(conv_id) == dir_mtime:
@@ -570,9 +584,17 @@ def backfill(
                 continue
             if index.index_event(conv_id, event):
                 indexed_events += 1
+    # Drop index entries whose conversation directory is gone: the delete
+    # path prunes eagerly, but this also covers conversations deleted while
+    # the server was down or before the search feature existed.
+    pruned = 0
+    for orphan in index.conversation_ids() - seen_ids:
+        index.remove_conversation(orphan)
+        pruned += 1
     index.commit()
     return {
         "conversations_seen": conv_count,
         "events_indexed": indexed_events,
         "skipped_unchanged": skipped,
+        "pruned_orphans": pruned,
     }

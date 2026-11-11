@@ -36,6 +36,13 @@ class ContentSearchService:
         with self._lock:
             return backfill(index, self._config.conversations_path, incremental=True)
 
+    def remove_conversation(self, conv_id: str) -> None:
+        """Drop a conversation from the index (no-op when never indexed)."""
+        if self._index is None:
+            return
+        with self._lock:
+            self._index.remove_conversation(conv_id)
+
     def search(self, query: str, limit: int = 50) -> tuple[list[dict], bool]:
         """Return ``(hits, capped)``; ``capped`` is True only when results were
         actually truncated (one extra row is fetched to tell)."""
