@@ -81,6 +81,7 @@ class _ConnectionWriter:
     drop_reason: str | None = field(default=None, init=False)
 
     _queue: deque[tuple[str, int]] = field(default_factory=deque, init=False)
+    _held: deque[tuple[str, int]] | None = field(default=None, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     _pending_bytes: int = field(default=0, init=False)
     _task: asyncio.Task | None = field(default=None, init=False)
@@ -92,8 +93,28 @@ class _ConnectionWriter:
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
 
-    def send(self, frame: SessionFrameBase) -> bool:
-        """Admit one frame, never blocking. False if the connection is done."""
+    def hold_replies(self) -> None:
+        """Keep ``reply`` frames back until ``release_replies``.
+
+        Replies to the client's frames may be ready before ``sync`` is, but
+        ``sync`` (and the replay) must reach the client first.
+        """
+        if self._held is None:
+            self._held = deque()
+
+    def release_replies(self) -> None:
+        """Queue held replies, in order, after everything sent so far."""
+        held, self._held = self._held, None
+        if held:
+            self._queue.extend(held)
+            self._wake.set()
+
+    def send(self, frame: SessionFrameBase, *, reply: bool = False) -> bool:
+        """Admit one frame, never blocking. False if the connection is done.
+
+        A ``reply`` (to a client frame) waits while replies are held; it
+        counts against the same byte budget meanwhile.
+        """
         if self.closed:
             return False
 
@@ -120,8 +141,11 @@ class _ConnectionWriter:
             self._fail("slow_consumer")
             return False
 
-        self._queue.append((payload, size))
         self._pending_bytes += size
+        if reply and self._held is not None:
+            self._held.append((payload, size))
+            return True
+        self._queue.append((payload, size))
         self._wake.set()
         return True
 
@@ -400,6 +424,8 @@ async def session_socket(
     writer = _ConnectionWriter(websocket)
     writer.start()
     subscriber = _SessionSubscriber(writer=writer, events=events)
+    # Error replies to early frames wait until sync and the replay are sent.
+    writer.hold_replies()
 
     # Read the client's frames from the start. Subscribing waits for the
     # conversation's state lock, which a running step holds until it ends:
@@ -461,6 +487,7 @@ async def session_socket(
         # live-only client got nothing from disk, and has no cursor to recover
         # whatever the mark would discard.
         subscriber.go_live(through_seq if replayed else None)
+        writer.release_replies()
 
         await inbound
     finally:
@@ -551,7 +578,8 @@ async def _inbound_loop(
                     e,
                 )
                 if not writer.send(
-                    ErrorFrame(code=e.__class__.__name__, detail=str(e))
+                    ErrorFrame(code=e.__class__.__name__, detail=str(e)),
+                    reply=True,
                 ):
                     return
                 continue
@@ -574,7 +602,8 @@ async def _inbound_loop(
                 # rather than a durable event — and not worth dropping over.
                 logger.exception("session_socket_inbound_error", stack_info=True)
                 if not writer.send(
-                    ErrorFrame(code=e.__class__.__name__, detail=str(e))
+                    ErrorFrame(code=e.__class__.__name__, detail=str(e)),
+                    reply=True,
                 ):
                     return
             if closing:
