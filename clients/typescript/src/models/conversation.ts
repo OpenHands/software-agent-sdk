@@ -39,6 +39,13 @@ export interface ConversationRuntimeInfo {
   runtime_error: ConversationRuntimeError | null;
 }
 
+export interface ConversationConfigurationOverrides {
+  schema_version: 1;
+  revision: number;
+  secret_refs: string[];
+  mcp_server_refs: string[];
+}
+
 export interface ConversationInfo {
   id: ConversationID;
   /** Availability of the execution runtime backing this catalog entry. */
@@ -87,6 +94,8 @@ export interface ConversationInfo {
    * for conversations started directly with `agent` or `agent_settings`.
    */
   launched_agent_profile?: LaunchedAgentProfile | null;
+  /** Versioned additions scoped to this conversation, separate from the launch profile. */
+  configuration_overrides?: ConversationConfigurationOverrides;
   /** @deprecated Use launched_agent_profile, the canonical server field. */
   launched_profile?: LaunchedProfile | null;
   /**

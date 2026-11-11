@@ -1,14 +1,14 @@
 import asyncio
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -2184,21 +2184,25 @@ class EventService:
                     self._run_task = None
             await self._publish_state_update()
 
-    async def _allow_configuration_name(
-        self, field_name: str, name: str
-    ) -> StoredConversation | None:
-        profile = self.stored.launched_agent_profile
-        if profile is None:
-            return None
-        refs = getattr(profile, field_name)
-        if refs is None or name in refs:
-            return None
-        previous = self.stored
-        updated = profile.model_copy(update={field_name: [*refs, name]})
-        await self.save_meta(
-            previous.model_copy(update={"launched_agent_profile": updated})
-        )
-        return previous
+    async def _apply_configuration(
+        self,
+        field_name: Literal["secret_refs", "mcp_server_refs"],
+        name: str,
+        apply: Callable[[], None],
+    ) -> None:
+        async with self._configuration_lock:
+            previous = self.stored
+            overrides = previous.configuration_overrides.with_ref(field_name, name)
+            if overrides is not previous.configuration_overrides:
+                await self.save_meta(
+                    previous.model_copy(update={"configuration_overrides": overrides})
+                )
+            try:
+                await asyncio.to_thread(apply)
+            except Exception:
+                if overrides is not previous.configuration_overrides:
+                    await self.save_meta(previous)
+                raise
 
     async def add_conversation_secret(self, name: str, value: str) -> None:
         """Attach a recoverable secret and authorize it in this conversation."""
@@ -2208,16 +2212,11 @@ class EventService:
             raise RuntimeError("Conversation secrets require an encryption key")
         if name == CODEX_AUTH_SECRET_NAME and name in self.credential_bindings:
             raise ValueError("Secret name is reserved for a credential binding")
-        async with self._configuration_lock:
-            previous = await self._allow_configuration_name("secret_refs", name)
-            try:
-                await asyncio.to_thread(
-                    self._conversation.add_conversation_secret, name, value
-                )
-            except Exception:
-                if previous is not None:
-                    await self.save_meta(previous)
-                raise
+        await self._apply_configuration(
+            "secret_refs",
+            name,
+            partial(self._conversation.add_conversation_secret, name, value),
+        )
 
     async def attach_mcp_server(self, name: str, server: MCPServer) -> None:
         """Connect an MCP server and authorize it in this conversation."""
@@ -2225,16 +2224,11 @@ class EventService:
             raise ValueError("inactive_service")
         if self.cipher is None and (server.env or server.headers or server.auth):
             raise RuntimeError("MCP server credentials require an encryption key")
-        async with self._configuration_lock:
-            previous = await self._allow_configuration_name("mcp_server_refs", name)
-            try:
-                await asyncio.to_thread(
-                    self._conversation.attach_mcp_server, name, server
-                )
-            except Exception:
-                if previous is not None:
-                    await self.save_meta(previous)
-                raise
+        await self._apply_configuration(
+            "mcp_server_refs",
+            name,
+            partial(self._conversation.attach_mcp_server, name, server),
+        )
 
     async def get_live_tools(self) -> list[ConversationToolInfo]:
         """Read the current agent's tools without blocking the event loop."""
@@ -2247,13 +2241,11 @@ class EventService:
         """Update secrets in the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        profile = self.stored.launched_agent_profile
-        if profile is not None:
-            secrets = {
-                name: value
-                for name, value in secrets.items()
-                if profile.allows_secret(name)
-            }
+        secrets = {
+            name: value
+            for name, value in secrets.items()
+            if self.stored.allows_secret(name)
+        }
         if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
             secrets = dict(secrets)
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)

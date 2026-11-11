@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -102,6 +102,25 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
+class ConversationConfigurationOverrides(BaseModel):
+    """Additive configuration grants applied to one conversation."""
+
+    schema_version: Literal[1] = 1
+    revision: int = Field(default=0, ge=0)
+    secret_refs: list[str] = Field(default_factory=list)
+    mcp_server_refs: list[str] = Field(default_factory=list)
+
+    def with_ref(
+        self, field_name: Literal["secret_refs", "mcp_server_refs"], name: str
+    ) -> Self:
+        refs = getattr(self, field_name)
+        if name in refs:
+            return self
+        return self.model_copy(
+            update={field_name: [*refs, name], "revision": self.revision + 1}
+        )
+
+
 class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 
@@ -147,6 +166,18 @@ class StoredConversation(ConversationConfig):
             "`agent_settings`."
         ),
     )
+    configuration_overrides: ConversationConfigurationOverrides = Field(
+        default_factory=ConversationConfigurationOverrides,
+        description="Versioned, conversation-only configuration additions.",
+    )
+
+    def allows_secret(self, name: str) -> bool:
+        profile = self.launched_agent_profile
+        return (
+            profile is None
+            or profile.allows_secret(name)
+            or name in self.configuration_overrides.secret_refs
+        )
 
 
 class _ConversationInfoBase(BaseModel):
@@ -369,6 +400,10 @@ class _ConversationInfoBase(BaseModel):
             "with ``agent`` or ``agent_settings``. Clients use this to identify "
             "which agent profile is current without fragile settings-comparison."
         ),
+    )
+    configuration_overrides: ConversationConfigurationOverrides = Field(
+        default_factory=ConversationConfigurationOverrides,
+        description="Versioned configuration changes scoped to this conversation.",
     )
 
 

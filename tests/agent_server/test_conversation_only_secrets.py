@@ -148,7 +148,7 @@ async def test_conversation_secret_is_encrypted_isolated_and_restored(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_conversation_secret_expands_only_its_launched_profile_snapshot(tmp_path):
+async def test_conversation_secret_overrides_preserve_launch_profile_snapshot(tmp_path):
     cipher = Cipher("conversation-test-key")
     profile = ACPAgentProfile(
         name="restricted", acp_server="codex", secret_refs=["ALLOWED"]
@@ -191,26 +191,103 @@ async def test_conversation_secret_expands_only_its_launched_profile_snapshot(tm
                 )
             )
             assert all(result.status_code == 200 for result in concurrent)
+            details = await client.get(f"/api/conversations/{info.id}")
+            assert details.status_code == 200, details.text
+            assert details.json()["launched_agent_profile"]["secret_refs"] == [
+                "ALLOWED"
+            ]
+            assert details.json()["configuration_overrides"]["secret_refs"] == [
+                "ONLY_THIS",
+                "ONE",
+                "TWO",
+            ]
         event_service = await _event_service(service, info.id)
-        assert event_service.stored.launched_agent_profile.secret_refs == [
-            "ALLOWED",
+        assert event_service.stored.launched_agent_profile.secret_refs == ["ALLOWED"]
+        overrides = event_service.stored.configuration_overrides
+        assert overrides.schema_version == 1
+        assert overrides.revision == 3
+        assert overrides.secret_refs == ["ONLY_THIS", "ONE", "TWO"]
+        assert overrides.mcp_server_refs == []
+        info = await service.get_conversation(info.id)
+        assert info.launched_agent_profile.secret_refs == ["ALLOWED"]
+        assert info.configuration_overrides == overrides
+        assert (await event_service.get_state()).secret_registry.get_secret_value(
+            "ONLY_THIS"
+        ) == "private-value"
+        await event_service.update_secrets({"ONE": "refreshed", "DENIED": "blocked"})
+        live_secrets = (await event_service.get_state()).secret_registry
+        assert live_secrets.get_secret_value("ONE") == "refreshed"
+        assert "DENIED" not in live_secrets.secret_sources
+        assert get_agent_profile_store().load("restricted").secret_refs == ["ALLOWED"]
+        get_agent_profile_store().save(
+            profile.model_copy(update={"secret_refs": ["NEW_SHARED_GRANT"]})
+        )
+        await event_service.update_secrets({"NEW_SHARED_GRANT": "not-this-chat"})
+        assert (
+            "NEW_SHARED_GRANT"
+            not in (await event_service.get_state()).secret_registry.secret_sources
+        )
+        assert get_secrets_store().get_secret("ONLY_THIS") is None
+        saved_meta = (root / info.id.hex / "meta.json").read_text()
+        assert "ONLY_THIS" in saved_meta and "private-value" not in saved_meta
+        fork = await service.fork_conversation(info.id)
+        assert fork is not None
+        assert fork.launched_agent_profile.secret_refs == ["ALLOWED"]
+        assert fork.configuration_overrides.secret_refs == []
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        restored = await _event_service(service, info.id)
+        assert restored.stored.launched_agent_profile.secret_refs == ["ALLOWED"]
+        assert restored.stored.configuration_overrides.secret_refs == [
             "ONLY_THIS",
             "ONE",
             "TWO",
         ]
-        assert (await event_service.get_state()).secret_registry.get_secret_value(
-            "ONLY_THIS"
-        ) == "private-value"
-        assert get_agent_profile_store().load("restricted").secret_refs == ["ALLOWED"]
-        assert get_secrets_store().get_secret("ONLY_THIS") is None
-        saved_meta = (root / info.id.hex / "meta.json").read_text()
-        assert "ONLY_THIS" in saved_meta and "private-value" not in saved_meta
-    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
-        restored = await _event_service(service, info.id)
-        assert restored.stored.launched_agent_profile.allows_secret("ONLY_THIS")
         assert (await restored.get_state()).secret_registry.get_secret_value(
             "ONLY_THIS"
         ) == "private-value"
+        await restored.update_secrets({"NEW_SHARED_GRANT": "still-not-this-chat"})
+        assert (
+            "NEW_SHARED_GRANT"
+            not in (await restored.get_state()).secret_registry.secret_sources
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_expanded_profile_snapshot_keeps_effective_grants(tmp_path):
+    profile = ACPAgentProfile(name="legacy-grants", acp_server="codex", secret_refs=[])
+    get_agent_profile_store().save(profile)
+    root = tmp_path / "conversations"
+    cipher = Cipher("legacy-grants-key")
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent_profile_id=profile.id,
+                workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+            )
+        )
+        event_service = await _event_service(service, info.id)
+        launched = event_service.stored.launched_agent_profile
+        assert launched is not None
+        await event_service.save_meta(
+            event_service.stored.model_copy(
+                update={
+                    "launched_agent_profile": launched.model_copy(
+                        update={"secret_refs": ["OLD_GRANT"]}
+                    )
+                }
+            )
+        )
+    meta_file = root / info.id.hex / "meta.json"
+    legacy_meta = json.loads(meta_file.read_text())
+    legacy_meta.pop("configuration_overrides", None)
+    meta_file.write_text(json.dumps(legacy_meta))
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        restored = await _event_service(service, info.id)
+        assert restored.stored.configuration_overrides.revision == 0
+        await restored.update_secrets({"OLD_GRANT": "retained", "UNKNOWN": "denied"})
+        registry = (await restored.get_state()).secret_registry
+        assert registry.get_secret_value("OLD_GRANT") == "retained"
+        assert "UNKNOWN" not in registry.secret_sources
 
 
 @pytest.mark.asyncio
@@ -247,10 +324,9 @@ async def test_profile_secret_scope_saves_vault_and_profile_reference(tmp_path):
         assert saved_profile.secret_refs == ["PERSISTED"]
         assert saved_profile.id == profile.id
         assert saved_profile.revision > profile.revision
-        snapshot = (
-            await _event_service(service, info.id)
-        ).stored.launched_agent_profile
-        assert snapshot.allows_secret("PERSISTED")
+        stored = (await _event_service(service, info.id)).stored
+        assert stored.launched_agent_profile.secret_refs == []
+        assert stored.configuration_overrides.secret_refs == ["PERSISTED"]
         next_info, _ = await service.start_conversation(
             StartConversationRequest(
                 agent_profile_id=profile.id,
@@ -627,7 +703,7 @@ async def test_unreachable_or_disabled_mcp_does_not_change_conversation(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_mcp_explicit_attach_expands_conversation_snapshot_not_saved_profile(
+async def test_mcp_explicit_attach_records_conversation_overrides_not_saved_profile(
     tmp_path,
 ):
     cipher = Cipher("mcp-policy-key")
@@ -679,10 +755,10 @@ async def test_mcp_explicit_attach_expands_conversation_snapshot_not_saved_profi
                 },
             )
             assert inline.status_code == 200, inline.text
-            snapshot = (
-                await _event_service(service, info.id)
-            ).stored.launched_agent_profile
-            assert snapshot.mcp_server_refs == ["fetch", "inline"]
+            stored = (await _event_service(service, info.id)).stored
+            assert stored.launched_agent_profile.mcp_server_refs == []
+            assert stored.configuration_overrides.mcp_server_refs == ["fetch", "inline"]
+            assert stored.configuration_overrides.revision == 2
             assert get_agent_profile_store().load("no-mcp").mcp_server_refs == []
             assert (
                 await client.post(
@@ -701,13 +777,13 @@ async def test_mcp_explicit_attach_expands_conversation_snapshot_not_saved_profi
                     },
                 )
             ).status_code == 409
-            assert "broken" not in snapshot.mcp_server_refs
+            assert "broken" not in stored.configuration_overrides.mcp_server_refs
+            assert stored.configuration_overrides.revision == 2
         assert "fetch" in (root / info.id.hex / "meta.json").read_text()
     async with ConversationService(conversations_dir=root, cipher=cipher) as service:
-        restored = (
-            await _event_service(service, info.id)
-        ).stored.launched_agent_profile
-        assert restored.mcp_server_refs == ["fetch", "inline"]
+        restored = (await _event_service(service, info.id)).stored
+        assert restored.launched_agent_profile.mcp_server_refs == []
+        assert restored.configuration_overrides.mcp_server_refs == ["fetch", "inline"]
 
 
 @pytest.mark.asyncio

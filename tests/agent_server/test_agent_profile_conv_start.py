@@ -110,6 +110,7 @@ def _event_service_for(stored: StoredConversation, agent: AgentBase) -> AsyncMoc
     )
     event_service.stored = MagicMock(
         launched_agent_profile=stored.launched_agent_profile,
+        configuration_overrides=stored.configuration_overrides,
         client_tools=[],
         title=None,
         metrics=None,

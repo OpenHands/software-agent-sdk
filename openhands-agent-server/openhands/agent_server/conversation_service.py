@@ -37,6 +37,7 @@ from openhands.agent_server.local_storage import (
     remove_conversation_worktree,
 )
 from openhands.agent_server.models import (
+    ConversationConfigurationOverrides,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -418,6 +419,7 @@ def _compose_conversation_info(
         client_tools=stored.client_tools,
         tool_module_qualnames=dict(stored.tool_module_qualnames),
         launched_agent_profile=stored.launched_agent_profile,
+        configuration_overrides=stored.configuration_overrides,
     )
 
 
@@ -519,6 +521,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
             "parent_conversation_id",
             "client_tools",
             "launched_agent_profile",
+            "configuration_overrides",
         },
     )
     return hash(json.dumps(metadata, sort_keys=True, default=str))
@@ -731,7 +734,7 @@ class ConversationService:
                 if event_service is not None
                 else (record.stored if record is not None else None)
             )
-            if stored is not None and not self._profile_allows_secret(
+            if stored is not None and not self._conversation_allows_secret(
                 stored, secret_name
             ):
                 raise CredentialAuthorizationRejected(
@@ -779,9 +782,8 @@ class ConversationService:
             self._credential_bindings = {}
 
     @staticmethod
-    def _profile_allows_secret(stored: StoredConversation, name: str) -> bool:
-        profile = stored.launched_agent_profile
-        return profile is None or profile.allows_secret(name)
+    def _conversation_allows_secret(stored: StoredConversation, name: str) -> bool:
+        return stored.allows_secret(name)
 
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
@@ -811,7 +813,7 @@ class ConversationService:
         bindings = {
             name: binding
             for name, binding in self._credential_bindings.pop(stored.id, {}).items()
-            if self._profile_allows_secret(stored, name)
+            if self._conversation_allows_secret(stored, name)
         }
         if not isinstance(agent, ACPAgent):
             # Only ACP agents use file credential bindings; the live path
@@ -819,7 +821,7 @@ class ConversationService:
             # Drop a pending binding so a regular conversation never requires one.
             return {}
         if (
-            self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
+            self._conversation_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
             and CODEX_AUTH_SECRET_NAME not in bindings
             and self._is_codex_agent(agent)
             and await self._has_local_codex_credential()
@@ -1394,7 +1396,7 @@ class ConversationService:
                     "secrets": {
                         name: value
                         for name, value in request.secrets.items()
-                        if self._profile_allows_secret(stored, name)
+                        if self._conversation_allows_secret(stored, name)
                     }
                 }
             )
@@ -2110,6 +2112,7 @@ class ConversationService:
                 "updated_at": utc_now(),
                 "forked_from_conversation_id": source_id,
                 "forked_from_event_id": from_event_id,
+                "configuration_overrides": ConversationConfigurationOverrides(),
             }
             if reset_metrics:
                 fork_overrides["metrics"] = None
