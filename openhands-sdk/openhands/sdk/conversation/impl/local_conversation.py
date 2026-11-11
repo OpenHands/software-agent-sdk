@@ -201,8 +201,8 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
 
 def _is_undecrypted(secret: SecretValue) -> bool:
     """True for what a load under a key that cannot decrypt the state leaves
-    in the agent's context secrets: cipher text kept as a string, or a
-    ``StaticSecret`` without its value."""
+    in the persisted agent's context secrets: cipher text kept as a string,
+    or a ``StaticSecret`` without its value."""
     if isinstance(secret, str):
         return secret.startswith(FERNET_TOKEN_PREFIX)
     return isinstance(secret, StaticSecret) and secret.value is None
@@ -444,6 +444,7 @@ class LocalConversation(BaseConversation):
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
         # ``self.agent`` and ``self._state.agent`` are the same object.
+        persisted_agent_adopted = agent is None
         if agent is None:
             agent = self._state.agent
             # The persisted agent carries client-tool ``Tool`` specs, but in a
@@ -573,9 +574,10 @@ class LocalConversation(BaseConversation):
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
                 for name, secret in ctx_secrets.items():
-                    if _is_undecrypted(secret):
+                    if persisted_agent_adopted and _is_undecrypted(secret):
                         # Filling it in would save the state, and with it
-                        # every other value this load could not decrypt.
+                        # every other value this load could not decrypt. A
+                        # caller's own agent is taken as given.
                         continue
                     existing = existing_sources.get(name)
                     # Refill only when absent, or when a StaticSecret lost its

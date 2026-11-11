@@ -437,6 +437,24 @@ def test_load_under_a_key_that_cannot_decrypt_leaves_the_saved_state_alone():
         restored.close()
 
 
+def test_callers_own_context_secret_is_registered_whatever_it_looks_like():
+    """Only a persisted agent can carry values that failed to decrypt. A secret
+    on the agent the caller passes is taken as given, also one that happens
+    to start like cipher text."""
+    token = FERNET_TOKEN_PREFIX + "-a-token-the-user-supplied"
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("agent-key"), usage_id="agent"),
+        tools=[],
+        agent_context=AgentContext(secrets={"TOKEN": token}),
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conversation = LocalConversation(agent=agent, workspace=tmpdir, visualizer=None)
+        registry = conversation.state.secret_registry
+        assert registry.get_secrets_as_env_vars("$TOKEN") == {"TOKEN": token}
+        conversation.close()
+
+
 @pytest.mark.parametrize(
     "cipher", [Cipher("test-secret-key"), None], ids=["cipher", "no-cipher"]
 )
