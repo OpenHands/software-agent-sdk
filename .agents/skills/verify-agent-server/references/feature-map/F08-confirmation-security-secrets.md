@@ -733,6 +733,11 @@ KID=$(control-agent-server api POST /api/conversations \
   to `meta.json`, so a runtime secret survives a reload (restart, idle
   eviction, sandbox pause). See `F08.secrets-restart` and
   `F08.secrets-unsaved-restart`.
+- "Written before the POST returns" holds for a conversation that is not in
+  the middle of a step. While a run waits on its model, a secret, policy or
+  analyzer posted from another request is live at once but is saved when
+  that step ends: the run keeps one deferred save open across the wait
+  (#5776 saves at once).
 - Unknown conversations answer 404 `{"detail": "Not Found"}` on the
   conversation routes and 404 `Conversation not found: <id>` on
   `respond_to_confirmation` (an events route).
