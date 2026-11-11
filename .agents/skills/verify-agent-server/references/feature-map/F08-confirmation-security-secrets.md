@@ -45,7 +45,7 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.secrets-lookup-self`: a runtime `LookupSecret` whose URL is the server's own `/api/settings/secrets/<name>` (hostless, made absolute from `OH_INTERNAL_SERVER_URL`, or absolute on the run's address) is answered in process from the secrets store with no HTTP request and no session key; a name the store lacks falls through to HTTP (401 without a key) and the command gets no value.
 - `F08.secrets-profile-scope`: for a conversation launched from an Agent Profile with `secret_refs`, names outside the list are silently dropped (200).
 - `F08.secrets-no-cipher`: on a server with no cipher (no `OH_SECRET_KEY`, no session key) a runtime secret reaches commands while the conversation lives, is persisted only as the redaction placeholder (the server warns at startup), and is empty after a restart although GET still lists the name.
-- `F08.secrets-restart`: a runtime secret that reached `base_state.json` is still injected into commands after a server restart.
+- `F08.secrets-restart`: a runtime secret is still injected into commands after a server restart.
 - `F08.secrets-unsaved-restart`: a runtime secret survives a restart even when nothing else changed in the conversation after it was posted.
 
 ## How to get to it (agent POV)
