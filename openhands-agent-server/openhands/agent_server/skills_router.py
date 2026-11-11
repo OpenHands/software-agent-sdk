@@ -165,7 +165,7 @@ class SkillCatalogResponse(BaseModel):
 class SyncResponse(BaseModel):
     """Response from skill sync operation."""
 
-    status: Literal["success", "error", "disabled"]
+    status: Literal["success", "error"]
     message: str
 
 
@@ -377,7 +377,7 @@ def sync_skills() -> SyncResponse:
     """
     if not (public_skills_enabled() or public_plugin_catalog_enabled()):
         return SyncResponse(
-            status="disabled",
+            status="error",
             message="Public extensions are disabled by instance policy",
         )
     success, message = sync_public_skills()

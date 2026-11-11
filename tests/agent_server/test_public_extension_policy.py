@@ -275,16 +275,25 @@ class TestPublicCatalogSwitch:
         body = _client().get(path).json()
         assert body == {key: [], "disabled": True}
 
+    def test_sync_refused_when_both_disabled(self, monkeypatch):
+        monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, "false")
+        monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, "false")
+        with patch(
+            "openhands.agent_server.skills_router.sync_public_skills",
+            return_value=(True, "ok"),
+        ) as sync:
+            body = _client().post("/api/skills/sync").json()
+        assert body == {
+            "status": "error",
+            "message": "Public extensions are disabled by instance policy",
+        }
+        sync.assert_not_called()
+
     @pytest.mark.parametrize(
-        ("skills_env", "catalog_env", "status"),
-        [
-            ("false", "false", "disabled"),
-            ("true", "false", "success"),
-            ("false", "true", "success"),
-        ],
+        ("skills_env", "catalog_env"), [("true", "false"), ("false", "true")]
     )
-    def test_sync_refused_only_when_both_disabled(
-        self, monkeypatch, skills_env, catalog_env, status
+    def test_sync_allowed_when_either_enabled(
+        self, monkeypatch, skills_env, catalog_env
     ):
         monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, skills_env)
         monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, catalog_env)
@@ -292,5 +301,6 @@ class TestPublicCatalogSwitch:
             "openhands.agent_server.skills_router.sync_public_skills",
             return_value=(True, "ok"),
         ) as sync:
-            assert _client().post("/api/skills/sync").json()["status"] == status
-        assert sync.called is (status != "disabled")
+            body = _client().post("/api/skills/sync").json()
+        assert body == {"status": "success", "message": "ok"}
+        sync.assert_called_once()
