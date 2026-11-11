@@ -130,3 +130,30 @@ async def test_secrets_an_older_server_left_in_meta_json_are_kept(tmp_path):
     assert "secrets" not in json.loads(meta_file.read_text())
     base_state = json.loads((meta_file.parent / "base_state.json").read_text())
     assert "ONLY_IN_META" in base_state["secret_registry"]["secret_sources"]
+
+
+@pytest.mark.asyncio
+async def test_conversations_started_from_one_request_have_their_own_analyzer(
+    tmp_path,
+):
+    """An analyzer can keep per-conversation history, so two conversations
+    never share one, also when the same request object starts both."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = _request(workspace_dir).model_copy(
+        update={"security_analyzer": LLMSecurityAnalyzer()}
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        analyzers = []
+        for _ in range(2):
+            info, _ = await service.start_conversation(request)
+            event_service = await service.get_event_service(info.id)
+            assert event_service is not None
+            analyzers.append((await event_service.get_state()).security_analyzer)
+
+    assert all(isinstance(analyzer, LLMSecurityAnalyzer) for analyzer in analyzers)
+    assert analyzers[0] is not analyzers[1]
+    assert all(analyzer is not request.security_analyzer for analyzer in analyzers)

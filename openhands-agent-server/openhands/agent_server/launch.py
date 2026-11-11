@@ -183,15 +183,19 @@ def request_secrets(
 def request_security_analyzer(
     request: StartConversationRequest, cipher: Cipher | None
 ) -> SecurityAnalyzerBase | None:
-    """The request's security analyzer, its nested credentials decrypted when the
-    client encrypted them (e.g. a guardrail LLM ``api_key``)."""
+    """A copy of the request's security analyzer for one conversation, its
+    nested credentials decrypted when the client encrypted them (e.g. a
+    guardrail LLM ``api_key``).
+
+    Always a copy: an analyzer can keep per-conversation history, and one
+    request object can start more than one conversation.
+    """
     analyzer = request.security_analyzer
-    context = _decryption_context(request, cipher)
-    if analyzer is None or context is None:
-        return analyzer
+    if analyzer is None:
+        return None
     return type(analyzer).model_validate(
-        analyzer.model_dump(mode="json", context={"expose_secrets": True}),
-        context=context,
+        analyzer.model_dump(context={"expose_secrets": True}),
+        context=_decryption_context(request, cipher),
     )
 
 
