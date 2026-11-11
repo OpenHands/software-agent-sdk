@@ -86,7 +86,7 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
-from openhands.sdk.secret import SecretSource
+from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -335,7 +335,7 @@ class EventService:
         the next write of meta.json drops the key.
         """
         try:
-            return _LegacyMetaSecrets.model_validate_json(
+            legacy = _LegacyMetaSecrets.model_validate_json(
                 (self.conversation_dir / "meta.json").read_text(),
                 context={"cipher": self.cipher},
             ).secrets
@@ -348,6 +348,14 @@ class EventService:
                 self.stored.id,
             )
             return {}
+        # A value this server's key cannot decrypt reads as unset. Taking it
+        # over would save the state, and with it everything else this load
+        # could not decrypt.
+        return {
+            name: source
+            for name, source in legacy.items()
+            if not (isinstance(source, StaticSecret) and source.value is None)
+        }
 
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
         """Persist ``stored`` (default: the current metadata) to ``meta.json``.

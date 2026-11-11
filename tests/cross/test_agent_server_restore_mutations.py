@@ -364,3 +364,57 @@ async def test_start_request_for_an_existing_id_does_not_reseed_its_state(tmp_pa
         _, started = await service.start_conversation(again)
         assert not started
         await assert_unchanged(service)
+
+
+@pytest.mark.asyncio
+async def test_legacy_secrets_this_key_cannot_decrypt_do_not_cost_the_agent_its_key(
+    tmp_path,
+):
+    """A load under a key that cannot decrypt the files takes nothing over from
+    an older meta.json, so it does not save the state: with the right key back,
+    the agent's key and the saved secrets are too."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("restore-mutations-key")
+    request = _request(workspace_dir).model_copy(
+        update={
+            "agent": Agent(
+                llm=LLM(
+                    model="gpt-4o", api_key=SecretStr("agent-key"), usage_id="test-llm"
+                ),
+                tools=[],
+            )
+        }
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    meta_file = conversations_dir / info.id.hex / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+    }
+    meta_file.write_text(json.dumps(meta))
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=Cipher("another-key")
+    ) as service:
+        assert await service.get_event_service(info.id) is not None
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        restored = await service.get_event_service(info.id)
+        assert restored is not None
+        state = await restored.get_state()
+        api_key = state.agent.llm.api_key
+        assert isinstance(api_key, SecretStr)
+        assert api_key.get_secret_value() == "agent-key"
+        secrets = state.secret_registry.secret_sources
+        assert secrets["START_TOKEN"].get_value() == "start-value"
