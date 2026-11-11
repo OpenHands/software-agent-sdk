@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import time
 from unittest import mock
 from unittest.mock import MagicMock, patch
 
@@ -225,14 +226,23 @@ class TestHookExecutor:
 
         child_pid = int(pid_file.read_text())
         try:
-            os.kill(child_pid, 0)
-            child_alive = True
-        except ProcessLookupError:
-            child_alive = False
+            deadline = time.monotonic() + 2
+            while True:
+                status = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(child_pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.strip()
+                # A zombie still has a PID but cannot execute any more code.
+                if not status or status.startswith("Z"):
+                    break
+                if time.monotonic() >= deadline:
+                    pytest.fail(f"Hook child {child_pid} is still running ({status})")
+                time.sleep(0.05)
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(child_pid, signal.SIGKILL)
-        assert not child_alive
 
 
 class TestAsyncHookExecution:
