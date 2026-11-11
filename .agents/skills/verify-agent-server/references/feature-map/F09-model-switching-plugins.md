@@ -934,6 +934,7 @@ Preconditions:
 
 ## Gotchas
 
+- Agent Canvas does not switch or show the ACP effort yet; its side is [OpenHands/OpenHands#19436](https://github.com/OpenHands/OpenHands/pull/19436), and it also needs an Agent Server release after 1.61.0.
 - Every switch answers `{"success": true}` and nothing else; read the result
   back with `GET /api/conversations/{id}` (which serves the autosaved
   `base_state.json`, so on an idle conversation it shows a switch

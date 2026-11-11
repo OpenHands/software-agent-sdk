@@ -1183,6 +1183,7 @@ Preconditions:
 
 ## Gotchas
 
+- Agent Canvas does not call the pull-request status route yet, and it pins Agent Server 1.61.0, which predates it; the Canvas follow-up is [OpenHands/OpenHands#19644](https://github.com/OpenHands/OpenHands/issues/19644).
 - `changes` and `diff` without `ref` use the *display* base policy
   (`get_valid_ref(..., purpose="display")`), which differs from the *export*
   policy of `GET /api/file/archive` (`git-delta`): on a remote-less fixture
