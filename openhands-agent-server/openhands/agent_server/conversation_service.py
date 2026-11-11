@@ -1434,7 +1434,7 @@ class ConversationService:
                 update={
                     "secrets": {
                         name: value
-                        for name, value in request.secrets.items()
+                        for name, value in request_secrets(request, self.cipher).items()
                         if self._profile_allows_secret(stored, name)
                     }
                 }

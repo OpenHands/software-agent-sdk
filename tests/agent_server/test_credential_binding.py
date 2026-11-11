@@ -974,6 +974,46 @@ async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("loaded", [True, False], ids=["live", "cold"])
+async def test_resume_decrypts_an_encrypted_fallback(tmp_path, loaded) -> None:
+    """A request that marks its secrets as encrypted has them decrypted on a
+    resume, as on a create."""
+    cipher = Cipher("resume-fallback-key")
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        if not loaded:
+            assert service._event_services is not None
+            await service._event_services.pop(info.id).close()
+
+        resume = request.model_copy(
+            update={
+                "conversation_id": info.id,
+                "secrets": {
+                    "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("fallback-copy"))
+                },
+            }
+        )
+        await service.start_conversation(
+            StartConversationRequest.model_validate(
+                resume.model_dump(mode="json", context={"cipher": cipher})
+                | {"secrets_encrypted": True}
+            )
+        )
+
+        resumed = await service.get_event_service(info.id)
+        assert resumed is not None
+        sources = (await resumed.get_state()).secret_registry.secret_sources
+        assert sources["CODEX_AUTH_JSON"].get_value() == "fallback-copy"
+
+
+@pytest.mark.asyncio
 async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
     tmp_path,
 ) -> None:
