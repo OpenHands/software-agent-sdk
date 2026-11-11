@@ -17,6 +17,7 @@ from openhands.sdk.plugin.discovery import (
     load_project_plugins,
     load_user_plugins,
 )
+from openhands.sdk.plugin.errors import PluginManifestError, PluginNameError
 from openhands.sdk.plugin.fetch import (
     PluginFetchError,
     fetch_plugin_with_resolution,
@@ -69,40 +70,43 @@ __all__ = [
     "PluginFetchError",
     "PluginSourceError",
     "CheckedPlugin",
+    "PluginManifestError",
+    "PluginNameError",
     "PluginManifest",
     "PluginAuthor",
     "PluginSource",
     "ResolvedPluginSource",
-    "CommandDefinition",
-    # Plugin format strategies
+    # Format classes
     "PluginFormat",
     "AgentPluginsFormat",
     "ClaudeCodePluginFormat",
     "detect_format",
-    # Plugin loading
+    "get_plugin_data_dir",
+    # Discovery functions
+    "load_available_plugins",
+    "load_project_plugins",
+    "load_user_plugins",
+    # Loader
     "load_plugins",
+    # Source utilities
+    "is_local_path",
+    "parse_github_url",
+    "GitHubURLComponents",
+    "resolve_source_path",
+    "validate_source_path",
+    # Fetch
     "fetch_plugin_with_resolution",
     "preflight_plugin",
-    # Local plugin discovery (ambient auto-load)
-    "load_user_plugins",
-    "load_project_plugins",
-    "load_available_plugins",
-    # Source path utilities
-    "GitHubURLComponents",
-    "parse_github_url",
-    "is_local_path",
-    "validate_source_path",
-    "resolve_source_path",
-    # Installed plugins management
-    "InstalledPluginInfo",
+    # Installed plugin management
+    "list_installed_plugins",
+    "get_installed_plugin",
     "install_plugin",
     "uninstall_plugin",
-    "list_installed_plugins",
-    "load_installed_plugins",
-    "get_installed_plugins_dir",
-    "get_installed_plugin",
-    "get_plugin_data_dir",
     "enable_plugin",
     "disable_plugin",
-    "update_plugin",
+    "get_installed_plugins_dir",
+    "load_installed_plugins",
+    "InstalledPluginInfo",
+    # Types
+    "CommandDefinition",
 ]

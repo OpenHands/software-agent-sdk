@@ -210,7 +210,7 @@ class TestSchemaSelection:
 
     def test_a_published_but_unvendored_version_is_rejected(self):
         """Upstream publishes 1.1.0; this SDK vendors only 1.0.0."""
-        with pytest.raises(ValueError, match=r"Unsupported or missing \$schema"):
+        with pytest.raises(ValueError, match=r"missing or unsupported \$schema"):
             Plugin.load(fixture("unsupported-schema"))
 
     def test_rejection_names_the_version_we_support(self):
