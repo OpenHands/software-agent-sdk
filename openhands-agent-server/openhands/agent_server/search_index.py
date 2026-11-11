@@ -17,9 +17,9 @@ import hashlib
 import json
 import re
 import sqlite3
-import time
 from dataclasses import dataclass
 from pathlib import Path
+
 
 _EVENTS_DIR = "events"
 _META_FILE = "meta.json"
@@ -99,7 +99,9 @@ _SECRET_PATTERNS = [
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S
+    ),
 ]
 
 _MASK = "[REDACTED]"
@@ -212,11 +214,7 @@ class SearchIndex:
         words_sql = self._conn.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'messages_words_fts'"
         ).fetchone()
-        if (
-            fts_sql[0] is not None
-            and "porter" in fts_sql[0]
-            and words_sql is not None
-        ):
+        if fts_sql[0] is not None and "porter" in fts_sql[0] and words_sql is not None:
             return  # already current
         self._conn.executescript(
             """
@@ -298,10 +296,7 @@ class SearchIndex:
             # "wombat"). Gap is capped at 2 letters so this stays a last
             # resort, not a wildcard.
             for term in terms:
-                if (
-                    0 <= len(term) - len(token) <= 2
-                    and _is_subsequence(token, term)
-                ):
+                if 0 <= len(term) - len(token) <= 2 and _is_subsequence(token, term):
                     fuzzy.append(term)
         return fuzzy[:5]
 
@@ -322,9 +317,6 @@ class SearchIndex:
             if owner is None or owner == (conv_id, event_id):
                 return rowid
             rowid += 1  # astronomically rare hash collision; just step aside
-
-    def _fts_rowid_lookup(self, conv_id: str, event_id: str) -> int:
-        return self._fts_rowid_assign(conv_id, event_id)
 
     def index_conversation(self, conv_id: str, title: str | None) -> None:
         self._vocab_cache = None
@@ -359,8 +351,7 @@ class SearchIndex:
         event_id = event.get("id")
         if not event_id:
             return False
-        self._fts_rowid_assign(conv_id, event_id)
-        rowid = self._fts_rowid_lookup(conv_id, event_id)
+        rowid = self._fts_rowid_assign(conv_id, event_id)
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO messages(event_id, conv_id, fts_rowid, source, ts) "
             "VALUES(?,?,?,?,?)",
@@ -372,8 +363,8 @@ class SearchIndex:
                 event.get("timestamp"),
             ),
         )
-        self._conn.commit()
         if cur.rowcount == 0:  # already indexed
+            self._conn.commit()
             return False
         self._conn.execute(
             "INSERT OR REPLACE INTO messages_fts(rowid, text, conv_id) VALUES(?,?,?)",
@@ -403,9 +394,7 @@ class SearchIndex:
         ).fetchall()
         for (rowid,) in rows:
             self._conn.execute("DELETE FROM messages_fts WHERE rowid=?", (rowid,))
-            self._conn.execute(
-                "DELETE FROM messages_words_fts WHERE rowid=?", (rowid,)
-            )
+            self._conn.execute("DELETE FROM messages_words_fts WHERE rowid=?", (rowid,))
         self._conn.execute("DELETE FROM messages WHERE conv_id=?", (conv_id,))
         self._conn.execute("DELETE FROM conversations WHERE conv_id=?", (conv_id,))
         self._conn.commit()
@@ -433,9 +422,7 @@ class SearchIndex:
                 # candidates, or the stemmed word itself when the token
                 # is a known word.
                 if self._vocab_contains(token):
-                    group = [_quote_exact(token)] + [
-                        _quote(w) for w in candidates
-                    ]
+                    group = [_quote_exact(token)] + [_quote(w) for w in candidates]
                 elif candidates:
                     group = [_quote(w) for w in candidates]
                 else:
@@ -556,7 +543,7 @@ def backfill(
     indexed_events = 0
     conv_count = 0
     skipped = 0
-    for conv_dir in sorted(conversations_path.glob(f"*/")):
+    for conv_dir in sorted(conversations_path.glob("*/")):
         meta_file = conv_dir / _META_FILE
         if not meta_file.is_file():
             continue

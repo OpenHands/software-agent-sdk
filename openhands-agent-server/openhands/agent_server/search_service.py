@@ -34,19 +34,18 @@ class ContentSearchService:
     def sync(self) -> dict:
         index = self._ensure_index()
         with self._lock:
-            return backfill(
-                index, self._config.conversations_path, incremental=True
-            )
+            return backfill(index, self._config.conversations_path, incremental=True)
 
-    def search(self, query: str, limit: int = 50) -> list[dict]:
+    def search(self, query: str, limit: int = 50) -> tuple[list[dict], bool]:
+        """Return ``(hits, capped)``; ``capped`` is True only when results were
+        actually truncated (one extra row is fetched to tell)."""
         if not query.strip():
-            return []
+            return [], False
         index = self._ensure_index()
         with self._lock:
-            backfill(
-                index, self._config.conversations_path, incremental=True
-            )
-            hits = index.search(query, limit)
+            backfill(index, self._config.conversations_path, incremental=True)
+            hits = index.search(query, limit + 1)
+            capped = len(hits) > limit
         return [
             {
                 "conversation_id": h.conversation_id,
@@ -56,11 +55,10 @@ class ContentSearchService:
                 "timestamp": h.timestamp,
                 "snippet": h.snippet,
             }
-            for h in hits
-        ]
+            for h in hits[:limit]
+        ], capped
 
     def stats(self) -> dict:
         index = self._ensure_index()
         with self._lock:
             return index.stats()
-

@@ -1,16 +1,12 @@
 """Tests for the /conversations/search-content endpoint and service wiring."""
 
-from pathlib import Path
-
 import pytest
+from conftest import write_conversation
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
-from openhands.agent_server.config import Config
-from openhands.agent_server.search_index import backfill
+from openhands.agent_server.config import Config, TelemetrySpec
 from openhands.agent_server.search_service import ContentSearchService
-
-from conftest import write_conversation
 
 
 @pytest.fixture
@@ -39,10 +35,34 @@ def client(conv_root, tmp_path, monkeypatch):
         session_api_keys=["test-key"],
         conversations_path=conv_root,
         workspace_path=tmp_path / "workspace",
-        file_store_path=tmp_path / "filestore",
     )
     app = create_app(config)
     return TestClient(app)
+
+
+@pytest.fixture
+def remote_client(conv_root, tmp_path, monkeypatch):
+    """App configured as a hosted deployment: no content search service."""
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "test-key")
+    config = Config(
+        session_api_keys=["test-key"],
+        conversations_path=conv_root,
+        workspace_path=tmp_path / "workspace",
+        telemetry=TelemetrySpec(deployment_kind="remote"),
+    )
+    app = create_app(config)
+    return TestClient(app)
+
+
+def test_remote_deployment_hides_content_search(remote_client):
+    """Hosted deployments must not serve content search at all."""
+    assert not hasattr(remote_client.app.state, "content_search_service")
+    resp = remote_client.get(
+        "/api/conversations/search-content",
+        params={"query": "garage"},
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    assert resp.status_code == 404
 
 
 def test_endpoint_returns_snippets(client):
@@ -72,9 +92,7 @@ def test_endpoint_requires_query_param(client):
 
 
 def test_endpoint_requires_auth(client):
-    resp = client.get(
-        "/api/conversations/search-content", params={"query": "garage"}
-    )
+    resp = client.get("/api/conversations/search-content", params={"query": "garage"})
     assert resp.status_code in (401, 403)
 
 
@@ -103,11 +121,11 @@ def test_service_search_direct(conv_root, tmp_path):
         session_api_keys=["k"],
         conversations_path=conv_root,
         workspace_path=tmp_path / "w",
-        file_store_path=tmp_path / "f",
     )
     svc = ContentSearchService(config)
-    hits = svc.search("Rome")
+    hits, capped = svc.search("Rome")
     assert hits and hits[0]["title"] == "Italy trip"
+    assert capped is False
     # index landed next to conversations dir, as designed
     assert (conv_root.parent / "search-index.db").exists()
 
@@ -117,10 +135,9 @@ def test_service_search_empty_query_returns_nothing(conv_root, tmp_path):
         session_api_keys=["k"],
         conversations_path=conv_root,
         workspace_path=tmp_path / "w",
-        file_store_path=tmp_path / "f",
     )
     svc = ContentSearchService(config)
-    assert svc.search("   ") == []
+    assert svc.search("   ") == ([], False)
 
 
 def test_new_message_found_after_incremental_sync(conv_root, tmp_path):
@@ -128,12 +145,11 @@ def test_new_message_found_after_incremental_sync(conv_root, tmp_path):
         session_api_keys=["k"],
         conversations_path=conv_root,
         workspace_path=tmp_path / "w",
-        file_store_path=tmp_path / "f",
     )
     svc = ContentSearchService(config)
-    assert svc.search("kubernetes") == []
+    assert svc.search("kubernetes")[0] == []
     write_conversation(
         conv_root, "K8s migration", [("user", "Plan the kubernetes migration.")]
     )
-    hits = svc.search("kubernetes")
+    hits, _ = svc.search("kubernetes")
     assert hits and hits[0]["title"] == "K8s migration"

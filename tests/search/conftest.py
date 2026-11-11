@@ -26,9 +26,7 @@ def write_conversation(root: Path, title: str, messages: list) -> str:
                 "content": [{"type": "text", "text": text}],
             },
         }
-        (events_dir / f"event-{i:06d}-{event['id']}.json").write_text(
-            json.dumps(event)
-        )
+        (events_dir / f"event-{i:06d}-{event['id']}.json").write_text(json.dumps(event))
     return conv_id
 
 

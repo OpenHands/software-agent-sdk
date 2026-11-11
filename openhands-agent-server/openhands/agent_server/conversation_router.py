@@ -207,6 +207,7 @@ async def search_conversations(
 @conversation_catalog_router.get("/search-content", include_in_schema=False)
 @conversation_router.get("/search-content")
 async def search_conversation_content(
+    request: Request,
     query: Annotated[
         str,
         Query(
@@ -216,18 +217,17 @@ async def search_conversation_content(
         ),
     ],
     limit: Annotated[int, Query(title="Max hits to return", gt=0, le=100)] = 50,
-    request: Request = None,
 ) -> ContentSearchResponse:
     """Full-text content search over conversation history (local only).
 
     Returns matching message rows with snippets. ``capped`` tells the caller
     when the limit cut results off so the UI can show an honest hint.
+    Returns 404 on hosted deployments, where the feature is not mounted.
     """
     service = getattr(request.app.state, "content_search_service", None)
     if service is None:
-        raise HTTPException(status_code=503, detail="content search unavailable")
-    hits = service.search(query, limit)
-    capped = len(hits) >= limit
+        raise HTTPException(status_code=404, detail="not found")
+    hits, capped = service.search(query, limit)
     return ContentSearchResponse(
         results=[ContentSearchHit(**h) for h in hits],
         total=len(hits),

@@ -1,10 +1,9 @@
 """Tests for the conversation full-text search index."""
 
 import pytest
+from conftest import write_conversation
 
 from openhands.agent_server.search_index import SearchIndex, backfill, mask_secrets
-
-from conftest import write_conversation
 
 
 @pytest.fixture
@@ -261,9 +260,13 @@ def test_dropped_last_letter_still_matches(tmp_path, conv_root):
     """Porter stems "huggin" and "hugging" to different prefixes, so a bare
     prefix query misses; the raw prefix word must be quoted in instead."""
     idx = SearchIndex(conv_root.parent / "s.db")
-    write_conversation(tmp_path / "convs2", "ML chat", [
-        ("user", "We tried hugging face transformers and it worked."),
-    ])
+    write_conversation(
+        tmp_path / "convs2",
+        "ML chat",
+        [
+            ("user", "We tried hugging face transformers and it worked."),
+        ],
+    )
     backfill(idx, tmp_path / "convs2")
     (hit,) = [h for h in idx.search("huggin") if h.title == "ML chat"]
     assert "hugging" in hit.snippet
@@ -271,7 +274,6 @@ def test_dropped_last_letter_still_matches(tmp_path, conv_root):
 
 def test_old_tokenizer_schema_is_rebuilt(tmp_path, conv_root):
     """An index built pre-porter must transparently rebuild on reopen."""
-    import sqlite3
 
     db = tmp_path / "search.db"
     old = SearchIndex(db)

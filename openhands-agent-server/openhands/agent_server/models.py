@@ -433,7 +433,6 @@ class ContentSearchResponse(BaseModel):
     )
 
 
-
 INCLUDE_SKILLS_PARAM_TITLE = (
     "Whether to include ``agent.agent_context.skills`` in the response. "
     "Default ``false`` (breaking change as of this release): skills are "
