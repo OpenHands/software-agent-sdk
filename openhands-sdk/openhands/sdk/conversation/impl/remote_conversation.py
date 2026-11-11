@@ -1730,6 +1730,7 @@ class RemoteConversation(BaseConversation):
             "POST",
             f"{CONVERSATIONS_PATH}/{self._id}/interrupt",
         )
+        self._state.refresh_from_server()
 
     def load_plugin(self, plugin_ref: str) -> None:
         _send_request(
