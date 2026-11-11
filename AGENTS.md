@@ -183,10 +183,9 @@ consult each relevant package-level AGENTS.md.
 # PR-Specific Evidence Documents
 
 The `.pr/` directory is intentionally temporary by repository policy: it holds
-PR-only reviewer context. It stays on the PR branch through review and on
-`main` after merge, until the next release PR removes it:
-`.github/workflows/prepare-release.yml` deletes the tracked root `.pr/`
-directory in the same commit as the version changes.
+PR-only reviewer context. It stays on the PR branch through review and is
+removed from that branch once the PR is approved, so it never reaches `main`.
+Link to it by commit SHA, not branch name, so the links keep working.
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should not be kept long-term, store them in a `.pr/` directory at the repository root.
 
@@ -208,13 +207,15 @@ mkdir -p .pr
 ## How It Works
 
 1. **Notification**: When a PR adds or changes files under `.pr/`, the `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) posts a single comment to the PR conversation alerting reviewers
-2. **Release cleanup**: `.pr/` accumulates on `main` until the next release PR removes it; release PR checks reject any `.pr/` files that remain
+2. **Status**: the `pr-artifacts` commit status (`.github/workflows/pr-artifacts-before-merge.yml`, shared from OpenHands/release-actions) stays pending while the PR adds `.pr/` files, so the PR cannot merge with them
+3. **Removal at approval**: once the PR is approved, the workflow pushes one commit removing `.pr/` from the PR branch and the status turns green. Fork PRs need **Allow edits by maintainers** turned on; otherwise the status fails until the author enables it or deletes `.pr/`
+4. **Release backstop**: if `.pr/` ever reaches `main`, `.github/workflows/prepare-release.yml` still deletes it in the release PR
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
-- The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- Do not open separate PRs to remove `.pr/` from `main`; release preparation removes it
+- A pending `pr-artifacts` status during review is expected; it clears after approval
+- Do not delete `.pr/` yourself before approval; reviewers need it, and the workflow removes it
 
 ## When to Use
 

@@ -63,7 +63,7 @@ jobs:
                       const body = `${marker}
                       📁 **PR Artifacts Notice**
 
-                      This PR adds or changes temporary PR-specific documents under \`.pr/\`. They stay available on this branch for review; after merge, the **next release PR removes \`.pr/\` from main**.
+                      This PR adds or changes temporary PR-specific documents under \`.pr/\`. They stay available on this branch for review and are **removed automatically once this PR is approved**, by a commit on this branch from the \`PR artifacts before merge\` workflow. Until then the required \`pr-artifacts\` status stays pending. Link evidence by commit SHA so the links keep working.
                       `;
 
                       core.warning('.pr/ directory contains temporary PR-only artifacts');

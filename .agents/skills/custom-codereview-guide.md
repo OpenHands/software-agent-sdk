@@ -281,7 +281,7 @@ Do not comment on:
 - clear code merely to request a comment or docstring;
 - extra tests unless a concrete behavior or regression is unverified;
 - good behavior that needs no change; or
-- `.pr/` artifacts, which the next release PR removes.
+- `.pr/` artifacts, which are removed from the PR branch automatically after approval.
 
 Do not assume that test-only, documentation, configuration, CI, or dependency
 PRs are safe by category. Apply the relevant checkpoint, then approve promptly

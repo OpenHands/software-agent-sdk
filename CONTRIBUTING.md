@@ -94,13 +94,13 @@ The convention:
    interface before and after when you touch one — signatures, schemas, or event shapes — and
    state the compatibility impact (additive, breaking, or behind a flag).
 2. Commit it under the temporary **`.pr/`** directory, e.g. `.pr/design.html`. This directory is
-   for PR-only artifacts. It stays on `main` after the PR merges, until the next release PR
-   removes it.
-3. Link it near the top of the PR description via htmlpreview, pointing at the fork and branch the
-   PR is opened from so it renders before the PR is merged:
+   for PR-only artifacts. It is removed from the PR branch automatically once the PR is
+   approved, so it never reaches `main`.
+3. Link it near the top of the PR description via htmlpreview, at the commit that contains it
+   (`git rev-parse HEAD` after you push it), so the link keeps working after the removal:
 
    ```
-   https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
+   https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<commit-sha>/.pr/design.html
    ```
 
 Skip this for trivial PRs (a typo, a one-line guard, a dependency bump, a small bug fix) — there, a design doc is

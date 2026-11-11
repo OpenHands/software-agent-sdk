@@ -40,10 +40,11 @@ non-trivial PR easy to review.
 ## The `.pr/` workflow
 
 Use the temporary **`.pr/`** directory for PR-only artifacts. Before relying on automatic
-cleanup, verify how the target repository removes `.pr/` from `main`.
+cleanup, verify how the target repository removes `.pr/`.
 
-- This repository: `.pr/` stays on `main` after merge until the next release PR removes it
-  (`.github/workflows/prepare-release.yml`). Do not open a separate cleanup PR.
+- This repository: `.pr/` is removed from the PR branch once the PR is approved
+  (`.github/workflows/pr-artifacts-before-merge.yml`), so it never reaches `main`. Fork PRs
+  need **Allow edits by maintainers** on. Do not open a separate cleanup PR.
 - Repository without verified cleanup automation: remove `.pr/` manually before merge.
 
 The design doc is a temporary review aid, not project documentation. Keep the essential
