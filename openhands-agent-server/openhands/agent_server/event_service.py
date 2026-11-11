@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_lease import (
@@ -223,6 +223,12 @@ def _without_agent_context_secret(
     )
 
 
+class _LegacyMetaSecrets(BaseModel):
+    """The ``secrets`` key older servers wrote to meta.json."""
+
+    secrets: dict[str, SecretSource] = Field(default_factory=dict)
+
+
 @dataclass
 class EventService:
     """
@@ -314,6 +320,22 @@ class EventService:
                 "cipher": self.cipher,
             },
         )
+
+    def _read_legacy_meta_secrets(self) -> dict[str, SecretSource]:
+        """Start-time secrets an older server left in meta.json.
+
+        Older servers kept them there and could leave them out of
+        base_state.json. They are read on the first resume by this version;
+        the next ``save_meta`` writes meta.json without the key.
+        """
+        meta_file = self.conversation_dir / "meta.json"
+        try:
+            legacy = _LegacyMetaSecrets.model_validate_json(
+                meta_file.read_text(), context={"cipher": self.cipher}
+            )
+        except (OSError, ValidationError):
+            return {}
+        return legacy.secrets
 
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
         """Persist ``stored`` (default: the current metadata) to ``meta.json``.
@@ -1265,6 +1287,8 @@ class EventService:
             )
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
+        # Before the scrub below, which can rewrite meta.json.
+        legacy_secrets = await asyncio.to_thread(self._read_legacy_meta_secrets)
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
@@ -1388,7 +1412,18 @@ class EventService:
             mcp_tool_provider=self.mcp_tool_provider,
         )
 
-        if not base_state_exists:
+        if base_state_exists:
+            # base_state.json wins: only names it lacks are taken from the
+            # legacy meta.json copy, so a saved runtime override is kept.
+            known = conversation.state.secret_registry.secret_sources
+            missing = {
+                name: source
+                for name, source in legacy_secrets.items()
+                if name not in known and name not in self.credential_bindings
+            }
+            if missing:
+                conversation.update_secrets(missing)
+        else:
             conversation.set_confirmation_policy(self.confirmation_policy)
             conversation.set_security_analyzer(self.security_analyzer)
         # On resume the agent was unknown at construction time (loaded from

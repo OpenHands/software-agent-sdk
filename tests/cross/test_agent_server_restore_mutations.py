@@ -85,3 +85,48 @@ async def test_mutations_survive_a_server_restart_and_a_later_fork(tmp_path):
         fork_secrets = fork_state.secret_registry.secret_sources
         assert fork_secrets["START_TOKEN"].get_value() == "start-value"
         assert fork_secrets["ADDED_TOKEN"].get_value() == "added-value"
+
+
+@pytest.mark.asyncio
+async def test_secrets_an_older_server_left_in_meta_json_are_kept(tmp_path):
+    """Older servers kept start-time secrets in meta.json and could leave them
+    out of base_state.json. The first resume takes over the ones base_state.json
+    lacks; a value it already has wins over the older copy."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("restore-mutations-key")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(_request(workspace_dir))
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        await event_service.update_secrets({"START_TOKEN": "changed-value"})
+
+    meta_file = conversations_dir / info.id.hex / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        name: StaticSecret(value=SecretStr(value)).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+        for name, value in {
+            "START_TOKEN": "start-value",
+            "ONLY_IN_META": "legacy-value",
+        }.items()
+    }
+    meta_file.write_text(json.dumps(meta))
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        restored = await service.get_event_service(info.id)
+        assert restored is not None
+        secrets = (await restored.get_state()).secret_registry.secret_sources
+        assert secrets["ONLY_IN_META"].get_value() == "legacy-value"
+        assert secrets["START_TOKEN"].get_value() == "changed-value"
+
+    assert "secrets" not in json.loads(meta_file.read_text())
+    base_state = json.loads((meta_file.parent / "base_state.json").read_text())
+    assert "ONLY_IN_META" in base_state["secret_registry"]["secret_sources"]
