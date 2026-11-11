@@ -487,6 +487,15 @@ class GrantConversationSecret(BaseModel):
     type: Literal["secret.grant"]
     name: str
     value: SecretStr
+    scope: Literal["conversation", "agent_profile"] = "conversation"
+
+
+class AttachConversationSecret(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["secret.attach"]
+    name: str
+    scope: Literal["conversation", "agent_profile"] = "conversation"
 
 
 class AttachConversationMCP(BaseModel):
@@ -505,7 +514,10 @@ class InstallConversationMCP(BaseModel):
 
 
 ConversationConfigurationOperation = Annotated[
-    GrantConversationSecret | AttachConversationMCP | InstallConversationMCP,
+    GrantConversationSecret
+    | AttachConversationSecret
+    | AttachConversationMCP
+    | InstallConversationMCP,
     Field(discriminator="type"),
 ]
 
@@ -519,7 +531,7 @@ class ConversationConfigurationChangesRequest(BaseModel):
 
 
 class AppliedConfigurationChange(BaseModel):
-    type: Literal["secret.grant", "mcp.attach", "mcp.install"]
+    type: Literal["secret.grant", "secret.attach", "mcp.attach", "mcp.install"]
     name: str | None = None
     ref: str | None = None
 

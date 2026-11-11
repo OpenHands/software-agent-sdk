@@ -22,6 +22,7 @@ from pydantic import TypeAdapter, ValidationError
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
+    get_config,
     store_errors,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
@@ -40,6 +41,7 @@ from openhands.agent_server.models import (
     AskAgentRequest,
     AskAgentResponse,
     AttachConversationMCP,
+    AttachConversationSecret,
     ConversationConfigurationChangesRequest,
     ConversationConfigurationChangesResponse,
     ConversationInfo,
@@ -65,7 +67,9 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
+    get_agent_profile_store,
     get_llm_profile_store,
+    get_secrets_store,
     get_settings_store,
 )
 from openhands.sdk import LLM
@@ -82,6 +86,7 @@ from openhands.sdk.marketplace.registry import (
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles import save_profile_preserving_identity
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
@@ -564,6 +569,22 @@ async def resume_goal_in_conversation(
     return Success()
 
 
+def _save_profile_secret_ref(profile_id: UUID, name: str) -> None:
+    store = get_agent_profile_store()
+    with store.lock():
+        profile_name = store.name_for_id(profile_id)
+        if profile_name is None:
+            raise LookupError("Launched profile is not saved locally")
+        profile = store.load(profile_name)
+        if profile.id != profile_id:
+            raise LookupError("Launched profile has changed")
+        if profile.secret_refs is not None and name not in profile.secret_refs:
+            updated = profile.model_copy(
+                update={"secret_refs": [*profile.secret_refs, name]}
+            )
+            save_profile_preserving_identity(store, updated)
+
+
 @conversation_router.post(
     "/{conversation_id}/configuration/changes",
     response_model=ConversationConfigurationChangesResponse,
@@ -599,27 +620,71 @@ async def change_conversation_configuration(
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
     change = changes.operations[0]
-    if isinstance(change, GrantConversationSecret):
+    if isinstance(change, (GrantConversationSecret, AttachConversationSecret)):
         if not SECRET_NAME_PATTERN.fullmatch(change.name):
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret name"
             )
-        value = change.value.get_secret_value()
-        if not value.strip() or is_redacted_secret(value):
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret value"
-            )
+        secrets_store = get_secrets_store(get_config(request))
+        if isinstance(change, GrantConversationSecret):
+            value = change.value.get_secret_value()
+            if not value.strip() or is_redacted_secret(value):
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid secret value"
+                )
+            if (
+                change.scope == "agent_profile"
+                and await asyncio.to_thread(secrets_store.get_secret, change.name)
+                is not None
+            ):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "Secret already saved; attach it instead"
+                )
+        else:
+            value = await asyncio.to_thread(secrets_store.get_secret, change.name)
+            if value is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Secret not found")
+        if change.scope == "agent_profile":
+            launched = event_service.stored.launched_agent_profile
+            if (
+                launched is None
+                or await asyncio.to_thread(
+                    get_agent_profile_store().name_for_id, launched.agent_profile_id
+                )
+                is None
+            ):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "No locally saved agent profile"
+                )
         try:
             await event_service.add_conversation_secret(change.name, value)
-        except PermissionError as exc:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN, "Secret not allowed"
-            ) from exc
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "Secret not available"
             ) from exc
-        applied = AppliedConfigurationChange(type="secret.grant", name=change.name)
+        if change.scope == "agent_profile":
+            try:
+                if isinstance(change, GrantConversationSecret):
+                    await asyncio.to_thread(
+                        secrets_store.set_secret,
+                        change.name,
+                        value,
+                        create_only=True,
+                    )
+                await asyncio.to_thread(
+                    _save_profile_secret_ref, launched.agent_profile_id, change.name
+                )
+            except FileExistsError as exc:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "Secret available in this conversation, but saved name is in use",
+                ) from exc
+            except (LookupError, RuntimeError, OSError, ValueError) as exc:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "Secret available in this conversation, but profile save failed",
+                ) from exc
+        applied = AppliedConfigurationChange(type=change.type, name=change.name)
     elif isinstance(change, AttachConversationMCP):
         settings = await asyncio.to_thread(get_settings_store().load)
         if settings is None:

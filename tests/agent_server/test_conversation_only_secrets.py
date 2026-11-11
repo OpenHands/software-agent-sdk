@@ -29,9 +29,9 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
-    LaunchedAgentProfile,
     OpenHandsAgentProfile,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -148,11 +148,75 @@ async def test_conversation_secret_is_encrypted_isolated_and_restored(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rejects_secret_outside_launched_profile_allowlist(tmp_path):
+async def test_conversation_secret_expands_only_its_launched_profile_snapshot(tmp_path):
     cipher = Cipher("conversation-test-key")
     profile = ACPAgentProfile(
         name="restricted", acp_server="codex", secret_refs=["ALLOWED"]
     )
+    get_agent_profile_store().save(profile)
+    root = tmp_path / "conversations"
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent_profile_id=profile.id,
+                workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+            )
+        )
+        async with _client(service, cipher=cipher) as client:
+            response = await client.post(
+                f"/api/conversations/{info.id}/configuration/changes",
+                json={
+                    "operations": [
+                        {
+                            "type": "secret.grant",
+                            "name": "ONLY_THIS",
+                            "value": "private-value",
+                            "scope": "conversation",
+                        }
+                    ]
+                },
+            )
+            assert response.status_code == 200, response.text
+            concurrent = await asyncio.gather(
+                *(
+                    client.post(
+                        f"/api/conversations/{info.id}/configuration/changes",
+                        json={
+                            "operations": [
+                                {"type": "secret.grant", "name": name, "value": name}
+                            ]
+                        },
+                    )
+                    for name in ("ONE", "TWO")
+                )
+            )
+            assert all(result.status_code == 200 for result in concurrent)
+        event_service = await _event_service(service, info.id)
+        assert event_service.stored.launched_agent_profile.secret_refs == [
+            "ALLOWED",
+            "ONLY_THIS",
+            "ONE",
+            "TWO",
+        ]
+        assert (await event_service.get_state()).secret_registry.get_secret_value(
+            "ONLY_THIS"
+        ) == "private-value"
+        assert get_agent_profile_store().load("restricted").secret_refs == ["ALLOWED"]
+        assert get_secrets_store().get_secret("ONLY_THIS") is None
+        saved_meta = (root / info.id.hex / "meta.json").read_text()
+        assert "ONLY_THIS" in saved_meta and "private-value" not in saved_meta
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        restored = await _event_service(service, info.id)
+        assert restored.stored.launched_agent_profile.allows_secret("ONLY_THIS")
+        assert (await restored.get_state()).secret_registry.get_secret_value(
+            "ONLY_THIS"
+        ) == "private-value"
+
+
+@pytest.mark.asyncio
+async def test_profile_secret_scope_saves_vault_and_profile_reference(tmp_path):
+    cipher = Cipher("profile-secret-key")
+    profile = ACPAgentProfile(name="my-agent", acp_server="codex", secret_refs=[])
     get_agent_profile_store().save(profile)
     async with ConversationService(
         conversations_dir=tmp_path / "conversations", cipher=cipher
@@ -170,29 +234,177 @@ async def test_rejects_secret_outside_launched_profile_allowlist(tmp_path):
                     "operations": [
                         {
                             "type": "secret.grant",
-                            "name": "DENIED",
-                            "value": "not-allowed",
+                            "name": "PERSISTED",
+                            "value": "private-profile-value",
+                            "scope": "agent_profile",
                         }
                     ]
                 },
             )
-            assert response.status_code == 403
-            allowed = await client.post(
+            assert response.status_code == 200, response.text
+        assert get_secrets_store().get_secret("PERSISTED") == "private-profile-value"
+        saved_profile = get_agent_profile_store().load("my-agent")
+        assert saved_profile.secret_refs == ["PERSISTED"]
+        assert saved_profile.id == profile.id
+        assert saved_profile.revision > profile.revision
+        snapshot = (
+            await _event_service(service, info.id)
+        ).stored.launched_agent_profile
+        assert snapshot.allows_secret("PERSISTED")
+        next_info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent_profile_id=profile.id,
+                workspace=LocalWorkspace(working_dir=tmp_path / "next-workspace"),
+                secrets={
+                    "PERSISTED": StaticSecret(
+                        value=SecretStr(get_secrets_store().get_secret("PERSISTED"))
+                    )
+                },
+            )
+        )
+        next_state = await (await _event_service(service, next_info.id)).get_state()
+        assert next_state.secret_registry.get_secret_value("PERSISTED") == (
+            "private-profile-value"
+        )
+
+
+@pytest.mark.asyncio
+async def test_profile_scope_without_saved_profile_never_saves_secret(tmp_path):
+    cipher = Cipher("profile-secret-key")
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        conversation_id = await _start(service, tmp_path / "workspace")
+        async with _client(service, cipher=cipher) as client:
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/configuration/changes",
+                json={
+                    "operations": [
+                        {
+                            "type": "secret.grant",
+                            "name": "NO_PROFILE",
+                            "value": "must-not-persist",
+                            "scope": "agent_profile",
+                        }
+                    ]
+                },
+            )
+            assert response.status_code == 409, response.text
+        assert get_secrets_store().get_secret("NO_PROFILE") is None
+        state = await (await _event_service(service, conversation_id)).get_state()
+        assert "NO_PROFILE" not in state.secret_registry.secret_sources
+
+
+@pytest.mark.asyncio
+async def test_saved_secret_attaches_without_value_or_unintended_profile_update(
+    tmp_path,
+):
+    cipher = Cipher("saved-reference-key")
+    vault = get_secrets_store(Config(secret_key=SecretStr(cipher.secret_key)))
+    vault.set_secret("EXISTING", "already-stored")
+    vault.set_secret("ONE_OFF", "not-for-profile")
+    profile = ACPAgentProfile(
+        name="saved-ref-agent", acp_server="codex", secret_refs=[]
+    )
+    get_agent_profile_store().save(profile)
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent_profile_id=profile.id,
+                workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+            )
+        )
+        async with _client(service, cipher=cipher) as client:
+            url = f"/api/conversations/{info.id}/configuration/changes"
+            response = await client.post(
+                url,
+                json={
+                    "operations": [
+                        {
+                            "type": "secret.attach",
+                            "name": "EXISTING",
+                            "scope": "agent_profile",
+                        }
+                    ]
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {
+                "applied": [{"type": "secret.attach", "name": "EXISTING"}]
+            }
+            assert "already-stored" not in response.text
+            one_off = await client.post(
+                url,
+                json={"operations": [{"type": "secret.attach", "name": "ONE_OFF"}]},
+            )
+            assert one_off.status_code == 200, one_off.text
+            assert (
+                await client.post(
+                    url,
+                    json={
+                        "operations": [
+                            {
+                                "type": "secret.grant",
+                                "name": "EXISTING",
+                                "value": "replacement",
+                                "scope": "agent_profile",
+                            }
+                        ]
+                    },
+                )
+            ).status_code == 409
+        assert get_secrets_store().get_secret("EXISTING") == "already-stored"
+        with pytest.raises(FileExistsError):
+            get_secrets_store().set_secret("EXISTING", "replacement", create_only=True)
+        assert get_secrets_store().get_secret("EXISTING") == "already-stored"
+        assert get_agent_profile_store().load("saved-ref-agent").secret_refs == [
+            "EXISTING"
+        ]
+        current = await (await _event_service(service, info.id)).get_state()
+        assert current.secret_registry.get_secret_value("EXISTING") == "already-stored"
+        assert current.secret_registry.get_secret_value("ONE_OFF") == "not-for-profile"
+
+
+@pytest.mark.asyncio
+async def test_profile_save_failure_reports_conversation_only_partial_success(tmp_path):
+    cipher = Cipher("partial-profile-key")
+    profile = ACPAgentProfile(name="partial", acp_server="codex", secret_refs=[])
+    get_agent_profile_store().save(profile)
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent_profile_id=profile.id,
+                workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+            )
+        )
+        store = get_secrets_store(Config(secret_key=SecretStr(cipher.secret_key)))
+        store.persistence_dir.mkdir(parents=True, exist_ok=True)
+        store._path.write_text("invalid json")
+        async with _client(service, cipher=cipher) as client:
+            response = await client.post(
                 f"/api/conversations/{info.id}/configuration/changes",
                 json={
                     "operations": [
                         {
                             "type": "secret.grant",
-                            "name": "ALLOWED",
-                            "value": "approved-value",
+                            "name": "PARTIAL",
+                            "value": "not-in-vault",
+                            "scope": "agent_profile",
                         }
                     ]
                 },
             )
-            assert allowed.status_code == 200
-        state = await (await _event_service(service, info.id)).get_state()
-        assert "DENIED" not in state.secret_registry.secret_sources
-        assert state.secret_registry.get_secret_value("ALLOWED") == "approved-value"
+            assert response.status_code == 503, response.text
+            assert "conversation" in response.json()["detail"]
+            assert "not-in-vault" not in response.text
+        assert get_agent_profile_store().load("partial").secret_refs == []
+        assert (
+            await (await _event_service(service, info.id)).get_state()
+        ).secret_registry.get_secret_value("PARTIAL") == "not-in-vault"
 
 
 @pytest.mark.asyncio
@@ -415,13 +627,19 @@ async def test_unreachable_or_disabled_mcp_does_not_change_conversation(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_mcp_policy_is_captured_at_launch_not_from_edited_profile(tmp_path):
+async def test_mcp_explicit_attach_expands_conversation_snapshot_not_saved_profile(
+    tmp_path,
+):
     cipher = Cipher("mcp-policy-key")
+    repo = Path(__file__).resolve().parents[2]
+    server = MCPServer(
+        command=sys.executable,
+        args=["-m", "tests.sdk.mcp.stdio_test_server"],
+        cwd=str(repo),
+    )
     get_settings_store(Config(secret_key=SecretStr(cipher.secret_key))).save(
         PersistedSettings(
-            agent_settings=OpenHandsAgentSettings(
-                mcp_config={"fetch": MCPServer(command=sys.executable)}
-            )
+            agent_settings=OpenHandsAgentSettings(mcp_config={"fetch": server})
         )
     )
     get_llm_profile_store().save(
@@ -434,60 +652,62 @@ async def test_mcp_policy_is_captured_at_launch_not_from_edited_profile(tmp_path
         name="no-mcp", llm_profile_ref="default", mcp_server_refs=[], tools=[]
     )
     get_agent_profile_store().save(profile)
-    async with ConversationService(
-        conversations_dir=tmp_path / "conversations", cipher=cipher
-    ) as service:
+    root = tmp_path / "conversations"
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
         info, _ = await service.start_conversation(
             StartConversationRequest(
                 agent_profile_id=profile.id,
                 workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
             )
         )
-        get_agent_profile_store().save(
-            profile.model_copy(update={"mcp_server_refs": ["fetch"]})
-        )
         async with _client(service, cipher=cipher) as client:
+            url = f"/api/conversations/{info.id}/configuration/changes"
             response = await client.post(
-                f"/api/conversations/{info.id}/configuration/changes",
-                json={"operations": [{"type": "mcp.attach", "ref": "fetch"}]},
+                url, json={"operations": [{"type": "mcp.attach", "ref": "fetch"}]}
             )
-            assert response.status_code == 403, response.text
+            assert response.status_code == 200, response.text
             inline = await client.post(
-                f"/api/conversations/{info.id}/configuration/changes",
+                url,
                 json={
                     "operations": [
                         {
                             "type": "mcp.install",
-                            "name": "not-allowed",
-                            "server": {"command": sys.executable},
+                            "name": "inline",
+                            "server": server.model_dump(mode="json"),
                         }
                     ]
                 },
             )
-            assert inline.status_code == 403, inline.text
-            event_service = await _event_service(service, info.id)
-            snapshot = event_service.stored.launched_agent_profile
-            assert snapshot is not None
-            legacy = LaunchedAgentProfile.model_validate(
-                snapshot.model_dump(exclude={"mcp_server_refs"})
-            )
-            assert legacy.mcp_server_refs == []
+            assert inline.status_code == 200, inline.text
+            snapshot = (
+                await _event_service(service, info.id)
+            ).stored.launched_agent_profile
+            assert snapshot.mcp_server_refs == ["fetch", "inline"]
+            assert get_agent_profile_store().load("no-mcp").mcp_server_refs == []
             assert (
-                LaunchedAgentProfile.model_validate(
-                    legacy.model_dump(mode="json")
-                ).mcp_server_refs
-                == []
-            )
-            event_service.stored.launched_agent_profile = legacy
-            response = await client.post(
-                f"/api/conversations/{info.id}/configuration/changes",
-                json={"operations": [{"type": "mcp.attach", "ref": "fetch"}]},
-            )
-            assert response.status_code == 403, response.text
-            event_service.stored.launched_agent_profile = snapshot
-        assert not (
-            await (await _event_service(service, info.id)).get_state()
-        ).agent.mcp_config
+                await client.post(
+                    url,
+                    json={
+                        "operations": [
+                            {
+                                "type": "mcp.install",
+                                "name": "broken",
+                                "server": {
+                                    "command": sys.executable,
+                                    "args": ["-c", "exit(1)"],
+                                },
+                            }
+                        ]
+                    },
+                )
+            ).status_code == 409
+            assert "broken" not in snapshot.mcp_server_refs
+        assert "fetch" in (root / info.id.hex / "meta.json").read_text()
+    async with ConversationService(conversations_dir=root, cipher=cipher) as service:
+        restored = (
+            await _event_service(service, info.id)
+        ).stored.launched_agent_profile
+        assert restored.mcp_server_refs == ["fetch", "inline"]
 
 
 @pytest.mark.asyncio

@@ -184,7 +184,8 @@ export interface UpdateSecretsRequest {
 
 /** Secret values are sent only to the owning agent server, never returned. */
 export type ConversationConfigurationOperation =
-  | { type: 'secret.grant'; name: string; value: string }
+  | { type: 'secret.grant'; name: string; value: string; scope?: 'conversation' | 'agent_profile' }
+  | { type: 'secret.attach'; name: string; scope?: 'conversation' | 'agent_profile' }
   | { type: 'mcp.attach'; ref: string }
   | { type: 'mcp.install'; name: string; server: MCPServer };
 
@@ -195,6 +196,7 @@ export interface ConversationConfigurationChangesRequest {
 
 export type AppliedConfigurationChange =
   | { type: 'secret.grant'; name: string }
+  | { type: 'secret.attach'; name: string }
   | { type: 'mcp.attach'; ref: string }
   | { type: 'mcp.install'; name: string };
 

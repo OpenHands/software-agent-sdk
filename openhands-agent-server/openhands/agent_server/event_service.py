@@ -270,6 +270,7 @@ class EventService:
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _configuration_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -2183,31 +2184,57 @@ class EventService:
                     self._run_task = None
             await self._publish_state_update()
 
+    async def _allow_configuration_name(
+        self, field_name: str, name: str
+    ) -> StoredConversation | None:
+        profile = self.stored.launched_agent_profile
+        if profile is None:
+            return None
+        refs = getattr(profile, field_name)
+        if refs is None or name in refs:
+            return None
+        previous = self.stored
+        updated = profile.model_copy(update={field_name: [*refs, name]})
+        await self.save_meta(
+            previous.model_copy(update={"launched_agent_profile": updated})
+        )
+        return previous
+
     async def add_conversation_secret(self, name: str, value: str) -> None:
-        """Attach a recoverable secret only to this conversation."""
+        """Attach a recoverable secret and authorize it in this conversation."""
         if self._conversation is None:
             raise ValueError("inactive_service")
         if self.cipher is None:
             raise RuntimeError("Conversation secrets require an encryption key")
-        profile = self.stored.launched_agent_profile
-        if profile is not None and not profile.allows_secret(name):
-            raise PermissionError("Secret is not allowed by the launched agent profile")
         if name == CODEX_AUTH_SECRET_NAME and name in self.credential_bindings:
             raise ValueError("Secret name is reserved for a credential binding")
-        await asyncio.to_thread(self._conversation.add_conversation_secret, name, value)
+        async with self._configuration_lock:
+            previous = await self._allow_configuration_name("secret_refs", name)
+            try:
+                await asyncio.to_thread(
+                    self._conversation.add_conversation_secret, name, value
+                )
+            except Exception:
+                if previous is not None:
+                    await self.save_meta(previous)
+                raise
 
     async def attach_mcp_server(self, name: str, server: MCPServer) -> None:
-        """Connect one saved MCP server without changing profiles or settings."""
+        """Connect an MCP server and authorize it in this conversation."""
         if self._conversation is None:
             raise ValueError("inactive_service")
-        profile = self.stored.launched_agent_profile
-        if profile is not None and not profile.allows_mcp_server(name):
-            raise PermissionError(
-                "MCP server is not allowed by the launched agent profile"
-            )
         if self.cipher is None and (server.env or server.headers or server.auth):
             raise RuntimeError("MCP server credentials require an encryption key")
-        await asyncio.to_thread(self._conversation.attach_mcp_server, name, server)
+        async with self._configuration_lock:
+            previous = await self._allow_configuration_name("mcp_server_refs", name)
+            try:
+                await asyncio.to_thread(
+                    self._conversation.attach_mcp_server, name, server
+                )
+            except Exception:
+                if previous is not None:
+                    await self.save_meta(previous)
+                raise
 
     async def get_live_tools(self) -> list[ConversationToolInfo]:
         """Read the current agent's tools without blocking the event loop."""

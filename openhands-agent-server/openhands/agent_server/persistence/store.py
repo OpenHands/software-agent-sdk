@@ -672,13 +672,21 @@ class FileSecretsStore(SecretsStore):
                 return None
             return secret.secret.get_secret_value()
 
-    def set_secret(self, name: str, value: str, description: str | None = None) -> None:
+    def set_secret(
+        self,
+        name: str,
+        value: str,
+        description: str | None = None,
+        *,
+        create_only: bool = False,
+    ) -> None:
         """Set a single secret with file locking to prevent race conditions.
 
         Raises:
             RuntimeError: If the secrets file exists but cannot be loaded
                 (e.g., corrupted JSON, decryption failure). This prevents
                 data loss from overwriting existing secrets with defaults.
+            FileExistsError: If ``create_only`` is set and the name is already used.
         """
         with _file_lock(self._lock_path):
             secrets = self.load(strict=True)
@@ -693,6 +701,8 @@ class FileSecretsStore(SecretsStore):
                         "Refusing to overwrite with defaults to prevent data loss."
                     )
                 secrets = Secrets()
+            if create_only and name in secrets.custom_secrets:
+                raise FileExistsError(f"Secret {name!r} already exists")
 
             # Create new secrets dict with updated value
             new_secrets = dict(secrets.custom_secrets)
