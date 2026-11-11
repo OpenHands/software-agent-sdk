@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_lease import (
@@ -224,9 +224,13 @@ def _without_agent_context_secret(
 
 
 class _LegacyMetaSecrets(BaseModel):
-    """The ``secrets`` key older servers wrote to meta.json."""
+    """The ``secrets`` key older servers wrote to meta.json. Each entry is
+    read on its own, so one that cannot be parsed does not cost the others."""
 
-    secrets: dict[str, SecretSource] = Field(default_factory=dict)
+    secrets: dict[str, Any] = Field(default_factory=dict)
+
+
+_SECRET_SOURCE: TypeAdapter[SecretSource] = TypeAdapter(SecretSource)
 
 
 @dataclass
@@ -335,27 +339,32 @@ class EventService:
         the next write of meta.json drops the key.
         """
         try:
-            legacy = _LegacyMetaSecrets.model_validate_json(
-                (self.conversation_dir / "meta.json").read_text(),
-                context={"cipher": self.cipher},
+            entries = _LegacyMetaSecrets.model_validate_json(
+                (self.conversation_dir / "meta.json").read_text()
             ).secrets
-        except OSError:
+        except (OSError, ValidationError):
             return {}
-        except ValidationError:
-            logger.warning(
-                "Could not read the secrets an older server left in meta.json "
-                "of conversation %s; they are not taken over",
-                self.stored.id,
-            )
-            return {}
-        # A value this server's key cannot decrypt reads as unset. Taking it
-        # over would save the state, and with it everything else this load
-        # could not decrypt.
-        return {
-            name: source
-            for name, source in legacy.items()
-            if not (isinstance(source, StaticSecret) and source.value is None)
-        }
+        legacy: dict[str, SecretSource] = {}
+        for name, entry in entries.items():
+            try:
+                source = _SECRET_SOURCE.validate_python(
+                    entry, context={"cipher": self.cipher}
+                )
+            except ValidationError:
+                logger.warning(
+                    "Could not read the secret %s an older server left in "
+                    "meta.json of conversation %s; it is not taken over",
+                    name,
+                    self.stored.id,
+                )
+                continue
+            # A value this server's key cannot decrypt reads as unset. Taking
+            # it over would save the state, and with it everything else this
+            # load could not decrypt.
+            if isinstance(source, StaticSecret) and source.value is None:
+                continue
+            legacy[name] = source
+        return legacy
 
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
         """Persist ``stored`` (default: the current metadata) to ``meta.json``.

@@ -284,9 +284,10 @@ async def test_child_inherits_what_its_parent_has_now(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unreadable_legacy_meta_secrets_do_not_block_the_resume(tmp_path):
-    """A ``secrets`` key this server cannot parse (a secret kind it does not
-    know) is left behind: the conversation loads with what base_state.json has."""
+async def test_unreadable_legacy_meta_secret_costs_only_itself(tmp_path):
+    """One legacy secret this server cannot parse (a secret kind it does not
+    know) is left behind. The conversation loads, and the other legacy
+    secrets in the same file are still taken over."""
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -299,7 +300,12 @@ async def test_unreadable_legacy_meta_secrets_do_not_block_the_resume(tmp_path):
 
     meta_file = conversations_dir / info.id.hex / "meta.json"
     meta = json.loads(meta_file.read_text())
-    meta["secrets"] = {"GONE": {"kind": "SecretKindFromARemovedPlugin"}}
+    meta["secrets"] = {
+        "GONE": {"kind": "SecretKindFromARemovedPlugin"},
+        "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
+            mode="json", context={"cipher": cipher}
+        ),
+    }
     meta_file.write_text(json.dumps(meta))
 
     async with ConversationService(
@@ -308,8 +314,9 @@ async def test_unreadable_legacy_meta_secrets_do_not_block_the_resume(tmp_path):
         restored = await service.get_event_service(info.id)
         assert restored is not None
         secrets = (await restored.get_state()).secret_registry.secret_sources
-        assert set(secrets) == {"START_TOKEN"}
+        assert set(secrets) == {"START_TOKEN", "ONLY_IN_META"}
         assert secrets["START_TOKEN"].get_value() == "start-value"
+        assert secrets["ONLY_IN_META"].get_value() == "legacy-value"
 
 
 @pytest.mark.asyncio
