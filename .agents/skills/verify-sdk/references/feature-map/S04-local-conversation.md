@@ -239,7 +239,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check repl.collected_tool_messages eq 5 --check repl.collected_roles contains tool \
     --check prompt_is_input.waiting eq true --check prompt_is_input.reply contains "hello John 42"
   ```
-  With the default tmux pane pool, a follow-up call reaches the running command's pane untouched: it is not interrupted first, so a program waiting on `input()` gets the answer.
+  Known failure (reproduced 2026-11-11, [#6752](https://github.com/OpenHands/software-agent-sdk/issues/6752)): with the default tmux pane pool, an `is_input=True` follow-up reaches the running command untouched (`prompt_is_input` passes), but a plain command typed into the running REPL is preceded by Ctrl+C and a `clear` typed into Python, so `repl.reply` starts with `KeyboardInterrupt` and `NameError: name 'clear' is not defined` and `42` falls past the 200 characters the program keeps. The subprocess backend refuses the plain command instead.
 - **Final response, title and tags (`S04.final-response`, `S04.title-and-tags`).** `get_agent_final_response` on finished conversations; `generate_title` from the agent's LLM, an explicit LLM, a reply with `<think>` reasoning, a failing LLM and no user message; tags kept on disk, bad keys and long values refused.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
