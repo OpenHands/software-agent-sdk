@@ -2360,7 +2360,6 @@ describe('Auxiliary API clients', () => {
     );
   });
 
-<<<<<<< HEAD
   it('ConversationClient.react sends only the fields it is given', async () => {
     const saved = {
       id: 'r1',
@@ -2398,8 +2397,6 @@ describe('Auxiliary API clients', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
   });
 
-=======
->>>>>>> origin/main
   it('SettingsClient fetches and updates settings and secrets', async () => {
     const responses = [
       { agent_settings: { llm_model: 'gpt-4o' }, conversation_settings: {} },

@@ -49,11 +49,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.sdk-clone-repos`: with the server secret `GITHUB_TOKEN` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/GITHUB_TOKEN` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`GITLAB_TOKEN`) clones anonymously, and `get_repos_context()` names both clones.
 - `F18.ts-client`: the TypeScript `SettingsClient` reads both schemas, reads settings redacted, `plaintext` and `encrypted`, applies a sparse `updateSettings` that a second read shows, upserts, lists (also with `agentProfileId`), reads as text and deletes a secret, and rejects an unknown secret (404), a bad name (422) and a wrong key (401) with an `HttpError`.
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
-<<<<<<< HEAD
 - `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (`conversation_reactions`, off) without creating `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing.
-=======
-- `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (none are registered yet, so `[]`) without creating `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing.
->>>>>>> origin/main
 - `F18.upgrade-from-release`: settings, an LLM key and a secret saved by the latest released server read back identical after the same state is restarted on this checkout (`restart --checkout`), the upgrade does not rewrite either file, and the experimental routes answer.
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
 - `F18.no-cipher`: without any cipher key, `X-Expose-Secrets: encrypted` is 503, `plaintext` still works, both files store plaintext, and the secrets routes are open without a key.
@@ -672,30 +668,18 @@ Preconditions:
 - **Experimental features (`F18.experimental-features`).** List them and try
   to switch one the server does not know.
   ```sh
-<<<<<<< HEAD
   control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 1 --check 0.key eq conversation_reactions \
     --check 0.enabled eq false --save F18.experimental-features/list
-=======
-  control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 0 --save F18.experimental-features/list
->>>>>>> origin/main
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{"enabled": true}' --expect 404 \
     --check detail eq 'Unknown experimental feature: qa_f18_unknown' --save F18.experimental-features/unknown
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{}' --expect 422
   control-agent-server api GET /api/settings/experimental --auth none --expect 401
   if grep -qs experimental_features "$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"; then false; fi
   ```
-<<<<<<< HEAD
   The list holds `conversation_reactions`, off (F37 switches it), as
   `{key, label, description, enabled}`. A key the server does not know is a
   404, and the refused switch leaves `settings.json` without an
   `experimental_features` entry.
-=======
-  No feature is registered yet, so the list is `[]` and every key is unknown
-  (404). The refused switch leaves `settings.json` without an
-  `experimental_features` entry. A feature added to `EXPERIMENTAL_FEATURES`
-  appears in the list as `{key, label, description, enabled}` and its switch
-  is stored in `experimental_features` by key.
->>>>>>> origin/main
 - **Upgrade from the latest release (`F18.upgrade-from-release`).** A second
   run starts on the newest release tag, saves settings as a user of that
   release would, and is restarted on this checkout over the same state.
