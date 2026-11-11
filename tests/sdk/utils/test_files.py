@@ -1,4 +1,6 @@
 import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,8 +13,9 @@ from openhands.sdk.utils.files import (
 )
 
 
+@pytest.mark.parametrize("mode", [0o600, None], ids=["mkstemp", "umask"])
 def test_atomic_write_text_temp_file_is_marked_as_a_temp_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int | None
 ) -> None:
     temp_paths: list[Path] = []
     real_replace = os.replace
@@ -25,7 +28,7 @@ def test_atomic_write_text_temp_file_is_marked_as_a_temp_file(
 
     names = ("base_state.json", "event-00000-abc.json", ".eventlog-len-3.marker")
     for name in names:
-        atomic_write_text(tmp_path / name, "{}")
+        atomic_write_text(tmp_path / name, "{}", mode=mode)
 
     assert [path.parent for path in temp_paths] == [tmp_path] * len(names)
     for name, temp_path in zip(names, temp_paths, strict=True):
@@ -33,6 +36,32 @@ def test_atomic_write_text_temp_file_is_marked_as_a_temp_file(
         assert temp_path.name.endswith(".tmp")
         assert is_temp_file(temp_path)
     assert sorted(path.name for path in tmp_path.iterdir()) == sorted(names)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("umask", "mode", "expected"),
+    [
+        pytest.param(0o022, 0o600, 0o600, id="default-owner-only"),
+        pytest.param(0o022, 0o640, 0o640, id="explicit"),
+        pytest.param(0o022, None, 0o644, id="umask-022"),
+        pytest.param(0o077, None, 0o600, id="umask-077"),
+    ],
+)
+def test_atomic_write_text_mode(
+    tmp_path: Path, umask: int, mode: int | None, expected: int
+) -> None:
+    path = tmp_path / "data.json"
+    path.write_text("old")
+    path.chmod(0o604)
+    previous_umask = os.umask(umask)
+    try:
+        atomic_write_text(path, "new", mode=mode)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(path.stat().st_mode) == expected
+    assert path.read_text() == "new"
 
 
 @pytest.mark.parametrize(

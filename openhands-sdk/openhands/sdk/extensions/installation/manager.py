@@ -81,9 +81,11 @@ class InstallationManager[T: ExtensionProtocol]:
     def __post_init__(self) -> None:
         self.installation_dir = self.installation_dir.resolve()
 
-    @property
     def metadata_session(self) -> MetadataSession:
-        """Open a metadata session bound to this manager's dir and interface."""
+        """Open a metadata session bound to this manager's dir and interface.
+
+        Takes the metadata lock when called; use it in a ``with`` statement.
+        """
         return InstallationMetadata.open(
             self.installation_dir, interface=self.installation_interface
         )
@@ -199,7 +201,7 @@ class InstallationManager[T: ExtensionProtocol]:
             staged_path = staging_dir / "new"
             shutil.copytree(fetched_path, staged_path)
 
-            with self.metadata_session as session:
+            with self.metadata_session() as session:
                 if install_path.exists() and not force:
                     raise FileExistsError(
                         f"Extension '{extension.name}' is already installed"
@@ -273,7 +275,7 @@ class InstallationManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        with self.metadata_session as session:
+        with self.metadata_session() as session:
             if name not in session.extensions:
                 logger.warning(f"Extension '{name}' is not installed")
                 return False
@@ -311,7 +313,7 @@ class InstallationManager[T: ExtensionProtocol]:
             )
             return False
 
-        with self.metadata_session as session:
+        with self.metadata_session() as session:
             session.sync()
 
             info = session.extensions.get(name)
@@ -357,7 +359,7 @@ class InstallationManager[T: ExtensionProtocol]:
         if not self.installation_dir.exists():
             return []
 
-        with self.metadata_session as session:
+        with self.metadata_session() as session:
             return session.sync()
 
     def load_installed(self) -> list[T]:

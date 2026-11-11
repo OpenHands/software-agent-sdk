@@ -454,7 +454,7 @@ def apply_canvas_extension_update(
         # The swap and the metadata write share one session, so a concurrent
         # list can't see the install path missing between the two renames
         # and prune the entry.
-        with manager.metadata_session as session:
+        with manager.metadata_session() as session:
             current_info = session.extensions.get(name)
             if current_info is None or not install_path.is_dir():
                 return None

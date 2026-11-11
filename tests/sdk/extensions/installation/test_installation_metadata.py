@@ -442,13 +442,41 @@ def test_discover_untracked_skips_mismatched_manifest_name(tmp_path: Path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
-def test_save_to_dir_writes_owner_only_file(tmp_path: Path):
-    """Sources can carry URL credentials, so the metadata file must not be
-    readable by group or other users, even if an existing file was wider."""
+@pytest.mark.parametrize("existing_mode", [0o600, 0o644], ids=oct)
+def test_save_to_dir_keeps_existing_file_mode(tmp_path: Path, existing_mode: int):
+    """A save keeps the file's mode whatever the umask: an owner-only file stays
+    owner-only (sources can carry URL credentials), and a file other local users
+    read is not narrowed under them."""
     metadata_path = InstallationMetadata.get_metadata_path(tmp_path)
     metadata_path.write_text("{}")
-    metadata_path.chmod(0o644)
+    metadata_path.chmod(existing_mode)
+    previous_umask = os.umask(0o027)
+    try:
+        InstallationMetadata().save_to_dir(tmp_path)
+    finally:
+        os.umask(previous_umask)
 
-    InstallationMetadata().save_to_dir(tmp_path)
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == existing_mode
 
-    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("umask", "expected"),
+    [
+        pytest.param(0o022, 0o644, id="umask-022"),
+        pytest.param(0o077, 0o600, id="umask-077"),
+    ],
+)
+def test_save_to_dir_creates_new_file_with_umask_mode(
+    tmp_path: Path, umask: int, expected: int
+):
+    """A new file gets the umask's mode, as a plain write would give it: a
+    strict umask keeps sources, which can carry URL credentials, owner-only."""
+    metadata_path = InstallationMetadata.get_metadata_path(tmp_path)
+    previous_umask = os.umask(umask)
+    try:
+        InstallationMetadata().save_to_dir(tmp_path)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == expected

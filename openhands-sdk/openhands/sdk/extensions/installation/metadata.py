@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Final
@@ -261,10 +262,18 @@ class InstallationMetadata(BaseModel):
             raise InstallationMetadataLoadError(metadata_path, e) from e
 
     def save_to_dir(self, installed_dir: Path) -> None:
-        """Save metadata to the installed extensions directory."""
+        """Save metadata to the installed extensions directory.
+
+        An existing file keeps its permission bits. A new file gets them from
+        the umask, as it did before saves became atomic.
+        """
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(metadata_path, self.model_dump_json(indent=2), mode=0o600)
+        try:
+            mode: int | None = stat.S_IMODE(metadata_path.stat().st_mode)
+        except FileNotFoundError:
+            mode = None
+        atomic_write_text(metadata_path, self.model_dump_json(indent=2), mode=mode)
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.
