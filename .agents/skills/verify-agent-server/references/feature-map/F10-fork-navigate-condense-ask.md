@@ -552,7 +552,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   both the response and persisted metadata. The title is stored separately
   and adds no tag (#4814). Other stored configuration (secrets, plugins,
   `parent_conversation_id`, client tools) is copied from the source. The
-  fork's `last_user_message_id` starts `null`.
+  fork's `last_user_message_id` is the last user message among the events
+  it copied, and what a hook decided about a copied action or message
+  (`blocked_actions`, `blocked_messages`) comes with them.
 - The fork's `base_state.json` is written with the source's cipher (the
   server's), so the fork's agent keeps its model keys
   (`F10.fork-keeps-credentials`) and its conversation secrets; the fork is

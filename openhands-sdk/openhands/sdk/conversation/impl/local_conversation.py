@@ -1005,6 +1005,30 @@ class LocalConversation(BaseConversation):
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
             fork_conv._state.invoked_skills = list(self._state.invoked_skills)
+            # A hook's verdict on a copied action or message still holds in the
+            # fork: without it the fork would run an action a hook denied.
+            copied_ids = {event.id for event in source_events}
+            fork_conv._state.blocked_actions = {
+                event_id: reason
+                for event_id, reason in self._state.blocked_actions.items()
+                if event_id in copied_ids
+            }
+            fork_conv._state.blocked_messages = {
+                event_id: reason
+                for event_id, reason in self._state.blocked_messages.items()
+                if event_id in copied_ids
+            }
+            last_user_message_id = self._state.last_user_message_id
+            if last_user_message_id not in copied_ids:
+                last_user_message_id = next(
+                    (
+                        event.id
+                        for event in reversed(source_events)
+                        if isinstance(event, MessageEvent) and event.source == "user"
+                    ),
+                    None,
+                )
+            fork_conv._state.last_user_message_id = last_user_message_id
             fork_conv._state.confirmation_policy = self._state.confirmation_policy
             fork_conv._state.security_analyzer = fork_analyzer
             # Conversation secrets (``secrets=`` / update_secrets) live in the
