@@ -54,33 +54,31 @@ class TestPolicyRails:
         decision = _evaluate_rail("curl https://example.com/data.json")
         assert decision.outcome == SecurityRisk.LOW
 
-    def test_raw_disk_dd(self):
-        decision = _evaluate_rail("dd if=/dev/zero of=/dev/sda")
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("dd if=/dev/zero of=/dev/sda", id="dd"),
+            pytest.param("dd of=/dev/sda if=/dev/zero", id="dd_reversed_operands"),
+            pytest.param(
+                "dd bs=1M of=/dev/sda if=/dev/zero", id="dd_with_extra_operands"
+            ),
+            pytest.param("mkfs.ext4 /dev/sda1", id="mkfs"),
+        ],
+    )
+    def test_raw_disk(self, command: str):
+        decision = _evaluate_rail(command)
         assert decision.outcome == SecurityRisk.HIGH
         assert decision.rule_name == RAIL_RAW_DISK_OP
 
-    def test_raw_disk_dd_reversed_operands(self):
-        decision = _evaluate_rail("dd of=/dev/sda if=/dev/zero")
-        assert decision.outcome == SecurityRisk.HIGH
-        assert decision.rule_name == RAIL_RAW_DISK_OP
-
-    def test_raw_disk_dd_with_extra_operands(self):
-        decision = _evaluate_rail("dd bs=1M of=/dev/sda if=/dev/zero")
-        assert decision.outcome == SecurityRisk.HIGH
-        assert decision.rule_name == RAIL_RAW_DISK_OP
-
-    def test_raw_disk_mkfs(self):
-        decision = _evaluate_rail("mkfs.ext4 /dev/sda1")
-        assert decision.outcome == SecurityRisk.HIGH
-        assert decision.rule_name == RAIL_RAW_DISK_OP
-
-    def test_catastrophic_delete_root(self):
-        decision = _evaluate_rail("rm -rf /")
-        assert decision.outcome == SecurityRisk.HIGH
-        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
-
-    def test_catastrophic_delete_home(self):
-        decision = _evaluate_rail("rm -rf ~")
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("rm -rf /", id="root"),
+            pytest.param("rm -rf ~", id="home"),
+        ],
+    )
+    def test_catastrophic_delete(self, command: str):
+        decision = _evaluate_rail(command)
         assert decision.outcome == SecurityRisk.HIGH
         assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
 

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,7 @@ from openhands.sdk.subagent.registry import (
     register_plugin_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 def setup_function() -> None:
@@ -560,6 +562,83 @@ def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
     assert agent.llm.stream is False
     # Metrics must be independent from the parent LLM
     assert agent.llm.metrics is not parent_llm.metrics
+
+
+_PROFILE_API_KEY = "sk-profile-secret"
+
+
+def _save_encrypted_profile(profile_dir: Path, cipher: Cipher) -> None:
+    """Persist profile ``enc`` with its API key encrypted at rest."""
+    LLMProfileStore(base_dir=profile_dir).save(
+        "enc",
+        LLM(model="gpt-4o", api_key=SecretStr(_PROFILE_API_KEY), usage_id="enc"),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+
+def test_agent_definition_to_factory_decrypts_profile_with_cipher(
+    tmp_path: Path,
+) -> None:
+    """An encrypted profile reaches the sub-agent LLM and condenser decrypted."""
+    cipher = Cipher("subagent-profile-key")
+    _save_encrypted_profile(tmp_path, cipher)
+    agent_def = AgentDefinition(
+        name="profile-agent", model="enc", profile_store_dir=str(tmp_path)
+    )
+
+    agent = agent_definition_to_factory(agent_def, cipher=cipher)(_make_test_llm())
+
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == _PROFILE_API_KEY
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert isinstance(agent.condenser.llm.api_key, SecretStr)
+    assert agent.condenser.llm.api_key.get_secret_value() == _PROFILE_API_KEY
+    stored = json.loads((tmp_path / "enc.json").read_text())
+    assert stored["api_key"].startswith(FERNET_TOKEN_PREFIX)
+
+
+def test_register_file_agents_decrypts_profile_with_cipher(tmp_path: Path) -> None:
+    """A Markdown agent naming an encrypted profile gets the decrypted key."""
+    cipher = Cipher("subagent-profile-key")
+    _save_encrypted_profile(tmp_path / "profiles", cipher)
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "worker.md").write_text(
+        "---\n"
+        "name: profile-worker\n"
+        "description: Uses an encrypted profile\n"
+        "model: enc\n"
+        f"profile_store_dir: {tmp_path / 'profiles'}\n"
+        "---\n\n"
+        "Do the work.\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        registered = register_file_agents(tmp_path, cipher=cipher)
+
+    assert registered == ["profile-worker"]
+    agent = get_agent_factory("profile-worker").factory_func(_make_test_llm())
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == _PROFILE_API_KEY
+
+
+def test_register_plugin_agents_decrypts_profile_with_cipher(tmp_path: Path) -> None:
+    """A plugin agent naming an encrypted profile gets the decrypted key."""
+    cipher = Cipher("subagent-profile-key")
+    _save_encrypted_profile(tmp_path, cipher)
+    plugin_agent = AgentDefinition(
+        name="plugin-profile-agent", model="enc", profile_store_dir=str(tmp_path)
+    )
+
+    registered = register_plugin_agents([plugin_agent], cipher=cipher)
+
+    assert registered == ["plugin-profile-agent"]
+    agent = get_agent_factory("plugin-profile-agent").factory_func(_make_test_llm())
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == _PROFILE_API_KEY
 
 
 def test_agent_definition_to_factory_model_profile_with_json_suffix(

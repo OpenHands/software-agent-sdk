@@ -1,8 +1,10 @@
-"""VSCode service for managing OpenVSCode Server in the agent server."""
+"""VSCode service for managing Coder code-server in the agent server."""
 
 import asyncio
+import json
 import os
 import signal
+import sys
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -35,8 +37,13 @@ class VSCodeService:
         self.connection_token: str | None = connection_token
         self.server_base_path: str | None = server_base_path
         self.process: asyncio.subprocess.Process | None = None
-        self.openvscode_server_root: Path = Path("/openhands/.openvscode-server")
-        self.extensions_dir: Path = self.openvscode_server_root / "extensions"
+        self._output_task: asyncio.Task | None = None
+        self.openvscode_server_root: Path = Path(
+            os.environ.get("CODE_SERVER_ROOT", "/openhands/.code-server")
+        )
+        self.extensions_dir: Path = (
+            self.openvscode_server_root / "lib" / "vscode" / "extensions"
+        )
 
     async def start(self) -> bool:
         """Start the VSCode server.
@@ -71,6 +78,7 @@ class VSCodeService:
 
         except Exception as e:
             logger.error(f"Failed to start VSCode server: {e}")
+            await self.stop()
             return False
 
     async def stop(self) -> None:
@@ -87,12 +95,16 @@ class VSCodeService:
             except Exception as e:
                 logger.error(f"Error stopping VSCode server: {e}")
             finally:
+                if self._output_task:
+                    self._output_task.cancel()
+                    await asyncio.gather(self._output_task, return_exceptions=True)
+                    self._output_task = None
                 self.process = None
 
     async def set_connection_token(self, connection_token: str) -> None:
         """Restart a running server with a new connection token.
 
-        openvscode-server reads its token only at startup, so the server is
+        The editor adapter reads its token only at startup, so the server is
         stopped and started again with the new one. A server that is not
         running keeps its token, so ``get_vscode_url`` doesn't advertise a
         server that isn't there (for example, in images without VSCode).
@@ -111,8 +123,8 @@ class VSCodeService:
         """Get the VSCode URL with authentication token.
 
         When ``server_base_path`` is configured, the server only answers under
-        that prefix (it is passed to openvscode-server as
-        ``--server-base-path``), so the prefix is included in the returned URL.
+        that prefix (the adapter strips it before proxying to code-server),
+        so the prefix is included in the returned URL.
         Without it, path-based-routing deployments are advertised a root URL
         that the server does not serve.
 
@@ -158,7 +170,7 @@ class VSCodeService:
         Returns:
             True if available, False otherwise
         """
-        vscode_binary = self.openvscode_server_root / "bin" / "openvscode-server"
+        vscode_binary = self.openvscode_server_root / "bin" / "code-server"
         return vscode_binary.exists() and vscode_binary.is_file()
 
     async def _is_port_available(self) -> bool:
@@ -201,40 +213,51 @@ class VSCodeService:
         while not await self._is_port_available():
             await asyncio.sleep(0.1)
 
+    def _proxy_script_path(self) -> Path:
+        # In the frozen (PyInstaller) binary, __file__ points inside the PYZ
+        # archive; bundled data files live under sys._MEIPASS instead.
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            return (
+                Path(bundle_root)
+                / "openhands"
+                / "agent_server"
+                / ("code_server_proxy.cjs")
+            )
+        return Path(__file__).with_name("code_server_proxy.cjs")
+
     async def _start_vscode_process(self) -> None:
         """Start the VSCode server process."""
-        extensions_arg = (
-            f"--extensions-dir {self.extensions_dir} "
-            if self.extensions_dir.exists()
-            else ""
-        )
-        base_path_arg = (
-            f"--server-base-path {self.server_base_path} "
-            if self.server_base_path
-            else ""
-        )
-        cmd = (
-            f"exec {self.openvscode_server_root}/bin/openvscode-server "
-            f"--host 0.0.0.0 "
-            f"--connection-token {self.connection_token} "
-            f"--port {self.port} "
-            f"{extensions_arg}"
-            f"{base_path_arg}"
-            f"--disable-workspace-trust\n"
-        )
-
-        # Start the process in its own process group, so stop() can signal
-        # node along with the launcher script.
-        self.process = await asyncio.create_subprocess_shell(
-            cmd,
+        config = json.dumps(
+            {
+                "root": str(self.openvscode_server_root),
+                "port": self.port,
+                "token": self.connection_token,
+                "basePath": self.server_base_path,
+            }
+        ).encode()
+        self.process = await asyncio.create_subprocess_exec(
+            str(self.openvscode_server_root / "lib" / "node"),
+            str(self._proxy_script_path()),
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=sanitized_env(),
             start_new_session=True,
         )
+        assert self.process.stdin is not None
+        self.process.stdin.write(config)
+        await self.process.stdin.drain()
+        self.process.stdin.close()
 
         # Wait for server to start (look for startup message)
         await self._wait_for_startup()
+        self._output_task = asyncio.create_task(self._drain_output())
+
+    async def _drain_output(self) -> None:
+        if self.process and self.process.stdout:
+            async for _line in self.process.stdout:
+                pass
 
     async def _wait_for_startup(self) -> None:
         """Wait for VSCode server to start up."""
@@ -261,15 +284,16 @@ class VSCodeService:
                     logger.debug(f"VSCode server output: {line}")
 
                     # Look for startup indicators
-                    if "Web UI available at" in line or "Server bound to" in line:
+                    if "OpenHands editor ready" in line:
                         logger.info("VSCode server startup detected")
-                        break
+                        return
 
                 except TimeoutError:
                     continue
 
         except Exception as e:
-            logger.warning(f"Error waiting for VSCode startup: {e}")
+            raise RuntimeError("Failed waiting for code-server startup") from e
+        raise RuntimeError("code-server exited or timed out before startup")
 
 
 # Global VSCode service instance
