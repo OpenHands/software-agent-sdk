@@ -1,4 +1,5 @@
 import json
+import shutil
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -970,6 +971,52 @@ async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
         state = await resumed.get_state()
         assert "CODEX_AUTH_JSON" not in resumed.credential_bindings
         assert "CODEX_AUTH_JSON" in state.secret_registry.secret_sources
+
+
+@pytest.mark.asyncio
+async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
+    tmp_path,
+) -> None:
+    """An older server could leave a start-time secret only in meta.json. The
+    credential scrub rewrites that file during a load, so the secret is moved
+    to base_state.json first and a load that fails afterwards keeps it."""
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret("CODEX_AUTH_JSON", "canonical")
+    cipher = Cipher("legacy-meta-key")
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=workspace_dir),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    meta_file = conversations_dir / info.id.hex / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+    }
+    meta_file.write_text(json.dumps(meta))
+    shutil.rmtree(workspace_dir)
+    workspace_dir.write_text("not a directory")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+    ) as service:
+        with pytest.raises(OSError):
+            await service.get_event_service(info.id)
+        workspace_dir.unlink()
+
+        restored = await service.get_event_service(info.id)
+        assert restored is not None
+        secrets = (await restored.get_state()).secret_registry.secret_sources
+        assert secrets["ONLY_IN_META"].get_value() == "legacy-value"
 
 
 @pytest.mark.asyncio
