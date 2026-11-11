@@ -16,6 +16,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ObservationEvent
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
@@ -444,6 +445,166 @@ def test_single_enabled_mcp_server_keeps_unprefixed_tool_names(
     conversation.close()
 
 
+def test_reconfigure_agent_rebuilds_from_resolved_base_without_restarting_history(
+    tmp_path: Path,
+) -> None:
+    conversation_id = uuid.uuid4()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="original-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config({"base": FETCH_SERVER}),
+        ),
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "conversations",
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+    try:
+        conversation._ensure_agent_ready()
+        original = conversation.agent
+        conversation.attach_mcp_server("added", MCPServer.model_validate(FETCH_SERVER))
+        base_agent = conversation.state.base_agent
+        assert base_agent is not None
+        assert set(base_agent.mcp_config) == {"base"}
+        history_length = len(conversation.state.events)
+        conversation.reconfigure_agent(
+            {"llm": LLM(model="interim-model", api_key=SecretStr("test-key"))}
+        )
+        conversation.reconfigure_agent(
+            {"llm": LLM(model="next-model", api_key=SecretStr("test-key"))}
+        )
+        conversation.reconfigure_agent({"tool_concurrency_limit": 2})
+        assert conversation.agent is not original
+        assert conversation.agent.llm.model == "next-model"
+        assert conversation.agent.tool_concurrency_limit == 2
+        assert (
+            conversation.llm_registry.get(conversation.agent.llm.usage_id).model
+            == "next-model"
+        )
+        assert base_agent.llm.model == "original-model"
+        assert conversation.state.base_agent is base_agent
+        assert conversation.state.agent_overrides_version == 3
+        assert conversation.state.agent_overrides["llm"].model == "next-model"
+        assert conversation.state.agent_overrides["tool_concurrency_limit"] == 2
+        assert set(base_agent.mcp_config) == {"base"}
+        assert _mcp_tool_names(conversation) == {"fetch", "added_fetch"}
+        assert len(conversation.state.events) == history_length
+        with pytest.raises(ValueError, match="system prompt"):
+            conversation.reconfigure_agent({"persona": "new instructions"})
+        assert conversation.agent.llm.model == "next-model"
+        assert _mcp_tool_names(conversation) == {"fetch", "added_fetch"}
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        with pytest.raises(ValueError, match="idle step boundary"):
+            conversation.reconfigure_agent(
+                {"llm": LLM(model="unsafe-model", api_key=SecretStr("test-key"))}
+            )
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+        assert conversation.agent.llm.model == "next-model"
+        fork = conversation.fork()
+        try:
+            fork._ensure_agent_ready()
+            assert _mcp_tool_names(fork) == {"fetch"}
+        finally:
+            fork.close()
+    finally:
+        conversation.close()
+    resumed = LocalConversation(
+        agent=None,
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "conversations",
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+    try:
+        resumed._ensure_agent_ready()
+        assert resumed.agent.llm.model == "next-model"
+        restored_base = resumed.state.base_agent
+        assert restored_base is not None
+        assert restored_base.llm.model == "original-model"
+        assert set(restored_base.mcp_config) == {"base"}
+        assert resumed.state.agent_overrides_version == 3
+        assert resumed.agent.tool_concurrency_limit == 2
+        assert _mcp_tool_names(resumed) == {"fetch", "added_fetch"}
+        resumed.reconfigure_agent({"llm": None})
+        assert resumed.agent.llm.model == "original-model"
+        assert resumed.agent.tool_concurrency_limit == 2
+        assert resumed.state.agent_overrides == {"tool_concurrency_limit": 2}
+        assert resumed.state.agent_overrides_version == 4
+        assert _mcp_tool_names(resumed) == {"fetch", "added_fetch"}
+    finally:
+        resumed.close()
+
+
+def test_reconfigure_agent_preserves_conversation_llm_selector(tmp_path: Path) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="original-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    try:
+        conversation._ensure_agent_ready()
+        conversation.switch_llm(
+            LLM(
+                model="selected-model",
+                api_key=SecretStr("test-key"),
+                usage_id="profile:selected",
+            )
+        )
+        conversation.reconfigure_agent({"tool_concurrency_limit": 2})
+        assert conversation.agent.llm.model == "selected-model"
+        assert conversation.state.base_agent is not None
+        assert conversation.state.base_agent.llm.model == "original-model"
+        conversation.reconfigure_agent({"llm": None})
+        assert conversation.agent.llm.model == "original-model"
+        assert conversation.agent.tool_concurrency_limit == 2
+    finally:
+        conversation.close()
+
+
+def test_reconfigure_agent_rolls_back_failed_state_write(tmp_path: Path) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="original-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "conversations",
+        visualizer=None,
+    )
+    conversation._ensure_agent_ready()
+    original = conversation.agent
+    assert isinstance(conversation.state._fs, LocalFileStore)
+    state_path = Path(conversation.state._fs.get_full_path(BASE_STATE))
+    original_state = state_path.read_text()
+    state_path.unlink()
+    state_path.mkdir()
+    try:
+        with pytest.raises(OSError):
+            conversation.reconfigure_agent(
+                {"llm": LLM(model="another-model", api_key=SecretStr("test-key"))}
+            )
+        assert conversation.agent is original
+        assert conversation.state.agent is original
+        assert conversation.state.base_agent is None
+        assert conversation.state.agent_overrides == {}
+        assert conversation.state.agent_overrides_version == 0
+        assert (
+            conversation.llm_registry.get(original.llm.usage_id).model
+            == "original-model"
+        )
+    finally:
+        state_path.rmdir()
+        state_path.write_text(original_state)
+        conversation.close()
+
+
 def test_attach_mcp_server_is_live_and_stable_across_resume_and_fork(
     tmp_path: Path,
 ) -> None:
@@ -618,6 +779,9 @@ def test_attach_mcp_server_rejects_acp_without_starting_it(tmp_path: Path) -> No
             conversation.attach_mcp_server(
                 "docs", MCPServer.model_validate(FETCH_SERVER)
             )
+        with pytest.raises(ValueError, match="not supported for ACP"):
+            conversation.reconfigure_agent({"tool_concurrency_limit": 2})
+        assert conversation.state.base_agent is None
     finally:
         conversation.close()
 

@@ -1487,6 +1487,125 @@ class LocalConversation(BaseConversation):
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
+    def reconfigure_agent(self, updates: Mapping[str, Any]) -> None:
+        """Replace an OpenHands agent between turns without resetting history."""
+        if not self.agent.supports_openhands_tools:
+            raise ValueError("Agent reconstruction is not supported for ACP agents")
+        supported = {"llm", "tool_concurrency_limit"}
+        prompt_fields = {
+            "persona",
+            "system_prompt",
+            "system_prompt_filename",
+            "system_prompt_kwargs",
+        }
+        if set(updates) & prompt_fields:
+            raise ValueError("Changing the system prompt requires prompt migration")
+        if unknown := set(updates) - supported:
+            raise ValueError(
+                f"Agent fields require a separate transition: {sorted(unknown)}"
+            )
+        self._ensure_agent_ready()
+        with self._state:
+            if (
+                self._state.execution_status
+                in (
+                    ConversationExecutionStatus.RUNNING,
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+                )
+                or self._step_holds_state_lock
+            ):
+                raise ValueError("Agent reconstruction requires an idle step boundary")
+            original = self.agent
+            previous_base = self._state.base_agent
+            base = previous_base or original
+            values = {name: getattr(base, name) for name in type(base).model_fields}
+            values["mcp_config"] = original.mcp_config
+            values["condenser"] = original.condenser
+            previous_overrides = self._state.agent_overrides
+            previous_version = self._state.agent_overrides_version
+            overrides = dict(previous_overrides)
+            for name, value in updates.items():
+                if value is None:
+                    overrides.pop(name, None)
+                else:
+                    overrides[name] = value
+            candidate = type(original).model_validate({**values, **overrides})
+            if candidate.static_system_message != original.static_system_message:
+                raise ValueError("Changing the system prompt requires prompt migration")
+            previous_dirty = self._state._dirty
+            llm_changed = candidate.llm != original.llm
+            try:
+                registered_llm = self.llm_registry.get(candidate.llm.usage_id)
+            except KeyError:
+                registered_llm = None
+            registered = False
+            try:
+                candidate._initialize(self._state)
+                candidate.add_runtime_tools(
+                    [
+                        tool
+                        for tool in original.tools_map.values()
+                        if isinstance(tool, MCPToolDefinition)
+                    ]
+                )
+                if llm_changed:
+                    condenser = self._condenser_for_switched_llm(
+                        original.llm, candidate.llm
+                    )
+                    if registered_llm is not None and _same_llm_config(
+                        registered_llm, candidate.llm
+                    ):
+                        replacement = registered_llm
+                    else:
+                        replacement = create_subscription_llm_from_config(candidate.llm)
+                        if registered_llm is not None:
+                            replacement.restore_metrics(registered_llm.metrics)
+                    candidate = candidate.model_copy(
+                        update={"llm": replacement, "condenser": condenser}
+                    )
+                else:
+                    candidate = candidate.model_copy(update={"llm": original.llm})
+                if previous_base is None:
+                    self._state.base_agent = type(original).model_validate(values)
+                self._state.agent_overrides = overrides
+                self._state.agent_overrides_version = previous_version + 1
+                self._state.agent = candidate
+                self.agent = candidate
+                if llm_changed and candidate.llm is not registered_llm:
+                    if registered_llm is not None:
+                        self.llm_registry.remove(registered_llm.usage_id)
+                    self.llm_registry.add(candidate.llm)
+                    registered = True
+                # Flush before leaving the context so a refused write can roll back.
+                if self._state._dirty and self._state._fs is not None:
+                    self._state._save_base_state(self._state._fs)
+                    self._state._dirty = False
+            except BaseException:
+                self._state.agent = original
+                self._state.base_agent = previous_base
+                self._state.agent_overrides = previous_overrides
+                self._state.agent_overrides_version = previous_version
+                self._state._dirty = previous_dirty
+                self.agent = original
+                if llm_changed:
+                    if registered:
+                        self.llm_registry.remove(candidate.llm.usage_id)
+                    if (
+                        registered_llm is not None
+                        and registered_llm.usage_id
+                        not in self.llm_registry.list_usage_ids()
+                    ):
+                        self.llm_registry.add(registered_llm)
+                candidate.close()
+                raise
+            self._close_runtime_tools(
+                [
+                    tool
+                    for tool in original.tools_map.values()
+                    if not isinstance(tool, MCPToolDefinition)
+                ]
+            )
+
     def attach_mcp_server(self, name: str, server: MCPServer) -> None:
         """Connect and expose an MCP server only in this conversation.
 
@@ -1502,6 +1621,7 @@ class LocalConversation(BaseConversation):
         self._ensure_agent_ready()
         old_agent = self.agent
         old_state_agent: AgentBase | None = None
+        old_base: AgentBase | None = None
         old_attached: list[str] = []
         old_dirty = False
         client: MCPClient | None = None
@@ -1512,6 +1632,7 @@ class LocalConversation(BaseConversation):
                 if name in self.agent.mcp_config:
                     raise ValueError(f"MCP server {name!r} is already configured")
                 old_state_agent = self._state.agent
+                old_base = self._state.base_agent
                 old_attached = list(self._state.attached_mcp_servers)
                 old_dirty = self._state._dirty
                 expanded = expand_mcp_servers(
@@ -1544,6 +1665,13 @@ class LocalConversation(BaseConversation):
                 )
                 updated_agent.add_runtime_tools(named(client.tools))
                 changed = True
+                if old_base is None:
+                    self._state.base_agent = type(old_agent).model_validate(
+                        {
+                            key: getattr(old_agent, key)
+                            for key in type(old_agent).model_fields
+                        }
+                    )
                 self._state.agent = updated_agent
                 self._state.attached_mcp_servers = [*old_attached, name]
                 self.agent = updated_agent
@@ -1555,6 +1683,7 @@ class LocalConversation(BaseConversation):
                 assert old_state_agent is not None
                 with self._state:
                     self._state.agent = old_state_agent
+                    self._state.base_agent = old_base
                     self._state.attached_mcp_servers = old_attached
                     self._state._dirty = old_dirty
                     self.agent = old_agent
@@ -2003,6 +2132,18 @@ class LocalConversation(BaseConversation):
                 self.agent.llm,
                 new_llm,
             )
+            if self._state.base_agent is None:
+                self._state.base_agent = type(self.agent).model_validate(
+                    {
+                        name: getattr(self.agent, name)
+                        for name in type(self.agent).model_fields
+                    }
+                )
+            self._state.agent_overrides = {
+                **self._state.agent_overrides,
+                "llm": new_llm,
+            }
+            self._state.agent_overrides_version += 1
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             # Invalidate the cached ask-agent LLM so it re-clones.

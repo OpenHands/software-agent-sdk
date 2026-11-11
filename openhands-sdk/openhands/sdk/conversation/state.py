@@ -93,6 +93,12 @@ class ConversationState(OpenHandsModel):
             "LLM changes, etc."
         ),
     )
+    base_agent: AgentBase | None = Field(
+        default=None,
+        description="Resolved agent before conversation-specific reconfiguration.",
+    )
+    agent_overrides: dict[str, Any] = Field(default_factory=dict)
+    agent_overrides_version: int = 0
     workspace: BaseWorkspace = Field(
         ...,
         description=(
@@ -678,15 +684,19 @@ class ConversationState(OpenHandsModel):
                     logger.exception("Auto-persist base_state failed", exc_info=True)
                     raise e
 
-            # Call state change callback if set. leaf_event_id/head_is_empty are
-            # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
-            # every event, so broadcasting it would ~double the persisted log) and
-            # the HEAD is recoverable from the just-appended event.
+            # Skip HEAD bookkeeping and baseline/override objects; the latter
+            # may contain credentials and must not be broadcast as updates.
             callback = self._on_state_change
             if (
                 callback is not None
                 and old is not _sentinel
-                and name not in ("leaf_event_id", "head_is_empty")
+                and name
+                not in (
+                    "leaf_event_id",
+                    "head_is_empty",
+                    "base_agent",
+                    "agent_overrides",
+                )
             ):
                 try:
                     # Import here to avoid circular imports
