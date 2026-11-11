@@ -1,5 +1,6 @@
 """Tests for parent/child conversation relationships."""
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -427,6 +428,37 @@ async def test_start_child_conversation_inherits_parent_state_config(
     assert child_state.security_analyzer is not parent_state.security_analyzer
     token = child_state.secret_registry.secret_sources["TOKEN"]
     assert token.get_value() == "shh"
+
+
+@pytest.mark.asyncio
+async def test_start_child_conversation_does_not_wait_for_parent_state_lock(
+    tmp_path, workspace_dir
+):
+    """A parent starts a child from inside its own step, which holds the
+    parent's state lock until the start returns."""
+    services: dict[UUID, Any] = {}
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=tmp_path / "conversation-worktrees",
+        ) as service:
+            parent_info, _ = await service.start_conversation(
+                _start_request(workspace_dir)
+            )
+            parent_state = await services[parent_info.id].get_state()
+            with parent_state:
+                result = await asyncio.wait_for(
+                    service.start_child_conversation(
+                        parent_info.id,
+                        StartChildConversationRequest(task="Write the docs"),
+                    ),
+                    timeout=5,
+                )
+
+    assert result is not None
 
 
 @pytest.mark.asyncio

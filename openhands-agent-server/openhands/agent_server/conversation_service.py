@@ -452,27 +452,32 @@ def _update_state_tags_sync(
     return state
 
 
-def _inheritable_state_config_sync(
+def _inheritable_state_config(
     state: ConversationState,
 ) -> tuple[
     ConfirmationPolicyBase, SecurityAnalyzerBase | None, dict[str, SecretSource]
 ]:
-    """Copy the base_state.json-owned config a child conversation inherits."""
-    with state:
-        analyzer = state.security_analyzer
-        # Round-trip rather than share or deep-copy, as LocalConversation.fork()
-        # does: analyzers keep mutable PrivateAttr history, a guardrail LLM may
-        # hold a non-deep-copyable lock, and expose_secrets keeps its credentials
-        # for the child's cipher to re-encrypt.
-        if analyzer is not None:
-            analyzer = type(analyzer).model_validate(
-                analyzer.model_dump(context={"expose_secrets": True})
-            )
-        return (
-            state.confirmation_policy,
-            analyzer,
-            dict(state.secret_registry.secret_sources),
+    """Copy the base_state.json-owned config a child conversation inherits.
+
+    Reads without the state lock: a parent starts a child from inside its own
+    step, which holds that lock until the start returns, so waiting for it
+    here would never end. Each of the three is replaced on change, never
+    mutated in place, so a plain read sees a whole value.
+    """
+    analyzer = state.security_analyzer
+    # The child gets its own analyzer and secret sources, as a fork does
+    # (LocalConversation.fork): the JSON round-trip avoids deep-copying a
+    # guardrail LLM's lock, and expose_secrets keeps its credentials for the
+    # child's cipher to re-encrypt.
+    if analyzer is not None:
+        analyzer = type(analyzer).model_validate(
+            analyzer.model_dump(context={"expose_secrets": True})
         )
+    secrets = {
+        name: source.model_copy(deep=True)
+        for name, source in state.secret_registry.secret_sources.items()
+    }
+    return state.confirmation_policy, analyzer, secrets
 
 
 def _compose_webhook_conversation_info_sync(
@@ -2208,9 +2213,8 @@ class ConversationService:
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
-            parent_state = await parent_service.get_state()
-            policy, analyzer, secrets = await asyncio.to_thread(
-                _inheritable_state_config_sync, parent_state
+            policy, analyzer, secrets = _inheritable_state_config(
+                await parent_service.get_state()
             )
             # A child spends under the same cap as its parent.
             max_budget_per_run = parent_service.get_conversation().max_budget_per_run
