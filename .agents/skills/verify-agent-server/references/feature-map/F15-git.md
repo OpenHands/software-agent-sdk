@@ -59,7 +59,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.repo-search-token`: without a stored token, GitHub search is 200 `{"items": [], "next_page_id": null, "missing_token": true}`; a secret named `github_token` or `GH_TOKEN` is picked up (a malformed `page_id` is then validated and refused with 400), and deleting it restores `missing_token`.
 - `F15.repo-search-errors`: `gitlab` and `bitbucket` are 400 (not supported), an unknown or missing `provider` is 422, and `limit` outside 1..100 is 422.
 - `F15.repo-search-unreachable`: when GitHub cannot be reached the search is 502 with the generic masked body and no token in it.
-- `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub repository search timed out` and no token in it.
+- `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub request timed out` and no token in it.
 - `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter.
 - `F15.repo-search-rejected-token`: a provider's HTTP 401 for a rejected token is passed through as 401 with a generic error, without exposing the token.
 - `F15.pr-status-token`: without a stored GitHub token, pull-request status is 409 with `detail.code` `missing_provider_token` (no request leaves the server).
@@ -121,8 +121,9 @@ Preconditions:
   installed and `$DEEPSEEK_API_KEY` is set (only `F15.agent-changes` uses the
   model; only `F15.ts-client` uses `node`, and builds the TypeScript client
   with `npm ci && npm run build` if `clients/typescript/dist` is missing). No
-  launch flags are needed; `F15.repo-search-unreachable` restarts the run with
-  a dead proxy and restores it.
+  launch flags are needed; the `repo-search` and `pr-status` bullets that
+  need GitHub to fail or answer restart the run with a dead, silent or
+  stand-in HTTPS proxy and restore it (`restart --reset-config`).
 - The block below activates `deepseek-flash`, points `git` at the run's
   private config (author `QA Verify`, so commits made here need no global git
   identity), creates the `qa-f15-repo` fixture (commits `Initial commit` =
@@ -719,10 +720,10 @@ Preconditions:
   call to `api.github.com` fails on any machine; restore afterwards.
   ```sh
   control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f15-not-a-real-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY=http://127.0.0.1:9 --env https_proxy=http://127.0.0.1:9 \
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY=http://127.0.0.1:9 --env https_proxy=http://127.0.0.1:9 \
     --env NO_PROXY=localhost --env no_proxy=localhost
   control-agent-server api GET /api/git/repositories/search --query provider=github --expect 502 \
-    --check detail eq 'Internal Server Error' --check exception eq '502: GitHub repository search failed' \
+    --check detail eq 'Internal Server Error' --check exception eq '502: GitHub request failed' \
     --check . not-contains qa-f15-not-a-real-token --save F15.repo-search-unreachable/dead-proxy
   control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
   control-agent-server restart --reset-config
@@ -730,7 +731,7 @@ Preconditions:
   control-agent-server doctor
   ```
   502 with the server's masked 5xx body
-  (`{"detail": "Internal Server Error", "exception": "502: GitHub repository search failed"}`),
+  (`{"detail": "Internal Server Error", "exception": "502: GitHub request failed"}`),
   without the token. `restart --reset-config` drops the dead proxy again
   (the run has no launch flags to lose), and the search is back to
   `missing_token` once the secret is deleted.
@@ -746,10 +747,10 @@ Preconditions:
   for i in $(seq 50); do test -s "$F/hang-port" && break; sleep 0.1; done
   HANG="http://127.0.0.1:$(cat "$F/hang-port")"
   control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f15-not-a-real-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY="$HANG" --env https_proxy="$HANG" --env NO_PROXY=localhost --env no_proxy=localhost
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY="$HANG" --env https_proxy="$HANG" --env NO_PROXY=localhost --env no_proxy=localhost
   T0=$SECONDS
   control-agent-server api GET /api/git/repositories/search --query provider=github --expect 504 --expect-max-ms 30000 \
-    --check detail eq 'Internal Server Error' --check exception eq '504: GitHub repository search timed out' \
+    --check detail eq 'Internal Server Error' --check exception eq '504: GitHub request timed out' \
     --check . not-contains qa-f15-not-a-real-token --save F15.repo-search-timeout/silent-proxy
   test $((SECONDS - T0)) -ge 14
   kill "$HANG_PID"
@@ -758,7 +759,7 @@ Preconditions:
   control-agent-server doctor
   ```
   504 after about 15 s (between 14 and 30), with the masked 5xx body
-  `{"detail": "Internal Server Error", "exception": "504: GitHub repository search timed out"}`
+  `{"detail": "Internal Server Error", "exception": "504: GitHub request timed out"}`
   and no token in it.
 - **Live GitHub listing (`F15.repo-search-github`), blocked: needs `QA_GITHUB_TOKEN` and egress to `api.github.com`.**
   Needs: `network`
@@ -846,12 +847,12 @@ Preconditions:
   for i in $(seq 1 100); do test -s "$F/reject-port" && break; sleep 0.1; done
   REJECT_PROXY="http://127.0.0.1:$(cat "$F/reject-port")"
   control-agent-server api PUT /api/settings/secrets --json '{"name":"github_token","value":"qa-f15-rejected-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY="$REJECT_PROXY" --env https_proxy="$REJECT_PROXY" \
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY="$REJECT_PROXY" --env https_proxy="$REJECT_PROXY" \
     --env HTTP_PROXY="$REJECT_PROXY" --env http_proxy="$REJECT_PROXY" \
     --env "SSL_CERT_FILE=$F/reject-cert.pem" --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1
   control-agent-server doctor
   control-agent-server api GET /api/git/repositories/search --query provider=github --expect 401 \
-    --check detail eq 'GitHub repository search failed' --check . not-contains qa-f15-rejected-token --save F15.repo-search-rejected-token/rejected
+    --check detail eq 'GitHub request failed' --check . not-contains qa-f15-rejected-token --save F15.repo-search-rejected-token/rejected
   control-agent-server assert --json "$F/reject-observed.json" --check request eq 'GET /user/repos' \
     --check fake_token_received eq true --check returned_status eq 401
   cp "$F/reject-observed.json" "$AGENT_SERVER_VERIFY_RUN/evidence/F15.repo-search-rejected-token/provider.json"
@@ -914,7 +915,7 @@ Preconditions:
   The `F15.repo-search-unreachable` dead proxy, for this route.
   ```sh
   control-agent-server api PUT /api/settings/secrets --json '{"name": "GITHUB_TOKEN", "value": "qa-f15-pr-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY=http://127.0.0.1:9 --env https_proxy=http://127.0.0.1:9 \
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY=http://127.0.0.1:9 --env https_proxy=http://127.0.0.1:9 \
     --env NO_PROXY=localhost --env no_proxy=localhost
   control-agent-server api GET /api/git/repositories/qa/f15/pull-requests/1 --query provider=github --expect 502 \
     --check detail eq 'Internal Server Error' --check exception eq '502: GitHub request failed' \
@@ -1064,7 +1065,7 @@ Preconditions:
   for i in $(seq 1 100); do test -s "$F/pr-port" && break; sleep 0.1; done
   PR_PROXY="http://127.0.0.1:$(cat "$F/pr-port")"
   control-agent-server api PUT /api/settings/secrets --json '{"name": "GITHUB_TOKEN", "value": "qa-f15-pr-token"}' --expect 200
-  control-agent-server restart --env HTTPS_PROXY="$PR_PROXY" --env https_proxy="$PR_PROXY" \
+  control-agent-server restart --env LITELLM_LOCAL_MODEL_COST_MAP=True --env HTTPS_PROXY="$PR_PROXY" --env https_proxy="$PR_PROXY" \
     --env HTTP_PROXY="$PR_PROXY" --env http_proxy="$PR_PROXY" \
     --env "SSL_CERT_FILE=$F/pr-cert.pem" --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1
   control-agent-server doctor
@@ -1230,6 +1231,24 @@ Preconditions:
   Statuses from GitHub: 401 and 403 pass through, other 4xx are 400, 5xx and
   transport errors 502 (masked as `Internal Server Error` with the reason in
   `exception`), a timeout 504.
+- Pull-request status shares the token lookup with search but not its error
+  mapping: GitHub's 404 stays 404, a rate limit (429, or 403 with
+  `X-RateLimit-Remaining: 0`) is 429 with `Retry-After` passed through, and a
+  rejected token (401, other 403) is 502, never 401, so a client cannot
+  mistake it for its own session key. No token is a 409 with
+  `detail.code` `missing_provider_token`, not an empty page. Both provider
+  routes now share the messages `GitHub request failed` and
+  `GitHub request timed out` (search said `GitHub repository search ...`
+  before #6704).
+- A literal `.` or `..` path segment never reaches the pull-request route:
+  the HTTP client normalizes it away first. Send `%2E` / `%2E%2E` to reach the
+  handler's own 422.
+- Every restart that points `HTTPS_PROXY` at a dead, silent or stand-in proxy
+  also sets `LITELLM_LOCAL_MODEL_COST_MAP=True`. Otherwise `import litellm`
+  tries to fetch its model cost map through that proxy at startup, fails, and
+  can intermittently crash the server with a `_DeadlockError` on
+  `litellm.rust_bridge.catalog` (seen once on the stand-in proxy:
+  `Server exited with code 1 during startup`).
 - `restart --env` values persist for later restarts of the run; clear them
   with `restart --reset-config` as `F15.repo-search-unreachable` does (that
   also drops `Launch:` flags, which this family has none of).

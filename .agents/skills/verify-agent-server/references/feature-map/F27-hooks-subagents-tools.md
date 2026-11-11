@@ -51,7 +51,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.agent-definitions`: `agent_definitions` in the create request make that sub-agent available to the conversation's task tool, which delegates to it by name (the delegate runs the command, the `TaskObservation` names it); the definition is stored with the conversation and is not listed by `POST /api/sub-agents`.
 - `F27.custom-tool-modules`: with `OH_EXTRA_PYTHON_PATH` naming a directory, `tool_module_qualnames` imports a module from it at create, the agent runs its tool, the conversation reports the mapping and `GET /api/tools/` lists the tool (the sealed catalog does not); after a restart the tool is gone until the conversation is loaded again, and a new message runs it again; an unimportable module is a logged warning and the create still succeeds.
 - `F27.import-modules`: a server started with `--import-modules` (and `OH_EXTRA_PYTHON_PATH`) lists the module's tool in `GET /api/tools/` and offers it in the catalog before any conversation exists; a module that cannot be imported stops the server before it binds its port.
-- `F27.custom-tool-missing-on-resume`: when a conversation's tool module can no longer be imported after a restart, the server should drop the tool with its warning and keep the conversation readable; today its event search and a new message are 500 (`Unknown kind`).
+- `F27.custom-tool-missing-on-resume`: when a conversation's tool module can no longer be imported after a restart, the server drops the tool with its warning, keeps the conversation readable, and answers a new message without a 500; today the message is 500 (`ToolDefinition ... is not registered`).
 - `F27.browser-playwright-path`: the browser probe finds a Playwright Chromium in `$PLAYWRIGHT_BROWSERS_PATH` as well as in standard paths, `~/.cache/ms-playwright` and `PATH`, and reports `browser_tool_set` usable.
 - `F27.browser-probe`: without a Chromium the server can find, the catalog reports `browser_tool_set` unusable and `/server_info` `usable_tools` leaves it out; with a Playwright Chromium in the server's `~/.cache/ms-playwright` and a restart, the catalog reports it usable and `usable_tools` lists it.
 - `F27.browser-disabled-launch`: a conversation started from the saved settings (default tools) gets `browser_tool_set` while the server finds Chromium, and leaves it out after a restart with `enable_browser: false`; a conversation created before keeps its stored tools.
@@ -780,21 +780,23 @@ Preconditions:
 
   Requires: `F27.custom-tool-modules`
   ```sh
-  W0=$(control-agent-server logs --grep 'Failed to import module' | jq -r .total_matching)
+  W0=$(control-agent-server logs --grep 'Failed to import' | jq -r .total_matching)
   control-agent-server restart --reset-config
   control-agent-server api GET "/api/conversations/$MCID" --expect 200 --check tool_module_qualnames.qa_f27_echo eq qa_f27_tools --quiet
-  control-agent-server api POST "/api/conversations/$MCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok."}], "run": false}' --expect 2xx,4xx --save F27.custom-tool-missing-on-resume/send  # bug: status eq 500 && response.body.exception contains "Unknown kind 'QaF27EchoObservation'"
-  control-agent-server logs --grep 'Failed to import module' --expect-min "$((W0 + 1))"
-  control-agent-server api GET "/api/conversations/$MCID/events/search" --expect 200 --check items len-ge 1 --quiet  # bug: status eq 500
+  control-agent-server api POST "/api/conversations/$MCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok."}], "run": false}' --expect 2xx,4xx --save F27.custom-tool-missing-on-resume/send  # bug: status eq 500 && response.body.exception contains "ToolDefinition 'qa_f27_echo' is not registered"
+  control-agent-server logs --grep 'Failed to import' --expect-min "$((W0 + 1))"
+  control-agent-server api GET "/api/conversations/$MCID/events/search" --expect 200 --check items len-ge 1 --quiet
   ```
   `_prepare_persisted_runtime` logs `Failed to import module 'qa_f27_tools'
   ... Tool will not be available.` and promises to go on without the tool.
-  Today the conversation cannot be loaded at all: its stored events hold a
-  `QaF27EchoObservation`, whose class only that module defines, so the
-  message `POST` and `GET .../events/search` are `500` with `Unknown kind
-  'QaF27EchoObservation'`. Only `GET /api/conversations/{id}`, which reads
-  the metadata without loading, still answers. A deployment that drops or
-  renames a custom tool module loses every conversation that used it.
+  The conversation still loads: `GET /api/conversations/{id}` answers and
+  `GET .../events/search` lists its stored events. Expected: a message is accepted, or refused with a
+  client error naming the missing tool. Today every message `POST` is an
+  unhandled `500` whose `exception` is `"ToolDefinition 'qa_f27_echo' is not
+  registered"`: the agent is built from the stored tool list on the first
+  message, and `resolve_tool` raises. A deployment that drops or renames a
+  custom tool module can read but no longer continue every conversation
+  that used it.
 - **Playwright browsers directory (`F27.browser-playwright-path`), blocked on a machine with Chromium at a standard path (needs Chromium only in a Playwright directory).**
   Point the server at the run-owned Playwright directory through
   `PLAYWRIGHT_BROWSERS_PATH` only.
@@ -990,10 +992,10 @@ Preconditions:
   a run. A model may retry a blocked call; the recipes allow several blocked
   attempts (`--expect-min`).
 - `tool_module_qualnames` changes process-wide registries, and a custom
-  tool's events need its module to deserialize
+  tool needs its module to continue a conversation
   (`F27.custom-tool-missing-on-resume`). The server
   log wraps long lines, so the recipes grep for short phrases
-  (`Extended sys.path with 1 directory`, `Failed to import module`).
+  (`Extended sys.path with 1 directory`, `Failed to import`).
 - `OH_EXTRA_PYTHON_PATH` only extends `sys.path`; nothing is imported until a
   create names the module or `--import-modules` does at startup. A
   launched run gets the variable with `restart --env`, but `--import-modules`
