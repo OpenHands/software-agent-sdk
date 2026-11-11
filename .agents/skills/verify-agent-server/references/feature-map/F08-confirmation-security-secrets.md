@@ -730,11 +730,9 @@ KID=$(control-agent-server api POST /api/conversations \
   secret's last resolved value, wherever it appears in terminal output.
 - Runtime secret changes made through `POST .../secrets` live only in
   `base_state.json` (written before the POST returns) and are never written
-  to `meta.json`; `meta.json` keeps only the create-time secrets a runtime
-  POST has not replaced, which are re-applied on reload. Confirmation policy
-  and analyzer changes likewise live in `base_state.json`, and `meta.json`'s
-  create-time values seed only a new conversation. See
-  `F08.secrets-restart` and `F08.secrets-unsaved-restart`.
+  to `meta.json`, so a runtime secret survives a reload (restart, idle
+  eviction, sandbox pause). See `F08.secrets-restart` and
+  `F08.secrets-unsaved-restart`.
 - Unknown conversations answer 404 `{"detail": "Not Found"}` on the
   conversation routes and 404 `Conversation not found: <id>` on
   `respond_to_confirmation` (an events route).
