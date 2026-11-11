@@ -979,9 +979,9 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   the generated `AcpAgentProfile` (regenerated only from the pinned release
   image, which predates the field) nor the exported `ACPAgentProfile`
   declares, so `contract.ts` fails with `TS2353 ... '"acp_effort"' does not
-  exist` (#6747). When the next release regenerates the contract, the
-  `exported.ts` line fails the same way until `ACPAgentProfile` gains the
-  field.
+  exist` (#6747). Release PR #6731 regenerates the contract and adds the
+  field to `ACPAgentProfile`, which the client's key-parity test requires to
+  happen together.
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.

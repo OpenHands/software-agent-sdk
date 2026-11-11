@@ -80,13 +80,13 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check names_match eq true --check numbered_in_order eq true --check files_follow_event_ids eq true \
     --check callback_saw_file_every_time eq true --check files_grew_one_by_one eq true --check status eq finished
   ```
-- **Damaged event files (`S04.persist-events`).** A finished conversation is reopened after one change at a time to its `events/` folder: an empty file (what an interrupted write leaves), invalid JSON, a deleted file. A deleted file is skipped and the other events reload (#6197); an empty or invalid file still makes the reload fail with an error that names the file or the JSON problem (the recovery `S05.event-log-recovery` expects).
+- **Damaged event files (`S04.persist-events`).** A finished conversation is reopened after one change at a time to its `events/` folder: an empty file (what an interrupted write leaves), invalid JSON, a deleted file. The conversation reopens every time without an error: a deleted file is skipped and the other events reload; an empty or invalid file is read as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) in the same place, so the event count is unchanged (`S05.event-log-recovery`).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S04/lifecycle --arg corrupt \
     --check events_before eq 6 --check intact.events eq 6 \
-    --check empty_middle.error contains "Missing event file" --check empty_last.error contains "Missing event file" \
-    --check invalid_json_middle.error contains "Invalid JSON" \
+    --check empty_middle.error missing --check empty_middle.events eq 6 --check empty_last.error missing --check empty_last.events eq 6 \
+    --check invalid_json_middle.error missing --check invalid_json_middle.events eq 6 \
     --check missing_middle.error missing --check missing_middle.events eq 5 \
     --check missing_last.error missing --check missing_last.events eq 5
   ```
