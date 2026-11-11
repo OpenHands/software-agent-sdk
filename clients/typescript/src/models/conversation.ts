@@ -15,6 +15,7 @@ import {
 } from '../types/base';
 import type { HookConfig } from '../hooks';
 import type { MCPServer } from './api';
+import type { ACPEffortOption } from './acp-model-discovery';
 import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
 
 export enum ConversationSortOrder {
@@ -47,6 +48,8 @@ export interface ConversationInfo {
    * Note: This field was renamed from agent_status to execution_status in the API.
    */
   execution_status: ConversationExecutionStatus;
+  current_effort?: string | null;
+  available_efforts?: ACPEffortOption[];
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */

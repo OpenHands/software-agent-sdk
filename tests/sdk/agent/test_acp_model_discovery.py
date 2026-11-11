@@ -10,7 +10,11 @@ import pytest
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.acp_model_discovery import discover_acp_models
-from openhands.sdk.agent.acp_models import ACPModelDiscoveryError, ACPModelInfo
+from openhands.sdk.agent.acp_models import (
+    ACPEffortOption,
+    ACPModelDiscoveryError,
+    ACPModelInfo,
+)
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.settings.model import ACPAgentSettings
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -22,7 +26,12 @@ FAKE_COMMAND = [sys.executable, str(FAKE_SERVER)]
 
 @pytest.fixture(autouse=True)
 def _clean_fake_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("FAKE_ACP_MODELS", "FAKE_ACP_KEY", "FAKE_ACP_REQUIRE_KEY"):
+    for var in (
+        "FAKE_ACP_MODELS",
+        "FAKE_ACP_KEY",
+        "FAKE_ACP_REQUIRE_KEY",
+        "FAKE_ACP_EFFORT",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -140,5 +149,88 @@ def test_legacy_server_switches_models_at_runtime(
         with pytest.raises(Exception, match="Unknown model"):
             agent.set_acp_model("not-offered")
         assert agent.current_model_id == "m2"
+    finally:
+        agent.close()
+
+
+@pytest.fixture
+def with_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_ACP_EFFORT", "1")
+
+
+@pytest.mark.usefixtures("with_effort")
+def test_reports_the_default_model_effort(work_root: Path) -> None:
+    result = discover_acp_models(_settings(), work_root=work_root)
+
+    assert result.current_effort == "high"
+    assert result.available_efforts == [
+        ACPEffortOption(value="low", name="Low"),
+        ACPEffortOption(value="high", name="High"),
+    ]
+    assert result.efforts_by_model == {"m1": result.available_efforts, "m2": []}
+    assert result.current_model_id == "m1"
+
+
+def test_reports_no_efforts_without_an_effort_option(work_root: Path) -> None:
+    result = discover_acp_models(_settings(), work_root=work_root)
+
+    assert result.current_effort is None
+    assert result.efforts_by_model == {"m1": [], "m2": []}
+
+
+@pytest.mark.usefixtures("with_effort")
+@pytest.mark.parametrize(
+    ("model", "effort", "running_effort"),
+    [(None, "low", "low"), ("m1", "low", "low"), ("m1", "max", "high")],
+)
+def test_session_start_applies_the_requested_effort(
+    tmp_path: Path, model: str | None, effort: str, running_effort: str
+) -> None:
+    agent = ACPAgent(acp_command=FAKE_COMMAND, acp_model=model, acp_effort=effort)
+    try:
+        _start(agent, tmp_path)
+        assert agent.current_effort == running_effort
+    finally:
+        agent.close()
+
+
+@pytest.mark.usefixtures("with_effort")
+def test_effort_is_skipped_for_a_model_that_offers_none(tmp_path: Path) -> None:
+    agent = ACPAgent(acp_command=FAKE_COMMAND, acp_model="m2", acp_effort="low")
+    try:
+        _start(agent, tmp_path)
+        assert agent.current_model_id == "m2"
+        assert agent.current_effort is None
+        assert agent.available_efforts == []
+    finally:
+        agent.close()
+
+
+@pytest.mark.usefixtures("with_effort")
+def test_switches_effort_at_runtime(tmp_path: Path) -> None:
+    agent = ACPAgent(acp_command=FAKE_COMMAND)
+    try:
+        _start(agent, tmp_path)
+        agent.set_acp_effort("low")
+        assert agent.current_effort == "low"
+        with pytest.raises(ValueError, match="choose one of: low, high"):
+            agent.set_acp_effort("max")
+        assert agent.current_effort == "low"
+
+        agent.set_acp_model("m2")
+        with pytest.raises(ValueError, match="offers no reasoning effort"):
+            agent.set_acp_effort("low")
+    finally:
+        agent.close()
+
+
+@pytest.mark.usefixtures("with_effort")
+def test_model_switch_keeps_the_pinned_effort(tmp_path: Path) -> None:
+    agent = ACPAgent(acp_command=FAKE_COMMAND, acp_effort="low")
+    try:
+        _start(agent, tmp_path)
+        agent.set_acp_model("m2")
+        agent.set_acp_model("m1")
+        assert agent.current_effort == "low"
     finally:
         agent.close()

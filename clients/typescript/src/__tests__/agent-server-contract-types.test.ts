@@ -7,6 +7,8 @@ import type {
   GitChangeStatus as PublicGitChangeStatus,
 } from '../index';
 import type { SettingsClient } from '../client/settings-client';
+import type { ConversationInfo } from '../models/conversation';
+import type { ACPEffortOption } from '../models/acp-model-discovery';
 import type {
   AcpAgentProfile as GeneratedACPAgentProfile,
   AgentProfileDiagnostics as GeneratedAgentProfileDiagnostics,
@@ -92,6 +94,11 @@ describe('Agent Server generated contract aliases', () => {
       })
     ).toBe('');
   }, 30_000);
+
+  it('exposes typed conversation effort fields', () => {
+    assertType<Equal<ConversationInfo['current_effort'], string | null | undefined>>(true);
+    assertType<Equal<ConversationInfo['available_efforts'], ACPEffortOption[] | undefined>>(true);
+  });
 
   it('statically checks settings client request and response types', () => {
     assertType<
