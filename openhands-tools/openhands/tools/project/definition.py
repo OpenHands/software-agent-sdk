@@ -89,7 +89,8 @@ _LIST_DESCRIPTION = (
     "confirmation, paused, error or stuck), `needs_input` (finished with a "
     "question for the person, shown after `asks:`), `working` (running), "
     "`finished`, `idle` and "
-    "`resolved` (the person or a confident critic marked it done). "
+    "`resolved` (the person, the conversation itself or the resolution judge "
+    "found nothing left in it). "
     "`finished` means the run ended; it does not say the task succeeded, so "
     "read the conversation before reporting an outcome. Call this again to refresh; "
     "a previous result is not the current state."
@@ -758,6 +759,71 @@ class UpdateProjectMemoryTool(
         ]
 
 
+# resolve_conversation
+
+
+class ResolveConversationAction(Action):
+    """Mark this conversation resolved: nothing is left in it."""
+
+    @property
+    def visualize(self) -> Text:
+        return Text("Resolve this conversation", style="bold green")
+
+
+class ResolveConversationObservation(Observation):
+    @property
+    def visualize(self) -> Text:
+        return Text(self.text, style="red" if self.is_error else "green")
+
+
+_RESOLVE_CONVERSATION_DESCRIPTION = (
+    "Mark this conversation resolved, so the person's project board shows it "
+    "as done and stops asking for their attention. Call it as your last step "
+    "when nothing is left in this conversation for the person or for you: "
+    "for example the person says the pull request is merged, or thanks you "
+    "for finished work. Do not call it when your reply asks the person "
+    "something, waits on their review, CI or another step, or when part of "
+    "your task is undone. The person's next message reopens the conversation."
+)
+
+
+class ResolveConversationTool(
+    ToolDefinition[ResolveConversationAction, ResolveConversationObservation]
+):
+    """Tool that resolves the calling project conversation."""
+
+    user_selectable: ClassVar[bool] = False
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        **params,
+    ) -> Sequence[Self]:
+        """Create the tool bound to the current conversation."""
+        if params:
+            raise ValueError(
+                f"ResolveConversationTool does not accept parameters: {sorted(params)}"
+            )
+        from openhands.tools.project.impl import ResolveConversationExecutor
+
+        return [
+            cls(
+                description=_RESOLVE_CONVERSATION_DESCRIPTION,
+                action_type=ResolveConversationAction,
+                observation_type=ResolveConversationObservation,
+                executor=ResolveConversationExecutor(conv_state, server_url),
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
 register_tool(ListProjectConversationsTool.name, ListProjectConversationsTool)
 register_tool(ReadProjectConversationTool.name, ReadProjectConversationTool)
 register_tool(WriteArtifactTool.name, WriteArtifactTool)
@@ -766,3 +832,4 @@ register_tool(ListArtifactsTool.name, ListArtifactsTool)
 register_tool(MessageProjectConversationTool.name, MessageProjectConversationTool)
 register_tool(ReadProjectMemoryTool.name, ReadProjectMemoryTool)
 register_tool(UpdateProjectMemoryTool.name, UpdateProjectMemoryTool)
+register_tool(ResolveConversationTool.name, ResolveConversationTool)

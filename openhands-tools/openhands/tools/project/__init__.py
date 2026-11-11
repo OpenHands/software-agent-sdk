@@ -2,11 +2,12 @@
 
 Provides ``list_project_conversations``, ``message_project_conversation``,
 ``read_project_conversation``, ``write_artifact``, ``read_artifact``,
-``list_artifacts``, ``read_project_memory`` and ``update_project_memory``:
-server-executed tools that let a conversation see the conversations of its
-agent-server project, send one of them a follow-up, read one's latest
-messages, write, list and read the project's artifacts (files), and read and
-keep the project's shared memory. Together with ``start_child_conversation``
+``list_artifacts``, ``read_project_memory``, ``update_project_memory`` and
+``resolve_conversation``: server-executed tools that let a conversation see the
+conversations of its agent-server project, send one of them a follow-up, read
+one's latest messages, write, list and read the project's artifacts (files),
+keep the project's shared memory, and resolve itself when nothing is left in
+it. Together with ``start_child_conversation``
 (a child copies its parent's ``project`` tag) they give a project coordinator
 typed actions to start, follow and steer its conversations.
 
@@ -49,6 +50,9 @@ from openhands.tools.project.definition import (
     ReadProjectMemoryAction,
     ReadProjectMemoryObservation,
     ReadProjectMemoryTool,
+    ResolveConversationAction,
+    ResolveConversationObservation,
+    ResolveConversationTool,
     UpdateProjectMemoryAction,
     UpdateProjectMemoryObservation,
     UpdateProjectMemoryTool,
@@ -63,6 +67,7 @@ from openhands.tools.project.impl import (
     ReadArtifactExecutor,
     ReadProjectConversationExecutor,
     ReadProjectMemoryExecutor,
+    ResolveConversationExecutor,
     UpdateProjectMemoryExecutor,
     WriteArtifactExecutor,
 )
@@ -94,6 +99,10 @@ __all__ = [
     "ReadProjectMemoryExecutor",
     "ReadProjectMemoryObservation",
     "ReadProjectMemoryTool",
+    "ResolveConversationAction",
+    "ResolveConversationExecutor",
+    "ResolveConversationObservation",
+    "ResolveConversationTool",
     "UpdateProjectMemoryAction",
     "UpdateProjectMemoryExecutor",
     "UpdateProjectMemoryObservation",

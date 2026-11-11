@@ -2031,6 +2031,40 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resolve_by_the_agent_is_auto_and_never_over_the_person(
+    client, service, tmp_path
+):
+    """resolve_conversation: the worker resolves its own conversation."""
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/conversations"
+    member = await _start(
+        service, tmp_path, tags={"project": project["id"], "turn": "answered"}
+    )
+    agent = {"json": {"by": "agent"}}
+
+    assert (
+        await client.post(f"{base}/{member.hex}/resolve", **agent)
+    ).status_code == 204
+    assert await _tags(service, member) == {
+        "project": project["id"],
+        "turn": "answered",
+        "resolved": "auto",
+        "resolvenote": "agent",
+    }
+    listed = (await client.get(base)).json()["conversations"]
+    assert [(c["resolved"], c["resolve_note"]) for c in listed] == [("auto", "agent")]
+
+    assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
+    assert (
+        await client.post(f"{base}/{member.hex}/resolve", **agent)
+    ).status_code == 204
+    assert (await _tags(service, member))["resolved"] == "user"
+    assert "resolvenote" not in await _tags(service, member)
+    bad = await client.post(f"{base}/{member.hex}/resolve", json={"by": "coordinator"})
+    assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     """Review S6/N2: a full-set PATCH built from tags read a moment ago cannot
     undo a board update, set board state or change membership. Resolving goes

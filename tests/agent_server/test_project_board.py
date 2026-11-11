@@ -1042,3 +1042,29 @@ async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
     )
 
     assert store.tags == {"project": "p1", "turn": "answered"}
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_resolved_itself_is_not_judged():
+    """The person says "merged", the worker reacts and resolves its own
+    conversation with resolve_conversation: no judge call, and its resolve
+    stands."""
+    store = _Tags({"project": "p1", "turn": "asked", "ask": "Merge it?"})
+    seen: list[ResolutionState] = []
+    subscriber = _judging(
+        store, ResolutionVerdict(probability=0.1, owed="review"), seen
+    )
+
+    await _feed(subscriber, _message("user", "merged"), _status("running"))
+    assert store.tags == {"project": "p1"}
+    # What the resolve route does for resolve_conversation, mid-turn.
+    store.tags.update({"resolved": "auto", "resolvenote": "agent"})
+    await _feed(subscriber, _finish("Great, thanks for merging!"), _status("finished"))
+
+    assert seen == []
+    assert store.tags == {
+        "project": "p1",
+        "turn": "answered",
+        "resolved": "auto",
+        "resolvenote": "agent",
+    }

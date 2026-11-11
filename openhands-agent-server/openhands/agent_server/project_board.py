@@ -65,6 +65,11 @@ AUTO_RESOLVE_THRESHOLD: Final[float] = 0.9
 TurnOutcome = Literal["asked", "answered"]
 ResolvedBy = Literal["user", "auto"]
 
+AGENT_RESOLVE_NOTE = "agent"
+"""``resolvenote`` of a conversation its own agent resolved, with
+``resolve_conversation``: nothing left, by the agent's own account. The judge
+does not run on such a turn."""
+
 _EXECUTION_STATUS_KEY: Final[str] = "execution_status"
 # A question mark that ends a sentence: followed by space, closing markup or
 # quotes, or the end of the text. Leaves out "?" inside URLs and code.

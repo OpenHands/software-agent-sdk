@@ -17,7 +17,7 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO
+from typing import Annotated, Any, BinaryIO, Literal
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -57,7 +57,11 @@ from openhands.agent_server.project_artifacts import (
     open_workspace_file,
     valid_artifact_name,
 )
-from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
+from openhands.agent_server.project_board import (
+    AGENT_RESOLVE_NOTE,
+    ResolvedBy,
+    TurnOutcome,
+)
 from openhands.agent_server.project_memory import (
     MEMORY_INDEX,
     MemoryConflict,
@@ -270,19 +274,20 @@ class ProjectConversation(BaseModel):
     resolved: ResolvedBy | None = Field(
         default=None,
         description=(
-            "`user` when the person resolved the conversation, `auto` when the "
-            "server judged that nothing is left for the person (see "
-            "`resolve_note`). Backed by the `resolved` tag; a new user message "
+            "`user` when the person resolved the conversation, `auto` when its "
+            "own agent or the server's judge found nothing left for the person "
+            "(see `resolve_note`). Backed by the `resolved` tag; a new user message "
             "clears it."
         ),
     )
     resolve_note: str | None = Field(
         default=None,
         description=(
-            "While `resolved` is `auto`: why, in one short line. Either the "
-            "judge's probability that nothing is left for the person and what "
-            "it thinks the person owes (`0.93 nothing`), or a critic score "
-            "(`0.95 critic`). Backed by the `resolvenote` tag."
+            "While `resolved` is `auto`: why, in one short line. "
+            f"`{AGENT_RESOLVE_NOTE}` when the conversation's agent resolved it, "
+            "the judge's probability that nothing is left for the person and "
+            "what it thinks the person owes (`0.93 nothing`), or a critic "
+            "score (`0.95 critic`). Backed by the `resolvenote` tag."
         ),
     )
     turn: TurnOutcome | None = Field(
@@ -835,18 +840,31 @@ async def remove_project_conversation(
     return DeleteResponse()
 
 
+class ResolveConversationRequest(BaseModel):
+    by: Literal["user", "agent"] = Field(
+        default="user",
+        description=(
+            "Who resolves. `user` (the person) sets `resolved=user`. `agent` is "
+            "the conversation's own agent, through its resolve_conversation "
+            f"tool: `resolved=auto` with the note `{AGENT_RESOLVE_NOTE}`, and "
+            "never over the person's own resolve."
+        ),
+    )
+
+
 async def _set_member_resolved(
     project_id: UUID,
     conversation_id: UUID,
     request: Request,
     service: ConversationService,
     resolved: bool,
+    by: Literal["user", "agent"] = "user",
 ) -> Response:
     _find(await _load(_store(request)), project_id)
     info = await service.get_conversation(conversation_id)
     if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
         raise HTTPException(status_code=404, detail="Conversation not in project")
-    if await service.set_resolved(conversation_id, resolved) is None:
+    if await service.set_resolved(conversation_id, resolved, by=by) is None:
         raise HTTPException(status_code=404, detail="Conversation not in project")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -860,15 +878,19 @@ async def resolve_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
     request: Request,
+    body: ResolveConversationRequest | None = None,
     service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
-    """Resolve a member for the person: ``resolved=user``. Idempotent.
+    """Resolve a member: for the person (``resolved=user``) by default, or for
+    its own agent (``by=agent``: ``resolved=auto``, note ``agent``). Idempotent.
 
-    It replaces an automatic resolve and its note. The person's next message
-    in the conversation reopens it, as before.
+    The person's resolve replaces an automatic one and its note; the agent's
+    never replaces the person's. The person's next message in the conversation
+    reopens it, as before.
     """
+    by = body.by if body is not None else "user"
     return await _set_member_resolved(
-        project_id, conversation_id, request, service, True
+        project_id, conversation_id, request, service, True, by
     )
 
 

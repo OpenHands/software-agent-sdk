@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -59,6 +59,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import FileSecretsStore, get_projects_store
 from openhands.agent_server.persistence.models import ProjectItem
 from openhands.agent_server.project_board import (
+    AGENT_RESOLVE_NOTE,
     ConversationOutcomeSubscriber,
 )
 from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
@@ -611,15 +612,21 @@ class _ConversationRecord:
     stored_signature: int | None = None
 
 
-PROJECT_WORKER_TOOLS = (
+PROJECT_MEMBER_TOOLS = (
     "write_artifact",
     "read_artifact",
     "list_artifacts",
     "read_project_memory",
     "update_project_memory",
 )
-"""Tools the server adds to a conversation a project member starts: workers
-save their deliverables and keep the project's memory."""
+"""Tools every project conversation gets: save deliverables and keep the
+project's memory."""
+
+
+PROJECT_WORKER_TOOLS = (*PROJECT_MEMBER_TOOLS, "resolve_conversation")
+"""Tools the server adds to a conversation a project member starts. Workers
+also resolve their own conversation when nothing is left in it; the
+coordinator is not on the board, so it does not."""
 
 
 PROJECT_COORDINATOR_TOOLS = (
@@ -627,7 +634,7 @@ PROJECT_COORDINATOR_TOOLS = (
     "message_project_conversation",
     "read_project_conversation",
     "start_child_conversation",
-    *PROJECT_WORKER_TOOLS,
+    *PROJECT_MEMBER_TOOLS,
 )
 """Tools the server adds to a coordinator it starts with a new project."""
 
@@ -2204,11 +2211,18 @@ class ConversationService:
             )
 
     async def set_resolved(
-        self, conversation_id: UUID, resolved: bool
+        self,
+        conversation_id: UUID,
+        resolved: bool,
+        *,
+        by: Literal["user", "agent"] = "user",
     ) -> dict[str, str] | None:
-        """Resolve a conversation for the person (``resolved=user``) or reopen it.
+        """Resolve a conversation, or reopen it.
 
-        Either way the auto-resolve note goes. Returns the tags after the
+        The person's resolve (``by="user"``) sets ``resolved=user``; the
+        conversation's own agent (``by="agent"``) sets ``resolved=auto`` with
+        the note :data:`AGENT_RESOLVE_NOTE`, unless the person already resolved
+        it. Otherwise the auto-resolve note goes. Returns the tags after the
         change, or ``None`` when the conversation does not exist.
         """
         async with self._tag_lock(conversation_id):
@@ -2216,10 +2230,15 @@ class ConversationService:
             if event_service is None:
                 return None
             current = dict(event_service.stored.tags)
+            if resolved and by == "agent" and current.get(RESOLVED_TAG_KEY) == "user":
+                return current
             tags = dict(current)
             tags.pop(RESOLVE_NOTE_TAG_KEY, None)
             tags.pop(RESOLVED_TAG_KEY, None)
-            if resolved:
+            if resolved and by == "agent":
+                tags[RESOLVED_TAG_KEY] = "auto"
+                tags[RESOLVE_NOTE_TAG_KEY] = AGENT_RESOLVE_NOTE
+            elif resolved:
                 tags[RESOLVED_TAG_KEY] = "user"
             if tags != current:
                 await self.update_conversation(

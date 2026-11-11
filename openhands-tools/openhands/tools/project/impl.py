@@ -44,6 +44,8 @@ from openhands.tools.project.definition import (
     ReadProjectConversationObservation,
     ReadProjectMemoryAction,
     ReadProjectMemoryObservation,
+    ResolveConversationAction,
+    ResolveConversationObservation,
     UpdateProjectMemoryAction,
     UpdateProjectMemoryObservation,
     WriteArtifactAction,
@@ -639,6 +641,45 @@ class ListArtifactsExecutor(
         else:
             text = f"{len(lines)} project artifact(s):\n" + "\n".join(lines)
         return ListArtifactsObservation.from_text(text=text, project_id=project_id)
+
+
+class ResolveConversationExecutor(
+    ToolExecutor[ResolveConversationAction, ResolveConversationObservation]
+):
+    """Resolve the calling conversation on its project's board."""
+
+    def __init__(
+        self,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        timeout: float = PROJECT_TOOL_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self._client = _ProjectClient(conv_state, server_url, timeout, transport)
+
+    def __call__(
+        self,
+        action: ResolveConversationAction,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> ResolveConversationObservation:
+        try:
+            project_id = self._client.project_id()
+            own_id = self._client.conv_state.id.hex
+            self._client.request(
+                "POST",
+                f"/api/projects/{project_id}/conversations/{own_id}/resolve",
+                json={"by": "agent"},
+            )
+        except ProjectToolError as exc:
+            return ResolveConversationObservation.from_text(
+                text=str(exc), is_error=True
+            )
+        return ResolveConversationObservation.from_text(
+            text=(
+                "This conversation is resolved. End your turn now; the "
+                "person's next message reopens it."
+            )
+        )
 
 
 def _artifact_line(item: dict[str, Any]) -> str:

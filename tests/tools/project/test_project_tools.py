@@ -18,6 +18,9 @@ from openhands.tools.project import (
     ReadProjectConversationAction,
     ReadProjectConversationExecutor,
     ReadProjectConversationTool,
+    ResolveConversationAction,
+    ResolveConversationExecutor,
+    ResolveConversationTool,
 )
 
 
@@ -701,3 +704,46 @@ def test_a_coordinators_system_prompt_states_its_role(tmp_path):
     for tag in ("CODE_QUALITY", "PULL_REQUESTS", "PROBLEM_SOLVING_WORKFLOW"):
         assert f"<{tag}>" not in static
     assert "herd" not in static
+
+
+def test_resolve_posts_the_agent_resolve_for_its_own_conversation(
+    tmp_path, _server_env
+):
+    state = _conv_state(tmp_path)
+    requests: list[httpx.Request] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    (tool,) = ResolveConversationTool.create(state)
+    assert tool.name == "resolve_conversation"
+    assert isinstance(tool.executor, ResolveConversationExecutor)
+    executor = ResolveConversationExecutor(state, transport=httpx.MockTransport(server))
+
+    observation = executor(ResolveConversationAction())
+
+    assert not observation.is_error
+    assert "End your turn" in observation.text
+    (request,) = requests
+    assert request.method == "POST"
+    assert request.url == (
+        f"http://agent-server:9000/api/projects/{PROJECT_ID}/conversations/"
+        f"{state.id.hex}/resolve"
+    )
+    assert json.loads(request.content) == {"by": "agent"}
+    assert request.headers["X-Session-API-Key"] == "session-key"
+
+
+def test_resolve_outside_a_project_makes_no_request(tmp_path):
+    def server(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    executor = ResolveConversationExecutor(
+        _conv_state(tmp_path, tags={}), transport=httpx.MockTransport(server)
+    )
+
+    observation = executor(ResolveConversationAction())
+
+    assert observation.is_error
+    assert "not part of a project" in observation.text
