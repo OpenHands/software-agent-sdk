@@ -299,5 +299,6 @@ class TestPluginsMarketplaceRoute:
                     "skills": None,
                     "files": None,
                 }
-            ]
+            ],
+            "disabled": False,
         }

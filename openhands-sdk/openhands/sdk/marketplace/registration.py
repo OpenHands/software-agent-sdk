@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath, PureWindowsPath
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -31,6 +32,13 @@ class MarketplaceRegistration(BaseModel):
             "Whether to load marketplace plugins and standalone skills at "
             "conversation start. Use True for all, False or [] for none, or a "
             "list of plugin/skill names for selective loading."
+        ),
+    )
+    public_skill_precedence: Literal["public", "marketplace"] | None = Field(
+        default=None,
+        description=(
+            "Which source wins when one of this marketplace's skills has the same "
+            "name as a default public skill. None keeps the legacy behavior."
         ),
     )
 

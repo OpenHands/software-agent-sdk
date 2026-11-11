@@ -47,7 +47,9 @@ from openhands.sdk.skills.skill import (
     PUBLIC_SKILLS_REF,
     PUBLIC_SKILLS_REPO,
     _invalidate_public_skills_cache,
+    is_public_skill,
     load_skills_from_dir,
+    public_plugin_catalog_enabled,
 )
 from openhands.sdk.skills.utils import (
     get_skills_cache_dir,
@@ -354,8 +356,15 @@ def load_all_skills(
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
     registered_marketplaces: list[MarketplaceRegistration] | None = None,
+    load_registered_marketplaces: bool | None = None,
 ) -> SkillLoadResult:
-    """Merge skills: sandbox < marketplace < public < user < org < project."""
+    """Merge skills: sandbox < marketplace < public < user < org < project.
+
+    A marketplace whose ``public_skill_precedence`` is ``"marketplace"`` wins
+    name conflicts with default public skills (identified by source, so a user
+    skill of the same name still wins). ``load_registered_marketplaces=None``
+    keeps the legacy coupling of marketplace loading to ``load_public``.
+    """
     sources: dict[str, int] = {}
     skill_lists: list[list[Skill]] = []
 
@@ -368,15 +377,20 @@ def load_all_skills(
     sources["sandbox"] = len(sandbox_skills)
     skill_lists.append(sandbox_skills)
 
+    if load_registered_marketplaces is None:
+        load_registered_marketplaces = load_public
     auto_load_registrations = [
         registration
         for registration in registered_marketplaces or []
-        if registration.auto_load
+        if registration.auto_load and load_registered_marketplaces
     ]
-
     marketplace_skills: list[Skill] = []
-    if load_public and auto_load_registrations:
-        marketplace_skills = load_registered_marketplace_skills(auto_load_registrations)
+    preferred: set[str] = set()
+    for registration in auto_load_registrations:
+        loaded = load_registered_marketplace_skills([registration])
+        marketplace_skills.extend(loaded)
+        if registration.public_skill_precedence == "marketplace":
+            preferred.update(skill.name for skill in loaded)
     sources["registered_marketplaces"] = len(marketplace_skills)
     skill_lists.append(marketplace_skills)
 
@@ -388,7 +402,13 @@ def load_all_skills(
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)
-    skill_lists.append(list(sdk_base.values()))
+    skill_lists.append(
+        [
+            skill
+            for skill in sdk_base.values()
+            if not (skill.name in preferred and is_public_skill(skill))
+        ]
+    )
 
     # 4. Load organization skills (one or more repos merged into a single tier;
     # later repos override earlier ones on name collision).
@@ -703,6 +723,9 @@ def service_get_marketplace_catalog(
         List of MarketplaceSkillInfo with skill details and installation status.
     """
     global _catalog_cache
+
+    if not public_plugin_catalog_enabled():
+        return []
 
     now = monotonic()
     if _catalog_cache is not None and now - _catalog_cache[0] < _CATALOG_TTL_SECONDS:

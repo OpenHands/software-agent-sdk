@@ -33,7 +33,11 @@ from openhands.sdk.skills import (
     SkillInfo,
     SkillValidationError,
 )
-from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.skills.skill import (
+    DEFAULT_MARKETPLACE_PATH,
+    public_plugin_catalog_enabled,
+    public_skills_enabled,
+)
 from openhands.sdk.skills.utils import SKILL_NAME_PATTERN
 
 
@@ -111,6 +115,13 @@ class SkillsRequest(BaseModel):
             "public skills."
         ),
     )
+    load_registered_marketplaces: bool | None = Field(
+        default=None,
+        description=(
+            "Load auto_load registered marketplaces independently of load_public. "
+            "Null keeps the legacy behavior of following load_public."
+        ),
+    )
 
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
@@ -154,7 +165,7 @@ class SkillCatalogResponse(BaseModel):
 class SyncResponse(BaseModel):
     """Response from skill sync operation."""
 
-    status: Literal["success", "error"]
+    status: Literal["success", "error", "disabled"]
     message: str
 
 
@@ -259,6 +270,10 @@ class MarketplaceCatalogResponse(BaseModel):
     """Response containing the marketplace catalog."""
 
     skills: list[MarketplaceSkillInfo]
+    disabled: bool = Field(
+        default=False,
+        description="True when instance policy disables the default public catalog",
+    )
 
 
 def _merge_registered_marketplaces(
@@ -322,6 +337,7 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
         registered_marketplaces=registered_marketplaces,
+        load_registered_marketplaces=request.load_registered_marketplaces,
     )
 
     skills_info = [skill.to_skill_info() for skill in result.skills]
@@ -359,6 +375,11 @@ def sync_skills() -> SyncResponse:
     Returns:
         SyncResponse indicating success or failure.
     """
+    if not (public_skills_enabled() or public_plugin_catalog_enabled()):
+        return SyncResponse(
+            status="disabled",
+            message="Public extensions are disabled by instance policy",
+        )
     success, message = sync_public_skills()
     return SyncResponse(
         status="success" if success else "error",
@@ -594,4 +615,7 @@ def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     Returns:
         MarketplaceCatalogResponse containing list of available skills.
     """
-    return MarketplaceCatalogResponse(skills=service_get_marketplace_catalog())
+    return MarketplaceCatalogResponse(
+        skills=service_get_marketplace_catalog(),
+        disabled=not public_plugin_catalog_enabled(),
+    )

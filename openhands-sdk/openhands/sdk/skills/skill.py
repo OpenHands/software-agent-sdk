@@ -1174,6 +1174,27 @@ PUBLIC_SKILLS_REF = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 # A local checkout or package of the public repo, read instead of a git clone.
 PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
+# Instance policy switches for the default public extensions repository. Read
+# at call time so a warm agent-server picks up values delivered by POST
+# /api/init. Unset or empty means enabled.
+PUBLIC_SKILLS_ENABLED_ENV = "OH_PUBLIC_SKILLS_ENABLED"
+PUBLIC_PLUGIN_CATALOG_ENABLED_ENV = "OH_PUBLIC_PLUGIN_CATALOG_ENABLED"
+
+
+def _env_flag_enabled(name: str) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    return not raw or raw in ("1", "true", "yes", "on")
+
+
+def public_skills_enabled() -> bool:
+    """Whether skills auto-load from the default public extensions repository."""
+    return _env_flag_enabled(PUBLIC_SKILLS_ENABLED_ENV)
+
+
+def public_plugin_catalog_enabled() -> bool:
+    """Whether the default public extensions catalog may be fetched and served."""
+    return _env_flag_enabled(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV)
+
 
 # Process-level cache for load_public_skills. Conversation creation re-validates
 # AgentContext several times and each validation re-runs load_public_skills
@@ -1259,6 +1280,16 @@ def _local_public_skills_path(repo_url: str) -> Path | None:
     return Path(path).expanduser()
 
 
+def is_public_skill(skill: "Skill") -> bool:
+    """Whether ``skill`` was loaded from the default public extensions repository."""
+    if not skill.source:
+        return False
+    root = _local_public_skills_path(PUBLIC_SKILLS_REPO) or (
+        get_skills_cache_dir() / "public-skills"
+    )
+    return skill.source.startswith(to_posix_path(root).rstrip("/") + "/")
+
+
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     ref: str = PUBLIC_SKILLS_REF,
@@ -1310,6 +1341,10 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
+    if repo_url == PUBLIC_SKILLS_REPO and not public_skills_enabled():
+        logger.info("Public skills are disabled by %s", PUBLIC_SKILLS_ENABLED_ENV)
+        return []
+
     local_path = _local_public_skills_path(repo_url)
     cache_key = (str(local_path or repo_url), ref, marketplace_path)
     with _PUBLIC_SKILLS_CACHE_LOCK:
