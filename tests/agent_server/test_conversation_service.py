@@ -1,6 +1,7 @@
 import asyncio
 import json
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -10,7 +11,9 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from litellm.types.utils import ChatCompletionMessageToolCall, Function
 from pydantic import SecretStr
 
@@ -18,6 +21,7 @@ from openhands.agent_server.conversation_lease import (
     LEASE_FILE_NAME,
     ConversationOwnershipLostError,
 )
+from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
@@ -28,6 +32,8 @@ from openhands.agent_server.conversation_service import (
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
+from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -359,6 +365,129 @@ async def test_agent_tool_from_unimportable_module_rejects_create(tmp_path):
         # An unimportable module whose tool the agent does not use stays a warning.
         info, is_new = await service.start_conversation(request([]))
         assert is_new and info.id is not None
+
+
+_RESUME_TOOL_MODULE = """
+from collections.abc import Sequence
+from typing import ClassVar
+
+from openhands.sdk.llm import ImageContent, TextContent
+from openhands.sdk.tool import (
+    Action, Observation, ToolDefinition, ToolExecutor, register_tool,
+)
+
+
+class QaResumeEchoAction(Action):
+    text: str
+
+
+class QaResumeEchoObservation(Observation):
+    out: str
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=self.out)]
+
+
+class _Executor(ToolExecutor[QaResumeEchoAction, QaResumeEchoObservation]):
+    def __call__(self, action, conversation=None):
+        return QaResumeEchoObservation(out=action.text)
+
+
+class QaResumeEchoTool(ToolDefinition[QaResumeEchoAction, QaResumeEchoObservation]):
+    name: ClassVar[str] = "qa_resume_echo"
+
+    @classmethod
+    def create(cls, conv_state=None, **params):
+        return [
+            cls(
+                description="Echo",
+                action_type=QaResumeEchoAction,
+                observation_type=QaResumeEchoObservation,
+                executor=_Executor(),
+            )
+        ]
+
+
+register_tool("qa_resume_echo", QaResumeEchoTool)
+"""
+
+
+@pytest.mark.asyncio
+async def test_resume_without_tool_module_drops_tool_instead_of_failing(
+    tmp_path, monkeypatch
+):
+    """#6746: a tool module that is gone after a restart costs only its tool."""
+    from openhands.sdk.tool import registry as tool_registry
+
+    module_dir = tmp_path / "modules"
+    module_dir.mkdir()
+    (module_dir / "qa_resume_tools.py").write_text(_RESUME_TOOL_MODULE)
+    monkeypatch.syspath_prepend(str(module_dir))
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="qa_resume_echo"), Tool(name="terminal")],
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        tool_module_qualnames={"qa_resume_echo": "qa_resume_tools"},
+        autotitle=False,
+    )
+    try:
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _ = await svc.start_conversation(request)
+            event_service = await svc.get_event_service(info.id)
+            assert event_service is not None
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="hi")])
+            )
+            assert "qa_resume_echo" in event_service.get_conversation().agent.tools_map
+    finally:
+        # A restarted server without the module: off sys.path, never imported,
+        # its tool not registered.
+        monkeypatch.undo()
+        monkeypatch.delitem(sys.modules, "qa_resume_tools", raising=False)
+        with tool_registry._LOCK:
+            for reg in (
+                tool_registry._REG,
+                tool_registry._USABILITY_REG,
+                tool_registry._TOOL_CLASSES,
+            ):
+                reg.pop("qa_resume_echo", None)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        app = FastAPI()
+        app.include_router(conversation_router, prefix="/api")
+        app.include_router(event_router, prefix="/api")
+        app.dependency_overrides[get_conversation_service] = lambda: restarted
+        base = f"/api/conversations/{info.id}"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.get(base)).status_code == 200
+            sent = await client.post(
+                f"{base}/events",
+                json={
+                    "role": "user",
+                    "content": [{"type": "text", "text": "still there?"}],
+                    "run": False,
+                },
+            )
+            assert sent.status_code == 200, sent.text
+            search = await client.get(f"{base}/events/search")
+            assert search.status_code == 200
+            assert "still there?" in search.text
+
+        event_service = await restarted.get_event_service(info.id)
+        assert event_service is not None
+        conversation = event_service.get_conversation()
+        assert "qa_resume_echo" not in conversation.agent.tools_map
+        assert "terminal" in conversation.agent.tools_map
+        assert [t.name for t in conversation.state.agent.tools] == ["terminal"]
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:

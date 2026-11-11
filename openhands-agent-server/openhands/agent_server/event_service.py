@@ -88,6 +88,7 @@ from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.tool.registry import is_tool_available
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
@@ -1127,6 +1128,37 @@ class EventService:
                 partial(_log_emit_failure, type(event).__name__),
             )
 
+    def _drop_unimportable_module_tools(self, conversation: LocalConversation) -> None:
+        """Drop resumed-agent tools whose ``tool_module_qualnames`` module is gone.
+
+        On resume the server only warns when such a module fails to import
+        ("Tool will not be available"); left in the agent, the tool would make
+        every message fail with ``KeyError`` when the agent is built (#6746).
+        """
+        module_tools = self.stored.tool_module_qualnames
+        agent = conversation.agent
+        missing = {
+            tool.name
+            for tool in agent.tools
+            if tool.name in module_tools
+            and not is_tool_available(tool.name, check_usable=False)
+        }
+        if not missing:
+            return
+        logger.warning(
+            "Conversation %s continues without tools whose modules could not "
+            "be imported: %s",
+            self.stored.id,
+            ", ".join(f"'{name}' ({module_tools[name]})" for name in sorted(missing)),
+        )
+        agent = agent.model_copy(
+            update={"tools": [t for t in agent.tools if t.name not in missing]}
+        )
+        # Keep the live and persisted agent the same object, as the SDK does.
+        with conversation._state:
+            conversation._state.agent = agent
+            conversation.agent = agent
+
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
         for llm in agent.get_all_llms():
@@ -1405,6 +1437,8 @@ class EventService:
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
+        if agent is None:
+            self._drop_unimportable_module_tools(conversation)
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
