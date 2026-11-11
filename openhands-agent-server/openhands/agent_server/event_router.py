@@ -493,8 +493,10 @@ async def react_to_message(
     """Add or remove the person's emoji reaction on a message.
 
     The reaction is saved as a `ReactionEvent` and streamed like other events;
-    it does not run the agent. Without `target_event_id` it goes on the
-    agent's latest message. Needs the `conversation_reactions` feature on;
+    it does not run the agent. While tool calls wait for their results (a
+    pending confirmation) it is held back and saved once they are answered.
+    Without `target_event_id` it goes on the agent's latest message. Needs
+    the `conversation_reactions` feature on;
     unlike the agent's tools, which a conversation gets when it starts, this
     check follows the switch at once.
     """
