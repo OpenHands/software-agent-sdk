@@ -12,13 +12,20 @@ from __future__ import annotations
 
 import json
 import sys
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_service import EventService
 from openhands.sdk import LLM, Agent
-from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.request import (
+    StartChildConversationRequest,
+    StartConversationRequest,
+)
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
@@ -181,3 +188,93 @@ async def test_conversations_started_from_one_request_have_their_own_analyzer(
     assert all(isinstance(analyzer, LLMSecurityAnalyzer) for analyzer in analyzers)
     assert analyzers[0] is not analyzers[1]
     assert all(analyzer is not request.security_analyzer for analyzer in analyzers)
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_create_that_failed_halfway_gets_the_requested_settings(
+    tmp_path,
+):
+    """A create can fail after base_state.json is written. The retry with the
+    same id is still a create: it applies the request's policy and analyzer."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = _request(workspace_dir).model_copy(
+        update={
+            "conversation_id": uuid4(),
+            "confirmation_policy": AlwaysConfirm(),
+            "security_analyzer": LLMSecurityAnalyzer(),
+        }
+    )
+    update_secrets = LocalConversation.update_secrets
+    calls = 0
+
+    def fail_the_first_save(self, secrets):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(28, "No space left on device")
+        return update_secrets(self, secrets)
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        with patch.object(LocalConversation, "update_secrets", fail_the_first_save):
+            with pytest.raises(OSError):
+                await service.start_conversation(request)
+            info, _ = await service.start_conversation(request)
+
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        state = await event_service.get_state()
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+
+
+@pytest.mark.asyncio
+async def test_child_inherits_what_its_parent_has_now(tmp_path):
+    """A child started on a real service gets the parent's current policy,
+    analyzer and secrets, changes made after the parent's start included, in
+    its own base_state.json and not in its meta.json."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        conversation_worktree_root=tmp_path / "worktrees",
+        cipher=Cipher("restore-mutations-key"),
+    ) as service:
+        parent, _ = await service.start_conversation(_request(workspace_dir))
+        parent_service = await service.get_event_service(parent.id)
+        assert parent_service is not None
+        await parent_service.set_confirmation_policy(AlwaysConfirm())
+        await parent_service.set_security_analyzer(LLMSecurityAnalyzer())
+        await parent_service.update_secrets({"ADDED_TOKEN": "added-value"})
+
+        with patch.object(EventService, "run", new=AsyncMock()):
+            child = await service.start_child_conversation(
+                parent.id, StartChildConversationRequest(task="Reply with ok.")
+            )
+        assert child is not None
+        child_service = await service.get_event_service(child.conversation_id)
+        assert child_service is not None
+        parent_state = await parent_service.get_state()
+        child_state = await child_service.get_state()
+
+        assert isinstance(child_state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(child_state.security_analyzer, LLMSecurityAnalyzer)
+        assert child_state.security_analyzer is not parent_state.security_analyzer
+        secrets = child_state.secret_registry.secret_sources
+        assert secrets["START_TOKEN"].get_value() == "start-value"
+        assert secrets["ADDED_TOKEN"].get_value() == "added-value"
+
+    child_dir = conversations_dir / child.conversation_id.hex
+    base_state = json.loads((child_dir / "base_state.json").read_text())
+    assert base_state["confirmation_policy"]["kind"] == "AlwaysConfirm"
+    assert base_state["security_analyzer"]["kind"] == "LLMSecurityAnalyzer"
+    assert set(base_state["secret_registry"]["secret_sources"]) == {
+        "START_TOKEN",
+        "ADDED_TOKEN",
+    }
+    meta = json.loads((child_dir / "meta.json").read_text())
+    assert not {"confirmation_policy", "security_analyzer", "secrets"} & set(meta)

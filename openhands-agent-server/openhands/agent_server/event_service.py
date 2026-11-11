@@ -1439,7 +1439,10 @@ class EventService:
         }
         if missing:
             conversation.update_secrets(missing)
-        if not base_state_exists:
+        # Only a caller that creates a conversation passes its agent. The
+        # presence of base_state.json cannot tell a new conversation from a
+        # resumed one: a create that failed halfway leaves the file behind.
+        if self.agent is not None:
             conversation.set_confirmation_policy(self.initial_confirmation_policy)
             conversation.set_security_analyzer(self.initial_security_analyzer)
         # On resume the agent was unknown at construction time (loaded from
