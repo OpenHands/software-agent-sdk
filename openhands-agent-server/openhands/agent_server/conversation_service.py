@@ -463,18 +463,20 @@ def _inheritable_state_config(
     step, which holds that lock until the start returns, so waiting for it
     here would never end. Each of the three is replaced on change, never
     mutated in place, so a plain read sees a whole value.
+
+    The child gets its own analyzer and secret sources, copied the way
+    ``LocalConversation.fork`` copies them: a dump/validate round trip that
+    keeps credentials for the child's cipher to re-encrypt.
     """
     analyzer = state.security_analyzer
-    # The child gets its own analyzer and secret sources, as a fork does
-    # (LocalConversation.fork): the JSON round-trip avoids deep-copying a
-    # guardrail LLM's lock, and expose_secrets keeps its credentials for the
-    # child's cipher to re-encrypt.
     if analyzer is not None:
         analyzer = type(analyzer).model_validate(
             analyzer.model_dump(context={"expose_secrets": True})
         )
     secrets = {
-        name: source.model_copy(deep=True)
+        name: type(source).model_validate(
+            source.model_dump(context={"expose_secrets": True})
+        )
         for name, source in state.secret_registry.secret_sources.items()
     }
     return state.confirmation_policy, analyzer, secrets
