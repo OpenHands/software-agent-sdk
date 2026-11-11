@@ -193,7 +193,7 @@ def test_list_reports_server_errors(tmp_path):
 @pytest.mark.parametrize(
     ("status", "attention"),
     [
-        ("finished", "finished"),
+        ("finished", "idle"),
         ("idle", "idle"),
         ("running", "working"),
     ],

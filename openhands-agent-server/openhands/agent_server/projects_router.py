@@ -128,7 +128,6 @@ class ProjectAttention(str, Enum):
     NEEDS_YOU = "needs_you"
     NEEDS_INPUT = "needs_input"
     WORKING = "working"
-    FINISHED = "finished"
     IDLE = "idle"
     RESOLVED = "resolved"
 
@@ -139,7 +138,7 @@ _ATTENTION_BY_STATUS = {
     ConversationExecutionStatus.ERROR: ProjectAttention.NEEDS_YOU,
     ConversationExecutionStatus.STUCK: ProjectAttention.NEEDS_YOU,
     ConversationExecutionStatus.RUNNING: ProjectAttention.WORKING,
-    ConversationExecutionStatus.FINISHED: ProjectAttention.FINISHED,
+    ConversationExecutionStatus.FINISHED: ProjectAttention.IDLE,
     ConversationExecutionStatus.IDLE: ProjectAttention.IDLE,
 }
 _ATTENTION_ORDER = {
@@ -482,7 +481,8 @@ def _attention(
         return attention
     if resolved is not None:
         return ProjectAttention.RESOLVED
-    if attention == ProjectAttention.FINISHED and turn == "asked":
+    # A finished turn that asked something; an idle (reloaded) one stays idle.
+    if execution_status == ConversationExecutionStatus.FINISHED and turn == "asked":
         return ProjectAttention.NEEDS_INPUT
     return attention
 
@@ -754,7 +754,8 @@ async def list_project_conversations(
 
     ``attention`` is derived from ``execution_status``: waiting for
     confirmation, paused, error and stuck are ``needs_you``; running is
-    ``working``; finished is ``finished``; idle is ``idle``.
+    ``working``; finished and idle are ``idle``: nothing runs and nothing
+    waits on the person, but it is not resolved either.
     """
     project = _find(await _load(_store(request)), project_id)
     members = await service.list_tagged_conversations(PROJECT_TAG, project_id.hex)

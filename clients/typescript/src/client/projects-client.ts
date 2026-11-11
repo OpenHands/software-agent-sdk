@@ -39,7 +39,6 @@ export const PROJECT_ATTENTION_ORDER = [
   'needs_you',
   'needs_input',
   'working',
-  'finished',
   'idle',
   'resolved',
 ] as const;

@@ -88,10 +88,10 @@ _LIST_DESCRIPTION = (
     "Conversations come grouped by `attention`: `needs_you` (waiting for "
     "confirmation, paused, error or stuck), `needs_input` (finished with a "
     "question for the person, shown after `asks:`), `working` (running), "
-    "`finished`, `idle` and "
+    "`idle` (not running and not resolved) and "
     "`resolved` (the person, the conversation itself or the resolution judge "
     "found nothing left in it). "
-    "`finished` means the run ended; it does not say the task succeeded, so "
+    "`idle` does not say the task succeeded, so "
     "read the conversation before reporting an outcome. Call this again to refresh; "
     "a previous result is not the current state."
 )

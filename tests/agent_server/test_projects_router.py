@@ -356,7 +356,7 @@ async def test_conversations_are_grouped_by_attention(client, service, tmp_path)
         ("broken", "needs_you"),
         ("asks", "needs_you"),
         ("busy", "working"),
-        ("done", "finished"),
+        ("done", "idle"),
         ("idle", "idle"),
     ]
     assert outsider.hex not in {t["conversation_id"] for t in conversations}
@@ -939,7 +939,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
     by_title = {t["title"]: t for t in conversations}
     assert {t: by_title[t]["attention"] for t in cases} == {
         "question": "needs_input",
-        "answer": "finished",
+        "answer": "idle",
         "done": "resolved",
         "closed-running": "working",
         "blocked": "needs_you",
@@ -957,7 +957,6 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
             "needs_you",
             "needs_input",
             "working",
-            "finished",
             "idle",
             "resolved",
         ].index,

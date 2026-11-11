@@ -9,8 +9,8 @@ file lock. Membership is not stored there: a conversation belongs to a project
 when its `project` tag holds the project's id (hex), so a child started with
 `start_child_conversation` joins its parent's project with the rest of the
 copied tags. `GET /api/projects/{id}/conversations` lists the members grouped by
-what they need from the person (`attention`: `needs_you`, `working`,
-`finished`, `idle`, derived from `execution_status`). Two server-executed
+what they need from the person (`attention`: `needs_you`, `needs_input`,
+`working`, `idle`, `resolved`, derived from `execution_status` and tags). Two server-executed
 tools, `list_project_conversations` and `message_project_conversation`, give a
 coordinator agent typed access to the same list and a way to steer a conversation.
 Messages go through the generic `POST /api/conversations/{conversation_id}/events`.
@@ -62,7 +62,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.coordinator-unique`: a conversation that coordinates one project cannot coordinate or join another (409), and its tag is unchanged.
 - `F36.add-conversation`: `PUT .../conversations/{conversation_id}` answers 204, is idempotent, sets `project` and keeps the conversation's other tags.
 - `F36.move-conversation`: adding a member of one project to another moves it: the first project's conversations no longer list it.
-- `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `finished`, `idle`, newest-updated first within a group; non-members are left out.
+- `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `idle` (finished or never run), newest-updated first within a group; non-members are left out.
 - `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
 - `F36.message-rest`: `POST /api/conversations/{id}/events` with `refuse_pending_confirmation` saves the message, starts a run and answers `run: started` with the previous status. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
@@ -96,7 +96,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   where a conversation is `{conversation_id, title, execution_status, attention,
   resolved, turn, automation_id, parent_conversation_id, created_at,
   updated_at}`. `attention` is `needs_you`, `needs_input`, `working`,
-  `finished`, `idle` or `resolved`.
+  `idle` (finished or never run, not resolved) or `resolved`.
 - Tags the server sets on project members (`openhands.agent_server.project_board`):
   `turn=asked|answered` when a run finishes, and `resolved=auto` plus
   `resolvenote` when an answered turn leaves nothing for the person (never
@@ -113,7 +113,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   substantive question, choice, review or check (>= 0.5) makes the turn
   `asked` (Needs you) even without a question mark, with the reply's last
   sentence as `ask`; work left that waits on no one stays `answered` and
-  unresolved (Done). A question asked earlier in the turn and not repeated is
+  unresolved (Idle). A question asked earlier in the turn and not repeated is
   not judged. `OH_RESOLUTION_MODEL=off` disables it;
   without a verdict a critic score >= 0.9 still resolves (`0.95 critic`).
   The board shows the note as `resolve_note`.
@@ -426,7 +426,7 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$A3" --check tags.resolved eq auto --until-ok 30 --save F36.needs-you/finished
   ```
   With half the task left and no question, the turn is `answered` and not
-  resolved (Done). Once the second haiku is written, the judge reads the first
+  resolved (Idle). Once the second haiku is written, the judge reads the first
   message as context and resolves. Verified 2026-11-10 with deepseek-flash.
 - **The worker resolves itself (`F36.self-resolve`).**
   Requires: `F36.auto-resolve`
@@ -650,7 +650,7 @@ Preconditions:
 - A child copies its parent's tags when it is started. Tagging a parent later
   does not tag children it already has: add them with `PUT` too.
 - `attention` comes from `execution_status`, refined by the `turn` and
-  `resolved` tags. `finished` means the run ended, not that the task
+  `resolved` tags. `idle` means nothing runs, not that the task
   succeeded. `turn` is a heuristic: the last paragraph of the agent's final
   message, outside code, ends a sentence with `?`. Once the agent stops on a
   question it stays `asked` until a user message, so a Stop hook that makes
