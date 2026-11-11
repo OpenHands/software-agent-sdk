@@ -74,8 +74,10 @@ _SENDER_REPLY: dict[SenderRole, str] = {
     "coordinator": (
         "Answer in this conversation: the coordinator gets your final message."
     ),
-    "member": "Answer in this conversation; the sender can read it from there.",
-    "conversation": "Answer in this conversation; the sender can read it from there.",
+    "member": ("Answer in this conversation. The sender is not told when you do."),
+    "conversation": (
+        "Answer in this conversation. The sender is not told when you do."
+    ),
 }
 
 
