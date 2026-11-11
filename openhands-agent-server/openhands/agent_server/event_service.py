@@ -327,51 +327,27 @@ class EventService:
             },
         )
 
-    def _adopt_legacy_meta_secrets(self) -> None:
-        """Move start-time secrets an older server left in meta.json into
-        base_state.json.
+    def _read_legacy_meta_secrets(self) -> dict[str, SecretSource]:
+        """Start-time secrets an older server left in meta.json.
 
-        Older servers kept them in meta.json and could leave them out of
-        base_state.json. base_state.json wins: only names it lacks are taken,
-        so a saved runtime change is kept. They are written before anything
-        rewrites meta.json, which no longer has a place for them.
+        Older servers kept them there and could leave them out of
+        base_state.json. ``start`` takes over the names base_state.json lacks;
+        the next write of meta.json drops the key.
         """
-        context = {"cipher": self.cipher}
-        base_state_file = self.conversation_dir / BASE_STATE
         try:
-            legacy = _LegacyMetaSecrets.model_validate_json(
-                (self.conversation_dir / "meta.json").read_text(), context=context
+            return _LegacyMetaSecrets.model_validate_json(
+                (self.conversation_dir / "meta.json").read_text(),
+                context={"cipher": self.cipher},
             ).secrets
         except OSError:
-            return
+            return {}
         except ValidationError:
             logger.warning(
                 "Could not read the secrets an older server left in meta.json "
                 "of conversation %s; they are not taken over",
                 self.stored.id,
             )
-            return
-        if not legacy or not base_state_file.exists():
-            return
-        state = ConversationState.model_validate_json(
-            base_state_file.read_text(), context=context
-        )
-        sources = state.secret_registry.secret_sources
-        missing = {
-            name: source
-            for name, source in legacy.items()
-            if name not in sources and name not in self.credential_bindings
-        }
-        if not missing:
-            return
-        state.secret_registry = state.secret_registry.model_copy(
-            update={"secret_sources": {**sources, **missing}}
-        )
-        with self._write_guard():
-            atomic_write_text(
-                base_state_file,
-                state.model_dump_json(exclude_none=True, context=context),
-            )
+            return {}
 
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
         """Persist ``stored`` (default: the current metadata) to ``meta.json``.
@@ -395,6 +371,8 @@ class EventService:
     async def _scrub_persisted_credentials(
         self,
         credential_bindings: Mapping[str, VersionedCredentialBinding] | None = None,
+        *,
+        legacy_secrets: Mapping[str, SecretSource] | None = None,
     ) -> None:
         bindings = (
             self.credential_bindings
@@ -445,6 +423,10 @@ class EventService:
                     context=context,
                 )
                 sources = dict(state.secret_registry.secret_sources)
+                # The meta.json rewrite below drops the secrets an older
+                # server kept there, so the names this file lacks move here.
+                for secret_name, source in (legacy_secrets or {}).items():
+                    sources.setdefault(secret_name, source)
                 for secret_name in bindings:
                     sources.pop(secret_name, None)
                     state.agent = _without_agent_context_secret(
@@ -1319,8 +1301,8 @@ class EventService:
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
         # Before the scrub below, which can rewrite meta.json.
-        await asyncio.to_thread(self._adopt_legacy_meta_secrets)
-        await self._scrub_persisted_credentials()
+        legacy_secrets = await asyncio.to_thread(self._read_legacy_meta_secrets)
+        await self._scrub_persisted_credentials(legacy_secrets=legacy_secrets)
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
@@ -1447,6 +1429,16 @@ class EventService:
             mcp_tool_provider=self.mcp_tool_provider,
         )
 
+        # base_state.json wins: only the names it lacks are taken from the
+        # copy an older server left in meta.json.
+        known = conversation.state.secret_registry.secret_sources
+        missing = {
+            name: source
+            for name, source in legacy_secrets.items()
+            if name not in known and name not in self.credential_bindings
+        }
+        if missing:
+            conversation.update_secrets(missing)
         if not base_state_exists:
             conversation.set_confirmation_policy(self.initial_confirmation_policy)
             conversation.set_security_analyzer(self.initial_security_analyzer)
