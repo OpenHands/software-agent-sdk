@@ -783,8 +783,8 @@ EOF
   done
   ```
   The response reports the actual isolation, including `shared` for the
-  non-git fallback. GET proves inherited model, limits, tags and masked
-  start-time secrets, plus the parent link. Only the child's task appears in
+  non-git fallback. GET proves inherited model, limits, tags and the
+  parent's secrets, masked, plus the parent link. Only the child's task appears in
   its user history; the parent stays idle. The worktree has its own branch.
   The non-git case removes the empty `.git` created during parent startup,
   so it exercises the intended non-git fallback independently of the next bug.

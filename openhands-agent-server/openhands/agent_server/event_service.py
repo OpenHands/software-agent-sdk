@@ -1307,7 +1307,6 @@ class EventService:
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
-        # self.stored contains an Agent configuration we can instantiate
         self.conversation_dir.mkdir(parents=True, exist_ok=True)
         # lease_ttl_seconds=0 disables leasing for single-instance deployments
         # where shared-storage stale leases would otherwise block pod restarts.
