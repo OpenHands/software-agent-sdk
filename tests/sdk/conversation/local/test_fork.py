@@ -19,7 +19,9 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.security.confirmation_policy import ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_llm_analyzer import (
     ToolShieldLLMSecurityAnalyzer,
 )
@@ -424,6 +426,30 @@ def test_fork_without_cipher_still_redacts_secrets(tmp_path):
     fork = src.fork()
 
     assert set(_persisted_base_state(fork)["agent"]["llm"]["api_key"]) == {"*"}
+
+
+def test_fork_keeps_confirmation_policy(tmp_path):
+    """A fork asks for confirmation under the same policy as its source.
+
+    The fork's base_state.json must carry it too: the agent-server resumes a
+    fork from that file.
+    """
+    policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM, confirm_unknown=False)
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+    )
+    src.set_confirmation_policy(policy)
+
+    fork = src.fork()
+
+    assert fork.state.confirmation_policy == policy
+    assert _persisted_base_state(fork)["confirmation_policy"] == {
+        "kind": "ConfirmRisky",
+        "threshold": "MEDIUM",
+        "confirm_unknown": False,
+    }
 
 
 def test_fork_copies_secret_registry():
