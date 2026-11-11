@@ -50,8 +50,8 @@ def client_factory(tmp_path):
 
         app = create_app(Config(session_api_keys=[SESSION_KEY], web_url=web_url))
         # Override the lifespan-managed conversation service with our mock.
-        app.dependency_overrides[get_conversation_service] = (
-            lambda: conversation_service
+        app.dependency_overrides[get_conversation_service] = lambda: (
+            conversation_service
         )
         return TestClient(app, raise_server_exceptions=False)
 
