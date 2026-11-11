@@ -90,7 +90,7 @@ _tool_ids = itertools.count()
 
 def _mcp_tool(input_schema: dict[str, Any]) -> MCPToolDefinition:
     mcp_tool = mcp.types.Tool(
-        name=f"tool_{next(_tool_ids)}", description="test", inputSchema=input_schema
+        name=f"tool_{next(_tool_ids)}", description="test", input_schema=input_schema
     )
     return MCPToolDefinition.create(mcp_tool, Mock(spec=MCPClient))[0]
 
