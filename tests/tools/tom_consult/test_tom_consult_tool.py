@@ -97,7 +97,7 @@ def test_tom_uses_sdk_provider_routing(
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, *args):
+        def log_message(self, format: str, *args):
             pass
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
@@ -129,7 +129,14 @@ def test_tom_uses_sdk_provider_routing(
                 )
             else:
                 result = agent.llm_client.call_structured_messages(
-                    [{"role": "user", "content": "Question"}], Answer
+                    [
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Use pytest."}],
+                        },
+                        {"role": "user", "content": "Question"},
+                    ],
+                    Answer,
                 )
             assert result == Answer(answer="routed")
             assert len(requests) == (2 if repair else 1)
@@ -143,6 +150,12 @@ def test_tom_uses_sdk_provider_routing(
             if repair:
                 assert requests[1]["model"] == "gpt-5-nano"
             assert requests[0]["model"] == "claude-haiku-4-5-20251001"
+            if not asynchronous:
+                history = [
+                    m for m in requests[0]["messages"] if m["role"] == "assistant"
+                ]
+                assert len(history) == 1
+                assert "Use pytest." in json.dumps(history[0]["content"])
         finally:
             server.shutdown()
             thread.join(timeout=5)

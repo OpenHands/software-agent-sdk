@@ -30,6 +30,36 @@ class TomLLMClient(LLMClient):
         )
 
     @staticmethod
+    def _system_message() -> Message:
+        return Message(
+            role="system",
+            content=[
+                TextContent(
+                    text="Analyze user context and return the requested JSON."
+                )
+            ],
+        )
+
+    @staticmethod
+    def _message(message: dict[str, Any]) -> Message:
+        content = message.get("content")
+        if isinstance(content, list):
+            # LiteLLM's response-message model rejects request content blocks.
+            converted = Message.from_llm_chat_message(
+                LiteLLMMessage(**{**message, "content": None})
+            )
+            converted.content = [
+                TextContent(
+                    text=part["text"],
+                    cache_prompt="cache_control" in part,
+                )
+                for part in content
+                if part.get("type") == "text"
+            ]
+            return converted
+        return Message.from_llm_chat_message(LiteLLMMessage(**message))
+
+    @staticmethod
     def _text(response: LLMResponse) -> str:
         text = "".join(
             part.text
@@ -58,10 +88,11 @@ class TomLLMClient(LLMClient):
             kwargs["max_tokens"] = max_tokens
         response = await self._llm().acompletion(
             messages=[
+                self._system_message(),
                 Message(
                     role="user",
                     content=[TextContent(text=f"{prompt}\n\n{instructions}")],
-                )
+                ),
             ],
             response_format=output_type,
             **kwargs,
@@ -79,6 +110,7 @@ class TomLLMClient(LLMClient):
         """Keep ToM's repair fallback on the same SDK transport boundary."""
         response = await self._llm(fallback=True).acompletion(
             messages=[
+                self._system_message(),
                 Message(
                     role="user",
                     content=[
@@ -88,7 +120,7 @@ class TomLLMClient(LLMClient):
                             )
                         )
                     ],
-                )
+                ),
             ],
             response_format=output_type,
         )
@@ -103,10 +135,9 @@ class TomLLMClient(LLMClient):
         """Generate and parse a synchronous ToM consultation."""
         parser = PydanticOutputParser(output_type)
         instructions = parser.get_format_instructions()
-        sdk_messages = [
-            Message.from_llm_chat_message(LiteLLMMessage(**message))
-            for message in messages
-        ]
+        sdk_messages = [self._message(message) for message in messages]
+        if not sdk_messages or sdk_messages[0].role != "system":
+            sdk_messages.insert(0, self._system_message())
         sdk_messages.append(
             Message(role="user", content=[TextContent(text=instructions)])
         )
@@ -124,12 +155,13 @@ class TomLLMClient(LLMClient):
         except ValueError:
             response = self._llm(fallback=True).completion(
                 messages=[
+                    self._system_message(),
                     Message(
                         role="user",
                         content=[
                             TextContent(text=self._repair_prompt(content, instructions))
                         ],
-                    )
+                    ),
                 ],
                 response_format=output_type,
             )
