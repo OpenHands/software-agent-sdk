@@ -657,7 +657,7 @@ async def change_conversation_configuration(
                     status.HTTP_409_CONFLICT, "No locally saved agent profile"
                 )
         try:
-            await event_service.add_conversation_secret(change.name, value)
+            await event_service.reconfigure_agent(secret=(change.name, value))
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "Secret not available"
@@ -699,7 +699,7 @@ async def change_conversation_configuration(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "MCP server disabled"
             )
         try:
-            await event_service.attach_mcp_server(change.ref, server)
+            await event_service.reconfigure_agent(mcp_server=(change.ref, server))
         except PermissionError as exc:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "MCP server not allowed"
@@ -715,7 +715,9 @@ async def change_conversation_configuration(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid MCP server"
             )
         try:
-            await event_service.attach_mcp_server(change.name, change.server)
+            await event_service.reconfigure_agent(
+                mcp_server=(change.name, change.server)
+            )
         except PermissionError as exc:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "MCP server not allowed"

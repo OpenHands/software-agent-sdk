@@ -1487,7 +1487,42 @@ class LocalConversation(BaseConversation):
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
-    def reconfigure_agent(self, updates: Mapping[str, Any]) -> None:
+    def reconfigure_agent(
+        self,
+        updates: Mapping[str, Any] | None = None,
+        *,
+        secret: tuple[str, str] | None = None,
+        mcp_server: tuple[str, MCPServer] | None = None,
+        selector_llm: LLM | None = None,
+    ) -> None:
+        """Apply one configuration change without replacing an active session.
+
+        Agent field updates rebuild at an idle boundary. Secrets use the
+        conversation registry, MCP servers keep their live connections, and
+        selector switches retain their established in-step behavior.
+        """
+        if (
+            sum(
+                (
+                    bool(updates),
+                    secret is not None,
+                    mcp_server is not None,
+                    selector_llm is not None,
+                )
+            )
+            > 1
+        ):
+            raise ValueError("Apply one configuration operation at a time")
+        if secret is not None:
+            self._add_conversation_secret(*secret)
+        elif mcp_server is not None:
+            self._attach_mcp_server(*mcp_server)
+        elif selector_llm is not None:
+            self._switch_llm_live(selector_llm)
+        else:
+            self._reconfigure_agent_fields(updates or {})
+
+    def _reconfigure_agent_fields(self, updates: Mapping[str, Any]) -> None:
         """Replace an OpenHands agent between turns without resetting history."""
         if not self.agent.supports_openhands_tools:
             raise ValueError("Agent reconstruction is not supported for ACP agents")
@@ -1607,6 +1642,10 @@ class LocalConversation(BaseConversation):
             )
 
     def attach_mcp_server(self, name: str, server: MCPServer) -> None:
+        """Compatibility entry point for a conversation-only MCP attachment."""
+        self.reconfigure_agent(mcp_server=(name, server))
+
+    def _attach_mcp_server(self, name: str, server: MCPServer) -> None:
         """Connect and expose an MCP server only in this conversation.
 
         Attached servers use prefixed tool names even when they are the only
@@ -2099,6 +2138,10 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If the conversation's agent is an :class:`ACPAgent`.
         """
+        self.reconfigure_agent(selector_llm=llm)
+
+    def _switch_llm_live(self, llm: LLM) -> None:
+        """Switch the selected model without waiting for an active agent step."""
         self._reject_llm_switch_on_acp()
         usage_id = llm.usage_id
         try:
@@ -3300,6 +3343,10 @@ class LocalConversation(BaseConversation):
             self.pause()
 
     def add_conversation_secret(self, name: str, value: str) -> None:
+        """Compatibility entry point for a conversation-only secret grant."""
+        self.reconfigure_agent(secret=(name, value))
+
+    def _add_conversation_secret(self, name: str, value: str) -> None:
         """Persist a new secret here without changing saved user settings."""
         with self._state:
             if name in self._state.secret_registry.secret_sources:

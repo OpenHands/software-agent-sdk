@@ -742,6 +742,41 @@ def test_attach_mcp_server_rolls_back_failed_state_write(tmp_path: Path) -> None
         conversation.close()
 
 
+def test_reconfigure_agent_handles_secret_and_live_mcp_in_one_api(
+    tmp_path: Path,
+) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    try:
+        conversation.reconfigure_agent(secret=("MCP_TEST_VALUE", "only-for-this-convo"))
+        assert conversation.state.secret_registry.get_secret_value(
+            "MCP_TEST_VALUE"
+        ) == ("only-for-this-convo")
+        server = MCPServer.model_validate(
+            {**FETCH_SERVER, "env": {"MY_KEY": "${MCP_TEST_VALUE}"}}
+        )
+        conversation.reconfigure_agent(mcp_server=("docs", server))
+        assert _mcp_tool_names(conversation) == {"docs_fetch"}
+        assert conversation.agent.mcp_config["docs"].env == {
+            "MY_KEY": SecretStr("only-for-this-convo")
+        }
+        with pytest.raises(ValueError, match="one configuration operation"):
+            conversation.reconfigure_agent(
+                {"tool_concurrency_limit": 2}, secret=("UNUSED", "private")
+            )
+        assert "UNUSED" not in conversation.state.secret_registry.secret_sources
+        assert conversation.agent.tool_concurrency_limit != 2
+    finally:
+        conversation.close()
+
+
 def test_attach_mcp_server_expands_conversation_secrets(tmp_path: Path) -> None:
     conversation = LocalConversation(
         agent=Agent(

@@ -88,6 +88,30 @@ def test_conversation_configuration_openapi_references_resolve():
 
 
 @pytest.mark.asyncio
+async def test_reconfigure_agent_uses_one_server_entrypoint_for_fields_and_secrets(
+    tmp_path: Path,
+) -> None:
+    cipher = Cipher("conversation-test-key")
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        conversation_id = await _start(service, tmp_path / "workspace")
+        event_service = await _event_service(service, conversation_id)
+        await event_service.reconfigure_agent({"tool_concurrency_limit": 2})
+        await event_service.reconfigure_agent(secret=("PRIVATE_KEY", "private-value"))
+        state = await event_service.get_state()
+        assert state.agent.tool_concurrency_limit == 2
+        assert state.secret_registry.get_secret_value("PRIVATE_KEY") == "private-value"
+        assert "PRIVATE_KEY" in event_service.stored.configuration_overrides.secret_refs
+        with pytest.raises(ValueError, match="one configuration operation"):
+            await event_service.reconfigure_agent(
+                {"tool_concurrency_limit": 3}, secret=("OTHER", "private")
+            )
+        assert (await event_service.get_state()).agent.tool_concurrency_limit == 2
+        assert "OTHER" not in event_service.stored.configuration_overrides.secret_refs
+
+
+@pytest.mark.asyncio
 async def test_conversation_secret_is_encrypted_isolated_and_restored(tmp_path):
     cipher = Cipher("conversation-test-key")
     root = tmp_path / "conversations"

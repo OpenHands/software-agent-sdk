@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -2204,31 +2204,67 @@ class EventService:
                     await self.save_meta(previous)
                 raise
 
-    async def add_conversation_secret(self, name: str, value: str) -> None:
-        """Attach a recoverable secret and authorize it in this conversation."""
+    async def reconfigure_agent(
+        self,
+        updates: Mapping[str, Any] | None = None,
+        *,
+        secret: tuple[str, str] | None = None,
+        mcp_server: tuple[str, MCPServer] | None = None,
+        selector_llm: LLM | None = None,
+    ) -> None:
+        """Apply one configuration change, keeping metadata in sync with the SDK."""
         if self._conversation is None:
             raise ValueError("inactive_service")
-        if self.cipher is None:
-            raise RuntimeError("Conversation secrets require an encryption key")
-        if name == CODEX_AUTH_SECRET_NAME and name in self.credential_bindings:
-            raise ValueError("Secret name is reserved for a credential binding")
+        if (
+            sum(
+                (
+                    bool(updates),
+                    secret is not None,
+                    mcp_server is not None,
+                    selector_llm is not None,
+                )
+            )
+            > 1
+        ):
+            raise ValueError("Apply one configuration operation at a time")
+        if secret is not None:
+            name, _ = secret
+            if self.cipher is None:
+                raise RuntimeError("Conversation secrets require an encryption key")
+            if name == CODEX_AUTH_SECRET_NAME and name in self.credential_bindings:
+                raise ValueError("Secret name is reserved for a credential binding")
+            field_name: Literal["secret_refs", "mcp_server_refs"] = "secret_refs"
+        elif mcp_server is not None:
+            name, server = mcp_server
+            if self.cipher is None and (server.env or server.headers or server.auth):
+                raise RuntimeError("MCP server credentials require an encryption key")
+            field_name = "mcp_server_refs"
+        elif selector_llm is not None:
+            await asyncio.to_thread(
+                self._conversation.reconfigure_agent, selector_llm=selector_llm
+            )
+            return
+        else:
+            await asyncio.to_thread(self._conversation.reconfigure_agent, updates or {})
+            return
         await self._apply_configuration(
-            "secret_refs",
+            field_name,
             name,
-            partial(self._conversation.add_conversation_secret, name, value),
+            partial(
+                self._conversation.reconfigure_agent,
+                updates,
+                secret=secret,
+                mcp_server=mcp_server,
+            ),
         )
 
+    async def add_conversation_secret(self, name: str, value: str) -> None:
+        """Compatibility entry point for a conversation-only secret grant."""
+        await self.reconfigure_agent(secret=(name, value))
+
     async def attach_mcp_server(self, name: str, server: MCPServer) -> None:
-        """Connect an MCP server and authorize it in this conversation."""
-        if self._conversation is None:
-            raise ValueError("inactive_service")
-        if self.cipher is None and (server.env or server.headers or server.auth):
-            raise RuntimeError("MCP server credentials require an encryption key")
-        await self._apply_configuration(
-            "mcp_server_refs",
-            name,
-            partial(self._conversation.attach_mcp_server, name, server),
-        )
+        """Compatibility entry point for a conversation-only MCP attachment."""
+        await self.reconfigure_agent(mcp_server=(name, server))
 
     async def get_live_tools(self) -> list[ConversationToolInfo]:
         """Read the current agent's tools without blocking the event loop."""
