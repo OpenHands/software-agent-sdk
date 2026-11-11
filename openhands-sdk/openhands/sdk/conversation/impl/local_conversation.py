@@ -100,7 +100,6 @@ from openhands.sdk.skills import (
     load_marketplace_standalone_skills,
     merge_skills_by_name,
 )
-from openhands.sdk.skills.skill import is_public_skill
 from openhands.sdk.skills.utils import (
     expand_mcp_servers,
     expand_variable_references,
@@ -188,16 +187,6 @@ def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # event the source's own branch walk bridges to instead.
     bridged = source._effective_parent_id(source.get_index(event.id), event)
     return copied.model_copy(update={"parent_id": bridged})
-
-
-def _prefer_over_public(existing: list[Skill], preferred: list[Skill]) -> list[Skill]:
-    """Let ``preferred`` replace same-named default public skills in ``existing``.
-
-    Skills from other sources still win, as with any marketplace skill.
-    """
-    names = {skill.name for skill in preferred}
-    kept = [s for s in existing if not (s.name in names and is_public_skill(s))]
-    return merge_skills_by_name(kept, preferred)
 
 
 def _same_llm_config(a: LLM, b: LLM) -> bool:
@@ -1064,8 +1053,7 @@ class LocalConversation(BaseConversation):
         has_mcp_config = bool(merged_mcp)
         marketplace_skills_loaded = False
 
-        # (source, auto_loaded, public_skill_precedence of its marketplace)
-        plugins_to_load: list[tuple[PluginSource, bool, str | None]] = []
+        plugins_to_load: list[tuple[PluginSource, bool]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
             registrations = [
                 registration.model_copy(
@@ -1080,7 +1068,6 @@ class LocalConversation(BaseConversation):
             ]
             registry = MarketplaceRegistry(registrations)
             marketplace_skills: list[Skill] = []
-            preferred_skills: list[Skill] = []
             for registration in registry.get_auto_load_registrations():
                 try:
                     marketplace, marketplace_path = registry.get_marketplace(
@@ -1119,35 +1106,34 @@ class LocalConversation(BaseConversation):
                             exc_info=True,
                         )
                         continue
-                    plugins_to_load.append(
-                        (plugin_source, True, registration.public_skill_precedence)
-                    )
+                    plugins_to_load.append((plugin_source, True))
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
                 # catalog.
-                standalone = load_marketplace_standalone_skills(
-                    marketplace, marketplace_path, registration
+                marketplace_skills.extend(
+                    load_marketplace_standalone_skills(
+                        marketplace, marketplace_path, registration
+                    )
                 )
-                if registration.public_skill_precedence == "marketplace":
-                    preferred_skills.extend(standalone)
-                else:
-                    marketplace_skills.extend(standalone)
-            if marketplace_skills or preferred_skills:
-                skills = _prefer_over_public(merged_context.skills, preferred_skills)
+            if marketplace_skills:
                 merged_context = merged_context.model_copy(
-                    update={"skills": merge_skills_by_name(skills, marketplace_skills)}
+                    update={
+                        "skills": merge_skills_by_name(
+                            merged_context.skills, marketplace_skills
+                        )
+                    }
                 )
                 marketplace_skills_loaded = True
 
         if self._plugin_specs:
-            plugins_to_load.extend((spec, False, None) for spec in self._plugin_specs)
+            plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
 
         # Load plugins if specified or registered for auto-load
         if plugins_to_load:
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec, auto_loaded, precedence in plugins_to_load:
+            for spec, auto_loaded in plugins_to_load:
                 if auto_loaded:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
@@ -1199,21 +1185,7 @@ class LocalConversation(BaseConversation):
                 explicit_plugin_names.add(plugin.name)
 
                 # Merge plugin contents
-                public_skills = {
-                    skill.name: skill
-                    for skill in (merged_context.skills if merged_context else [])
-                    if precedence == "public" and is_public_skill(skill)
-                }
                 merged_context = plugin.add_skills_to(merged_context)
-                if public_skills:
-                    merged_context = merged_context.model_copy(
-                        update={
-                            "skills": [
-                                public_skills.get(skill.name, skill)
-                                for skill in merged_context.skills
-                            ]
-                        }
-                    )
                 merged_mcp = plugin.add_mcp_config_to(merged_mcp)
                 has_mcp_config = has_mcp_config or bool(merged_mcp)
 

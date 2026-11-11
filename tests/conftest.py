@@ -15,6 +15,12 @@ from openhands.sdk import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
+from openhands.sdk.skills.skill import (
+    PUBLIC_PLUGIN_CATALOG_ENABLED_ENV,
+    PUBLIC_SKILLS_ENABLED_ENV,
+    PUBLIC_SKILLS_PATH_ENV,
+    _invalidate_public_skills_cache,
+)
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -146,6 +152,24 @@ def mock_tool():
     mock_tool.name = "mock_tool"
     mock_tool.executor = MockExecutor()
     return mock_tool
+
+
+@pytest.fixture
+def public_repo(tmp_path, monkeypatch):
+    """Point the default public skills source at a local `github` + `public-only`
+    repository, with both public-extension switches unset."""
+    for name in ("github", "public-only"):
+        skill_dir = tmp_path / "public" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}\n---\nPUBLIC-{name}\n"
+        )
+    monkeypatch.setenv(PUBLIC_SKILLS_PATH_ENV, str(tmp_path / "public"))
+    monkeypatch.delenv(PUBLIC_SKILLS_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, raising=False)
+    _invalidate_public_skills_cache()
+    yield tmp_path / "public"
+    _invalidate_public_skills_cache()
 
 
 @pytest.fixture

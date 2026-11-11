@@ -47,7 +47,6 @@ from openhands.sdk.skills.skill import (
     PUBLIC_SKILLS_REF,
     PUBLIC_SKILLS_REPO,
     _invalidate_public_skills_cache,
-    is_public_skill,
     load_skills_from_dir,
     public_plugin_catalog_enabled,
 )
@@ -360,10 +359,8 @@ def load_all_skills(
 ) -> SkillLoadResult:
     """Merge skills: sandbox < marketplace < public < user < org < project.
 
-    A marketplace whose ``public_skill_precedence`` is ``"marketplace"`` wins
-    name conflicts with default public skills (identified by source, so a user
-    skill of the same name still wins). ``load_registered_marketplaces=None``
-    keeps the legacy coupling of marketplace loading to ``load_public``.
+    ``load_registered_marketplaces=None`` keeps the legacy coupling of
+    registered-marketplace loading to ``load_public``.
     """
     sources: dict[str, int] = {}
     skill_lists: list[list[Skill]] = []
@@ -382,15 +379,12 @@ def load_all_skills(
     auto_load_registrations = [
         registration
         for registration in registered_marketplaces or []
-        if registration.auto_load and load_registered_marketplaces
+        if registration.auto_load
     ]
+
     marketplace_skills: list[Skill] = []
-    preferred: set[str] = set()
-    for registration in auto_load_registrations:
-        loaded = load_registered_marketplace_skills([registration])
-        marketplace_skills.extend(loaded)
-        if registration.public_skill_precedence == "marketplace":
-            preferred.update(skill.name for skill in loaded)
+    if load_registered_marketplaces and auto_load_registrations:
+        marketplace_skills = load_registered_marketplace_skills(auto_load_registrations)
     sources["registered_marketplaces"] = len(marketplace_skills)
     skill_lists.append(marketplace_skills)
 
@@ -402,13 +396,7 @@ def load_all_skills(
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)
-    skill_lists.append(
-        [
-            skill
-            for skill in sdk_base.values()
-            if not (skill.name in preferred and is_public_skill(skill))
-        ]
-    )
+    skill_lists.append(list(sdk_base.values()))
 
     # 4. Load organization skills (one or more repos merged into a single tier;
     # later repos override earlier ones on name collision).

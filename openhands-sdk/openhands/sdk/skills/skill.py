@@ -16,6 +16,8 @@ from pydantic import (
     BaseModel,
     Field,
     SerializationInfo,
+    TypeAdapter,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -1174,16 +1176,25 @@ PUBLIC_SKILLS_REF = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 # A local checkout or package of the public repo, read instead of a git clone.
 PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
-# Instance policy switches for the default public extensions repository. Read
-# at call time so a warm agent-server picks up values delivered by POST
-# /api/init. Unset or empty means enabled.
+# Deployment switches for the default public extensions repository. Read at
+# call time so a warm agent-server picks up values delivered by POST /api/init.
+# They gate only automatic loading/fetching from that repository; skills a
+# client sends or a persisted conversation already holds are not filtered.
 PUBLIC_SKILLS_ENABLED_ENV = "OH_PUBLIC_SKILLS_ENABLED"
 PUBLIC_PLUGIN_CATALOG_ENABLED_ENV = "OH_PUBLIC_PLUGIN_CATALOG_ENABLED"
+_BOOL_ADAPTER = TypeAdapter(bool)
 
 
 def _env_flag_enabled(name: str) -> bool:
-    raw = os.environ.get(name, "").strip().lower()
-    return not raw or raw in ("1", "true", "yes", "on")
+    """Parse a default-enabled switch; unset, empty or unrecognised keep it on."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return True
+    try:
+        return _BOOL_ADAPTER.validate_python(raw)
+    except ValidationError:
+        logger.warning("Ignoring unrecognised %s=%r; keeping it enabled", name, raw)
+        return True
 
 
 def public_skills_enabled() -> bool:
@@ -1192,7 +1203,7 @@ def public_skills_enabled() -> bool:
 
 
 def public_plugin_catalog_enabled() -> bool:
-    """Whether the default public extensions catalog may be fetched and served."""
+    """Whether the default public plugin and skills catalogs may be fetched."""
     return _env_flag_enabled(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV)
 
 
@@ -1280,16 +1291,6 @@ def _local_public_skills_path(repo_url: str) -> Path | None:
     return Path(path).expanduser()
 
 
-def is_public_skill(skill: "Skill") -> bool:
-    """Whether ``skill`` was loaded from the default public extensions repository."""
-    if not skill.source:
-        return False
-    root = _local_public_skills_path(PUBLIC_SKILLS_REPO) or (
-        get_skills_cache_dir() / "public-skills"
-    )
-    return skill.source.startswith(to_posix_path(root).rstrip("/") + "/")
-
-
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     ref: str = PUBLIC_SKILLS_REF,
@@ -1329,7 +1330,8 @@ def load_public_skills(
 
     Returns:
         List of Skill objects loaded from the public repository.
-        Returns empty list if loading fails.
+        Returns empty list if loading fails, or for the default repository when
+        ``OH_PUBLIC_SKILLS_ENABLED`` is false (nothing is fetched or read).
 
     Example:
         >>> from openhands.sdk.context import AgentContext
