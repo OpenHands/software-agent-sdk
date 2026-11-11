@@ -98,6 +98,7 @@ from openhands.sdk.security.confirmation_policy import (
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import copy_keeping_secrets
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -464,19 +465,14 @@ def _inheritable_state_config(
     here would never end. Each of the three is replaced on change, never
     mutated in place, so a plain read sees a whole value.
 
-    The child gets its own analyzer and secret sources, copied the way
-    ``LocalConversation.fork`` copies them: a dump/validate round trip that
-    keeps credentials for the child's cipher to re-encrypt.
+    The child gets its own analyzer and secret sources, with their
+    credentials, for the child's cipher to encrypt again.
     """
     analyzer = state.security_analyzer
     if analyzer is not None:
-        analyzer = type(analyzer).model_validate(
-            analyzer.model_dump(context={"expose_secrets": True})
-        )
+        analyzer = copy_keeping_secrets(analyzer)
     secrets = {
-        name: type(source).model_validate(
-            source.model_dump(context={"expose_secrets": True})
-        )
+        name: copy_keeping_secrets(source)
         for name, source in dict(state.secret_registry.secret_sources).items()
     }
     return state.confirmation_policy, analyzer, secrets
