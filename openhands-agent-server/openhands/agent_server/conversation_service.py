@@ -2754,109 +2754,140 @@ class ConversationService:
             parent_stored = parent_service.stored
             # With Projects off, a member's child is an ordinary child: no
             # project tag, tools, guidance or memory (the parent keeps its own).
-            projects_on = PROJECT_TAG_KEY in parent_stored.tags and (
+            if PROJECT_TAG_KEY in parent_stored.tags and (
                 await feature_enabled_now("projects")
-            )
-            worker_profile = (
-                await self._project_worker_profile(parent_stored)
-                if projects_on
-                else None
-            )
-            if worker_profile is not None:
-                return await self._start_project_worker(
-                    parent_service, request, worker_profile, run_slot
+            ):
+                return await self._start_project_child(
+                    parent_service, request, run_slot
                 )
-            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
-            # A child spends under the same cap as its parent.
-            max_budget_per_run = parent_service.get_conversation().max_budget_per_run
-            child_id = uuid4()
+            return await self._start_copied_child(parent_service, request, run_slot)
 
-            # Reuse the worktree machinery of a regular start: a worktree is
-            # planned (and its guidance appended to the child's agent) only when
-            # the parent workspace has a usable git base commit; otherwise
-            # the child shares it.
-            worktree = (
-                _plan_conversation_worktree(
-                    parent_stored.workspace,
-                    child_id,
-                    self.conversation_worktree_root,
-                    None,
-                )
-                if request.isolation == "worktree"
-                else None
+    async def _start_project_child(
+        self,
+        parent_service: EventService,
+        request: StartChildConversationRequest,
+        run_slot: RunSlot,
+    ) -> StartChildConversationResponse:
+        """A project member's child: a worker from an agent profile, or, with
+        no profile to start from, a copy of the parent's agent that still runs
+        the worker's prompt, project context and tools."""
+        parent_stored = parent_service.stored
+        worker_profile = await self._project_worker_profile(parent_stored)
+        if worker_profile is not None:
+            return await self._start_project_worker(
+                parent_service, request, worker_profile, run_slot
             )
-            suffixes = [worktree.guidance] if worktree else []
-            # The child inherits the parent's agent, and with it any legacy
-            # guidance naming the conversation that started the parent. In a
-            # project it runs the worker's prompt with its own project context,
-            # even when its parent is the coordinator.
-            child_agent = without_worker_guidance(parent_agent)
-            additions: AgentLaunchAdditions | None = None
-            brief_header: list[TextContent] = []
-            if projects_on:
-                context, role = await _project_prompt(
-                    parent_stored.tags[PROJECT_TAG_KEY],
-                    (parent_stored.title, parent_id),
-                )
-                additions = AgentLaunchAdditions(
-                    prompt_preset=PromptPreset.PROJECT_WORKER,
-                    project_context=context,
-                )
-                brief_header = [
-                    TextContent(
-                        text=sender_header(parent_stored.title, parent_id, role=role)
-                    )
-                ]
-            launched = await asyncio.to_thread(
-                lambda: finalize(
-                    child_agent,
-                    live_launch_runtime(
-                        self.acp_skill_sourcing, enable_browser=self.enable_browser
-                    ),
-                    additions=additions,
-                    extra_suffixes=suffixes,
-                    withheld_tools=() if projects_on else PROJECT_TOOL_NAMES,
-                )
+        project_hex = parent_stored.tags[PROJECT_TAG_KEY]
+        context, role = await _project_prompt(
+            project_hex, (parent_stored.title, parent_stored.id)
+        )
+        return await self._start_copied_child(
+            parent_service,
+            request,
+            run_slot,
+            additions=AgentLaunchAdditions(
+                prompt_preset=PromptPreset.PROJECT_WORKER,
+                project_context=context,
+            ),
+            header=sender_header(parent_stored.title, parent_stored.id, role=role),
+            withheld_tools=(),
+            extra_tags={PROJECT_TAG_KEY: project_hex},
+        )
+
+    async def _start_copied_child(
+        self,
+        parent_service: EventService,
+        request: StartChildConversationRequest,
+        run_slot: RunSlot,
+        *,
+        additions: AgentLaunchAdditions | None = None,
+        header: str | None = None,
+        withheld_tools: Sequence[str] = PROJECT_TOOL_NAMES,
+        extra_tags: Mapping[str, str] | None = None,
+    ) -> StartChildConversationResponse:
+        """A child that runs a copy of its parent's agent.
+
+        It keeps the parent's tags except project membership and board state;
+        ``extra_tags`` adds to them. ``header`` opens the task message.
+        """
+        parent_stored = parent_service.stored
+        parent_id = parent_stored.id
+        parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+        # A child spends under the same cap as its parent.
+        max_budget_per_run = parent_service.get_conversation().max_budget_per_run
+        child_id = uuid4()
+
+        # Reuse the worktree machinery of a regular start: a worktree is
+        # planned (and its guidance appended to the child's agent) only when
+        # the parent workspace has a usable git base commit; otherwise
+        # the child shares it.
+        worktree = (
+            _plan_conversation_worktree(
+                parent_stored.workspace,
+                child_id,
+                self.conversation_worktree_root,
+                None,
             )
-            workspace = (
-                _create_conversation_worktree(worktree)
-                if worktree is not None
-                else parent_stored.workspace
+            if request.isolation == "worktree"
+            else None
+        )
+        suffixes = [worktree.guidance] if worktree else []
+        # The child inherits the parent's agent, and with it any legacy
+        # guidance naming the conversation that started the parent.
+        child_agent = without_worker_guidance(parent_agent)
+        launched = await asyncio.to_thread(
+            lambda: finalize(
+                child_agent,
+                live_launch_runtime(
+                    self.acp_skill_sourcing, enable_browser=self.enable_browser
+                ),
+                additions=additions,
+                extra_suffixes=suffixes,
+                withheld_tools=tuple(withheld_tools),
             )
-            now = utc_now()
-            child_stored = parent_stored.model_copy(
-                update={
-                    "id": child_id,
-                    "workspace": workspace,
-                    "worktree": request.isolation == "worktree",
-                    "title": request.title,
-                    "metrics": None,
-                    "created_at": now,
-                    "updated_at": now,
-                    "parent_conversation_id": parent_id,
-                    "forked_from_conversation_id": None,
-                    "forked_from_event_id": None,
-                    # Project membership carries over; the parent's own
-                    # resolved/turn state does not.
-                    "tags": {
+        )
+        workspace = (
+            _create_conversation_worktree(worktree)
+            if worktree is not None
+            else parent_stored.workspace
+        )
+        now = utc_now()
+        child_stored = parent_stored.model_copy(
+            update={
+                "id": child_id,
+                "workspace": workspace,
+                "worktree": request.isolation == "worktree",
+                "title": request.title,
+                "metrics": None,
+                "created_at": now,
+                "updated_at": now,
+                "parent_conversation_id": parent_id,
+                "forked_from_conversation_id": None,
+                "forked_from_event_id": None,
+                "tags": {
+                    **{
                         key: value
                         for key, value in parent_stored.tags.items()
-                        if key not in BOARD_TAG_KEYS
-                        and (projects_on or key != PROJECT_TAG_KEY)
+                        if key not in BOARD_TAG_KEYS and key != PROJECT_TAG_KEY
                     },
-                }
-            )
-            info, _ = await self._launch_prepared_conversation(
-                child_stored,
-                launched,
-                run_slot=run_slot,
-                max_budget_per_run=max_budget_per_run,
-                initial_message=Message(
-                    role="user",
-                    content=[*brief_header, TextContent(text=request.task)],
-                ),
-                initial_sender=conversation_sender(parent_id),
-            )
+                    **(extra_tags or {}),
+                },
+            }
+        )
+        info, _ = await self._launch_prepared_conversation(
+            child_stored,
+            launched,
+            run_slot=run_slot,
+            max_budget_per_run=max_budget_per_run,
+            initial_message=Message(
+                role="user",
+                content=[
+                    *([TextContent(text=header)] if header else []),
+                    TextContent(text=request.task),
+                ],
+            ),
+            initial_sender=conversation_sender(parent_id),
+        )
 
         return StartChildConversationResponse(
             conversation_id=child_id,
