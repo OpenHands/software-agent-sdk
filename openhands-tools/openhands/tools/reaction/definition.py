@@ -1,7 +1,7 @@
 """The ``react`` and ``unreact`` tools."""
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -125,6 +125,9 @@ def _annotations() -> ToolAnnotations:
 class ReactTool(ToolDefinition[ReactAction, ReactionObservation]):
     """Tool that puts an emoji reaction on a message."""
 
+    # Given by the conversation_reactions feature, not picked in agent settings.
+    user_selectable: ClassVar[bool] = False
+
     @classmethod
     def create(
         cls,
@@ -148,6 +151,9 @@ class ReactTool(ToolDefinition[ReactAction, ReactionObservation]):
 
 class UnreactTool(ToolDefinition[UnreactAction, ReactionObservation]):
     """Tool that takes an emoji reaction off a message."""
+
+    # Given by the conversation_reactions feature, not picked in agent settings.
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

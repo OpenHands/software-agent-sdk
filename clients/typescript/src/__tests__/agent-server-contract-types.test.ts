@@ -201,6 +201,18 @@ describe('Agent Server generated contract aliases', () => {
     assertType<Equal<keyof AgentProfileDiagnostics, keyof GeneratedAgentProfileDiagnostics>>(true);
   });
 
+  it('preserves optional nullable ACP effort in profiles and save inputs', () => {
+    assertType<
+      Equal<Pick<ACPAgentProfile, 'acp_effort'>, Pick<GeneratedACPAgentProfile, 'acp_effort'>>
+    >(true);
+    assertType<
+      Equal<
+        Pick<Extract<AgentProfileSaveInput, { agent_kind: 'acp' }>, 'acp_effort'>,
+        Pick<GeneratedACPAgentProfile, 'acp_effort'>
+      >
+    >(true);
+  });
+
   it('preserves optional nullable public-skill selection in profiles and diagnostics', () => {
     assertType<
       Equal<

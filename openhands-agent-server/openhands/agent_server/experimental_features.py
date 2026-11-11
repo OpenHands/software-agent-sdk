@@ -1,16 +1,18 @@
 """User-facing experimental features (feature flags).
 
-A feature is a capability the user turns on or off for themselves, such as
-emoji reactions. Each one is a yes/no switch stored in
-``PersistedSettings.experimental_features``. The tools a feature gives the
-agent are chosen when a conversation starts, so they follow the switch for
-conversations started after it; a route that checks the switch (such as the
-person's reactions) follows it at once. Child conversations reuse their
-parent's agent and tools. Unknown keys are refused, so the list below is the
-whole set.
+A feature is a capability the user turns on or off for themselves. Each one is
+a yes/no switch stored in ``PersistedSettings.experimental_features`` and off
+until the user turns it on. Unknown keys are refused, so
+``EXPERIMENTAL_FEATURES`` is the whole set.
 
-To add a feature, append a :class:`ExperimentalFeatureDefinition` to
-``EXPERIMENTAL_FEATURES`` and read it where it takes effect with :func:`is_enabled`.
+To add a feature, append an :class:`ExperimentalFeatureDefinition` to
+``EXPERIMENTAL_FEATURES`` and read it where it takes effect with
+:func:`is_enabled`.
+
+The tools a feature gives the agent are chosen when a conversation starts
+(:func:`experimental_feature_tools`), so they follow the switch for
+conversations started after it; a route that checks the switch follows it at
+once. Child conversations reuse their parent's agent and tools.
 
 A Docker runtime's server has its own, empty settings: the host passes it the
 person's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
@@ -21,9 +23,10 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from openhands.sdk.tool.spec import Tool
 
@@ -32,27 +35,19 @@ if TYPE_CHECKING:
     from openhands.agent_server.config import Config
 
 
-ExperimentalFeatureKey = Literal["conversation_reactions", "projects"]
-
-
-class ExperimentalFeatureDefinition(BaseModel):
-    key: ExperimentalFeatureKey
+@dataclass(frozen=True)
+class ExperimentalFeatureDefinition:
+    key: str
     label: str
     description: str
-    default: bool = False
-    tools: tuple[str, ...] = Field(
-        default=(),
-        description="Tools an OpenHands agent gets while the feature is on.",
-    )
 
 
 class ExperimentalFeature(BaseModel):
     """A feature and whether it is on for this user."""
 
-    key: ExperimentalFeatureKey
+    key: str
     label: str
     description: str
-    default: bool
     enabled: bool
 
 
@@ -68,8 +63,6 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
         "when it starts on something before it answers, and you can react to "
         "its messages. Applies to conversations started after you turn it on."
     ),
-    # Tool names as registered by openhands.tools.reaction.
-    tools=("react", "unreact"),
 )
 
 PROJECTS = ExperimentalFeatureDefinition(
@@ -97,18 +90,18 @@ PROJECT_TOOL_NAMES: tuple[str, ...] = (
 in its agent spec and the server adds the workers', so they are withheld from
 new conversations while Projects is off rather than added while it is on."""
 
-EXPERIMENTAL_FEATURES: tuple[ExperimentalFeatureDefinition, ...] = (
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
     PROJECTS,
-)
-EXPERIMENTAL_FEATURES_BY_KEY: dict[str, ExperimentalFeatureDefinition] = {
-    f.key: f for f in EXPERIMENTAL_FEATURES
-}
+]
 
 
-def is_enabled(features: Mapping[str, bool], key: ExperimentalFeatureKey) -> bool:
-    stored = features.get(key)
-    return EXPERIMENTAL_FEATURES_BY_KEY[key].default if stored is None else stored
+def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
+    return next((f for f in EXPERIMENTAL_FEATURES if f.key == key), None)
+
+
+def is_enabled(features: Mapping[str, bool], key: str) -> bool:
+    return features.get(key, False)
 
 
 def experimental_feature_flags(
@@ -119,7 +112,6 @@ def experimental_feature_flags(
             key=f.key,
             label=f.label,
             description=f.description,
-            default=f.default,
             enabled=is_enabled(features, f.key),
         )
         for f in EXPERIMENTAL_FEATURES
@@ -128,26 +120,22 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
-    return [
-        Tool(name=name)
-        for f in EXPERIMENTAL_FEATURES
-        if is_enabled(features, f.key)
-        for name in f.tools
-    ]
+    if is_enabled(features, CONVERSATION_REACTIONS.key):
+        # Tool names as registered by openhands.tools.reaction.
+        return [Tool(name="react"), Tool(name="unreact")]
+    return []
 
 
 def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[str]:
     """Tools a new conversation does not get, even if its spec lists them."""
-    return [] if is_enabled(features, "projects") else list(PROJECT_TOOL_NAMES)
+    return [] if is_enabled(features, PROJECTS.key) else list(PROJECT_TOOL_NAMES)
 
 
-async def feature_enabled_now(
-    key: ExperimentalFeatureKey, config: "Config | None" = None
-) -> bool:
+async def feature_enabled_now(key: str, config: "Config | None" = None) -> bool:
     """Whether the person has ``key`` on right now (host switches in a runtime).
 
     For server behavior that follows the switch at once, such as a route or a
-    wake-up. An unreadable settings file counts as the feature's default.
+    wake-up. An unreadable settings file counts as off.
     """
     host_features = host_experimental_features()
     if host_features is not None:
@@ -162,7 +150,7 @@ async def feature_enabled_now(
             lambda: get_settings_store(config).load() or PersistedSettings()
         )
     except (PermissionError, OSError):
-        return EXPERIMENTAL_FEATURES_BY_KEY[key].default
+        return False
     return is_enabled(settings.experimental_features, key)
 
 
@@ -188,5 +176,5 @@ def host_experimental_features() -> dict[str, bool] | None:
     return {
         key: value
         for key, value in parsed.items()
-        if key in EXPERIMENTAL_FEATURES_BY_KEY and isinstance(value, bool)
+        if find_experimental_feature(key) is not None and isinstance(value, bool)
     }

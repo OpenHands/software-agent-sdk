@@ -31,12 +31,14 @@
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/3744"
     },
     {
-      "endpoints": [
-        "GET /api/settings/experimental",
-        "PATCH /api/settings/experimental/{}",
-        "POST /api/conversations/{}/reactions"
-      ],
-      "reason": "Client-ahead API for user feature flags and conversation reactions, added with the Agent Server endpoints in the same PR.",
+      "endpoints": ["GET /api/settings/experimental", "PATCH /api/settings/experimental/{}"],
+      "reason": "Client-ahead API for experimental features, added with the Agent Server endpoints in the same PR.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/6758"
+    },
+    {
+      "endpoints": ["POST /api/conversations/{}/reactions"],
+      "reason": "Client-ahead API for conversation reactions, added with the Agent Server endpoint in the same PR.",
       "owner": "OpenHands SDK maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/6609"
     },

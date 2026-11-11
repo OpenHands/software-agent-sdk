@@ -124,6 +124,13 @@ def _projects_feature_on(request, monkeypatch):
     the shipped default."""
     if request.node.get_closest_marker("projects_off"):
         return
-    from openhands.agent_server.experimental_features import PROJECTS
+    from openhands.agent_server import experimental_features
 
-    monkeypatch.setattr(PROJECTS, "default", True)
+    original = experimental_features.is_enabled
+
+    def projects_on_unless_stored(features, key: str) -> bool:
+        if key == experimental_features.PROJECTS.key and key not in features:
+            return True
+        return original(features, key)
+
+    monkeypatch.setattr(experimental_features, "is_enabled", projects_on_unless_stored)

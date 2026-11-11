@@ -11,10 +11,11 @@ from openhands.agent_server import project_wake
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.experimental_features import (
-    EXPERIMENTAL_FEATURES_BY_KEY,
     PROJECT_TOOL_NAMES,
     experimental_feature_withheld_tools,
     feature_enabled_now,
+    find_experimental_feature,
+    is_enabled,
 )
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk import LLM, Agent
@@ -26,7 +27,8 @@ pytestmark = pytest.mark.projects_off
 
 
 def test_projects_is_an_experimental_feature_off_by_default():
-    assert EXPERIMENTAL_FEATURES_BY_KEY["projects"].default is False
+    assert find_experimental_feature("projects") is not None
+    assert not is_enabled({}, "projects")
     assert experimental_feature_withheld_tools({}) == list(PROJECT_TOOL_NAMES)
     assert experimental_feature_withheld_tools({"projects": True}) == []
 
