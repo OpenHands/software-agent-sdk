@@ -85,6 +85,7 @@ PROJECT_TOOL_NAMES: tuple[str, ...] = (
     "list_artifacts",
     "read_project_memory",
     "update_project_memory",
+    "resolve_conversation",
 )
 """Tools registered by openhands.tools.project. A client lists the coordinator's
 in its agent spec and the server adds the workers', so they are withheld from

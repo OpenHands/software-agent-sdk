@@ -101,6 +101,12 @@ when no judge model is available or the call failed."""
 _TURN_ACTIONS_KEPT: Final[int] = 20
 
 TurnSenderLookup = Callable[[], Awaitable[str | None]]
+
+ProjectsEnabled = Callable[[], Awaitable[bool]]
+"""Whether the person has the ``projects`` experimental feature on right now.
+
+While it is off the board is left as it is: no outcome is recorded, no judge
+runs and nothing is reopened."""
 """Reads who started the current turn from the event log, for a subscriber
 that did not see the turn's first message (a server restart in between)."""
 """Called when the person writes in a project member, with the project id
@@ -267,6 +273,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     on_stopped: OnStopped | None = None
     turn_sender_lookup: TurnSenderLookup | None = None
     judge: ResolutionJudge | None = None
+    projects_enabled: ProjectsEnabled | None = None
     # The message that started the current turn and what the agent did in
     # it, for the resolution judge.
     _turn_request: str | None = field(default=None, init=False)
@@ -335,8 +342,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                     if project and text:
                         callback = self.on_person_message
                         self._notify_later(lambda: callback(project, text))
-                # Reopen any conversation the person resolved, in a project
-                # or not; recording outcomes is limited to project members.
+                # Reopen a member the person resolved (checked when it runs).
                 # An outcome still being written is not visible in the tags
                 # yet, so queue the reopen behind it as well.
                 pending = self._tail is not None and not self._tail.done()
@@ -471,7 +477,13 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
         self._tail = asyncio.create_task(run())
 
+    async def _enabled(self) -> bool:
+        return self.projects_enabled is None or await self.projects_enabled()
+
     async def _reopen(self) -> None:
+        # Only a project member's board state is the server's to clear.
+        if PROJECT_TAG_KEY not in self.tags() or not await self._enabled():
+            return
         # Most user messages find neither tag; each write is a metadata save.
         for key in sorted(BOARD_TAG_KEYS):
             if key in self.tags():
@@ -488,6 +500,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         sender_known: bool = True,
         judged: ResolutionState | None = None,
     ) -> None:
+        if not await self._enabled():
+            return
         verdict = None
         shown = False
         if judged is not None and RESOLVED_TAG_KEY not in self.tags():

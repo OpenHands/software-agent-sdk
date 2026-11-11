@@ -410,12 +410,64 @@ async def test_a_rhetorical_question_mid_run_does_not_stick():
 
 
 @pytest.mark.asyncio
-async def test_a_user_message_reopens_a_resolved_conversation_outside_projects():
+async def test_a_user_message_leaves_tags_outside_projects_alone():
     store = _Tags({"resolved": "user", "other": "x"})
 
     await _feed(_subscriber(store), _message("user", "One more thing"))
 
-    assert store.tags == {"other": "x"}
+    assert store.tags == {"resolved": "user", "other": "x"}
+
+
+def _projects_switch(on: bool):
+    async def enabled() -> bool:
+        return on
+
+    return enabled
+
+
+@pytest.mark.asyncio
+async def test_with_projects_off_a_member_run_records_nothing():
+    store = _Tags({"project": "p1"})
+    judged: list[object] = []
+
+    async def judge(state):
+        judged.append(state)
+        return None
+
+    subscriber = _subscriber(store)
+    subscriber.judge = judge
+    subscriber.projects_enabled = _projects_switch(False)
+    await _feed(
+        subscriber,
+        _message("user", "Fix the test"),
+        _finish("Done. Should I also update the docs?"),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1"}
+    assert judged == []
+
+
+@pytest.mark.asyncio
+async def test_with_projects_off_a_member_stays_resolved():
+    store = _Tags({"project": "p1", "resolved": "user"})
+    subscriber = _subscriber(store)
+    subscriber.projects_enabled = _projects_switch(False)
+
+    await _feed(subscriber, _message("user", "One more thing"))
+
+    assert store.tags == {"project": "p1", "resolved": "user"}
+
+
+@pytest.mark.asyncio
+async def test_with_projects_on_a_member_is_reopened():
+    store = _Tags({"project": "p1", "resolved": "user"})
+    subscriber = _subscriber(store)
+    subscriber.projects_enabled = _projects_switch(True)
+
+    await _feed(subscriber, _message("user", "One more thing"))
+
+    assert store.tags == {"project": "p1"}
 
 
 @pytest.mark.asyncio

@@ -3208,6 +3208,7 @@ class ConversationService:
                     turn_sender_lookup=functools.partial(
                         _logged_turn_sender, event_service
                     ),
+                    projects_enabled=functools.partial(feature_enabled_now, "projects"),
                     judge=make_resolution_judge(
                         functools.partial(_agent_llm, event_service),
                         functools.partial(conversation_context, event_service),
