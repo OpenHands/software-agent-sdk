@@ -252,7 +252,13 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
             # so the request still opens with a system message (repo invariant).
             recent_events = self._events
             if len(recent_events) > self.history_limit:
-                window = recent_events[-self.history_limit :]
+                # A limit of zero (or less) means no history: `[-0:]` is the
+                # whole list, not an empty slice.
+                window = (
+                    recent_events[-self.history_limit :]
+                    if self.history_limit > 0
+                    else []
+                )
                 # Re-include the leading system prompt if the tail window dropped it.
                 if recent_events and isinstance(recent_events[0], SystemPromptEvent):
                     if not any(isinstance(e, SystemPromptEvent) for e in window):

@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
@@ -106,11 +106,12 @@ class StoredConversation(ConversationConfig):
 
     Extends :class:`ConversationConfig` (the agent-less shared config) with
     server-assigned fields. It deliberately does NOT carry the ``agent``,
-    ``confirmation_policy``, ``security_analyzer``, or ``secrets``: these are
-    init-only fields on :class:`StartConversationRequest` whose post-creation
-    source of truth is ``ConversationState`` / ``base_state.json``. Because
-    ``StoredConversation`` does not extend ``StartConversationRequest``, none of
-    these can silently appear in ``meta.json`` by construction.
+    ``confirmation_policy``, ``security_analyzer``, ``secrets`` or the
+    conversation budget (``max_budget_per_run``): these live on
+    :class:`StartConversationRequest` and their single source of truth after
+    creation is ``ConversationState`` persisted to ``base_state.json``. Because
+    ``StoredConversation`` is not a ``StartConversationRequest``, none of them
+    can silently re-appear in ``meta.json``.
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
@@ -169,6 +170,13 @@ class _ConversationInfoBase(BaseModel):
         gt=0,
         description=(
             "Maximum number of iterations the agent can perform in a single run."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description=(
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost. `None` means no budget limit."
         ),
     )
     stuck_detection: bool = Field(
@@ -319,6 +327,23 @@ class _ConversationInfoBase(BaseModel):
             "entries are opaque aliases whose human identity lives in "
             '``description`` (e.g. claude-agent-acp\'s ``"default"`` -> '
             '``"Opus 4.7 with 1M context · ..."``).'
+        ),
+    )
+    current_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort the ACP session reports for its current model "
+            "(the server's own default when none was requested). ``None`` when "
+            "the model offers no effort setting, the server doesn't report one, "
+            "or the agent is not ACP."
+        ),
+    )
+    available_efforts: list[ACPEffortOption] = Field(
+        default_factory=list,
+        description=(
+            "Reasoning-effort levels the ACP session offers for its current "
+            "model, verbatim from the server. Pass a ``value`` to "
+            "``switch_acp_effort``. Empty when the model offers none."
         ),
     )
     supports_runtime_model_switch: bool = Field(
@@ -530,6 +555,16 @@ class UpdateConversationRequest(BaseModel):
             "Key-value tags to set on the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters. "
             "Replaces all existing tags when provided."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "New hard cost ceiling in USD. Applies to the running conversation "
+            "from its next step. Omit to leave unchanged; send `null` to remove "
+            "the limit."
         ),
     )
 

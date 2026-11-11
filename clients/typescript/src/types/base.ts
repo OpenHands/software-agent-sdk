@@ -2,6 +2,8 @@
  * Base types and interfaces for the OpenHands Agent Server TypeScript client
  */
 
+import type { MetricsSnapshot } from '../generated/agent-server-schema';
+
 export type ConversationID = string;
 
 /**
@@ -129,6 +131,8 @@ export interface ConversationStats {
   message_events: number;
   action_events: number;
   observation_events: number;
+  /** Per-LLM accumulated costs in USD, updated as responses are received. */
+  usage_to_metrics?: Record<string, MetricsSnapshot>;
   [key: string]: unknown;
 }
 

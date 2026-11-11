@@ -162,7 +162,9 @@ def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> 
         ... )
         'https://x-token-auth:${TOKEN}@host/r.git'
     """
-    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url)
+    # A URL scheme is case-insensitive, and the in-text variant already matches
+    # that way; an uppercase scheme must not leak its credentials.
+    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url, re.IGNORECASE)
     if not match:
         return url
     if preserve_placeholders and "${" in match.group(2):
@@ -341,6 +343,9 @@ _API_KEY_LITERAL_RE = re.compile(
     r"|tgp_v1_[A-Za-z0-9_-]{20,}"  # Together AI
     r"|ghp_[A-Za-z0-9]{20,}"  # GitHub PAT (classic)
     r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub PAT (fine-grained)
+    r"|ghu_[A-Za-z0-9]{20,}"  # GitHub user-to-server tokens
+    r"|ghs_[A-Za-z0-9]{20,}"  # GitHub server-to-server tokens
+    r"|gho_[A-Za-z0-9]{20,}"  # GitHub OAuth tokens
     r"|sk-oh-[A-Za-z0-9_-]{10,}"  # OpenHands API keys
     r"|ctx7sk-[A-Za-z0-9_-]{10,}"  # Context7 MCP keys
     r"|cla_[A-Za-z0-9_-]{20,}"  # Claude.ai MCP tokens

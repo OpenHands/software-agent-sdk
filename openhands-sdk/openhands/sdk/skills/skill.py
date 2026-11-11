@@ -46,7 +46,7 @@ from openhands.sdk.skills.utils import (
     update_skills_repository,
     validate_skill_name,
 )
-from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
+from openhands.sdk.utils import maybe_truncate
 from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
@@ -105,6 +105,7 @@ class SkillInfo(BaseModel):
     type: Literal["repo", "knowledge", "agentskills"]
     content: str
     triggers: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -244,7 +245,7 @@ class Skill(BaseModel):
         description=(
             "A brief description of what the skill does and when to use it. "
             "Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated "
-            "with a notice pointing to the skill's source path."
+            "with a notice pointing to invoke_skill for the full skill."
         ),
     )
     license: str | None = Field(
@@ -290,10 +291,12 @@ class Skill(BaseModel):
         ),
     )
 
+    # Points at invoke_skill, never at the file: to_prompt() leaves out the
+    # skill's location on purpose so the agent loads it through the tool.
     _DESCRIPTION_TRUNCATE_NOTICE = (
         "<response clipped><NOTE>Due to the max output limit, only part of "
-        "the full description is shown. You can view the complete skill "
-        "content at {source}.</NOTE>"
+        'the full description is shown. Call invoke_skill(name="{name}") to '
+        "load the full skill.</NOTE>"
     )
 
     @field_validator("allowed_tools", mode="before")
@@ -675,8 +678,8 @@ class Skill(BaseModel):
         """Truncate description to MAX_DESCRIPTION_LENGTH via maybe_truncate.
 
         Uses a model_validator (not field_validator) so the truncation notice
-        can reference self.source, telling the agent where to find the full
-        skill content.
+        can name the skill, pointing the agent to ``invoke_skill`` for the full
+        content. It never names the file (#6644).
         """
         if (
             self.description is not None
@@ -688,9 +691,7 @@ class Skill(BaseModel):
                 len(self.description),
                 self.MAX_DESCRIPTION_LENGTH,
             )
-            notice = DEFAULT_TRUNCATE_NOTICE
-            if self.source:
-                notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(source=self.source)
+            notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(name=self.name)
             self.description = maybe_truncate(
                 self.description,
                 truncate_after=self.MAX_DESCRIPTION_LENGTH,
@@ -819,6 +820,9 @@ class Skill(BaseModel):
             type=self.get_skill_type(),
             content=self.content,
             triggers=self.get_triggers(),
+            paths=list(self.trigger.paths)
+            if isinstance(self.trigger, PathTrigger)
+            else [],
             source=self.source,
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
@@ -1125,7 +1129,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     all_skills.append(skill)
                     seen_names.add(skill.name)
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-            except (SkillError, OSError, yaml.YAMLError) as e:
+            except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load nested third-party files (e.g. server/AGENTS.md) as directory-scoped
@@ -1179,7 +1183,7 @@ PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
 # Cache value: (timestamp, skills)
 # For mutable refs (branches), timestamp is time.monotonic() at write time and
 # the entry expires after _PUBLIC_SKILLS_CACHE_TTL_SECONDS.
-# For immutable refs (tags, commit SHAs), timestamp is float("inf") so the
+# For pinned refs (tags and commit SHAs), timestamp is float("inf") so the
 # TTL check is never satisfied and the entry lives for the process lifetime.
 _PUBLIC_SKILLS_CACHE: dict[
     tuple[str, str, str | None], tuple[float, list["Skill"]]
@@ -1266,8 +1270,8 @@ def load_public_skills(
     https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs within the same process, it
     returns cached results. For branch refs it re-fetches after the cache TTL; for
-    tags and commit SHAs (immutable refs) the cache never expires so no further
-    network calls are made.
+    pinned tags and commit SHAs the cache never expires. The loader makes no
+    further network calls for those refs.
 
     When ``EXTENSIONS_PATH`` names a local copy of the default repository, such
     as an installed ``@openhands/extensions`` package, skills are read from it
@@ -1287,8 +1291,8 @@ def load_public_skills(
             OpenHands skills repository.
         ref: Branch name, tag (e.g. ``"v1.0.0"``), or full 40-character commit
             SHA to load skills from. Defaults to ``'main'``. Tags and commit
-            SHAs are treated as immutable: once loaded, the result is cached
-            for the lifetime of the process without further remote polling.
+            SHAs are pinned after loading. The result stays cached for the
+            lifetime of the process without further remote polling.
         marketplace_path: Relative path to the marketplace JSON file within the
             repository. Pass None to load all public skills without filtering.
 
@@ -1331,9 +1335,7 @@ def load_public_skills(
                 logger.warning("Failed to access public skills repository")
                 return all_skills
 
-            # Detect whether the ref is immutable (tag or commit SHA in detached
-            # HEAD). Pinned repos are cached indefinitely — no re-fetching needed.
-            is_pinned = is_skills_repo_pinned(repo_path)
+            is_pinned = is_skills_repo_pinned(repo_path, ref)
 
         # Load skills from the local repository
         skills_dir = repo_path / "skills"

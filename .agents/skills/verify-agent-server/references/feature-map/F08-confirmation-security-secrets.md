@@ -465,22 +465,20 @@ KID=$(control-agent-server api POST /api/conversations \
   ```
   Every status matches and, after a save, none of the refused names is
   stored while the earlier secrets remain.
-- **Non-string secret value (`F08.secrets-bad-value`), known bug.** The same
+- **Non-string secret value (`F08.secrets-bad-value`).** The same
   body with a string value is accepted (the control); then a number, `null`
   and `true` where a value belongs.
   ```sh
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_STRING": "qa-f08-string-value"}}' --expect 200
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_NUMBER": 5}}' \
-    --expect 422 --save F08.secrets-bad-value/number  # bug: status eq 500 && response.body.exception contains "'int' object has no attribute 'pop'"
-  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_NULL": null}}' --expect 422  # bug: status eq 500 && response.body.exception contains "'NoneType' object has no attribute 'pop'"
-  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_BOOL": true}}' --expect 422  # bug: status eq 500 && response.body.exception contains "'bool' object has no attribute 'pop'"
+    --expect 422 --check detail.0.type eq model_attributes_type --save F08.secrets-bad-value/number
+  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_NULL": null}}' --expect 422
+  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_BOOL": true}}' --expect 422
   ```
-  Expected: 422 like any other invalid body. Today each is 500
-  `"exception": "'int' object has no attribute 'pop'"` (`'NoneType'` for
-  `null`, `'bool'` for `true`): `UpdateSecretsRequest.convert_string_secrets` passes non-string,
-  non-dict values through, and `DiscriminatedUnionMixin` calls `.pop("kind")`
-  on them, an `AttributeError` that escapes request validation. Same root
-  cause as `F04.create-secrets-plain`.
+  Each is a standard 422 validation error (`model_attributes_type`) like any
+  other invalid body, never a 500.
+  `UpdateSecretsRequest.convert_string_secrets` converts only strings
+  and `{"value": ...}` dicts; other values reach `SecretSource` validation as is.
 - **Secrets in the terminal (`F08.secrets-terminal`).** The stub's command
   writes `$QA_F08_TOKEN` to a file and echoes it.
   ```sh

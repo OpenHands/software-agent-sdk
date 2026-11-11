@@ -88,7 +88,12 @@ class MetaProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_routing_mode(self) -> MetaProfile:
-        """Require either structured classes or a direct prompt, not both."""
+        """Validate direct-prompt mode: a template needs ``{{ instance_text }}``
+        and excludes classes.
+
+        A meta-profile with neither classes nor a template is accepted here so
+        persisted ones still load; ``POST /api/meta-profiles/{name}`` refuses it.
+        """
         if self.prompt_template is None:
             return self
         if re.search(r"{{\s*instance_text\s*}}", self.prompt_template) is None:

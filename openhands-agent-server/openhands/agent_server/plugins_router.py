@@ -410,11 +410,34 @@ def uninstall_plugin_endpoint(plugin_name: PluginNamePath) -> UninstallPluginRes
 @plugins_router.post(
     "/installed/{plugin_name}/refresh",
     response_model=UpdatePluginResponse,
-    responses={404: {"description": "Plugin not installed"}},
+    responses={
+        400: {"description": "Failed to fetch the plugin's recorded source"},
+        404: {"description": "Plugin not installed"},
+    },
 )
 def refresh_plugin_endpoint(plugin_name: PluginNamePath) -> UpdatePluginResponse:
-    """Refresh an installed plugin to the latest version from its source."""
-    info = service_update_plugin(name=plugin_name)
+    """Refresh an installed plugin to the latest version from its source.
+
+    A failed refresh leaves the installed copy unchanged.
+    """
+    try:
+        info = service_update_plugin(name=plugin_name)
+    except (PluginFetchError, ExtensionFetchError):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Failed to fetch the source of plugin '{plugin_name}'. "
+                "The installed copy was kept."
+            ),
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The source of plugin '{plugin_name}' no longer holds a valid "
+                "plugin. The installed copy was kept."
+            ),
+        )
     if info is None:
         raise HTTPException(
             status_code=404,

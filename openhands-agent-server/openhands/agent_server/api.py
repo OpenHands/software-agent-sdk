@@ -3,9 +3,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import traceback
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
 from importlib.metadata import version
 from pathlib import Path
@@ -17,7 +19,10 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 from starlette.requests import Request
+from starlette.types import ASGIApp
 
 from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
@@ -50,8 +55,8 @@ from openhands.agent_server.conversation_router import (
     conversation_router,
 )
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
-    get_default_conversation_service,
 )
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
@@ -61,6 +66,9 @@ from openhands.agent_server.dependencies import (
     check_workspace_session,
 )
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.experimental_features_router import (
+    experimental_features_router,
+)
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -78,6 +86,7 @@ from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
+from openhands.agent_server.persistence import reencrypt_stale_stores
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
@@ -120,6 +129,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SOCKET_NAME,
     TMUX_SOCKET_OWNER_OPTION,
 )
+from openhands.tools.terminal.env import UTF8_FALLBACK_LOCALE, ensure_utf8_locale
 from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
@@ -260,6 +270,38 @@ def _cleanup_stale_tmux_sessions() -> None:
         _reclaim_stale_tmux_sockets(socket_dir)
 
 
+TRACE_FLUSH_TIMEOUT_MILLIS = 5000
+
+
+async def _flush_trace_export() -> None:
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        return
+    outcome: Future[bool] = Future()
+    outcome.set_running_or_notify_cancel()
+
+    def flush() -> None:
+        try:
+            outcome.set_result(provider.force_flush(TRACE_FLUSH_TIMEOUT_MILLIS))
+        except Exception as exc:
+            outcome.set_exception(exc)
+
+    threading.Thread(target=flush, name="shutdown-trace-flush", daemon=True).start()
+    try:
+        flushed = await asyncio.wait_for(
+            asyncio.wrap_future(outcome), TRACE_FLUSH_TIMEOUT_MILLIS / 1000
+        )
+    except TimeoutError:
+        flushed = False
+    except Exception:
+        logger.warning("Shutdown trace flush failed", exc_info=True)
+        return
+    if not flushed:
+        logger.warning(
+            "Shutdown trace flush timed out after %d ms", TRACE_FLUSH_TIMEOUT_MILLIS
+        )
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
@@ -267,6 +309,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
         _ensure_server_tmux_tmpdir()
     )
+    # Stale-session cleanup below queries tmux before any terminal exists.
+    locale_override = ensure_utf8_locale() if os.name == "posix" else None
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
@@ -375,11 +419,14 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
+        await asyncio.to_thread(reencrypt_stale_stores, config)
         #
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.
         export_session_api_key(config)
-        service = get_default_conversation_service()
+        # Not get_default_conversation_service(): it rebuilds config from OH_*
+        # env, ignoring the config passed to create_app().
+        service = ConversationService.get_instance(config)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
@@ -431,6 +478,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             await backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
+        await _flush_trace_export()
 
         if tmux_tmpdir_was_defaulted:
             if os.environ.get("TMUX_TMPDIR") == str(tmux_tmpdir):
@@ -438,6 +486,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     os.environ.pop("TMUX_TMPDIR", None)
                 else:
                     os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if locale_override is not None:
+            locale_name, original_locale = locale_override
+            if os.environ.get(locale_name) == UTF8_FALLBACK_LOCALE:
+                if original_locale is None:
+                    os.environ.pop(locale_name, None)
+                else:
+                    os.environ[locale_name] = original_locale
         if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
             if original_session_api_key is None:
                 os.environ.pop(V1_SESSION_API_KEY_ENV, None)
@@ -514,13 +569,25 @@ def _get_root_path(config: Config) -> str:
     return root_path
 
 
+class AgentServerApp(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # ServerErrorMiddleware creates unhandled 500 responses outside user
+        # middleware, so CORS must wrap the complete stack to decorate them.
+        config = self.state.config
+        return CORSDispatcher(
+            super().build_middleware_stack(),
+            allow_origins=config.allow_cors_origins,
+            allow_origin_regex=config.allow_cors_origin_regex,
+        )
+
+
 def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
         Basic FastAPI application with title, description, and lifespan.
     """
-    return FastAPI(
+    return AgentServerApp(
         title="OpenHands Agent Server",
         version=version("openhands-agent-server"),
         description=(
@@ -599,6 +666,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(acp_router)
     api_router.include_router(provider_connections_router)
     api_router.include_router(mcp_router)
+    api_router.include_router(experimental_features_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
@@ -863,10 +931,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
             return JSONResponse(
                 status_code=exc.status_code,
                 content=content,
+                headers=exc.headers,
             )
 
-        # Return clean JSON response for all non-5xx HTTP exceptions
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
+        # exception's headers (e.g. Retry-After, WWW-Authenticate).
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
 
 def create_app(config: Config | None = None) -> FastAPI:
@@ -888,11 +962,15 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app)
     _setup_static_files(app, config)
-    app.add_middleware(
-        CORSDispatcher,
-        allow_origins=config.allow_cors_origins,
-        allow_origin_regex=config.allow_cors_origin_regex,
-    )
+    if config.conversation_runtime_selectable:
+        from openhands.agent_server.docker_runtime.hybrid import (
+            RuntimeDispatchMiddleware,
+        )
+
+        app.add_middleware(RuntimeDispatchMiddleware)
+    # CORS is not added as user middleware here: AgentServerApp wraps the
+    # complete stack (including ServerErrorMiddleware) in CORSDispatcher so
+    # unhandled 500 responses also carry CORS headers.
     _add_exception_handlers(app)
 
     return app

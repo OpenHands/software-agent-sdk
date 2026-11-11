@@ -23,6 +23,7 @@ from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionStore,
 )
 from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
@@ -1757,6 +1758,69 @@ def test_patch_provider_connection_rejects_clearing_api_key(client):
     assert client.get("/api/profiles/linked").json()["api_key_set"] is True
 
 
+@pytest.mark.parametrize("unusable_key", ["", "   ", REDACTED_SECRET_VALUE])
+def test_create_provider_connection_rejects_unusable_api_key(client, unusable_key):
+    """POST refuses a blank or redacted key instead of storing a keyless one."""
+    response = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Blank", "api_key": unusable_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "api_key"
+    assert client.get("/api/llm/provider-connections").json() == []
+
+    created = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Valid", "api_key": "sk-valid"},
+    )
+    assert created.status_code == 201
+    assert created.json()["api_key_set"] is True
+
+
+@pytest.mark.parametrize("unusable_key", ["", "   ", REDACTED_SECRET_VALUE])
+def test_patch_provider_connection_rejects_unusable_api_key(client, unusable_key):
+    """PATCH refuses a blank or redacted key and keeps the stored one."""
+    created = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Anthropic", "api_key": "sk-ant-old"},
+    ).json()
+    connection_id = created["id"]
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": unusable_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "api_key"
+    [stored] = client.get("/api/llm/provider-connections").json()
+    assert stored == created
+
+    assert client.post("/api/profiles/linked/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["api_key_set"] is True
+
+
 def test_get_profile_maps_corrupted_provider_file(client, temp_profiles_dir):
     """A corrupted provider file yields a mapped 4xx, not an unhandled 500.
 
@@ -2402,3 +2466,70 @@ def test_validate_profile_subscription_missing_credentials(client):
     body = response.json()
     assert body["valid"] is False
     assert "subscription login" in body["error"]["message"].lower()
+
+
+def test_validate_profile_resolves_provider_connection(client):
+    """A draft linked to a provider connection is checked with its credentials.
+
+    Regression for #5644: the pre-flight sent the posted LLM as is, so a
+    linked draft without an inline key was checked keyless and reported
+    ``valid=False`` even though activating it would run on the connection's
+    key.
+    """
+    from unittest.mock import MagicMock
+
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-conn",
+            "base_url": "https://conn.example.com",
+        },
+    ).json()["id"]
+
+    captured: dict = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        captured["api_key"] = self._get_litellm_api_key_value()
+        captured["base_url"] = self.base_url
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", fake_acompletion),
+    ):
+        response = client.post(
+            "/api/profiles/draft/validate",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": connection_id,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "error": None}
+    assert captured == {
+        "api_key": "sk-ant-conn",
+        "base_url": "https://conn.example.com",
+    }
+
+
+def test_validate_profile_with_dangling_provider_connection_returns_422(client):
+    """A draft linked to a missing connection names it, like activation does."""
+    with patch("openhands.sdk.llm.llm.LLM.acompletion") as acompletion:
+        response = client.post(
+            "/api/profiles/draft/validate",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": "missing-connection",
+                }
+            },
+        )
+
+    assert response.status_code == 422
+    assert "missing-connection" in response.json()["detail"]
+    acompletion.assert_not_called()

@@ -1,5 +1,6 @@
 """Tests for basic file editor operations."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -509,6 +510,19 @@ def test_str_replace_error_multiple_multiline_occurrences(editor):
     assert "[1, 7]" in error_msg  # Should show correct starting line numbers
 
 
+def test_str_replace_rejects_overlapping_occurrences(editor, tmp_path):
+    editor, _ = editor
+    # "aa" occurs at offsets 0 and 1 of "aaa", so it does not identify a single
+    # location and the replacement must be refused.
+    path = tmp_path / "overlap.txt"
+    path.write_text("aaa\n")
+
+    with pytest.raises(ToolError, match="Multiple occurrences"):
+        editor(command="str_replace", path=str(path), old_str="aa", new_str="b")
+
+    assert path.read_text() == "aaa\n"
+
+
 def test_str_replace_nonexistent_string(editor):
     editor, test_file = editor
     with pytest.raises(ToolError) as exc_info:
@@ -522,6 +536,19 @@ def test_str_replace_nonexistent_string(editor):
     assert f"old_str `Non-existent Line` did not appear verbatim in {test_file}" in str(
         exc_info.value.message
     )
+
+
+def test_str_replace_through_symlink_edits_target(editor, tmp_path):
+    editor, _ = editor
+    target = tmp_path / "target.txt"
+    target.write_text("hello\n")
+    link = tmp_path / "link.txt"
+    symlink_or_skip(target, link)
+
+    editor(command="str_replace", path=str(link), old_str="hello", new_str="bye")
+
+    assert link.is_symlink()
+    assert target.read_text() == "bye\n"
 
 
 def test_str_replace_with_empty_new_str(editor):
@@ -609,6 +636,17 @@ def test_insert_with_empty_string(editor):
     content = test_file.read_text().splitlines()
     assert "" in content
     assert len(content) == 3  # Original 2 lines plus empty line
+
+
+def test_insert_after_last_line_without_trailing_newline(editor, tmp_path):
+    editor, _ = editor
+    path = tmp_path / "no_eol.txt"
+    path.write_text("a\nb")
+
+    editor(command="insert", path=str(path), insert_line=2, new_str="x")
+
+    lines = path.read_text().splitlines()
+    assert lines == ["a", "b", "x"]
 
 
 def test_insert_chinese_text_into_english_file(editor):
@@ -958,3 +996,15 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         new_str="Inserted line at 500",
     )
     assert "   500\tInserted line at 500" in result.text
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="text-mode writes emit CRLF natively on Windows"
+)
+def test_str_replace_preserves_crlf_line_endings(tmp_path):
+    path = tmp_path / "crlf.txt"
+    path.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    FileEditor()(command="str_replace", path=str(path), old_str="two", new_str="TWO")
+
+    assert path.read_bytes() == b"one\r\nTWO\r\nthree\r\n"

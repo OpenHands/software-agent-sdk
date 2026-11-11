@@ -5,12 +5,15 @@ Background: https://github.com/OpenHands/software-agent-sdk/issues/2523
 
 from __future__ import annotations
 
+import io
 import os
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import Request, Response, status
@@ -143,6 +146,19 @@ class TestBuildInitializedConfig:
         )
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "s1"
+
+    def test_previous_secret_keys_reach_the_cipher(self):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base,
+            InitRequest(
+                session_api_keys=["new-session-key"],
+                previous_secret_keys=[SecretStr("old-session-key")],
+            ),
+        )
+        assert merged.cipher is not None
+        assert merged.cipher.secret_key == "new-session-key"
+        assert merged.cipher.previous_keys == ("old-session-key",)
 
     def test_explicit_secret_key_wins(self):
         base = Config(deferred_init=True)
@@ -883,6 +899,65 @@ class TestEndToEndOverLifespan:
                     ).status_code
                     == 200
                 )
+            finally:
+                _reset_conversation_singleton()
+
+    def test_download_trajectory_uses_init_conversations_path(self, tmp_path):
+        """Both trajectory routes serve conversations stored under the
+        ``conversations_path`` delivered by /api/init, not the launch path."""
+        _reset_conversation_singleton()
+        init_convs = tmp_path / "u" / "convs"
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(init_convs),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                resp = client.post(
+                    "/api/conversations",
+                    json={
+                        "agent": {
+                            "kind": "Agent",
+                            "llm": {"model": "test", "api_key": "sk-init-path"},
+                            "tools": [],
+                        },
+                        "workspace": {"working_dir": str(workspace)},
+                    },
+                )
+                assert resp.status_code in (200, 201), resp.text
+                conversation_id = UUID(resp.json()["id"])
+                assert (init_convs / conversation_id.hex / "base_state.json").exists()
+
+                for route in (
+                    f"/api/file/download-trajectory/{conversation_id}",
+                    f"/api/conversations/{conversation_id}"
+                    f"/file/download-trajectory/{conversation_id}",
+                ):
+                    resp = client.get(route)
+                    assert resp.status_code == 200, (route, resp.text)
+                    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+                        names = archive.namelist()
+                        blob = b"".join(archive.read(n) for n in names)
+                    assert f"{conversation_id.hex}/base_state.json" in names
+                    assert b"sk-init-path" not in blob
+                    assert not list(init_convs.glob("*.zip"))
+
+                missing = uuid4()
+                resp = client.get(f"/api/file/download-trajectory/{missing}")
+                assert resp.status_code == 404
+                assert resp.json()["detail"] == "Conversation not found"
             finally:
                 _reset_conversation_singleton()
 

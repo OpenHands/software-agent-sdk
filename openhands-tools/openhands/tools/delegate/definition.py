@@ -1,8 +1,8 @@
 """Delegate action and observation models for OpenHands agents."""
 
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from openhands.sdk.tool.tool import (
     Action,
@@ -14,7 +14,14 @@ CommandLiteral = Literal["spawn", "delegate"]
 
 
 class DelegateAction(Action):
-    """Schema for delegation operations."""
+    """Legacy delegation action, deprecated since v1.60.0.
+
+    Use TaskAction for new tasks. Retained to read stored events.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        json_schema_extra={"deprecated": True}
+    )
 
     command: CommandLiteral = Field(
         description="The commands to run. Allowed options are: `spawn`, `delegate`."
@@ -42,6 +49,13 @@ class DelegateAction(Action):
 
 
 class DelegateObservation(Observation):
-    """Observation from delegation operations."""
+    """Legacy delegation observation, deprecated since v1.60.0.
+
+    Use TaskObservation for new tasks. Retained to read stored events.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        json_schema_extra={"deprecated": True}
+    )
 
     command: CommandLiteral = Field(description="The command that was executed")

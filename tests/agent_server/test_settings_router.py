@@ -22,6 +22,8 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import _deep_merge
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -125,7 +127,7 @@ def test_get_conversation_settings_schema():
     assert body["model_name"] == "ConversationSettings"
 
     section_keys = [section["key"] for section in body["sections"]]
-    assert section_keys == ["general", "verification"]
+    assert section_keys == ["general", "verification", "runtime"]
 
     verification_section = next(
         section for section in body["sections"] if section["key"] == "verification"
@@ -261,6 +263,13 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
         "max_iterations": 42,
         "confirmation_mode": True,
         "security_analyzer": "llm",
+        "default_runtime": "local",
+        "worktree_base_ref": None,
+        "worktree_branch_prefix": "openhands/",
+        "worktree_base": "default_branch",
+        "container_memory": None,
+        "container_cpus": None,
+        "container_browser": True,
     }
 
     patch_response = client_with_settings.patch(
@@ -387,6 +396,7 @@ def test_get_settings_without_header_redacts_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -408,6 +418,7 @@ def test_get_settings_with_plaintext_header_exposes_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -430,6 +441,7 @@ def test_get_settings_with_encrypted_header_encrypts_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -579,6 +591,7 @@ def test_get_settings_with_true_header_treats_as_encrypted(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -670,8 +683,10 @@ def test_patch_settings_rejects_invalid_active_profile(client_with_settings):
 def test_patch_settings_active_agent_profile_id_independent(client_with_settings):
     """active_agent_profile_id sets/clears independently of active_profile."""
     get_llm_profile_store().save("fast-profile", LLM(model="gpt-4o-mini"))
+    profile = OpenHandsAgentProfile(name="mine", llm_profile_ref="fast-profile")
+    get_agent_profile_store().save(profile)
 
-    agent_id = "12345678-1234-1234-1234-1234567890ab"
+    agent_id = str(profile.id)
     set_response = client_with_settings.patch(
         "/api/settings",
         json={"active_profile": "fast-profile", "active_agent_profile_id": agent_id},
@@ -847,6 +862,58 @@ def test_patch_settings_rejects_malformed_active_agent_profile_id(client_with_se
         json={"active_agent_profile_id": "not-a-uuid"},
     )
     assert response.status_code == 422
+
+
+def test_patch_settings_rejects_unknown_active_agent_profile_id(
+    client_with_settings,
+):
+    """An id that names no stored agent profile is 404, like /activate (#5847)."""
+    unknown = "00000000-0000-4000-8000-0000000000f1"
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_agent_profile_id": unknown}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == (f"Agent profile with id '{unknown}' not found")
+    assert (
+        client_with_settings.get("/api/settings").json()["active_agent_profile_id"]
+        is None
+    )
+
+
+def test_patch_settings_active_meta_profile_must_exist(
+    client_with_settings, temp_persistence_dir
+):
+    """An unknown meta-profile is 404 and enables nothing; a stored one is
+    accepted and null clears it (#5847)."""
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_meta_profile": "no-router"}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Meta-profile 'no-router' not found"
+    body = client_with_settings.get("/api/settings").json()
+    assert body["active_meta_profile"] is None
+    assert body["agent_settings"]["enable_classify_and_switch_llm_tool"] is False
+
+    MetaProfileStore(base_dir=Path(temp_persistence_dir) / "meta-profiles").save(
+        "router",
+        MetaProfile.model_validate(
+            {
+                "classifier_model": "minimax",
+                "classes": [{"description": "UI", "model": "deepseek"}],
+            }
+        ),
+    )
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_meta_profile": "router"}
+    )
+    assert response.status_code == 200
+    assert response.json()["active_meta_profile"] == "router"
+
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_meta_profile": None}
+    )
+    assert response.status_code == 200
+    assert response.json()["active_meta_profile"] is None
 
 
 def test_existing_settings_load_with_null_active_agent_profile_id(
@@ -1117,6 +1184,39 @@ def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_setting
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()["agent_settings"]["mcp_config"]
     assert plaintext["github"]["url"] == "https://github.example/mcp"
+
+
+def test_mcp_server_create_rejects_server_without_command_or_url(
+    client_with_settings,
+):
+    for body in ({}, {"enabled": True}, {"description": "No endpoint"}):
+        response = client_with_settings.post("/api/settings/mcp/qa-empty", json=body)
+        assert response.status_code == 422, response.text
+        assert "require 'command' or 'url'" in response.text
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert "qa-empty" not in mcp_config
+
+
+def test_mcp_server_patch_rejects_removing_command_from_untyped_server(
+    client_with_settings,
+):
+    created = client_with_settings.post(
+        "/api/settings/mcp/local", json={"command": "uvx", "args": ["fetch"]}
+    )
+    assert created.status_code == 201, created.text
+
+    patched = client_with_settings.patch(
+        "/api/settings/mcp/local", json={"command": None}
+    )
+    assert patched.status_code == 422, patched.text
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert mcp_config["local"]["command"] == "uvx"
 
 
 def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
@@ -1403,6 +1503,7 @@ def test_update_agent_settings_same_kind_merge() -> None:
     """Same-kind update deep-merges within the variant."""
     settings = PersistedSettings()
     settings.update({"agent_settings_diff": {"llm": {"model": "gpt-4o"}}})
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert settings.agent_settings.llm.model == "gpt-4o"
 
 
@@ -1467,6 +1568,7 @@ def test_update_agent_settings_secret_survives_same_kind_merge() -> None:
 
     settings.update({"agent_settings_diff": {"llm": {"temperature": 0.5}}})
 
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert isinstance(settings.agent_settings.llm.api_key, SecretStr)
     assert settings.agent_settings.llm.api_key.get_secret_value() == "sk-SECRET"
 
@@ -1592,6 +1694,165 @@ def test_patch_settings_switch_agent_kind_from_openhands_to_acp(client_with_sett
     body = response.json()
     assert body["agent_settings"]["agent_kind"] == "acp"
     assert body["agent_settings"]["acp_command"] == ["echo", "hello"]
+
+
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_mcp_catalog(
+    client_with_settings, seed, switch
+):
+    server = {
+        "transport": "http",
+        "url": "https://example.invalid/mcp",
+        "headers": {"X-Api-Key": "mcp-key"},
+        "auth": {"strategy": "bearer", "value": "mcp-token"},
+    }
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {**seed, "mcp_config": {"example": server}}},
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
+    )
+
+    assert switched.status_code == 200
+    assert switched.json()["agent_settings"]["agent_kind"] == switch["agent_kind"]
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    example = persisted["mcp_config"]["example"]
+    assert example["url"] == server["url"]
+    assert example["headers"] == server["headers"]
+    assert example["auth"] == server["auth"]
+
+
+@pytest.mark.parametrize(
+    ("mcp_patch", "expected_servers", "keep_enabled"),
+    [
+        ({"other": None}, {"keep"}, True),
+        ({"keep": {"enabled": False}}, {"keep", "other"}, False),
+        (
+            {"new": {"transport": "http", "url": "https://new.invalid/mcp"}},
+            {"keep", "other", "new"},
+            True,
+        ),
+        (None, set(), None),
+    ],
+    ids=["delete-server", "sparse-server-patch", "add-server", "delete-catalog"],
+)
+def test_patch_settings_kind_switch_applies_mcp_patch(
+    client_with_settings, mcp_patch, expected_servers, keep_enabled
+):
+    def server(name):
+        return {"transport": "http", "url": f"https://{name}.invalid/mcp"}
+
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "mcp_config": {"keep": server("keep"), "other": server("other")}
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "mcp_config": mcp_patch,
+            }
+        },
+    )
+
+    assert switched.status_code == 200
+    agent_settings = switched.json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "acp"
+    assert set(agent_settings["mcp_config"]) == expected_servers
+    if keep_enabled is not None:
+        keep = agent_settings["mcp_config"]["keep"]
+        assert keep["enabled"] is keep_enabled
+        assert keep["url"] == "https://keep.invalid/mcp"
+
+
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_server_wide_settings(
+    client_with_settings, temp_persistence_dir, seed, switch
+):
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                **seed,
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
+    )
+
+    assert switched.status_code == 200
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    assert persisted["agent_context"]["load_memory"] is True
+    assert persisted["verification"]["critic_api_key"] == "critic-key"
+    assert "critic-key" not in (temp_persistence_dir / "settings.json").read_text()
+
+
+def test_patch_settings_stores_critic_key_on_acp_settings(
+    client_with_settings, temp_persistence_dir
+):
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert switched.status_code == 200
+
+    saved = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"verification": {"critic_api_key": "typed-key"}}},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["agent_settings"]["verification"]["critic_api_key"] == (
+        "**********"
+    )
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == "acp"
+    assert persisted["verification"]["critic_api_key"] == "typed-key"
+    assert "typed-key" not in (temp_persistence_dir / "settings.json").read_text()
 
 
 def test_patch_settings_same_kind_restated_still_deep_merges(client_with_settings):
@@ -1734,7 +1995,12 @@ def test_secret_upsert_rejects_unusable_value_without_changing_existing(
     assert stored.status_code == 200
     assert stored.text == "original-value"
     assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
-        {"name": "MY_SECRET", "description": "Original"}
+        {
+            "name": "MY_SECRET",
+            "description": "Original",
+            "scope": None,
+            "scope_description": None,
+        }
     ]
 
 
@@ -1945,7 +2211,12 @@ def test_secret_upsert_updates_existing(client_with_settings):
     assert get_response.status_code == 200
     assert get_response.text == "updated-value"
     assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
-        {"name": "MY_SECRET", "description": "Updated"}
+        {
+            "name": "MY_SECRET",
+            "description": "Updated",
+            "scope": None,
+            "scope_description": None,
+        }
     ]
 
 
@@ -2058,6 +2329,7 @@ def test_get_settings_encrypted_mode_without_cipher_returns_503(temp_persistence
     # Note: Without cipher, we need to manually create a settings file
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=None)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 

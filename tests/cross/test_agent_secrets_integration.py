@@ -25,16 +25,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# -----------------------
-# Fixtures
-# -----------------------
-
-
-# SecretSource subclasses live at module level: the discriminated-union lookup
-# rejects classes defined inside functions, and a registered local class
-# breaks SecretSource validation for every later test in the process.
-
-
 class MySecretSource(SecretSource):
     def get_value(self):
         return "dynamic-token-123"
@@ -66,9 +56,13 @@ class MyChangingFailingDynamicSecretSource(SecretSource):
         self.counter += 1
         if self.counter == 1:
             return f"changing-secret-{self.counter}"
-        else:
-            self.raised_on_second = True
-            raise Exception("Blip occured, failed to refresh token")
+        self.raised_on_second = True
+        raise Exception("Blip occured, failed to refresh token")
+
+
+# -----------------------
+# Fixtures
+# -----------------------
 
 
 @pytest.fixture

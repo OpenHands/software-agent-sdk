@@ -57,8 +57,11 @@ from openhands.sdk.profiles import (
     save_profile_preserving_identity,
     validate_agent_profile,
 )
-from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.profiles.agent_profile_store import (
+    PROFILE_NAME_PATTERN,
+    canonical_profile_name,
+)
+from openhands.sdk.settings.model import apply_agent_settings_diff
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -321,6 +324,7 @@ def active_agent_profile(
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     """Return the stable id of the profile stored under ``name``, if present."""
+    name = canonical_profile_name(name)
     with store_errors():
         for summary in store.list_summaries():
             if summary.get("name") == name:
@@ -330,7 +334,7 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
 
 
 @agent_profiles_router.get("", response_model=AgentProfileListResponse)
-async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
+def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     """List all stored agent profiles and the active pointer.
 
     Some profile is always active: with no valid pointer, ``default`` is
@@ -354,7 +358,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
 
 
 @agent_profiles_router.get("/{name}", response_model=AgentProfileDetailResponse)
-async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
+def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     """Get a stored profile.
 
     A profile is secret-free at rest (#4017), so there is nothing to mask or
@@ -403,7 +407,7 @@ def _validate_profile_payload(
     response_model=AgentProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_agent_profile(
+def save_agent_profile(
     name: ProfileName, body: dict[str, Any]
 ) -> AgentProfileMutationResponse:
     """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
@@ -442,7 +446,7 @@ async def save_agent_profile(
 
 
 @agent_profiles_router.delete("/{name}", response_model=AgentProfileMutationResponse)
-async def delete_agent_profile(
+def delete_agent_profile(
     request: Request, name: ProfileName
 ) -> AgentProfileMutationResponse:
     """Delete a stored profile (idempotent).
@@ -451,8 +455,7 @@ async def delete_agent_profile(
     reseeded from the settings when it was the one deleted. If
     ``agent_settings`` is itself left on a non-OpenHands variant, it is first
     reset to default OpenHands agent settings so stale ACP configuration does
-    not outlive the profile it came from; the server-wide ``mcp_config`` is
-    carried over.
+    not outlive the profile it came from; server-wide settings are carried over.
     """
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
@@ -470,15 +473,10 @@ async def delete_agent_profile(
                 s: PersistedSettings,
             ) -> PersistedSettings:
                 s.active_agent_profile_id = None
-                # Stale non-OpenHands settings outlive their profile. Reset to
-                # a fresh OpenHands base rather than merging across the variant
-                # boundary (see _apply_agent_settings_diff), except for
-                # ``mcp_config``: it is the server-wide MCP registry every other
-                # profile resolves ``mcp_server_refs`` against, not ACP state.
                 prior_kind = s.agent_settings.agent_kind
                 if prior_kind != "openhands":
-                    s.agent_settings = OpenHandsAgentSettings(
-                        mcp_config=s.agent_settings.mcp_config
+                    s.agent_settings = apply_agent_settings_diff(
+                        s.agent_settings, {"agent_kind": "openhands"}
                     )
                     logger.info(
                         f"Reset agent_settings to default "
@@ -499,7 +497,7 @@ async def delete_agent_profile(
 @agent_profiles_router.post(
     "/{name}/rename", response_model=AgentProfileMutationResponse
 )
-async def rename_agent_profile(
+def rename_agent_profile(
     name: ProfileName, body: RenameAgentProfileRequest
 ) -> AgentProfileMutationResponse:
     """Rename a stored profile atomically.
@@ -534,7 +532,7 @@ async def rename_agent_profile(
 @agent_profiles_router.post(
     "/{profile_id}/activate", response_model=ActivateAgentProfileResponse
 )
-async def activate_agent_profile(
+def activate_agent_profile(
     request: Request, profile_id: ProfileId
 ) -> ActivateAgentProfileResponse:
     """Activate a profile by its stable ``id`` — pointer only.
@@ -606,7 +604,8 @@ async def materialize_agent_profile(
         store = get_agent_profile_store()
         try:
             with store_errors():
-                profile = store.load(name)
+                # Off the event loop: the store lock wait blocks (up to 30 s).
+                profile = await asyncio.to_thread(store.load, name)
         except FileNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

@@ -25,7 +25,7 @@ from openhands.sdk.event.resume_transcript import (
 from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.token import TokenEvent
-from openhands.sdk.event.types import EventID, ToolCallID
+from openhands.sdk.event.types import EventID, ToolCallID, UnmaskedID
 from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
 
 
@@ -54,6 +54,7 @@ __all__ = [
     "LLMCompletionLogEvent",
     "EventID",
     "ToolCallID",
+    "UnmaskedID",
     "RESUME_CONTEXT_MARKER",
     "render_resume_transcript",
 ]

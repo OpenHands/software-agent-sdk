@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
 
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.persistence import (
@@ -36,6 +36,23 @@ MetaProfileName = Annotated[
     str,
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
+
+
+def _require_route(meta_profile: MetaProfile) -> MetaProfile:
+    """Refuse a meta-profile that has nothing to route to.
+
+    Checked on save only, not in ``MetaProfile`` itself, so meta-profiles
+    already persisted without classes or a template (store files, the inline
+    copy in ``settings.json``, conversation tool params) still load.
+    """
+    if not meta_profile.classes and meta_profile.prompt_template is None:
+        raise ValueError(
+            "A meta-profile needs either classes or a prompt_template to route."
+        )
+    return meta_profile
+
+
+RoutableMetaProfile = Annotated[MetaProfile, AfterValidator(_require_route)]
 
 
 def _get_meta_profile_store() -> MetaProfileStore:
@@ -71,6 +88,10 @@ class MetaProfileMutationResponse(BaseModel):
 class ActivateMetaProfileResponse(BaseModel):
     name: str
     message: str
+    applied: bool = True
+    """False when the current agent settings cannot attach the routing tool
+    (e.g. ACP), so nothing was activated (mirrors ``llm_applied`` on LLM-profile
+    activation)."""
 
 
 @contextmanager
@@ -121,7 +142,7 @@ def _set_active_meta_profile_if_matches(
 
 
 @meta_profiles_router.get("", response_model=MetaProfileListResponse)
-async def list_meta_profiles(request: Request) -> MetaProfileListResponse:
+def list_meta_profiles(request: Request) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
     config = get_config(request)
     settings_store = get_settings_store(config)
@@ -138,7 +159,7 @@ async def list_meta_profiles(request: Request) -> MetaProfileListResponse:
 
 
 @meta_profiles_router.get("/{name}", response_model=MetaProfileDetailResponse)
-async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
+def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     """Get a meta-profile's full configuration."""
     store = _get_meta_profile_store()
     try:
@@ -158,9 +179,9 @@ async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     response_model=MetaProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_meta_profile(
+def save_meta_profile(
     name: MetaProfileName,
-    body: MetaProfile,
+    body: RoutableMetaProfile,
 ) -> MetaProfileMutationResponse:
     """Save (create or overwrite) a meta-profile.
 
@@ -187,7 +208,7 @@ async def save_meta_profile(
 
 
 @meta_profiles_router.delete("/{name}", response_model=MetaProfileMutationResponse)
-async def delete_meta_profile(
+def delete_meta_profile(
     request: Request, name: MetaProfileName
 ) -> MetaProfileMutationResponse:
     """Delete a meta-profile (idempotent).
@@ -209,7 +230,7 @@ async def delete_meta_profile(
 @meta_profiles_router.post(
     "/{name}/activate", response_model=ActivateMetaProfileResponse
 )
-async def activate_meta_profile(
+def activate_meta_profile(
     request: Request, name: MetaProfileName
 ) -> ActivateMetaProfileResponse:
     """Activate a meta-profile by recording it as ``active_meta_profile``.
@@ -217,7 +238,9 @@ async def activate_meta_profile(
     Unlike LLM profiles, activating a meta-profile does not mutate the agent's
     LLM config — it only records which meta-profile the
     ``route_task_to_model`` tool should route with. Returns 404 if the
-    meta-profile does not exist.
+    meta-profile does not exist. On agent settings that cannot attach the
+    routing tool (e.g. ACP) nothing is recorded and the response has
+    ``applied: false``.
     """
     # Verify the meta-profile exists (and is valid) before activating.
     store = _get_meta_profile_store()
@@ -232,8 +255,10 @@ async def activate_meta_profile(
 
     config = get_config(request)
     settings_store = get_settings_store(config)
+    applied = False
 
     def apply_active(settings: PersistedSettings) -> PersistedSettings:
+        nonlocal applied
         # Route through PersistedSettings.update() so activation also wires
         # agent_settings (active_meta_profile + enable_classify_and_switch_llm_tool),
         # which is what actually attaches the routing tool. A direct field
@@ -246,6 +271,8 @@ async def activate_meta_profile(
                 },
             }
         )
+        # ``update()`` drops the pointer when the agent cannot route (ACP).
+        applied = settings.active_meta_profile == name
         return settings
 
     try:
@@ -253,7 +280,23 @@ async def activate_meta_profile(
     except (OSError, PermissionError):
         logger.error("Failed to activate meta-profile - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to activate meta-profile")
+    except RuntimeError as e:
+        logger.error(f"Failed to activate meta-profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settings file is corrupted or encrypted with a different key",
+        )
 
+    if not applied:
+        logger.info(f"Meta-profile '{name}' not activated: agent cannot route")
+        return ActivateMetaProfileResponse(
+            name=name,
+            message=(
+                f"Meta-profile '{name}' not activated: the current agent "
+                "settings cannot route between models"
+            ),
+            applied=False,
+        )
     logger.info(f"Activated meta-profile '{name}'")
     return ActivateMetaProfileResponse(
         name=name, message=f"Meta-profile '{name}' activated"

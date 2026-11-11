@@ -1,5 +1,6 @@
 """Tests for Conversation.fork() primitive."""
 
+import json
 import tempfile
 import threading
 import uuid
@@ -159,9 +160,18 @@ def test_fork_execution_status_is_idle():
 def test_fork_resets_metrics_by_default():
     """By default, metrics on the fork should be fresh (empty)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
+        src.max_budget_per_run = 3.0
         fork = src.fork()
 
+        assert fork.max_budget_per_run == 3.0
+        saved = json.loads(Path(tmpdir, fork.id.hex, "base_state.json").read_text())
+        assert saved["max_budget_per_run"] == 3.0
         combined = fork.state.stats.get_combined_metrics()
         assert combined.accumulated_cost == 0
 
@@ -169,7 +179,12 @@ def test_fork_resets_metrics_by_default():
 def test_fork_preserves_metrics_when_requested():
     """When reset_metrics=False the fork should carry over stats."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
         # Inject a non-zero metric
         from openhands.sdk.llm.utils.metrics import Metrics
 
@@ -179,6 +194,7 @@ def test_fork_preserves_metrics_when_requested():
 
         fork = src.fork(reset_metrics=False)
 
+        assert fork.max_budget_per_run == 2.0
         combined = fork.state.stats.get_combined_metrics()
         assert combined.accumulated_cost == pytest.approx(1.5)
 
@@ -227,12 +243,11 @@ def test_fork_with_tags():
 
 
 @pytest.mark.parametrize("tags", [{}, {"purpose": "debugging"}, {"title": "user tag"}])
-def test_fork_with_title_is_deprecated(tags: dict[str, str]):
-    """Passing title is accepted for compat but warns and does not pollute tags."""
+def test_fork_with_title_is_ignored(tags: dict[str, str]):
+    """Passing title is accepted for signature compat but does not pollute tags."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        with pytest.warns(DeprecationWarning, match="title parameter is deprecated"):
-            fork = src.fork(title="My Fork", tags=tags)
+        fork = src.fork(title="My Fork", tags=tags)
 
         assert dict(fork.state.tags) == tags
 
@@ -434,3 +449,17 @@ def test_fork_preserves_ciphered_security_analyzer_credentials():
         assert isinstance(resumed_analyzer, ToolShieldLLMSecurityAnalyzer)
         assert isinstance(resumed_analyzer.llm.api_key, SecretStr)
         assert resumed_analyzer.llm.api_key.get_secret_value() == "sk-GUARD-xyz"
+
+
+def test_fork_preserves_max_budget_per_run():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
+        fork = src.fork()
+
+        assert isinstance(fork, LocalConversation)
+        assert fork.max_budget_per_run == 2.0

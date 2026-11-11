@@ -91,8 +91,8 @@ def app(
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")
     fastapi_app.include_router(bash_router_module.bash_router, prefix="/api")
-    fastapi_app.dependency_overrides[get_conversation_service] = (
-        lambda: conversation_service
+    fastapi_app.dependency_overrides[get_conversation_service] = lambda: (
+        conversation_service
     )
     mark_initialization_complete()
     return fastapi_app

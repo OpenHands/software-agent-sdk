@@ -1,18 +1,6 @@
 # OpenHands Agent Server TypeScript Client
 
-> ⚠️ **ALPHA SOFTWARE WARNING** ⚠️
->
-> This TypeScript SDK is currently in **alpha** and is **not stable**. The API may change significantly between versions without notice. This software is intended for early testing and development purposes only.
->
-> - Breaking changes may occur in any release
-> - Features may be incomplete or contain bugs
-> - Documentation may be outdated or incomplete
-> - Not recommended for production use
->
-> Please use with caution and expect frequent updates.
-
-A TypeScript client library for the OpenHands Agent Server API. Mirrors the structure and functionality of the Python [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk),
-but only supports remote conversations.
+The OpenHands Software Agent SDK provides Python, TypeScript, and REST APIs for **building agents that work with code**. This package is the browser-compatible TypeScript client for the Agent Server API, shipped and versioned as part of the Software Agent SDK. It mirrors the structure and functionality of the Python [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk), and controls remote Agent Server conversations: it connects to an Agent Server running the agent runtime and does not bundle a local agent implementation.
 
 ## ✨ Browser Compatible
 
@@ -297,6 +285,35 @@ await conversation.updateSecrets({
   API_KEY: 'secret-value',
   DATABASE_URL: () => process.env.DATABASE_URL || 'default-url',
 });
+```
+
+### Displaying a Conversation Budget
+
+Set `maxBudgetPerRun` when creating a remote conversation, using an Agent Server
+that supports `max_budget_per_run`. Omit it or pass `null` for no limit.
+
+```typescript
+const conversation = await manager.createConversation(agent, { maxBudgetPerRun: 5 });
+const info = await manager.getConversation(conversation.id);
+const spent = Object.values(info.stats?.usage_to_metrics ?? {}).reduce(
+  (total, metrics) => total + (metrics.accumulated_cost ?? 0),
+  0
+);
+console.log({ spent, limit: info.max_budget_per_run });
+```
+
+Both amounts are in USD. Despite its legacy name, the limit applies to the
+conversation's accumulated cost, including earlier runs. The server checks the
+limit after each completed agent step, so a step may overshoot it. The same
+`stats.usage_to_metrics` costs arrive in WebSocket state updates while running;
+use those updates to refresh a live display. The configured limit remains
+available from the conversation's REST response after reconnecting.
+
+To change the limit later, send `max_budget_per_run` in a conversation update.
+Omit it to keep the current limit, or pass `null` to remove it:
+
+```typescript
+await manager.updateConversation(conversation.id, { max_budget_per_run: 10 });
 ```
 
 ## API Reference

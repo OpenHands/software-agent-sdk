@@ -321,7 +321,8 @@ async def test_stop_running_goal_loop_emits_interrupted(event_service, tmp_path)
         updates = _goal_status_updates(event_service)
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
-        assert updates[-1]["iteration"] == 1
+        # The audit was abandoned, so the round is not counted as completed.
+        assert updates[-1]["iteration"] == 0
     finally:
         judge._gate.set()  # release the orphaned judge thread for cleanup
         await event_service.close()
@@ -357,6 +358,85 @@ async def test_resume_from_interrupted_status(event_service, tmp_path):
         assert outcome is not None
         assert outcome.status == "complete"
         assert outcome.iterations == 2  # resumed from round 1 -> completed at round 2
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_after_failed_audit_never_exceeds_cap(event_service, tmp_path):
+    # The only round's judge call fails -> interrupted at 0 of 1 (the failed
+    # audit is not a completed round); the resume re-runs that round and caps
+    # at 1 of 1, never above max_iterations.
+    await _start(event_service, tmp_path, "did the work", "tried again")
+    failing_judge = TestLLM.from_messages(
+        [RuntimeError("judge network error")], usage_id="judge"
+    )
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=failing_judge, max_iterations=1
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "interrupted"
+        assert updates[-1]["iteration"] == 0
+
+        await event_service.resume_goal_loop(
+            judge_llm=_scripted(_NOT_DONE, usage_id="judge")
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "capped"
+        assert updates[-1]["iteration"] == 1
+        assert all(u["iteration"] <= u["max_iterations"] for u in updates)
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_iteration", "stored_max", "override_max", "final_iteration"),
+    [(1, 1, None, 1), (3, 5, 2, 2)],
+    ids=["stored-at-cap", "lower-max-override"],
+)
+async def test_resume_from_status_at_cap_never_exceeds_cap(
+    event_service,
+    tmp_path,
+    stored_iteration,
+    stored_max,
+    override_max,
+    final_iteration,
+):
+    # An interrupted status already at (or past) the cap -- persisted by an
+    # older server that counted the failed audit, or resumed with a lower
+    # max_iterations -- resumes into one final round, not past the cap.
+    await _start(event_service, tmp_path, "resumed")
+    conversation = event_service.get_conversation()
+    with conversation._state:
+        conversation._on_event(
+            ConversationStateUpdateEvent(
+                key="goal",
+                value={
+                    "active": False,
+                    "status": "interrupted",
+                    "iteration": stored_iteration,
+                    "max_iterations": stored_max,
+                    "objective": "build x",
+                    "verdict": None,
+                },
+            )
+        )
+    try:
+        await event_service.resume_goal_loop(
+            judge_llm=_scripted(_NOT_DONE, usage_id="judge"),
+            max_iterations=override_max,
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)[1:]  # skip the stored one
+        assert updates[-1]["status"] == "capped"
+        assert updates[-1]["iteration"] == final_iteration
+        assert all(u["iteration"] <= u["max_iterations"] for u in updates)
     finally:
         await event_service.close()
 

@@ -28,6 +28,10 @@ describe('RemoteWorkspace downloads', () => {
       const content = await workspace[method]('/workspace/file.txt');
 
       expect(content instanceof Blob ? await content.text() : content).toBe('file contents');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://example.com/api/file/download?path=%2Fworkspace%2Ffile.txt',
+        expect.objectContaining({ cache: 'no-store' })
+      );
     }
   );
 

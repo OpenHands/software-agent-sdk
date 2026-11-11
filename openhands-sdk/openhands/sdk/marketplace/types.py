@@ -298,15 +298,20 @@ class Marketplace(BaseModel):
                 except Exception as e:
                     logger.warning(f"Failed to load skill from {skill_md}: {e}")
                     continue
-                source = skill_md.parent.relative_to(marketplace_dir).as_posix()
-                entries.setdefault(
+                source = f"./{skill_md.parent.relative_to(marketplace_dir).as_posix()}"
+                entry = entries.setdefault(
                     skill.name,
                     MarketplaceEntry(
                         name=skill.name,
-                        source=f"./{source}",
+                        source=source,
                         description=skill.description,
                     ),
                 )
+                if entry.source != source:
+                    logger.warning(
+                        f"Skill '{skill.name}' in {source} has the same name as "
+                        f"the one in {entry.source}; keeping {entry.source}"
+                    )
 
         return cls(
             name=name,

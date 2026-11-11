@@ -23,10 +23,21 @@ jobs:
                   fi
                   echo "✅ Version format is valid: $INPUTS_VERSION"
 
+            # Open the release PR as openhands-release-bot[bot] (the shared
+            # release App), matching release-please; no PAT fallback.
+            - name: Mint GitHub App token (release bot)
+              id: app-token
+              uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: software-agent-sdk
+
             - name: Checkout repository
               uses: actions/checkout@v7.0.1
               with:
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+                  token: ${{ steps.app-token.outputs.token }}
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -52,6 +63,10 @@ jobs:
                   echo "Creating branch: $BRANCH_NAME"
                   git checkout -b "$BRANCH_NAME"
                   echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+            # Before any build step, so no .pr/ file is on disk when repository code runs.
+            - name: Remove temporary PR artifacts
+              run: python3 .github/scripts/remove_pr_artifacts.py
 
             - name: Set package version
               env:
@@ -108,7 +123,7 @@ jobs:
             - name: Create Pull Request
               id: create_pr
               env:
-                  GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
                   GITHUB_ACTOR: ${{ github.actor }}
                   INPUTS_VERSION: ${{ inputs.version }}
               run: |
@@ -127,12 +142,16 @@ jobs:
 
                   ### Release Checklist
                   - [x] Version set to {version}
+                  - [x] Temporary `.pr/` artifacts removed
                   - [ ] Fix any deprecation deadlines if they exist
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
                   - [ ] Security scan passes (tagged with `security-scan`)
                   - [ ] Confirm any `release-note-required` PRs are accurately called out in the final release notes
+
+                  ### Updating this branch
+                  If `main` advances, refresh this branch as described in `.github/workflows/README-RELEASE.md` instead of using **Update branch**, so new `.pr/` artifacts are removed in the same update.
 
                   ### What happens on merge
                   When this PR is merged, the `create-release.yml` workflow will automatically:

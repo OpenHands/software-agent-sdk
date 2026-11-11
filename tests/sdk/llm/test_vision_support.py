@@ -124,8 +124,9 @@ def test_deepseek_v4_vision_payload_keeps_image(_mock_sv, _mock_model_info):
     )
     formatted = llm.format_messages_for_llm([msg])
 
-    assert len(formatted) == 1
-    assert len(_collect_image_url_parts(formatted[0])) == 1
+    # ``openhands/*`` models gain a prepended proxy-identity system message.
+    user_block = next(item for item in formatted if item["role"] == "user")
+    assert len(_collect_image_url_parts(user_block)) == 1
 
 
 @patch(

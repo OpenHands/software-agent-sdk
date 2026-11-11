@@ -12,8 +12,9 @@ server mints the id, never returns the key (only `api_key_set`), encrypts it
 at rest with the server's cipher, refuses to read a file it cannot decrypt
 rather than dropping keys, caps the store at 64 connections, and refuses to
 delete a connection that a profile or the active settings still reference.
-ACP model discovery is a separate pre-conversation request: a local launch
-failure returns a structured error and creates no conversation.
+ACP model discovery is a separate pre-conversation request: a throwaway
+session reports the real adapter's models, while a local launch failure
+returns a structured error. Neither creates a persisted conversation.
 
 Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
 
@@ -27,7 +28,8 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 
 ## Sub-features
 
-- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure.
+- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure; `ACPClient.discoverModels` exposes the same structured errors and rejects unauthorized calls.
+- `F23.acp-discovery-live`: the real Claude Code ACP adapter reports its default and offered models through REST and TypeScript `ACPClient.discoverModels`; a repeated request and `refresh: true` return the same catalog without persisting any conversation or probe directory.
 - `F23.auth-required`: all seven routes answer 401 `{"detail": "Unauthorized"}` without a valid `X-Session-API-Key`, and nothing is created.
 - `F23.providers`: `GET /api/llm/providers` returns LiteLLM's provider names, sorted and unique, including `deepseek`, `openai` and `anthropic`.
 - `F23.models`: `GET /api/llm/models` returns every LiteLLM model, sorted and unique, with no `bedrock`-prefixed id, including `deepseek/deepseek-flash`.
@@ -64,8 +66,9 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - REST (ACP): `POST /api/acp/models` with `agent_settings`, optional `secrets`
   and `refresh`. `available_models` and `current_model_id` come from a
   throwaway ACP session; startup failures use the response's `error` field.
-  This recipe covers authentication, validation and local spawn failure.
-  Successful discovery requires the selected ACP provider and credentials.
+  `F23.acp-discovery-errors` covers refused requests and local spawn failure;
+  `F23.acp-discovery-live` starts the real Claude Code adapter with the same
+  DeepSeek Anthropic-compatible credentials as F09.
 - REST (connections): `GET /api/llm/provider-connections` (a JSON array),
   `POST /api/llm/provider-connections`
   (`{"display_name": "...", "provider": "deepseek", "api_key": "...", "base_url": null}`,
@@ -82,17 +85,20 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
   `active_profile` resolve the connection into `agent_settings.llm`
   (`GET /api/settings` with `X-Expose-Secrets: plaintext` shows it);
   `POST /api/conversations/{conversation_id}/switch_llm` resolves it for a
-  running conversation (model switching family). `POST /api/profiles/{name}/validate`
-  does not resolve it today (`F23.validate-linked-draft`).
+  running conversation (model switching family), and
+  `POST /api/profiles/{name}/validate` resolves it for the pre-flight of a
+  draft (`F23.validate-linked-draft`).
 - SDK: no Python client calls these routes. In-process code uses
   `ProviderConnectionStore` and `LLMProfileStore(provider_store=...)`
   (`openhands-sdk/openhands/sdk/llm/`). `RemoteWorkspace.get_llm()` of a
-  linked profile does not resolve the connection (LLM profiles family).
+  linked profile resolves the connection through its plaintext profile read
+  (`F20.sdk-get-llm-linked`, fixed by #4952).
 - TypeScript client: `LLMMetadataClient.getProviders()`, `getModels(provider?)`
   and `getVerifiedModels()` (`clients/typescript/src/client/llm-client.ts`);
   provider connections have only generated types
   (`clients/typescript/src/generated/agent-server-schema.ts`), no client
-  method.
+  method. `ACPClient.discoverModels(request)` reaches `POST /api/acp/models`;
+  both ACP bullets execute this TypeScript entry point.
 - Configuration: `OH_PERSISTENCE_DIR` (the store lives in
   `provider-connections/` under it, else `~/.openhands`), `OH_SECRET_KEY`
   (the cipher; without it the session key is used, and with neither keys
@@ -330,11 +336,13 @@ Preconditions:
   ```
   Each is 422 with the pydantic error type and location; the list still
   has the two connections.
-- **Blank keys on create (`F23.conn-create-blank-key`), known bug.**
+- **Blank keys on create (`F23.conn-create-blank-key`).**
   An empty key is refused (positive control); then create with a
   whitespace-only key and with the redacted placeholder, record both
   statuses, and assert them together. An `EXIT` trap deletes whatever was
   created, however the bullet ends.
+
+  Requires: `F23.conn-create`
   ```sh
   trap 'BLANK=$(control-agent-server api GET /api/llm/provider-connections --field . \
       | jq -r "[.[] | select(.display_name | startswith(\"qa-f23-blank-\")) | .id] | join(\" \")") || true
@@ -347,15 +355,13 @@ Preconditions:
     --expect 201,422 --save F23.conn-create-blank-key/placeholder | jq -r .status)
   control-agent-server api GET /api/llm/provider-connections --save F23.conn-create-blank-key/list
   echo "whitespace key: $S_SPACE, placeholder key: $S_MASK"
-  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'  # bug: value eq '201 201'
+  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'
   control-agent-server api GET /api/llm/provider-connections --check . len-eq 2 --check . not-contains qa-f23-blank-
   ```
-  Expected: both are 422 like `""`, and nothing is created. Today both are
-  201 and the list shows them with `api_key_set: false`: `min_length=1`
-  accepts them, and the stored model's validator then turns a blank or
-  `**********` key into `null`, so a keyless connection exists although the
-  API says a connection always has a key. The trap deletes them, so later
-  bullets see the same two connections.
+  Both are 422 like `""`, and nothing is created: the list still holds
+  only the two connections from `F23.conn-create`, so a connection always
+  has a usable key. The trap deletes anything a regression would create,
+  so later bullets see the same two connections.
 - **Linked profile runs on the connection (`F23.linked-run`).** Save a
   profile linked to `CONN` with a stray inline key, activate it, and run a
   tiny conversation from the resulting settings.
@@ -431,7 +437,7 @@ Preconditions:
   ```
   Each is refused with the quoted message; the list is byte-for-byte the
   same afterwards (no `updated_at` bump).
-- **Blank keys on update (`F23.conn-patch-blank-key`), known bug.** Link a
+- **Blank keys on update (`F23.conn-patch-blank-key`).** Link a
   probe profile to `DEF` (key `sk-qa-f23-default`), then for an empty, a
   whitespace-only and the placeholder key: `PATCH`, activate the probe,
   record the applied key, and put the original key back.
@@ -458,22 +464,14 @@ Preconditions:
     control-agent-server api PATCH "/api/llm/provider-connections/$DEF" --json '{"api_key": "sk-qa-f23-default"}' --expect 200 --quiet > /dev/null
   done
   echo "applied keys: $APPLIED"
-  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'  # bug: value eq '[null][null][**********]'
+  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'
   ```
   Before any blank `PATCH`, activating the probe applies
   `sk-qa-f23-default` (positive control).
-  Expected: each `PATCH` is 422 (or leaves the key alone), so all three
-  activations apply `sk-qa-f23-default`. Today each is 200 and the key is
-  replaced: `""` and `"   "` clear it (response `api_key_set: false`,
-  activation applies no key, although `api_key: null` is refused as
-  "cannot be cleared"), and `**********` becomes the literal key (response
-  `api_key_set: true`, activation applies `**********`). The handler copies
-  the body into the stored model with `model_copy`, which skips the
-  validator that would drop blank or redacted keys. While the key is blank,
-  `GET /api/profiles` still lists the probe with `api_key_set: true` (it
-  counts the encrypted token without decrypting it) and `GET` of the probe
-  says `false`. An `EXIT` trap restores the key and `qa-f23-linked` as the
-  active profile and deletes the probe, however the bullet ends.
+  Each `PATCH` is 422, like `api_key: null`, and leaves the stored key
+  alone, so all three activations apply `sk-qa-f23-default`. An `EXIT` trap restores the key
+  and `qa-f23-linked` as the active profile and deletes the probe, however
+  the bullet ends.
 - **Rotate the key (`F23.conn-rotate-key`).** Rotate `CONN` to a key
   DeepSeek rejects, check that active settings keep the old key until the
   next activation, run a conversation on the rotated key, then rotate back.
@@ -502,7 +500,7 @@ Preconditions:
   (`****QA23`). With the real key rotated back and the profile activated
   through `POST /api/profiles/{name}/activate`, a new conversation
   finishes.
-- **Validate a linked draft (`F23.validate-linked-draft`), known bug.**
+- **Validate a linked draft (`F23.validate-linked-draft`).**
   Pre-flight the same DeepSeek model with the key inline (positive
   control), then as a draft linked to `CONN`.
 
@@ -512,15 +510,13 @@ Preconditions:
     | control-agent-server api POST /api/profiles/qa-f23-draft/validate --stdin --timeout 120 --expect 200 --check valid eq true
   control-agent-server api POST /api/profiles/qa-f23-draft/validate --timeout 120 --expect 200 \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"provider_connection_id\": \"$CONN\", \"num_retries\": 0}}" \
-    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null  # bug: status eq 200 && response.body.valid eq false && response.body.error.type eq LLMAuthenticationError
+    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null
   ```
-  Expected: both `valid: true`, since a linked draft runs on the
-  connection's key once saved and activated. Today the linked draft is
-  `valid: false` with `LLMAuthenticationError` (`Authentication Fails`):
-  `validate_profile` sends the posted LLM unchanged and never calls
-  `resolve_provider_connection`, unlike activation and `switch_llm`. A
-  client cannot work around it by sending the key, because the connection
-  routes never return it.
+  Expected: both `valid: true`. `validate_profile` resolves
+  `provider_connection_id` to the connection's `api_key` and `base_url`
+  before the pre-flight, as activation and `switch_llm` do, so a client
+  never needs the key (the connection routes never return it). A dangling
+  `provider_connection_id` is 422 naming the missing connection.
 - **Restart (`F23.persist-restart`).** Restart the run and read everything
   back.
 
@@ -608,7 +604,7 @@ Preconditions:
   The create answers 503 after 29 to 33 seconds (the body's `detail` is the
   generic `Internal Server Error`; the route's message is in `exception`),
   and once the lock is free the list answers at once without `qa-f23-busy`.
-- **Lock wait blocks the server (`F23.store-busy-responsive`), known bug.**
+- **Lock wait does not block the server (`F23.store-busy-responsive`).**
   `/alive` answers within 3 seconds while the lock is free (positive
   control). Then hold the lock for 16 seconds, start a list in the
   background, and probe `/alive` while the list waits. The five-second
@@ -632,21 +628,16 @@ Preconditions:
   control-agent-server api GET /api/llm/provider-connections --timeout 60 --expect 200 --quiet --save F23.store-busy-responsive/list > /dev/null &
   LISTER=$!
   sleep 5
-  control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --save F23.store-busy-responsive/alive  # bug: status eq 200 && elapsed_ms gt 3000
+  control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --save F23.store-busy-responsive/alive
   wait "$LISTER"
   test $((SECONDS - T0)) -ge 10
   wait "$LOCKER"
   ```
-  Expected `/alive` to answer within 3 seconds while the list waits. Today
-  it answers only when the lock is released, about 10 seconds later (17.6 s
-  measured with a 20-second hold and a two-second head start): every
-  connection route is an `async def` that calls the synchronous, file-locked
-  `ProviderConnectionStore` on the event loop
-  (`provider_connections_router.py`), so a lock wait of up to 30 seconds
-  freezes the whole server, liveness and readiness probes included (the
-  same defect as `F20.store-busy-responsive` for the profile store). The
-  marked probe fails with `took N ms, limit 3000 ms` and a `200`, not with a
-  timeout or an error status.
+  `/alive` answers within 3 seconds while the list waits: the connection
+  routes are plain `def` handlers, so FastAPI runs the synchronous,
+  file-locked `ProviderConnectionStore` in its threadpool and the lock wait
+  never holds the event loop (`provider_connections_router.py`; the same
+  boundary as `F20.store-busy-responsive` for the profile store).
 - **Delete guard (`F23.delete-guard`).** Try to delete `CONN` while
   `qa-f23-linked` and the active settings use it, while only the profile
   does, and while only the settings do.
@@ -728,7 +719,88 @@ Preconditions:
   control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
   ```
   The response records a launch error rather than a 500, and no conversation
-  is persisted. A working-provider discovery remains a separate prerequisite.
+  is persisted. The TypeScript consumer below checks that a structured
+  failure resolves normally and a missing session key rejects with 401.
+  ```sh
+  test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
+  cat > "$F23/ts_acp_errors.mjs" <<'JS'
+  import assert from 'node:assert/strict';
+  import { resolve } from 'node:path';
+  import { pathToFileURL } from 'node:url';
+  const { ACPClient } = await import(pathToFileURL(resolve('clients/typescript/dist/clients.js')).href);
+  const client = new ACPClient({ host: process.env.AGENT_SERVER_URL, apiKey: process.env.SESSION_API_KEY });
+  const unauthorized = new ACPClient({ host: process.env.AGENT_SERVER_URL });
+  const request = { agent_settings: { agent_kind: 'acp', acp_server: 'custom', acp_command: [process.env.QA_F23_MISSING_ACP] } };
+  try {
+    const failed = await client.discoverModels(request);
+    assert.equal(failed.error.code, 'ACPSpawnError');
+    assert.deepEqual(failed.available_models, []);
+    assert.equal(failed.current_model_id, null);
+    assert.equal((await client.discoverModels({ ...request, refresh: true })).error.code, 'ACPSpawnError');
+    await assert.rejects(unauthorized.discoverModels(request), (err) => err.name === 'HttpError' && err.status === 401);
+    console.log('QA_F23_ACP_ERRORS_OK');
+  } finally {
+    client.close();
+    unauthorized.close();
+  }
+  JS
+  control-agent-server exec --env QA_F23_MISSING_ACP="$AGENT_SERVER_VERIFY_RUN/qa-missing-acp" --timeout 60 \
+    --expect-output QA_F23_ACP_ERRORS_OK --save F23.acp-discovery-errors/typescript -- node "$F23/ts_acp_errors.mjs"
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  ```
+- **Real ACP model discovery (`F23.acp-discovery-live`).** Use the real
+  Claude Code adapter through its built-in `npx` command. As in F09,
+  DeepSeek's Anthropic-compatible endpoint supplies the credentials and
+  `IS_SANDBOX=1` permits the adapter's session mode when running as root.
+  Discovery initializes a throwaway session without sending a model prompt.
+  ```sh
+  ACP_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  printf '{"agent_settings":{"agent_kind":"acp","acp_server":"claude-code"},"secrets":{"ANTHROPIC_API_KEY":{"kind":"StaticSecret","value":"%s"},"ANTHROPIC_BASE_URL":{"kind":"StaticSecret","value":"https://api.deepseek.com/anthropic"},"IS_SANDBOX":{"kind":"StaticSecret","value":"1"}}}' "$DEEPSEEK_API_KEY" \
+    | control-agent-server api POST /api/acp/models --stdin --timeout 180 --expect 200 \
+      --check error missing --check agent_name exists --check current_model_id exists --check supports_runtime_model_switch eq true \
+      --check available_models contains '"model_id": "sonnet"' --check available_models contains '"model_id": "haiku"' \
+      --raw-out "$F23/acp-models.json" --save F23.acp-discovery-live/rest
+  test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
+  cat > "$F23/ts_acp_live.mjs" <<'JS'
+  import assert from 'node:assert/strict';
+  import { readFileSync } from 'node:fs';
+  import { resolve } from 'node:path';
+  import { pathToFileURL } from 'node:url';
+  const { ACPClient } = await import(pathToFileURL(resolve('clients/typescript/dist/clients.js')).href);
+  const client = new ACPClient({ host: process.env.AGENT_SERVER_URL, apiKey: process.env.SESSION_API_KEY, timeout: 180000 });
+  const expected = JSON.parse(readFileSync(process.env.QA_F23_ACP_REFERENCE, 'utf8'));
+  assert.ok(process.env.DEEPSEEK_API_KEY);
+  const secret = (value) => ({ kind: 'StaticSecret', value });
+  const request = {
+    agent_settings: { agent_kind: 'acp', acp_server: 'claude-code' },
+    secrets: {
+      ANTHROPIC_API_KEY: secret(process.env.DEEPSEEK_API_KEY),
+      ANTHROPIC_BASE_URL: secret('https://api.deepseek.com/anthropic'),
+      IS_SANDBOX: secret('1'),
+    },
+  };
+  try {
+    assert.deepEqual(await client.discoverModels(request), expected);
+    const refreshed = await client.discoverModels({ ...request, refresh: true });
+    assert.equal(refreshed.error, null);
+    assert.equal(refreshed.agent_name, expected.agent_name);
+    assert.equal(refreshed.current_model_id, expected.current_model_id);
+    assert.deepEqual(refreshed.available_models, expected.available_models);
+    assert.equal(refreshed.supports_runtime_model_switch, true);
+    console.log('QA_F23_ACP_LIVE_OK');
+  } finally {
+    client.close();
+  }
+  JS
+  control-agent-server exec --env QA_F23_ACP_REFERENCE="$F23/acp-models.json" --timeout 240 \
+    --expect-output QA_F23_ACP_LIVE_OK --save F23.acp-discovery-live/typescript -- node "$F23/ts_acp_live.mjs"
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  control-agent-server state ls 'server/workspace/conversations/.acp-model-discovery-*' --expect-count 0
+  ```
+  REST reports the real adapter's model catalog. The TypeScript consumer
+  receives the same response on a repeated request and the same default
+  and offered models after an explicit refresh. The conversation count
+  stays unchanged and discovery removes its temporary probe directory.
 
 ## Gotchas
 
@@ -748,9 +820,9 @@ Preconditions:
 - The connection id is minted by the server (uuid4 hex); a client-chosen
   `id` is 422. There is no `GET` for a single connection: read the list.
 - `PATCH` copies the body onto the stored connection without re-running its
-  validators, which is why blank keys slip through
-  (`F23.conn-patch-blank-key`); the response is built from that copy, not
-  from a re-read.
+  validators, so the request models refuse blank and `**********` keys
+  themselves (`F23.conn-create-blank-key`, `F23.conn-patch-blank-key`); the
+  response is built from that copy, not from a re-read.
 - Resolution is read-at-use: a rotation or `base_url` change reaches a
   profile only on its next activation (or `PATCH /api/settings` with
   `active_profile`, or `switch_llm`); `agent_settings.llm` keeps the copy
@@ -777,9 +849,10 @@ Preconditions:
   the last four characters of a rejected key (`****QA23`) in its error; if
   the provider changes that message, check the `ConversationErrorEvent` by
   hand before calling it a product failure.
-- The connection store is synchronous inside `async` handlers, so while
-  its lock is held elsewhere the whole server stops answering for up to 30
-  seconds (`F23.store-busy-responsive`). Never hold the lock (`flock` on
+- The connection routes wait for the store lock in a worker thread, so a
+  held lock delays only connection requests (up to the 30-second timeout),
+  not the rest of the server (`F23.store-busy-responsive`). Still, never
+  hold the lock (`flock` on
   `provider-connections/.provider-connections.lock`) longer than a bullet
   needs, and do not run other bullets in parallel with `F23.store-busy`.
 - Writing to `provider_connections.json` by hand (`F23.corrupt-file`) is an

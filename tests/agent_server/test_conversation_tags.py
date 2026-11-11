@@ -71,8 +71,8 @@ def test_start_conversation_with_tags(
         sample_conversation_info,
         True,
     )
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -106,8 +106,8 @@ def test_start_conversation_without_tags(
         sample_conversation_info,
         True,
     )
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -134,8 +134,8 @@ def test_start_conversation_without_tags(
 
 def test_start_conversation_invalid_tag_key(client, mock_conversation_service):
     """Invalid tag keys are rejected with 422."""
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -160,8 +160,8 @@ def test_start_conversation_invalid_tag_key(client, mock_conversation_service):
 def test_update_conversation_tags(client, mock_conversation_service):
     """PATCH endpoint updates tags."""
     mock_conversation_service.update_conversation.return_value = True
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     conversation_id = uuid4()
@@ -185,8 +185,8 @@ def test_update_conversation_tags(client, mock_conversation_service):
 def test_update_conversation_title_and_tags(client, mock_conversation_service):
     """PATCH endpoint can update both title and tags."""
     mock_conversation_service.update_conversation.return_value = True
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     conversation_id = uuid4()
@@ -210,8 +210,8 @@ def test_get_conversation_includes_tags(
 ):
     """GET endpoint returns tags in response."""
     mock_conversation_service.get_conversation.return_value = sample_conversation_info
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:

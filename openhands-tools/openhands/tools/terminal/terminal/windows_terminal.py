@@ -12,6 +12,8 @@ import time
 from collections import deque
 from collections.abc import Mapping
 
+import psutil
+
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
@@ -25,6 +27,9 @@ from openhands.tools.terminal.env import (
 from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
     parse_ctrl_key,
+)
+from openhands.tools.terminal.terminal.process_priority import (
+    should_lower_process_priority,
 )
 
 
@@ -92,6 +97,10 @@ class WindowsTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        env = build_terminal_env(self._env)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
+
         startupinfo = None
         creationflags = 0
         if platform.system() == "Windows":
@@ -101,10 +110,9 @@ class WindowsTerminal(TerminalInterface):
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-        env = build_terminal_env(self._env)
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
+            # Not PROCESS_MODE_BACKGROUND_BEGIN: it also throttles disk I/O.
+            if should_lower_process_priority(env):
+                creationflags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
         self.process = subprocess.Popen(
             [self.shell_path, "-NoLogo", "-NoProfile"],
@@ -342,7 +350,13 @@ class WindowsTerminal(TerminalInterface):
         self._command_running_event.clear()
 
     def _terminate_child_processes(self) -> bool:
-        """Terminate descendants of the persistent PowerShell process."""
+        """Terminate descendants of the persistent PowerShell process.
+
+        Enumerating descendants and killing them through ``psutil`` avoids the
+        WMI query (``Get-CimInstance``) that used to back this method: on a
+        loaded Windows runner that query can exceed the subprocess timeout, so
+        the child that kept a timed-out command alive was never terminated.
+        """
         if (
             platform.system() != "Windows"
             or self.process is None
@@ -350,52 +364,28 @@ class WindowsTerminal(TerminalInterface):
         ):
             return False
 
-        script = f"""
-$root = {self.process.pid}
-$childrenByParent = @{{}}
-Get-CimInstance Win32_Process | ForEach-Object {{
-    $parentId = [int]$_.ParentProcessId
-    if (-not $childrenByParent.ContainsKey($parentId)) {{
-        $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[int]
-    }}
-    $childrenByParent[$parentId].Add([int]$_.ProcessId)
-}}
-$toStop = New-Object System.Collections.Generic.List[int]
-function Add-Descendants([int]$processId) {{
-    if (-not $childrenByParent.ContainsKey($processId)) {{ return }}
-    foreach ($childId in $childrenByParent[$processId]) {{
-        if ($childId -eq $PID) {{ continue }}
-        $toStop.Add($childId)
-        Add-Descendants $childId
-    }}
-}}
-Add-Descendants $root
-for ($i = $toStop.Count - 1; $i -ge 0; $i--) {{
-    Stop-Process -Id $toStop[$i] -Force -ErrorAction SilentlyContinue
-}}
-if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
-"""
-        startupinfo = None
-        startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
-        if startupinfo_cls is not None:
-            startupinfo = startupinfo_cls()
-            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
         try:
-            result = subprocess.run(
-                [self.shell_path, "-NoLogo", "-NoProfile", "-Command", script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5.0,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            logger.debug("Failed to terminate PowerShell child processes: %s", exc)
+            root = psutil.Process(self.process.pid)
+            children = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            logger.debug("Failed to enumerate PowerShell descendants: %s", exc)
             return False
+
+        if not children:
+            return False
+
+        # Kill leaves first so parents cannot reparent surviving grandchildren
+        # before they are terminated.
+        terminated = False
+        for child in reversed(children):
+            try:
+                child.kill()
+                terminated = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+                logger.debug("Failed to terminate child %s: %s", child.pid, exc)
+
+        psutil.wait_procs(children, timeout=_INTERRUPT_GRACE_SECONDS)
+        return terminated
 
     def interrupt(self) -> bool:
         """Interrupt the active command if the process is still alive."""
