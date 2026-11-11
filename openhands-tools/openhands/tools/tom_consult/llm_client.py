@@ -34,9 +34,7 @@ class TomLLMClient(LLMClient):
         return Message(
             role="system",
             content=[
-                TextContent(
-                    text="Analyze user context and return the requested JSON."
-                )
+                TextContent(text="Analyze user context and return the requested JSON.")
             ],
         )
 
