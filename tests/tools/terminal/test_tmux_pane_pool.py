@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+from libtmux.exc import LibTmuxException
 
 from openhands.tools.terminal.constants import (
     TMUX_SESSION_HEIGHT,
@@ -306,7 +307,11 @@ def test_stale_terminal_cannot_access_restarted_server(
                 assert time.monotonic() < deadline
                 time.sleep(0.05)
 
-            if operation == "read":
+            if operation == "read" and pooled:
+                # A pooled pane reports its dead server so the pool can recover.
+                with pytest.raises(LibTmuxException, match="no server running"):
+                    stale.read_screen()
+            elif operation == "read":
                 assert "SECOND_CONVERSATION_MARKER" not in stale.read_screen()
             elif operation == "write":
                 marker = tmp_path / "wrong-conversation"

@@ -127,6 +127,21 @@ class TestTmuxPoolRecovery:
         assert after.exit_code == 0
         assert "after_rebuild" in after.text
 
+    def test_shell_that_died_while_idle_is_noticed_before_the_timeout(
+        self, pool_executor
+    ):
+        pool_executor(TerminalAction(command="(sleep 1; kill -9 $$) &", timeout=5.0))
+        time.sleep(2.5)
+
+        started = time.monotonic()
+        obs = pool_executor(TerminalAction(command="echo after", timeout=30.0))
+
+        assert time.monotonic() - started < 10
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+        assert "after_rebuild" in after.text
+
     def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
         obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))
         assert obs.is_error

@@ -53,6 +53,7 @@ _TMUX_POOL_RECOVERY_MESSAGE = (
 _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "no server running",
     "can't find session",
+    "can't find pane",
     "could not find window_id",
     "could not find pane_id",
 )
@@ -541,12 +542,6 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 )
                 self._export_envs(cmd_action, conversation, session=session)
                 observation = session.execute(cmd_action)
-                if observation.exit_code == -1 and not handle.terminal.closed:
-                    # The command did not finish and we did not close the
-                    # terminal. If it exited the shell, the pane (or the whole
-                    # tmux server) is gone and refresh() raises a recoverable
-                    # tmux error handled below.
-                    handle.terminal.pane.refresh()
                 if session.is_running():
                     self._unfinished_pane = handle.terminal
                 elif self._unfinished_pane is handle.terminal:

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 import libtmux
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
@@ -58,6 +59,15 @@ class PooledTmuxTerminal(TmuxTerminal):
             with suppress(Exception):
                 self.window.kill()
             self._closed = True
+
+    def read_screen(self) -> str:
+        # tmux reports a vanished pane or server on stderr instead of raising.
+        # Raise it, so the pool recovers at the next read rather than waiting
+        # out the command timeout on a screen that will never change.
+        result = self.pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.returncode != 0:
+            raise LibTmuxException(*result.stderr)
+        return "\n".join(line.rstrip() for line in result.stdout)
 
 
 @dataclass(slots=True)
