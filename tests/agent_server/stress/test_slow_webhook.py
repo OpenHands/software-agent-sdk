@@ -130,8 +130,8 @@ def app(
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")
     fastapi_app.include_router(bash_router_module.bash_router, prefix="/api")
-    fastapi_app.dependency_overrides[get_conversation_service] = (
-        lambda: conversation_service
+    fastapi_app.dependency_overrides[get_conversation_service] = lambda: (
+        conversation_service
     )
     return fastapi_app
 
@@ -199,8 +199,8 @@ async def test_slow_webhook_does_not_unbound_growth(
     baseline_app.state.config = Config()
     baseline_app.include_router(conversation_router, prefix="/api")
     baseline_app.include_router(event_router, prefix="/api")
-    baseline_app.dependency_overrides[get_conversation_service] = (
-        lambda: baseline_service
+    baseline_app.dependency_overrides[get_conversation_service] = lambda: (
+        baseline_service
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(baseline_app),

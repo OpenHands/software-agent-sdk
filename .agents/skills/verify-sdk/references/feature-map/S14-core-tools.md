@@ -125,14 +125,14 @@ Preconditions:
     --check steps.prompt.exit_code eq -1 --check steps.answer.text contains "hello bob" \
     --check steps.more.is_error eq false --check steps.ctrl_c.exit_code eq 130
   ```
-  Expected: as on the subprocess backend, `is_input` answers the prompt, `""` shows more output and `C-c` stops the idle command. Known failure (reproduced 2026-10-13, not yet filed): on the default tmux backend every one of these calls returns `is_error` with "No previous running command to interact with." (or "... to retrieve logs from."). `TerminalExecutor._prepare_pooled_session` interrupts a still-running command whenever a pane is checked out, so the follow-up the observation itself recommends ("You may wait longer ... by sending empty command '', ... send keys ("C-c", ...)") can never reach the process.
+  Expected: as on the subprocess backend, `is_input` answers the prompt, `""` shows more output and `C-c` stops the idle command. On the default tmux backend a follow-up (input, an empty command, or a `C-x` key) gets the pane whose command is still running, and that command is left alone.
 - **Terminal query sequences under tmux (`S14.terminal-input-encoding`).** A command prints a DSR cursor-position query, then the agent runs `echo next`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S14/terminal --arg auto \
     --check escape_filtered eq true --check dsr_reply_visible eq false --check after_dsr_clean eq true
   ```
-  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-10-13, not yet filed): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
+  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-10-13, still failing 2026-11-09, [#6652](https://github.com/OpenHands/software-agent-sdk/issues/6652)): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
 - **A reset keeps the configured backend (`S14.terminal-reset`, `S14.terminal-backend-select`).** The subprocess run's `echo shell=$0` after `reset=True`, and the session type at the end.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
