@@ -239,8 +239,8 @@ class EventService:
     stored: StoredConversation
     conversations_dir: Path
     # What a NEW conversation starts with. base_state.json owns these from
-    # then on: a resume loads the agent, policy, analyzer and budget from it
-    # and ignores the values here.
+    # then on: a resume keeps the saved agent, policy and analyzer and ignores
+    # the values here. A budget given on a resume replaces the saved one.
     agent: AgentBase | None = None
     initial_confirmation_policy: ConfirmationPolicyBase = field(
         default_factory=NeverConfirm, kw_only=True
@@ -249,8 +249,9 @@ class EventService:
         default=None, kw_only=True
     )
     initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
-    # Added to the registry on every start, new or resumed: a resume gets a
-    # credential its caller just supplied this way.
+    # Added to the registry on every start, new or resumed, except for names
+    # with a credential binding: a resume gets a credential its caller just
+    # supplied this way.
     secrets: dict[str, SecretSource] = field(default_factory=dict, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
@@ -400,9 +401,6 @@ class EventService:
                 raise CredentialNeedsReauthentication(
                     "ChatGPT authentication is invalid. Please sign in again."
                 )
-        for secret_name in bindings:
-            self.secrets.pop(secret_name, None)
-
         if (
             not base_state_file.exists()
             and not meta_file.exists()
@@ -483,7 +481,6 @@ class EventService:
             )
             state.agent = agent
             conversation.agent = agent
-            self.secrets.pop(secret_name, None)
         await self._scrub_persisted_credentials()
 
     async def apply_resume_secrets(
@@ -1405,7 +1402,11 @@ class EventService:
             max_budget_per_run=self.initial_max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
-            secrets=self.secrets,
+            secrets={
+                name: source
+                for name, source in self.secrets.items()
+                if name not in self.credential_bindings
+            },
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,

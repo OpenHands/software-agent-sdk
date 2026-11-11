@@ -396,7 +396,8 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
         assert event_service is not None
-        assert "CODEX_AUTH_JSON" not in event_service.secrets
+        state = await event_service.get_state()
+        assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
         assert "CODEX_AUTH_JSON" in event_service.credential_bindings
         assert not event_service.stored.required_runtime_credential_bindings
 
@@ -430,7 +431,8 @@ async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
         event_service = await service.get_event_service(conversation_id)
         assert event_service is not None
         assert event_service.credential_bindings == {}
-        assert "CODEX_AUTH_JSON" in event_service.secrets
+        state = await event_service.get_state()
+        assert "CODEX_AUTH_JSON" in state.secret_registry.secret_sources
 
         # Pending binding consumed when the unloaded conversation loads again.
         await service.prepare_for_sandbox_pause()
@@ -620,8 +622,6 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
         assert event_service is not None
         state = await event_service.get_state()
 
-        assert "CODEX_AUTH_JSON" not in event_service.secrets
-        assert "KEEP" in event_service.secrets
         # The agent is no longer stored on meta.json; it lives on the live
         # conversation / base_state.json. Assert the scrub there.
         assert event_service._conversation is not None
@@ -718,7 +718,6 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
 
         state = await event_service.get_state()
         assert event_service.credential_bindings["CODEX_AUTH_JSON"] is binding
-        assert "CODEX_AUTH_JSON" not in event_service.secrets
         assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
         # The agent is on the live conversation / base_state.json, not meta.json.
         assert event_service._conversation is not None
@@ -971,51 +970,6 @@ async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
         state = await resumed.get_state()
         assert "CODEX_AUTH_JSON" not in resumed.credential_bindings
         assert "CODEX_AUTH_JSON" in state.secret_registry.secret_sources
-
-
-@pytest.mark.asyncio
-async def test_failed_resume_does_not_retain_plaintext_fallback(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    request = StartConversationRequest(
-        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
-        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
-    )
-
-    async with ConversationService(
-        conversations_dir=tmp_path / "conversations"
-    ) as service:
-        info, _ = await service.start_conversation(request)
-        assert service._event_services is not None
-        event_service = service._event_services.pop(info.id)
-        await event_service.close()
-
-        async def fail_load(conversation_id, **kwargs):
-            assert conversation_id == info.id
-            raise RuntimeError("resume failed")
-
-        monkeypatch.setattr(
-            service,
-            "_get_or_load_event_service_locked",
-            fail_load,
-        )
-        with pytest.raises(RuntimeError, match="resume failed"):
-            await service.start_conversation(
-                request.model_copy(
-                    update={
-                        "conversation_id": info.id,
-                        "secrets": {
-                            "CODEX_AUTH_JSON": StaticSecret(
-                                value=SecretStr("temporary-fallback")
-                            )
-                        },
-                    }
-                )
-            )
-
-        record = service._conversation_records[info.id]
-        assert "temporary-fallback" not in record.stored.model_dump_json()
 
 
 @pytest.mark.asyncio

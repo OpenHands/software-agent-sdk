@@ -2408,9 +2408,9 @@ class ConversationService:
                 if event_service is None:
                     continue
                 # Preserve runtime-only state so rehydration is faithful:
-                # sync the catalog to the current stored (switch_acp_model /
-                # secret updates replace it) and hand back credential bindings
-                # (close() clears them).
+                # sync the catalog to the current stored (title, tags and
+                # required credential bindings can change while live) and hand
+                # back credential bindings (close() clears them).
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
