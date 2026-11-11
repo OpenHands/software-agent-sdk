@@ -4,11 +4,14 @@ import fnmatch
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import IO, Annotated, Any, Literal
 from urllib.parse import quote
@@ -26,6 +29,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from starlette.types import Receive, Scope, Send
 
 from openhands.agent_server._secret_redaction import (
     redacted_json_bytes,
@@ -174,6 +178,27 @@ async def _download_file(path: str) -> FileResponse:
 
 
 _TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+_TRAJECTORY_TEMP_ZIP_NAME = re.compile(r"\.[0-9a-f]{32}-\w+\.zip")
+_TRAJECTORY_TEMP_ZIP_MAX_AGE_SECONDS = 60 * 60
+_TRAJECTORY_ZIP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="trajectory-zip"
+)
+
+
+def _remove_stale_trajectory_temp_zips(conversations_path: Path) -> None:
+    """Remove temp zips left behind when a server died during a download.
+
+    A younger zip may belong to a live download, possibly in another server
+    process sharing this directory, so only old ones are removed.
+    """
+    cutoff = time.time() - _TRAJECTORY_TEMP_ZIP_MAX_AGE_SECONDS
+    with contextlib.suppress(OSError):
+        for path in conversations_path.iterdir():
+            if not _TRAJECTORY_TEMP_ZIP_NAME.fullmatch(path.name):
+                continue
+            with contextlib.suppress(OSError):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
 
 
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
@@ -220,6 +245,14 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
+
+
+class _TemporaryFileResponse(FileResponse):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            Path(self.path).unlink(missing_ok=True)
 
 
 ArchiveFormat = Literal["git-delta", "tar.gz"]
@@ -945,7 +978,6 @@ async def download_trajectory(
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
     config: Config = request.app.state.config
-    temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 
     if not conversation_dir.is_dir():
@@ -954,12 +986,36 @@ async def download_trajectory(
             detail="Conversation not found",
         )
 
-    await asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
-    return FileResponse(
+    await asyncio.to_thread(
+        _remove_stale_trajectory_temp_zips, config.conversations_path
+    )
+
+    # Each request gets its own temp zip: a shared path would let one
+    # response's cleanup, or another request's rewrite, break a download of
+    # the same trajectory that is still being built or streamed.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{conversation_id.hex}-", suffix=".zip", dir=config.conversations_path
+    )
+    os.close(fd)
+    temp_file = Path(tmp_name)
+    zip_task = asyncio.get_running_loop().run_in_executor(
+        _TRAJECTORY_ZIP_EXECUTOR,
+        _create_zip_from_directory,
+        conversation_dir,
+        temp_file,
+    )
+    try:
+        await asyncio.shield(zip_task)
+    except BaseException:
+        try:
+            await zip_task
+        finally:
+            temp_file.unlink(missing_ok=True)
+        raise
+    return _TemporaryFileResponse(
         path=temp_file,
-        filename=temp_file.name,
+        filename=f"{conversation_id.hex}.zip",
         media_type="application/octet-stream",
-        background=BackgroundTask(temp_file.unlink),
     )
 
 

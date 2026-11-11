@@ -741,7 +741,7 @@ Preconditions:
   504 after about 15 s (between 14 and 30), with the masked 5xx body
   `{"detail": "Internal Server Error", "exception": "504: GitHub repository search timed out"}`
   and no token in it.
-- **Live GitHub listing (`F15.repo-search-github`).**
+- **Live GitHub listing (`F15.repo-search-github`), blocked: needs `QA_GITHUB_TOKEN` and egress to `api.github.com`.**
   Needs: `network`
 
   Set `$QA_GITHUB_TOKEN` to a GitHub token with read access to at least three
