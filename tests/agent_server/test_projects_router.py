@@ -2156,3 +2156,31 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
         )
 
     assert admission_refusal(state, from_person=from_person) == refusal
+
+
+@pytest.mark.asyncio
+async def test_the_recipient_sees_the_senders_id(client, service, tmp_path):
+    """Engel: a client may show the sender's mention as its title alone, but
+    the stored message, which is what the recipient's model reads, carries the
+    sender's id."""
+    sender = await _start(service, tmp_path, title="Reply with OK")
+    worker = await _start(service, tmp_path)
+
+    response = await client.post(
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("FYI the palette file is ready.", sender.hex, run=False),
+    )
+
+    assert response.status_code == 200
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+    state = await event_service.get_state()
+    [message] = [
+        e for e in state.events if isinstance(e, MessageEvent) and e.source == "user"
+    ]
+    header = message.llm_message.content[0]
+    assert isinstance(header, TextContent)
+    print(header.text)
+    assert header.text.startswith(
+        f"[Sent by [Reply with OK](conversation:{sender.hex}), "
+    )
