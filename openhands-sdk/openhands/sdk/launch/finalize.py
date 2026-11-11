@@ -34,7 +34,9 @@ class LaunchRuntime(BaseModel):
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
         description=(
-            "'native': an ACP CLI reads its own skills, so none are injected. "
+            "'native': an ACP CLI reads its own skills, so no managed skills "
+            "are injected. Skills a client supplies at launch are kept either "
+            "way. "
             "'openhands_managed': inject the resolved skill catalog."
         ),
     )
@@ -95,9 +97,9 @@ def finalize(
     for suffix in (appended, *extra_suffixes):
         if suffix.strip():
             agent = _append_system_message_suffix(agent, suffix.strip())
+    agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if additions and additions.skills:
         agent = _with_launch_skills(agent, additions.skills)
-    agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if managed_secrets:
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:

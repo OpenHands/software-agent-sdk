@@ -530,6 +530,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 url=f"{self.host}/api/settings/secrets/{item.name}",
                 headers=dict(self._headers),
                 description=item.description,
+                scope=item.scope,
+                scope_description=item.scope_description,
             )
 
         return result
@@ -634,8 +636,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         Clones specified repositories to meaningful directory names (e.g.,
         'openhands-cli' instead of 'repo_0'). Automatically fetches GitHub,
-        GitLab, Bitbucket and Azure DevOps tokens from the agent server's
-        secrets for authentication.
+        GitLab, Bitbucket, Azure DevOps and Bitbucket Data Center tokens from
+        the agent server's secrets for authentication.
 
         Args:
             repos: List of repositories to clone. Can be:

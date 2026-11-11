@@ -46,6 +46,18 @@ export class CanvasExtensionsClient {
     return `/api/canvas-extensions/installed/${encodeURIComponent(name)}/backend${suffix}`;
   }
 
+  async setEnabled(
+    name: string,
+    enabled: boolean,
+    consent?: { revision: string; secret_refs?: string[] }
+  ): Promise<{ name: string; enabled: boolean }> {
+    const response = await this.client.patch<{ name: string; enabled: boolean }>(
+      `/api/canvas-extensions/installed/${encodeURIComponent(name)}`,
+      { enabled, ...consent }
+    );
+    return response.data;
+  }
+
   async getBackendStatus(name: string): Promise<AgentServerCanvasBackendStatusResponse> {
     const response = await this.client.get<AgentServerCanvasBackendStatusResponse>(
       this.backendPath(name)
@@ -71,6 +83,25 @@ export class CanvasExtensionsClient {
     const response = await this.client.post<AgentServerCanvasBackendStartResponse>(
       this.backendPath(name, '/start'),
       { revision }
+    );
+    return response.data;
+  }
+
+  async grantBackendSecrets(
+    name: string,
+    revision: string,
+    secretRefs: string[]
+  ): Promise<AgentServerCanvasBackendStatusResponse> {
+    const response = await this.client.post<AgentServerCanvasBackendStatusResponse>(
+      this.backendPath(name, '/secret-grant'),
+      { revision, secret_refs: secretRefs }
+    );
+    return response.data;
+  }
+
+  async revokeBackendSecrets(name: string): Promise<AgentServerCanvasBackendStatusResponse> {
+    const response = await this.client.delete<AgentServerCanvasBackendStatusResponse>(
+      this.backendPath(name, '/secret-grant')
     );
     return response.data;
   }

@@ -53,7 +53,6 @@ from openhands.sdk.llm._tokenizer import (
     count_tokenized_output,
     load_chat_template_tokenizer,
 )
-from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
@@ -121,13 +120,11 @@ from litellm.utils import (
     create_pretrained_tokenizer,
     token_counter,
 )
-from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
-    is_quota_exhaustion_error,
     looks_like_auth_error,
     map_provider_exception,
 )
@@ -136,6 +133,7 @@ from openhands.sdk.llm.exceptions import (
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
     Message,
+    TextContent,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -154,11 +152,13 @@ from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
     litellm_call_kwargs,
 )
-from openhands.sdk.llm.utils.retry_mixin import RetryMixin
+from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_condition
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -379,7 +379,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
     retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
-    retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
+    retry_max_wait: int = Field(
+        default=64,
+        ge=0,
+        description=(
+            "Maximum retry wait in seconds. A longer provider Retry-After hint "
+            "stops retries instead of retrying before the requested delay."
+        ),
+        json_schema_extra=field_meta(),
+    )
 
     timeout: int | None = Field(
         default=300,
@@ -1146,13 +1154,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Exhausted allowances skip backoff. Provider quota errors may fall back;
         explicit budget denials stop without trying another model.
         """
-        retry_condition = (
-            retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
-            | retry_if_exception(is_transient_http_error)
-        ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=retry_condition,
+            retry_exceptions=transient_error_condition(LLM_RETRY_EXCEPTIONS),
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
@@ -3044,7 +3048,52 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         messages = copy.deepcopy(messages)
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
+        messages = self._apply_proxy_system_identity(messages)
         return messages, self.vision_is_active()
+
+    def _uses_openhands_proxy(self) -> bool:
+        """Whether this LLM's requests go to the OpenHands LLM proxy."""
+        call_kwargs = self._litellm_call_kwargs()
+        return is_openhands_proxy_base_url(call_kwargs["api_base"])
+
+    def _apply_proxy_system_identity(self, messages: list[Message]) -> list[Message]:
+        """Lead proxy calls with the default identity.
+
+        The OpenHands LLM proxy rejects requests whose leading system text
+        does not start with :data:`OPENHANDS_SYSTEM_IDENTITY` (HTTP 403
+        ``Request rejected by proxy policy``). Agent conversations always
+        lead with that identity via the SOUL prompt section, but bare
+        ``LLM.completion()`` / ``generate()`` calls (registry demos, hooks,
+        sub-LLM metering) send no system message — or a task-specific one
+        such as a hook policy — and are rejected. When the call does not
+        already lead with the identity, prepend it as its own system
+        message; caller messages are kept verbatim and in order.
+        """
+        if not self._uses_openhands_proxy():
+            return messages
+        if messages and messages[0].role == "system":
+            lead = "".join(
+                part.text
+                for part in messages[0].content
+                if isinstance(part, TextContent)
+            )
+            if lead.startswith(OPENHANDS_SYSTEM_IDENTITY):
+                return messages
+        identity = Message(
+            role="system",
+            content=[TextContent(text=OPENHANDS_SYSTEM_IDENTITY)],
+        )
+        return [identity, *messages]
+
+    def _proxy_instructions(self, instructions: str | None) -> str | None:
+        """Responses-API counterpart of :meth:`_apply_proxy_system_identity`."""
+        if not self._uses_openhands_proxy():
+            return instructions
+        if instructions is None:
+            return OPENHANDS_SYSTEM_IDENTITY
+        if instructions.startswith(OPENHANDS_SYSTEM_IDENTITY):
+            return instructions
+        return f"{OPENHANDS_SYSTEM_IDENTITY}\n\n{instructions}"
 
     def _prepare_chat_messages(self, messages: list[Message]) -> list[Message]:
         """Apply the cache+inline+resize passes, returning detached messages."""
@@ -3150,7 +3199,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         if self.is_subscription:
             return transform_for_subscription(system_chunks, input_items)
-        return instructions, input_items
+        return self._proxy_instructions(instructions), input_items
 
     def format_messages_for_responses(
         self, messages: list[Message]

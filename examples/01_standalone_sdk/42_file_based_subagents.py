@@ -16,8 +16,7 @@ from openhands.sdk import (
     register_agent,
 )
 from openhands.sdk.subagent import AgentDefinition
-from openhands.tools.delegate import DelegationVisualizer
-from openhands.tools.task import TaskToolSet
+from openhands.tools.task import DelegationVisualizer, TaskToolSet
 
 
 # 1. Define a sub-agent using AgentDefinition

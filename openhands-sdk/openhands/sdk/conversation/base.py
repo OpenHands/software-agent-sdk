@@ -258,6 +258,13 @@ class BaseConversation(ABC):
 
         This method runs the agent until it finishes processing the current
         message or reaches the maximum iteration limit.
+
+        When the run ends because the iteration limit is reached
+        (``ERROR``) or the agent is stuck (``STUCK``), the implementations
+        differ: ``LocalConversation.run()`` returns and leaves that status in
+        ``state.execution_status``, while ``RemoteConversation.run()`` raises
+        :class:`ConversationRunError`. Errors raised during the run, such as
+        LLM errors, raise ``ConversationRunError`` in both.
         """
         ...
 
@@ -472,10 +479,10 @@ class BaseConversation(ABC):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Deprecated on ``LocalConversation`` since 1.54.0 — has no
-                effect there and emits a ``DeprecationWarning``. Still
-                honoured by ``RemoteConversation`` (passed to the agent
-                server which stores it on ``StoredConversation``).
+            title: Honoured by ``RemoteConversation`` (passed to the agent
+                server which stores it on ``StoredConversation``); accepted
+                but ignored by ``LocalConversation``, which has no title
+                field.
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.

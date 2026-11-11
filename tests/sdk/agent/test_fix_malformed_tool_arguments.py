@@ -57,6 +57,13 @@ class StrOrListAction(Action):
     value: str | list[str] = Field(description="A str-or-list field")
 
 
+class OptionalAnnotatedAction(Action):
+    """Optional fields whose inner type carries ``Annotated`` metadata."""
+
+    items: Annotated[list[int], Field(description="Optional list")] | None = None
+    text: Annotated[str, Field(description="Optional string")] | None = None
+
+
 class _NestedActionForMalformedArgs(Action):
     """Action with nested structures for testing JSON decoding.
 
@@ -383,3 +390,11 @@ def test_str_or_list_field_list_passthrough():
     action = StrOrListAction.model_validate(fixed_data)
 
     assert action.value == ["a", "b", "c"]
+
+
+def test_optional_annotated_fields_are_repaired():
+    data = {"items": "[1, 2]", "text": ["a", "b"]}
+
+    fixed = fix_malformed_tool_arguments(data, OptionalAnnotatedAction)
+
+    assert fixed == {"items": [1, 2], "text": "ab"}

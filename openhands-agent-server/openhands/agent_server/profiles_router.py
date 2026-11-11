@@ -12,6 +12,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    profile_key_mismatch,
     store_errors,
     translate_missing_cipher,
 )
@@ -42,6 +43,7 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.pydantic_secrets import SecretDecryptionError
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -153,7 +155,7 @@ def _set_active_profile_if_matches(
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
-async def list_profiles(request: Request) -> ProfileListResponse:
+def list_profiles(request: Request) -> ProfileListResponse:
     """List all saved LLM profiles.
 
     Returns the list of profiles along with the currently active profile name,
@@ -175,7 +177,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
-async def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
+def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
     """Get a profile's configuration.
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
@@ -219,7 +221,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     response_model=ProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_profile(
+def save_profile(
     request: Request,
     name: ProfileName,
     body: SaveProfileRequest,
@@ -227,7 +229,9 @@ async def save_profile(
     """Save an LLM configuration as a named profile.
 
     Overwrites an existing profile of the same name. Returns 409 if creating
-    a new profile would exceed ``MAX_PROFILES``.
+    a new profile would exceed ``MAX_PROFILES``, or if the existing profile
+    holds a key the current cipher cannot decrypt (saved under another
+    ``OH_SECRET_KEY``): overwriting it would lose that key.
 
     When ``OH_SECRET_KEY`` is configured, secrets are encrypted at rest.
     Clients can submit cipher-encrypted secrets which will be decrypted
@@ -245,6 +249,8 @@ async def save_profile(
                 cipher=cipher,
                 max_profiles=MAX_PROFILES,
             )
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(name, e)
     except ProfileLimitExceeded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -418,9 +424,7 @@ async def validate_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(
-    request: Request, name: ProfileName
-) -> ProfileMutationResponse:
+def delete_profile(request: Request, name: ProfileName) -> ProfileMutationResponse:
     """Delete a saved profile (idempotent).
 
     Guarded by the agent-profile FK: returns 409 naming the referrers if any
@@ -440,7 +444,7 @@ async def delete_profile(
 
 
 @profiles_router.post("/{name}/rename", response_model=ProfileMutationResponse)
-async def rename_profile(
+def rename_profile(
     request: Request,
     name: ProfileName,
     body: RenameProfileRequest,
@@ -492,9 +496,7 @@ class ActivateProfileResponse(BaseModel):
 
 
 @profiles_router.post("/{name}/activate", response_model=ActivateProfileResponse)
-async def activate_profile(
-    request: Request, name: ProfileName
-) -> ActivateProfileResponse:
+def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResponse:
     """Activate a saved LLM profile.
 
     This endpoint:
@@ -503,7 +505,9 @@ async def activate_profile(
        ``agent_settings.llm``); ACP settings have no LLM to update
     3. Records the profile name as the active profile for frontend tracking
 
-    Returns 404 if the profile does not exist.
+    Returns 404 if the profile does not exist, and 409 if its stored key
+    cannot be decrypted with the current cipher (saved under another
+    ``OH_SECRET_KEY``) instead of applying an LLM without a key.
 
     Use ``GET /api/profiles`` to see which profile is currently active via
     the ``active_profile`` field.
@@ -520,7 +524,9 @@ async def activate_profile(
     # store_errors() maps to 422.
     try:
         with store_errors():
-            llm = profile_store.load(name, cipher=cipher)
+            llm = profile_store.load(name, cipher=cipher, strict=True)
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(name, e)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self, cast
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
@@ -32,6 +32,7 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import drop_mcp_servers_without_endpoint
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -110,6 +111,11 @@ class ConversationState(OpenHandsModel):
         gt=0,
         description="Maximum number of iterations the agent can "
         "perform in a single run.",
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description="USD limit on accumulated conversation LLM cost; "
+        "None means unbounded.",
     )
     stuck_detection: bool = Field(
         default=True,
@@ -256,6 +262,22 @@ class ConversationState(OpenHandsModel):
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_stored_mcp_servers_without_endpoint(cls, data: Any) -> Any:
+        """Let a persisted state with an endpoint-less MCP server still load.
+
+        Such a server was accepted before ``MCPServer`` required ``command``
+        or ``url``; it never contributed tools, so drop it rather than fail.
+        """
+        if not isinstance(data, dict):
+            return data
+        agent = data.get("agent")
+        if isinstance(agent, dict) and isinstance(agent.get("mcp_config"), dict):
+            mcp_config = drop_mcp_servers_without_endpoint(agent["mcp_config"])
+            data = {**data, "agent": {**agent, "mcp_config": mcp_config}}
+        return data
+
     @property
     def events(self) -> EventLog:
         return self._events
@@ -291,6 +313,28 @@ class ConversationState(OpenHandsModel):
             if not isinstance(self._events[i], artifacts):
                 return self._events.get_id(i)
         return None
+
+    def _repair_missing_leaf(self) -> bool:
+        """Move a persisted HEAD whose event file was lost onto a surviving event.
+
+        The lost event held its own parent, so the branch it was on cannot be
+        recovered; HEAD falls back to the lineage rule (the last real event, or
+        no HEAD for an empty log), and the warning says so. Returns whether
+        HEAD was moved.
+        """
+        lost = self.leaf_event_id
+        if lost is None or lost in self._events:
+            return False
+        self.leaf_event_id = None
+        self.leaf_event_id = self._resolve_active_leaf()
+        logger.warning(
+            "HEAD event '%s' is missing from the event log (its file was lost); "
+            "moved HEAD to '%s', the last surviving event. If HEAD was on "
+            "another branch, navigate back to it.",
+            lost,
+            self.leaf_event_id,
+        )
+        return True
 
     def active_branch(self, limit: int | None = None) -> list[Event]:
         """Raw events on the active branch (``path_to_root(leaf)``), root-first.
@@ -463,6 +507,7 @@ class ConversationState(OpenHandsModel):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
+        max_budget_per_run: float | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -488,6 +533,8 @@ class ConversationState(OpenHandsModel):
                 value is still stored on the state and used for environment
                 observation paths.
             max_iterations: Maximum iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. None preserves a
+                resumed state's cap and leaves new conversations unbounded.
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
                     persisted state. If provided, secrets are encrypted when
@@ -540,6 +587,7 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+            head_repaired = state._repair_missing_leaf()
 
             # Cold-load: rebuild the cached view with full property
             # enforcement — persisted events may come from an older code
@@ -548,6 +596,8 @@ class ConversationState(OpenHandsModel):
 
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
+            if head_repaired:  # persist it so the next load does not repeat it
+                state._save_base_state(file_store)
             # Agent: base_state.json is the single source of truth. When the
             # caller does not supply an agent (``agent is None``), keep the
             # persisted one untouched — this is what lets a persisted
@@ -560,6 +610,8 @@ class ConversationState(OpenHandsModel):
                 state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
+            if max_budget_per_run is not None:
+                state.max_budget_per_run = max_budget_per_run
 
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
@@ -579,6 +631,7 @@ class ConversationState(OpenHandsModel):
             workspace=workspace,
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
         )

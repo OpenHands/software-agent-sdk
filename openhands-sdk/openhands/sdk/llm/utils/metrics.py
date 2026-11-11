@@ -282,14 +282,12 @@ class Metrics(MetricsSnapshot):
         # Calculate cost difference
         result.accumulated_cost = self.accumulated_cost - baseline.accumulated_cost
 
-        # Include only costs that were added after the baseline
-        if baseline.costs:
-            last_baseline_timestamp = baseline.costs[-1].timestamp
-            result.costs = [
-                cost for cost in self.costs if cost.timestamp > last_baseline_timestamp
-            ]
-        else:
-            result.costs = self.costs.copy()
+        # Include only the costs appended after the baseline. The baseline is a
+        # prefix of this history, so slice by position rather than filtering on
+        # timestamps: a cost recorded in the same clock tick (or after a
+        # backwards clock step) would be dropped while accumulated_cost counts
+        # it, leaving the two disagreeing.
+        result.costs = self.costs[len(baseline.costs) :]
 
         # Include only response latencies that were added after the baseline
         result.response_latencies = self.response_latencies[

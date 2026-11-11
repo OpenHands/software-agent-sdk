@@ -3,9 +3,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import traceback
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
 from importlib.metadata import version
 from pathlib import Path
@@ -17,7 +19,10 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 from starlette.requests import Request
+from starlette.types import ASGIApp
 
 from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
@@ -121,6 +126,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SOCKET_NAME,
     TMUX_SOCKET_OWNER_OPTION,
 )
+from openhands.tools.terminal.env import UTF8_FALLBACK_LOCALE, ensure_utf8_locale
 from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
@@ -261,6 +267,38 @@ def _cleanup_stale_tmux_sessions() -> None:
         _reclaim_stale_tmux_sockets(socket_dir)
 
 
+TRACE_FLUSH_TIMEOUT_MILLIS = 5000
+
+
+async def _flush_trace_export() -> None:
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        return
+    outcome: Future[bool] = Future()
+    outcome.set_running_or_notify_cancel()
+
+    def flush() -> None:
+        try:
+            outcome.set_result(provider.force_flush(TRACE_FLUSH_TIMEOUT_MILLIS))
+        except Exception as exc:
+            outcome.set_exception(exc)
+
+    threading.Thread(target=flush, name="shutdown-trace-flush", daemon=True).start()
+    try:
+        flushed = await asyncio.wait_for(
+            asyncio.wrap_future(outcome), TRACE_FLUSH_TIMEOUT_MILLIS / 1000
+        )
+    except TimeoutError:
+        flushed = False
+    except Exception:
+        logger.warning("Shutdown trace flush failed", exc_info=True)
+        return
+    if not flushed:
+        logger.warning(
+            "Shutdown trace flush timed out after %d ms", TRACE_FLUSH_TIMEOUT_MILLIS
+        )
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
@@ -268,6 +306,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
         _ensure_server_tmux_tmpdir()
     )
+    # Stale-session cleanup below queries tmux before any terminal exists.
+    locale_override = ensure_utf8_locale() if os.name == "posix" else None
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
@@ -435,6 +475,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             await backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
+        await _flush_trace_export()
 
         if tmux_tmpdir_was_defaulted:
             if os.environ.get("TMUX_TMPDIR") == str(tmux_tmpdir):
@@ -442,6 +483,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     os.environ.pop("TMUX_TMPDIR", None)
                 else:
                     os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if locale_override is not None:
+            locale_name, original_locale = locale_override
+            if os.environ.get(locale_name) == UTF8_FALLBACK_LOCALE:
+                if original_locale is None:
+                    os.environ.pop(locale_name, None)
+                else:
+                    os.environ[locale_name] = original_locale
         if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
             if original_session_api_key is None:
                 os.environ.pop(V1_SESSION_API_KEY_ENV, None)
@@ -518,13 +566,25 @@ def _get_root_path(config: Config) -> str:
     return root_path
 
 
+class AgentServerApp(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # ServerErrorMiddleware creates unhandled 500 responses outside user
+        # middleware, so CORS must wrap the complete stack to decorate them.
+        config = self.state.config
+        return CORSDispatcher(
+            super().build_middleware_stack(),
+            allow_origins=config.allow_cors_origins,
+            allow_origin_regex=config.allow_cors_origin_regex,
+        )
+
+
 def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
         Basic FastAPI application with title, description, and lifespan.
     """
-    return FastAPI(
+    return AgentServerApp(
         title="OpenHands Agent Server",
         version=version("openhands-agent-server"),
         description=(
@@ -867,10 +927,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
             return JSONResponse(
                 status_code=exc.status_code,
                 content=content,
+                headers=exc.headers,
             )
 
-        # Return clean JSON response for all non-5xx HTTP exceptions
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
+        # exception's headers (e.g. Retry-After, WWW-Authenticate).
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
 
 def create_app(config: Config | None = None) -> FastAPI:
@@ -898,11 +964,9 @@ def create_app(config: Config | None = None) -> FastAPI:
         )
 
         app.add_middleware(RuntimeDispatchMiddleware)
-    app.add_middleware(
-        CORSDispatcher,
-        allow_origins=config.allow_cors_origins,
-        allow_origin_regex=config.allow_cors_origin_regex,
-    )
+    # CORS is not added as user middleware here: AgentServerApp wraps the
+    # complete stack (including ServerErrorMiddleware) in CORSDispatcher so
+    # unhandled 500 responses also carry CORS headers.
     _add_exception_handlers(app)
 
     return app

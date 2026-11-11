@@ -854,6 +854,65 @@ def test_delete_active_acp_profile_keeps_mcp_registry(client, store):
     assert agent_settings["mcp_config"].keys() == {"github"}
 
 
+def test_delete_active_acp_profile_keeps_server_wide_settings(client, store):
+    store.save(ACPAgentProfile(name="codex-test", acp_server="codex"))
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+    seeded = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    assert client.delete("/api/agent-profiles/codex-test").status_code == 200
+
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert settings["agent_kind"] == "openhands"
+    assert settings["agent_context"]["load_memory"] is True
+    assert settings["verification"]["critic_api_key"] == "critic-key"
+
+
+def test_openhands_profile_keeps_server_wide_settings_while_settings_are_acp(
+    client, store
+):
+    seeded = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+    switched = client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert switched.status_code == 200
+    client.post(
+        "/api/profiles/qa-llm",
+        json={"llm": {"model": "openai/qa", "api_key": "llm-key"}},
+    )
+    store.save(OpenHandsAgentProfile(name="qa-oh", llm_profile_ref="qa-llm"))
+
+    resolved = client.post("/api/agent-profiles/qa-oh/materialize").json()[
+        "resolved_settings"
+    ]
+
+    assert resolved["verification"]["critic_api_key"] == "**********"
+    assert resolved["agent_context"]["load_memory"] is True
+
+
 def test_delete_active_openhands_profile_clears_stale_acp_settings(client, store):
     """The reset keys off ``agent_settings``, not the deleted profile's kind."""
     store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))

@@ -50,6 +50,14 @@ for fixtures, `tmux` for bash and terminal tools, and a DeepSeek key for
 model-backed recipes. Every command prints one JSON object; exit 0 ok,
 1 action failed, 2 usage, 3 environment.
 
+In a container whose PID 1 does not reap children, run the entire
+`map run --fresh` or test command under a subreaper such as `tini -s --`
+(Docker's `docker-init -s --` is also suitable). For manual runs, wrap the
+shell containing launch, drive and stop; wrapping launch alone exits the
+supervisor too early. Otherwise exited descendants can remain zombies, causing cleanup
+checks to mistake them for live work. Keep the original failure evidence and
+report this environment difference; do not weaken the cleanup assertions.
+
 If an agent-facing path cannot be driven with the CLI, that is a **harness
 gap**: extend `scripts/control_agent_server.py` (document the verb in its
 `--help` with examples and in this file), prove it live, then write the recipe.
@@ -127,6 +135,9 @@ control-agent-server stop                       # stops only this run; evidence 
   server's real LLM client. Use it only for provider behavior a real model
   cannot produce on demand (a 401, a 500, a hang, an exact tool call such as
   `finish` or a risky command); every happy path runs on a real model.
+  A status step can include a provider error body, for example
+  `--step 'status:429:{"error":{"message":"Quota exceeded","type":"insufficient_quota","code":"insufficient_quota"}}'`,
+  so quota exhaustion and transient rate limiting can be distinguished.
   A recipe-local process that later bullets use (an HTTP fixture server, a
   proxy) runs under `helper start --name NAME -- CMD`, not `CMD &`: `map run`
   ends each bullet's process group when the bullet ends.
@@ -199,7 +210,8 @@ to another service; require real scored events before recording a pass.
 - **Re-prove the map**: every family's recipes are fenced `sh` blocks whose
   commands assert their own expectations, so
   `control-agent-server map run --file Fnn --fresh --record` replays a family
-  on its own fresh run (with the family's `Launch:` flags) and writes ledger
+  on its own fresh run (with the family's `Launch:` flags), requires a
+  passing `doctor` before the first recipe, and writes ledger
   rows, and `control-agent-server map run --all --fresh --record` replays the
   whole map. Only failing bullets need judgment; `known bug` bullets report as
   expected failures until the bug is fixed.
