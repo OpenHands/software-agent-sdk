@@ -195,9 +195,19 @@ def _process_schema_node(
         else:
             result["items"] = _process_schema_node(items, defs, _visiting)
 
-    # Handle enum
-    if "enum" in node:
-        result["enum"] = node["enum"]
+    # Preserve value constraints, including falsy constants.
+    for keyword in ("enum", "pattern", "const"):
+        if keyword in node:
+            result[keyword] = node[keyword]
+
+    # Additional properties may be a boolean or a schema containing references.
+    if "additionalProperties" in node:
+        additional = node["additionalProperties"]
+        result["additionalProperties"] = (
+            _process_schema_node(additional, defs, _visiting)
+            if isinstance(additional, dict)
+            else additional
+        )
 
     return result
 
