@@ -1218,3 +1218,84 @@ async def test_failed_canonical_preflight_preserves_legacy_auth_file(tmp_path) -
             )
 
         assert legacy_auth_file.read_text(encoding="utf-8") == "only-legacy-copy"
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_a_bound_credential_out_of_the_registry(tmp_path) -> None:
+    """A start secret named like a bound credential never reaches the
+    conversation: the binding is its only source."""
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret("CODEX_AUTH_JSON", "canonical")
+    service = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        ),
+        conversations_dir=tmp_path / "conversations",
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        secrets={
+            "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("request-copy")),
+            "KEEP": StaticSecret(value=SecretStr("keep-value")),
+        },
+        credential_bindings={
+            "CODEX_AUTH_JSON": LocalVersionedCredentialBinding(store, "CODEX_AUTH_JSON")
+        },
+    )
+    await service.start()
+    try:
+        sources = (await service.get_state()).secret_registry.secret_sources
+        assert set(sources) == {"KEEP"}
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_takes_legacy_meta_secrets_but_not_a_bound_credential(
+    tmp_path,
+) -> None:
+    """An older server's meta.json can hold the Codex credential next to other
+    start-time secrets. With a managed credential bound, the first resume takes
+    over the others and keeps that one out of base_state.json."""
+    store = FileSecretsStore(tmp_path / "settings")
+    cipher = Cipher("legacy-binding-key")
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    conversation_dir = conversations_dir / info.id.hex
+    meta_file = conversation_dir / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        name: StaticSecret(value=SecretStr(value)).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+        for name, value in {
+            "CODEX_AUTH_JSON": "legacy-copy",
+            "KEEP": "keep-value",
+        }.items()
+    }
+    meta_file.write_text(json.dumps(meta))
+    store.set_secret(
+        "CODEX_AUTH_JSON",
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"refresh_token": "r"}}),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+    ) as service:
+        resumed = await service.get_event_service(info.id)
+        assert resumed is not None
+        assert "CODEX_AUTH_JSON" in resumed.credential_bindings
+        sources = (await resumed.get_state()).secret_registry.secret_sources
+        assert sources["KEEP"].get_value() == "keep-value"
+        assert "CODEX_AUTH_JSON" not in sources
+
+    base_state = json.loads((conversation_dir / "base_state.json").read_text())
+    assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]
+    assert "secrets" not in json.loads(meta_file.read_text())

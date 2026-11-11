@@ -29,6 +29,7 @@ from openhands.agent_server.conversation_service import (
     _plan_conversation_worktree,
 )
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.launch import request_security_analyzer
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -58,6 +59,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_llm_analyzer import (
     ToolShieldLLMSecurityAnalyzer,
@@ -5091,3 +5093,46 @@ async def test_fork_conversation_preserves_secrets(tmp_path):
         secret = registry.secret_sources.get("MY_TOKEN")
         assert secret is not None
         assert secret.get_value() == "s3kr3t-value"
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_decrypts_encrypted_conversation_secrets(tmp_path):
+    """With secrets_encrypted=True (the Agent Canvas create path) a conversation
+    secret arrives as cipher text and the conversation gets its plain value."""
+    cipher = Cipher("request-secrets-key")
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    encrypted = cipher.encrypt(SecretStr("plain-token-value"))
+    assert encrypted is not None
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        secrets={"TOKEN": StaticSecret(value=SecretStr(encrypted))},
+        secrets_encrypted=True,
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        state = await event_service.get_state()
+        token = state.secret_registry.secret_sources["TOKEN"]
+        assert token.get_value() == "plain-token-value"
+
+
+def test_request_security_analyzer_refuses_encrypted_secrets_without_a_cipher(
+    tmp_path,
+):
+    """secrets_encrypted=True on a server with no cipher is an error, not an
+    analyzer whose key is the cipher text."""
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        security_analyzer=LLMSecurityAnalyzer(),
+        secrets_encrypted=True,
+    )
+
+    with pytest.raises(ValueError, match="cipher not configured"):
+        request_security_analyzer(request, None)

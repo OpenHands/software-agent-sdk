@@ -27,7 +27,11 @@ from openhands.sdk.conversation.request import (
     StartConversationRequest,
 )
 from openhands.sdk.secret import StaticSecret
-from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.security.confirmation_policy import (
+    AlwaysConfirm,
+    ConfirmRisky,
+    NeverConfirm,
+)
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -278,3 +282,85 @@ async def test_child_inherits_what_its_parent_has_now(tmp_path):
     }
     meta = json.loads((child_dir / "meta.json").read_text())
     assert not {"confirmation_policy", "security_analyzer", "secrets"} & set(meta)
+
+
+async def test_unreadable_legacy_meta_secrets_do_not_block_the_resume(tmp_path):
+    """A ``secrets`` key this server cannot parse (a secret kind it does not
+    know) is left behind: the conversation loads with what base_state.json has."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("restore-mutations-key")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(_request(workspace_dir))
+
+    meta_file = conversations_dir / info.id.hex / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {"GONE": {"kind": "SecretKindFromARemovedPlugin"}}
+    meta_file.write_text(json.dumps(meta))
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        restored = await service.get_event_service(info.id)
+        assert restored is not None
+        secrets = (await restored.get_state()).secret_registry.secret_sources
+        assert set(secrets) == {"START_TOKEN"}
+        assert secrets["START_TOKEN"].get_value() == "start-value"
+
+
+@pytest.mark.asyncio
+async def test_start_request_for_an_existing_id_does_not_reseed_its_state(tmp_path):
+    """A second start request with the id of an existing conversation returns
+    that conversation: its policy, analyzer and secrets stay as saved, whether
+    it is loaded or not, whatever the request carries."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("restore-mutations-key")
+    conversation_id = uuid4()
+    first = _request(workspace_dir).model_copy(
+        update={
+            "conversation_id": conversation_id,
+            "confirmation_policy": AlwaysConfirm(),
+            "security_analyzer": LLMSecurityAnalyzer(),
+        }
+    )
+    again = first.model_copy(
+        update={
+            "confirmation_policy": ConfirmRisky(),
+            "security_analyzer": None,
+            "secrets": {
+                "START_TOKEN": StaticSecret(value=SecretStr("second-value")),
+                "EXTRA": StaticSecret(value=SecretStr("extra-value")),
+            },
+        }
+    )
+
+    async def assert_unchanged(service: ConversationService) -> None:
+        event_service = await service.get_event_service(conversation_id)
+        assert event_service is not None
+        state = await event_service.get_state()
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+        secrets = state.secret_registry.secret_sources
+        assert set(secrets) == {"START_TOKEN"}
+        assert secrets["START_TOKEN"].get_value() == "start-value"
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        await service.start_conversation(first)
+        _, started = await service.start_conversation(again)
+        assert not started
+        await assert_unchanged(service)
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        _, started = await service.start_conversation(again)
+        assert not started
+        await assert_unchanged(service)

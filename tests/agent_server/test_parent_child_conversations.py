@@ -428,6 +428,7 @@ async def test_start_child_conversation_inherits_parent_state_config(
     assert child_state.security_analyzer is not parent_state.security_analyzer
     token = child_state.secret_registry.secret_sources["TOKEN"]
     assert token.get_value() == "shh"
+    assert token is not parent_state.secret_registry.secret_sources["TOKEN"]
 
 
 def _launch_child_like_the_tool(

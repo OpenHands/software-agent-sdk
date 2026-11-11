@@ -6,13 +6,20 @@ import uuid
 
 import pytest
 
+import openhands.agent_server.telemetry.service as telemetry_service
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.telemetry import models as m
-from openhands.agent_server.telemetry.factory import DiagnosticEventFactory
+from openhands.agent_server.telemetry.factory import (
+    DiagnosticEventFactory,
+    build_runtime_properties,
+)
 from openhands.agent_server.telemetry.subscriber import (
     ConversationTelemetryContext,
     TelemetrySubscriber,
 )
+from openhands.sdk import LLM, Agent
 from openhands.sdk.event import (
     AgentErrorEvent,
     ConversationStateUpdateEvent,
@@ -20,6 +27,8 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.workspace import LocalWorkspace
 
 
 class CollectingSink:
@@ -738,3 +747,38 @@ async def test_event_count_ignores_streaming_deltas(factory):
         await pub_sub(StreamingDeltaEvent(content="tok"))
 
     assert sub._event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_created_reports_the_conversations_policy(
+    tmp_path, monkeypatch
+):
+    """The policy in ``conversation_created`` is the one the conversation
+    runs under."""
+    sink = CollectingSink()
+    monkeypatch.setattr(telemetry_service, "_telemetry_sink", sink)
+    monkeypatch.setattr(
+        telemetry_service,
+        "_event_factory",
+        DiagnosticEventFactory(runtime=build_runtime_properties(deferred_init=False)),
+    )
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=AlwaysConfirm(),
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        await service.start_conversation(request)
+
+    [created] = [
+        event.properties
+        for event in sink.events
+        if event.event_name == m.EventName.CONVERSATION_CREATED
+    ]
+    assert isinstance(created, m.ConversationStartedProperties)
+    assert created.confirmation_policy == "alwaysconfirm"
