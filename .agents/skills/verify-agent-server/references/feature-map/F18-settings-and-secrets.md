@@ -22,7 +22,8 @@ Needs: `git`, `node`
 Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema`,
 `GET /api/settings`, `PATCH /api/settings`, `GET /api/settings/secrets`,
 `GET /api/settings/secrets/{name}`, `PUT /api/settings/secrets`,
-`DELETE /api/settings/secrets/{name}`
+`DELETE /api/settings/secrets/{name}`, `GET /api/settings/experimental`,
+`PATCH /api/settings/experimental/{key}`
 
 ## Sub-features
 
@@ -48,6 +49,8 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.sdk-clone-repos`: with the server secret `GITHUB_TOKEN` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/GITHUB_TOKEN` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`GITLAB_TOKEN`) clones anonymously, and `get_repos_context()` names both clones.
 - `F18.ts-client`: the TypeScript `SettingsClient` reads both schemas, reads settings redacted, `plaintext` and `encrypted`, applies a sparse `updateSettings` that a second read shows, upserts, lists (also with `agentProfileId`), reads as text and deletes a secret, and rejects an unknown secret (404), a bad name (422) and a wrong key (401) with an `HttpError`.
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
+- `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (none are registered yet, so `[]`) without creating `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing.
+- `F18.upgrade-from-release`: settings, an LLM key and a secret saved by the latest released server read back identical after the same state is restarted on this checkout (`restart --checkout`), the upgrade does not rewrite either file, and the experimental routes answer.
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
 - `F18.no-cipher`: without any cipher key, `X-Expose-Secrets: encrypted` is 503, `plaintext` still works, both files store plaintext, and the secrets routes are open without a key.
 - `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with 422 and neither wipes an existing value nor leaves a listed but unreadable secret (fixed by #5682).
@@ -662,6 +665,46 @@ Preconditions:
     --expect 200 --check conversation_settings.max_iterations eq 500 --check conversation_settings.confirmation_mode eq false
   ```
   Every value written before the restart reads back unchanged.
+- **Experimental features (`F18.experimental-features`).** List them and try
+  to switch one the server does not know.
+  ```sh
+  control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 0 --save F18.experimental-features/list
+  control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{"enabled": true}' --expect 404 \
+    --check detail eq 'Unknown experimental feature: qa_f18_unknown' --save F18.experimental-features/unknown
+  control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{}' --expect 422
+  control-agent-server api GET /api/settings/experimental --auth none --expect 401
+  if grep -qs experimental_features "$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"; then false; fi
+  ```
+  No feature is registered yet, so the list is `[]` and every key is unknown
+  (404). The refused switch leaves `settings.json` without an
+  `experimental_features` entry. A feature added to `EXPERIMENTAL_FEATURES`
+  appears in the list as `{key, label, description, enabled}` and its switch
+  is stored in `experimental_features` by key.
+- **Upgrade from the latest release (`F18.upgrade-from-release`).** A second
+  run starts on the newest release tag, saves settings as a user of that
+  release would, and is restarted on this checkout over the same state.
+  ```sh
+  HERE="${AGENT_SERVER_VERIFY_CHECKOUT:-$PWD}"
+  TAG=$(git -C "$HERE" describe --tags --abbrev=0 --match 'v*')
+  REL="$F18/release-$TAG"
+  git -C "$HERE" worktree add --detach "$REL" "$TAG" >/dev/null 2>&1
+  UP=$(control-agent-server launch --new --name f18-upgrade --checkout "$REL" --timeout 900 --print-run)
+  trap 'control-agent-server stop --run "$UP" >/dev/null; git -C "$HERE" worktree remove --force "$REL"' EXIT
+  control-agent-server api PATCH /api/settings --run "$UP" --json '{"agent_settings_diff": {"llm": {"model": "openai/qa-f18-upgrade", "api_key": "qa-f18-upgrade-key"}}, "conversation_settings_diff": {"max_iterations": 77}, "misc_settings_diff": {"qa_f18": "from-release"}}' --expect 200
+  control-agent-server api PUT /api/settings/secrets --run "$UP" --json '{"name": "QA_F18_UPGRADE", "value": "qa-f18-upgrade-secret"}' --expect 200
+  BEFORE=$(sha256sum "$UP/home/.openhands/settings.json" "$UP/home/.openhands/secrets.json")
+  control-agent-server restart --run "$UP" --checkout "$HERE"
+  control-agent-server api GET /api/settings --run "$UP" --header 'X-Expose-Secrets: plaintext' --expect 200 \
+    --check agent_settings.llm.model eq openai/qa-f18-upgrade --check agent_settings.llm.api_key eq qa-f18-upgrade-key \
+    --check conversation_settings.max_iterations eq 77 --check misc_settings.qa_f18 eq from-release --save F18.upgrade-from-release/settings
+  control-agent-server api GET /api/settings/secrets/QA_F18_UPGRADE --run "$UP" --expect 200 --check . eq qa-f18-upgrade-secret
+  control-agent-server api GET /api/settings/experimental --run "$UP" --expect 200 --save F18.upgrade-from-release/experimental
+  test "$BEFORE" = "$(sha256sum "$UP/home/.openhands/settings.json" "$UP/home/.openhands/secrets.json")"
+  ```
+  Everything the release saved reads back unchanged on this checkout, and
+  reading it does not rewrite `settings.json` or `secrets.json` (same
+  checksums). The first launch of a release worktree builds its environment
+  with `uv`, which needs the package index and can take minutes.
 - **Corrupted files (`F18.corrupted-files`).** Back up both files, overwrite
   them with broken JSON, drive every route, restore.
 
