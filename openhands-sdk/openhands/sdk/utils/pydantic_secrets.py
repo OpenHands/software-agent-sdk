@@ -2,7 +2,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, Final, Literal, overload
 
-from pydantic import SecretStr, ValidationInfo
+from pydantic import BaseModel, SecretStr, ValidationInfo
 
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
@@ -250,3 +250,15 @@ def validate_secret_dict(
         k: decrypt_str_with_cipher_or_keep(cipher, v, description=description)
         for k, v in value.items()
     }
+
+
+def copy_keeping_secrets[ModelT: BaseModel](model: ModelT) -> ModelT:
+    """A copy that shares nothing with ``model`` and keeps its credentials.
+
+    A dump/validate round trip rather than ``model_copy(deep=True)``: a deep
+    copy carries private runtime state along (an analyzer's history) and fails
+    on members that cannot be copied (a lock, an open client).
+    """
+    return type(model).model_validate(
+        model.model_dump(context={"expose_secrets": True})
+    )
