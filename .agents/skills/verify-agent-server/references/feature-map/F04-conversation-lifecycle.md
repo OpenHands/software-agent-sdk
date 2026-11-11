@@ -198,12 +198,13 @@ EOF
     --check workspace.working_dir eq "$W" --save F04.create-settings/get
   control-agent-server api GET /api/conversations/count --check . eq $((N1 + 1))
   control-agent-server state cat "server/workspace/conversations/${CID//-/}/meta.json" --max-chars 200 \
-    --check agent missing --check secrets_encrypted eq true --check autotitle eq false --check tags.qa eq f04
+    --check agent missing --check secrets_encrypted missing --check autotitle eq false --check tags.qa eq f04
   control-agent-server state cat "server/workspace/conversations/${CID//-/}/base_state.json" --max-chars 200 \
     --check agent.llm.model eq deepseek/deepseek-flash --check execution_status eq idle
   ```
-  The create is 201 and `idle`, the count grows by one, `meta.json` has no
-  `agent` and `base_state.json` holds it.
+  The create is 201 and `idle`, the count grows by one, `meta.json` has
+  neither the `agent` nor the request's `secrets_encrypted` flag, and
+  `base_state.json` holds the agent.
 - **Inline agent (`F04.create-inline-agent`).** An `agent` payload without
   `kind`.
   ```sh
@@ -400,12 +401,13 @@ EOF
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F04_TOKEN\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f04-secret-value\"}}}" \
     --expect 201 --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret \
     --check secret_registry.secret_sources.QA_F04_TOKEN.value ne qa-f04-secret-value --save F04.create-secrets/start --field id)
+  control-agent-server state cat "server/workspace/conversations/${SECID//-/}/base_state.json" --max-chars 200 \
+    --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret --not-contains qa-f04-secret-value
   control-agent-server state cat "server/workspace/conversations/${SECID//-/}/meta.json" --max-chars 200 \
-    --check secrets.QA_F04_TOKEN.kind eq StaticSecret --not-contains qa-f04-secret-value
-  control-agent-server state cat "server/workspace/conversations/${SECID//-/}/base_state.json" --max-chars 200 --not-contains qa-f04-secret-value
+    --check id exists --check secrets missing --not-contains QA_F04_TOKEN
   ```
   The response lists the secret with its value masked; on disk it is
-  encrypted.
+  encrypted in `base_state.json`, and `meta.json` does not mention it.
 - **Start-time secret visible to GET (`F04.create-secrets-get`).**
   Read the conversation created in the previous bullet.
 
