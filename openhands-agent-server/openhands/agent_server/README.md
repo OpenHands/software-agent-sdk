@@ -301,6 +301,7 @@ If `OH_SECRET_KEY` is not set:
 - Secrets will be redacted (masked) in stored conversations
 - When the server restarts, encrypted secrets cannot be decrypted and will be `None`
 - Conversations will need to be recreated with fresh API keys
+- With no session API key either, the server has no encryption key at all, and a conversation's secret values exist only in its loaded state. A conversation that holds secrets is then not unloaded when idle. A sandbox pause loses the values, as a restart does. A fork receives its source's secrets from memory, but not the keys inside the agent or the security analyzer.
 
 ### Webhook Configuration
 

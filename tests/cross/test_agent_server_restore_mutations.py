@@ -133,6 +133,30 @@ async def test_secrets_an_older_server_left_in_meta_json_are_kept(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fork_keeps_secret_values_on_a_server_without_a_cipher(tmp_path):
+    """Without a cipher the fork's base_state.json has no secret values, so the
+    server hands the fork the ones its source holds in memory."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        info, _ = await service.start_conversation(_request(workspace_dir))
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        await event_service.update_secrets({"ADDED_TOKEN": "added-value"})
+
+        fork_info = await service.fork_conversation(info.id)
+        assert fork_info is not None
+        fork_service = await service.get_event_service(fork_info.id)
+        assert fork_service is not None
+        secrets = (await fork_service.get_state()).secret_registry.secret_sources
+        assert secrets["START_TOKEN"].get_value() == "start-value"
+        assert secrets["ADDED_TOKEN"].get_value() == "added-value"
+
+
+@pytest.mark.asyncio
 async def test_conversations_started_from_one_request_have_their_own_analyzer(
     tmp_path,
 ):

@@ -297,3 +297,27 @@ async def test_eviction_keeps_runtime_policy_analyzer_and_secrets(tmp_path):
         assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
         token = state.secret_registry.secret_sources["TOKEN"]
         assert token.get_value() == "runtime-value"
+
+
+@pytest.mark.asyncio
+async def test_conversation_whose_secrets_cannot_be_reloaded_is_not_evicted(tmp_path):
+    """Without a cipher base_state.json has no secret values. The loaded
+    conversation is their only copy, so it stays loaded."""
+    request = _make_request(tmp_path / "workspace").model_copy(
+        update={"secrets": {"TOKEN": StaticSecret(value=SecretStr("start-value"))}}
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        conversation_idle_ttl_seconds=1800,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        assert service._event_services is not None
+        event_service = service._event_services[info.id]
+
+        event_service._last_active_monotonic = time.monotonic() - 10_000
+        await service._evict_idle_conversations(1800)
+
+        assert service._event_services[info.id] is event_service
+        token = (await event_service.get_state()).secret_registry.secret_sources
+        assert token["TOKEN"].get_value() == "start-value"

@@ -2129,6 +2129,13 @@ class ConversationService:
             # Extract the persisted data, then discard the temporary conversation.
             fork_agent = cast(AgentBase, fork_conv.agent)
             fork_workspace = fork_conv.workspace
+            # Without a cipher the fork's base_state.json has no secret values,
+            # so the ones it holds in memory go to its EventService directly.
+            fork_secrets = (
+                dict(fork_conv.state.secret_registry.secret_sources)
+                if self._cipher_for(fork_conv_id) is None
+                else None
+            )
             fork_conv.delete_on_close = False
             fork_conv.close()
 
@@ -2160,7 +2167,10 @@ class ConversationService:
                 # If the service fails to start, clean up the orphaned
                 # persistence directory so we don't leave stale state on disk.
                 fork_event_service = await self._start_event_service(
-                    fork_stored, is_new_conversation=True, persisted_agent=fork_agent
+                    fork_stored,
+                    is_new_conversation=True,
+                    persisted_agent=fork_agent,
+                    secrets=fork_secrets,
                 )
             except Exception:
                 safe_rmtree(fork_dir)

@@ -2561,8 +2561,19 @@ class EventService:
         """True if a non-internal subscriber (e.g. a websocket) is attached."""
         return bool(self._pub_sub.subscriber_ids() - self._internal_subscriber_ids)
 
+    def _holds_secrets_a_reload_would_lose(self) -> bool:
+        """Without a cipher base_state.json has no secret values, so the loaded
+        conversation is the only place that has them."""
+        conversation = self._conversation
+        return (
+            self.cipher is None
+            and conversation is not None
+            and bool(conversation.state.secret_registry.secret_sources)
+        )
+
     def is_idle_evictable(self) -> bool:
-        """Safe to evict only with no in-flight work and no external subscriber."""
+        """Safe to evict only with no in-flight work, no external subscriber
+        and no secret that a reload would lose."""
         run_active = self._run_task is not None and not self._run_task.done()
         goal_active = (
             self._goal_loop_task is not None and not self._goal_loop_task.done()
@@ -2574,6 +2585,7 @@ class EventService:
             or self._rerun_requested
             or self._acp_internal_rerun_requested
             or self.has_external_subscribers()
+            or self._holds_secrets_a_reload_would_lose()
         ):
             return False
         return True
