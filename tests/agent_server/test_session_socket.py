@@ -1,7 +1,9 @@
 """Session socket semantics: framing, the replay boundary, backpressure."""
 
 import asyncio
+import contextlib
 import json
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -22,8 +24,10 @@ from openhands.sdk.agent.stream_context import (
     StreamDelta,
     StreamStarted,
 )
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.io import InMemoryFileStore
 
 
 def _msg(text: str) -> MessageEvent:
@@ -39,9 +43,11 @@ class _FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.gate: asyncio.Event | None = None
+        self.send_started = asyncio.Event()
 
     async def send_text(self, payload: str) -> None:
         if self.gate is not None:
+            self.send_started.set()
             await self.gate.wait()
         self.sent.append(payload)
 
@@ -73,6 +79,12 @@ class _FakeEventLog:
 
     def __len__(self) -> int:
         return len(self._events)
+
+    def get_seq(self, idx: int) -> int:
+        return idx
+
+    def index_after_seq(self, seq: int) -> int:
+        return min(max(seq + 1, 0), len(self._events))
 
 
 async def _drain(writer: _ConnectionWriter) -> None:
@@ -170,6 +182,63 @@ async def test_replay_and_live_do_not_interleave_or_duplicate():
 
 
 @pytest.mark.asyncio
+async def test_event_persisted_before_mark_but_published_after_go_live():
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    history = [_msg(f"h{i}") for i in range(3)]
+    for e in history:
+        log.add(e)
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    through_seq = len(log) - 1
+    assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
+    sub.go_live(through_seq)
+    await sub(history[2])
+    live = _msg("live")
+    log.add(live)
+    await sub(live)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["seq"] for f in frames] == [0, 1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_seq_survives_a_reload_that_finds_a_lost_file():
+    """A seq is the on-disk index: a reload after a lost file keeps every
+    survivor's seq, and the next event gets one no client has seen."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    history = [_msg(f"h{i}") for i in range(4)]
+    for e in history:
+        log.append(e)
+    fs.delete(log._path(1))
+    reloaded = EventLog(fs)
+
+    writer = _ConnectionWriter(ws := _FakeWebSocket())  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=reloaded)
+
+    # The client saw seq 0 before the restart and resumes after it.
+    through_seq = reloaded.get_seq(len(reloaded) - 1)
+    assert through_seq == 3
+    start = reloaded.index_after_seq(0)
+    assert await _replay(reloaded, start, len(reloaded), writer)
+    sub.go_live(through_seq)
+    live = _msg("live")
+    reloaded.append(live)
+    await sub(live)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = [(f["seq"], f["event"]["id"]) for f in ws.frames()]
+    assert frames == [(2, history[2].id), (3, history[3].id), (4, live.id)]
+
+
+@pytest.mark.asyncio
 async def test_persisted_state_update_is_durable_and_deduped():
     """A ConversationStateUpdateEvent in the log must not be transient.
 
@@ -243,20 +312,27 @@ async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
     sub.go_live(None)
 
-    # Publish far past the budget, and time the publisher.
-    started = asyncio.get_running_loop().time()
-    for i in range(500):
-        event = _msg(f"m{i}" * 50)
-        log.add(event)
-        await sub(event)
-    elapsed = asyncio.get_running_loop().time() - started
+    async def publish():
+        first = _msg("first")
+        log.add(first)
+        await sub(first)
+        await ws.send_started.wait()
 
-    assert elapsed < 0.5, "publisher blocked on a wedged consumer"
-    assert writer.closed, "over-budget connection should be dropped"
-    assert writer.drop_reason == "slow_consumer"
+        for i in range(20):
+            event = _msg(f"m{i}" * 50)
+            log.add(event)
+            await sub(event)
 
-    ws.gate.set()
-    await writer.aclose()
+    # The timeout guards against deadlock while the socket gate stays closed.
+    try:
+        await asyncio.wait_for(publish(), timeout=10)
+
+        assert writer.closed, "over-budget connection should be dropped"
+        assert writer.drop_reason == "slow_consumer"
+        assert ws.frames() == []
+    finally:
+        ws.gate.set()
+        await writer.aclose()
 
 
 @pytest.mark.asyncio
@@ -393,3 +469,127 @@ async def test_a_dropped_progress_frame_does_not_drop_the_connection():
     )
     await _drain(writer)
     assert writer.closed
+
+
+class _LockedEventService:
+    """A running conversation: subscribing and sending both wait for its step."""
+
+    def __init__(self) -> None:
+        self.step_done = asyncio.Event()
+        self.sending = asyncio.Event()
+        self.saved: list[Message] = []
+        self.events = _FakeEventLog()
+
+    def get_conversation(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(state=SimpleNamespace(events=self.events))
+
+    async def subscribe_to_events(self, subscriber) -> object:
+        await self.step_done.wait()
+        return uuid4()
+
+    async def subscribe_to_stream_progress(self, subscriber) -> object:
+        return uuid4()
+
+    async def unsubscribe_from_events(self, subscriber_id) -> bool:
+        return True
+
+    async def unsubscribe_from_stream_progress(self, subscriber_id) -> bool:
+        return True
+
+    async def send_message(self, message: Message, run: bool) -> None:
+        self.sending.set()
+        await self.step_done.wait()
+        self.saved.append(message)
+
+
+class _ClientSocket(_FakeWebSocket):
+    """Sends its frames, then nothing more."""
+
+    def __init__(self, frames: list[dict]) -> None:
+        super().__init__()
+        self._frames = list(frames)
+
+    async def receive_json(self):
+        if self._frames:
+            return self._frames.pop(0)
+        await asyncio.Event().wait()
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        return None
+
+
+def _user_frame(text: str) -> dict:
+    return Message(role="user", content=[TextContent(text=text)]).model_dump(
+        mode="json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_message_sent_while_a_step_runs_is_saved_after_the_client_leaves(
+    monkeypatch,
+):
+    """The demo's lost "wait, actually": a socket opened on a running worker.
+
+    Subscribing waits for the step to end, so the server used to read no
+    frame until then; a client that left first lost its message. The frame
+    is now read at once and saved when the step ends, socket or not.
+    """
+    from openhands.agent_server import session_socket as module
+
+    service = _LockedEventService()
+    ws = _ClientSocket([_user_frame("wait, actually")])
+
+    async def accept(websocket, key):
+        return True
+
+    monkeypatch.setattr(module, "_accept_authenticated_websocket", accept)
+    monkeypatch.setattr(
+        module,
+        "_get_conversation_service",
+        lambda websocket: type(
+            "S", (), {"get_event_service": AsyncMock(return_value=service)}
+        )(),
+    )
+
+    task = asyncio.ensure_future(module.session_socket(uuid4(), ws))  # type: ignore[arg-type]
+    # The frame is taken while the step still runs; then the client leaves.
+    await asyncio.wait_for(service.sending.wait(), timeout=5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert service.saved == []
+
+    service.step_done.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert [m.content[0].text for m in service.saved] == ["wait, actually"]  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_a_frame_that_arrives_with_the_close_is_still_saved():
+    """When the writer fails as a frame arrives, the frame is not dropped."""
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    saved: list[Message] = []
+
+    class _Service:
+        async def send_message(self, message, run):
+            saved.append(message)
+
+    async def receive_json():
+        writer.closed_event.set()
+        return _user_frame("last words")
+
+    ws.receive_json = receive_json  # type: ignore[attr-defined]
+
+    await asyncio.wait_for(
+        _inbound_loop(uuid4(), ws, _Service(), writer),  # type: ignore[arg-type]
+        timeout=5,
+    )
+    await writer.aclose()
+
+    assert [m.content[0].text for m in saved] == ["last words"]  # type: ignore[union-attr]

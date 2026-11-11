@@ -86,9 +86,10 @@ def test_append_accepts_explicit_root_parent():
     assert log[1].parent_id == ROOT_PARENT_ID
 
 
-def test_path_to_root_unknown_leaf_raises():
-    with pytest.raises(KeyError):
-        _log(_event("a")).path_to_root("nope")
+def test_path_to_root_unknown_leaf_returns_empty():
+    """A damaged log loses events; an unknown leaf yields an empty branch
+    instead of a KeyError that turns every event read into a 500 (#6174)."""
+    assert _log(_event("a")).path_to_root("nope") == []
 
 
 def test_legacy_events_form_a_single_linear_branch():
