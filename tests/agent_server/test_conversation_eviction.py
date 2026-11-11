@@ -4,13 +4,17 @@ import asyncio
 import time
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, Event
 from openhands.sdk.credential import ResolvedCredential
-from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.secret import StaticSecret
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -259,3 +263,37 @@ async def test_eviction_preserves_reassigned_stored_metadata(tmp_path):
         rehydrated = await service.get_event_service(conversation_id)
         assert rehydrated is not None
         assert rehydrated.stored.title == "new-title"
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_runtime_policy_analyzer_and_secrets(tmp_path):
+    """What a client set after creation is still in force once the idle
+    conversation is evicted and loaded again (#4810)."""
+    conversations_dir = tmp_path / "conversations"
+    request = _make_request(tmp_path / "workspace").model_copy(
+        update={"secrets": {"TOKEN": StaticSecret(value=SecretStr("start-value"))}}
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        conversation_idle_ttl_seconds=1800,
+        cipher=Cipher("eviction-key"),
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        assert service._event_services is not None
+        event_service = service._event_services[info.id]
+        await event_service.set_confirmation_policy(AlwaysConfirm())
+        await event_service.set_security_analyzer(LLMSecurityAnalyzer())
+        await event_service.update_secrets({"TOKEN": "runtime-value"})
+
+        event_service._last_active_monotonic = time.monotonic() - 10_000
+        await service._evict_idle_conversations(1800)
+        assert info.id not in service._event_services
+
+        rehydrated = await service.get_event_service(info.id)
+        assert rehydrated is not None
+        state = await rehydrated.get_state()
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+        token = state.secret_registry.secret_sources["TOKEN"]
+        assert token.get_value() == "runtime-value"
