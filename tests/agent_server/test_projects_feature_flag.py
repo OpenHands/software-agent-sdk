@@ -1,13 +1,10 @@
 """Projects behind the ``projects`` experimental feature (off by default)."""
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import project_wake
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.experimental_features import (
@@ -18,7 +15,9 @@ from openhands.agent_server.experimental_features import (
     is_enabled,
 )
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
-from openhands.sdk import LLM, Agent
+from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.launch.finalize import LaunchRuntime, finalize
 from openhands.sdk.tool.spec import Tool
 
@@ -78,12 +77,41 @@ async def test_feature_enabled_now_uses_host_switches_in_a_runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_wake_ups_while_off(monkeypatch):
-    load = AsyncMock()
-    monkeypatch.setattr(project_wake, "get_projects_store", load)
-    service = SimpleNamespace(get_event_service=AsyncMock())
-    assert await project_wake._coordinator(service, uuid4(), uuid4().hex) is None  # type: ignore[arg-type]
-    load.assert_not_called()
+async def test_no_wake_ups_while_off():
+    """The board subscriber is Projects' one hook: off, it tells no one."""
+    told: list[object] = []
+
+    async def tell(*args):
+        told.append(args)
+
+    async def off() -> bool:
+        return False
+
+    tags = {"project": uuid4().hex}
+
+    async def set_tag(_cid, key, value, **_kw):
+        if value is None:
+            tags.pop(key, None)
+        else:
+            tags[key] = value
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: tags,
+        set_tag=set_tag,
+        on_finished=tell,
+        on_person_message=tell,
+        on_stopped=tell,
+        projects_enabled=off,
+    )
+    await subscriber(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Hi")]),
+        )
+    )
+    await subscriber.drain()
+    assert told == []
 
 
 def test_finalize_withholds_tools():

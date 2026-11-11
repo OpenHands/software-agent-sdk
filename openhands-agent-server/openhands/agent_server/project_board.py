@@ -105,8 +105,9 @@ TurnSenderLookup = Callable[[], Awaitable[str | None]]
 ProjectsEnabled = Callable[[], Awaitable[bool]]
 """Whether the person has the ``projects`` experimental feature on right now.
 
-While it is off the board is left as it is: no outcome is recorded, no judge
-runs and nothing is reopened."""
+The subscriber is Projects' one hook into a conversation's events, so this is
+its one check: while it is off the board is left as it is (no outcome, judge or
+reopen) and the coordinator hears nothing."""
 """Reads who started the current turn from the event log, for a subscriber
 that did not see the turn's first message (a server restart in between)."""
 """Called when the person writes in a project member, with the project id
@@ -603,7 +604,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if previous is not None:
                 await asyncio.gather(previous, return_exceptions=True)
             try:
-                await step()
+                if await self._enabled():
+                    await step()
             except Exception:
                 logger.warning(
                     "Notifying the coordinator about conversation %s failed",

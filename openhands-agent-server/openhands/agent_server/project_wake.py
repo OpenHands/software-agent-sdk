@@ -124,12 +124,7 @@ async def sender_message_header(
 async def _coordinator(
     service: "ConversationService", member_id: UUID, project_hex: str
 ) -> tuple[UUID, "EventService"] | None:
-    """The coordinator a member's news goes to, when there is one to tell.
-
-    None while Projects is off: members' news and the person's copies wait.
-    """
-    if not await feature_enabled_now("projects"):
-        return None
+    """The coordinator a member's news goes to, when there is one to tell."""
     persisted = await asyncio.to_thread(get_projects_store().load)
     if persisted is None:
         return None
