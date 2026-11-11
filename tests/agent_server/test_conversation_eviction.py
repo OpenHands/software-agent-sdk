@@ -14,6 +14,9 @@ from openhands.sdk.credential import ResolvedCredential
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.security.toolshield_llm_analyzer import (
+    ToolShieldLLMSecurityAnalyzer,
+)
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -321,3 +324,40 @@ async def test_conversation_whose_secrets_cannot_be_reloaded_is_not_evicted(tmp_
         assert service._event_services[info.id] is event_service
         token = (await event_service.get_state()).secret_registry.secret_sources
         assert token["TOKEN"].get_value() == "start-value"
+
+
+@pytest.mark.asyncio
+async def test_conversation_whose_analyzer_key_cannot_be_reloaded_is_not_evicted(
+    tmp_path,
+):
+    """Without a cipher the key inside a security analyzer is not saved
+    either, and an analyzer without its key rates nothing. The conversation
+    stays loaded."""
+    request = _make_request(tmp_path / "workspace").model_copy(
+        update={
+            "security_analyzer": ToolShieldLLMSecurityAnalyzer(
+                llm=LLM(
+                    model="openai/guard",
+                    api_key=SecretStr("guard-key"),
+                    usage_id="guard",
+                )
+            )
+        }
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        conversation_idle_ttl_seconds=1800,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        assert service._event_services is not None
+        event_service = service._event_services[info.id]
+
+        event_service._last_active_monotonic = time.monotonic() - 10_000
+        await service._evict_idle_conversations(1800)
+
+        assert service._event_services[info.id] is event_service
+        analyzer = (await event_service.get_state()).security_analyzer
+        assert isinstance(analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert isinstance(analyzer.llm.api_key, SecretStr)
+        assert analyzer.llm.api_key.get_secret_value() == "guard-key"

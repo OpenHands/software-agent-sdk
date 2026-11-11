@@ -2557,12 +2557,17 @@ class EventService:
 
     def _holds_secrets_a_reload_would_lose(self) -> bool:
         """Without a cipher base_state.json has no secret values, so the loaded
-        conversation is the only place that has them."""
+        conversation is the only place that has its secrets and the keys
+        inside its security analyzer."""
         conversation = self._conversation
-        return (
-            self.cipher is None
-            and conversation is not None
-            and bool(conversation.state.secret_registry.secret_sources)
+        if self.cipher is not None or conversation is None:
+            return False
+        state = conversation.state
+        return any(
+            part is not None
+            and part.model_dump(mode="json")
+            != part.model_dump(mode="json", context={"expose_secrets": True})
+            for part in (state.secret_registry, state.security_analyzer)
         )
 
     def is_idle_evictable(self) -> bool:
