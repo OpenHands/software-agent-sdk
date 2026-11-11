@@ -43,15 +43,14 @@ def stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
         "get_installed_canvas_extensions_dir",
         lambda: canvas,
     )
-    # The marketplace routes fetch their catalog with git before listing.
-    monkeypatch.setattr(
-        "openhands.agent_server.plugins_service._fetch_plugin_catalog_entries",
-        lambda *args, **kwargs: [],
-    )
-    monkeypatch.setattr(
-        "openhands.agent_server.skills_service._fetch_catalog_entries",
-        lambda *args, **kwargs: [],
-    )
+    # The marketplace routes clone their catalog with git before listing.
+    empty_repo = tmp_path / "empty-marketplace-repo"
+    empty_repo.mkdir()
+    for service in ("plugins_service", "skills_service"):
+        monkeypatch.setattr(
+            f"openhands.agent_server.{service}.update_skills_repository",
+            lambda *args, **kwargs: empty_repo,
+        )
     return {"plugins": plugins, "skills": skills, "canvas": canvas}
 
 
