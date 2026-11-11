@@ -831,8 +831,11 @@ KID=$(control-agent-server api POST /api/conversations \
   `base_state.json`. Without `OH_SECRET_KEY` and without a session key there
   is no cipher: secrets (and the agent's LLM `api_key`) are saved as the
   `**********` placeholder and are gone after a restart, while GET looks the
-  same (`F08.secrets-no-cipher`). `launch` sets both keys; only
-  `launch --no-auth --no-secret-key` gives a run without a cipher.
+  same (`F08.secrets-no-cipher`). The loaded conversation is then the only
+  place that has the values, so such a server does not evict an idle
+  conversation that holds secrets; a sandbox pause loses them as a restart
+  does. `launch` sets both keys; only `launch --no-auth --no-secret-key`
+  gives a run without a cipher.
 - A `LookupSecret` is fetched with `httpx` from inside the server process,
   so its URL must be reachable from the server, not from the client. A
   `LookupSecret` header whose name contains `authorization`, `cookie`,
