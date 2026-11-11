@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
+from pydantic import BaseModel
+
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamProgressCallbackType
@@ -196,6 +198,18 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
     context = {"expose_secrets": True}
     return a.model_dump(mode="json", context=context) == b.model_dump(
         mode="json", context=context
+    )
+
+
+def _own_copy[ModelT: BaseModel](model: ModelT) -> ModelT:
+    """A copy that shares nothing with ``model`` and keeps its credentials.
+
+    A dump/validate round trip rather than ``model_copy(deep=True)``: a deep
+    copy carries private runtime state along (an analyzer's history) and fails
+    on members that cannot be copied (a lock, an open client).
+    """
+    return type(model).model_validate(
+        model.model_dump(context={"expose_secrets": True})
     )
 
 
@@ -873,6 +887,8 @@ class LocalConversation(BaseConversation):
         Events are copied so the source remains immutable. The fork starts
         in ``execution_status='idle'``; calling ``run()`` resumes from the
         copied state — meaning the agent has full event memory of the source.
+        It also keeps the source's confirmation policy, its own copy of the
+        security analyzer and of the secrets, and the source's cipher.
 
         Args:
             conversation_id: ID for the forked conversation (auto-generated
@@ -899,17 +915,12 @@ class LocalConversation(BaseConversation):
         """
         del title  # no local title storage; see docstring
         fork_id = conversation_id or uuid.uuid4()
-        # Always deep-copy the agent (supplied or source) so the fork owns
+        # Always copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
         # per-conversation call context on the LLM (#2917, #3443): a
         # shared/aliased agent would clobber the source conversation's
-        # context. Round-trip via JSON avoids thread-lock pickling issues
-        # with model_copy(deep=True).
-        source_agent = agent if agent is not None else self.agent
-        agent_cls = type(source_agent)
-        fork_agent = agent_cls.model_validate(
-            source_agent.model_dump(context={"expose_secrets": True}),
-        )
+        # context.
+        fork_agent = _own_copy(agent if agent is not None else self.agent)
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
@@ -918,6 +929,15 @@ class LocalConversation(BaseConversation):
             # does not leave an orphaned persistence directory behind.
             if from_event_id is not None and from_event_id not in self._state.events:
                 raise ValueError(f"Unknown from_event_id: {from_event_id}")
+            # Copied before the fork exists too, for the same reason.
+            source_analyzer = self._state.security_analyzer
+            fork_analyzer = (
+                _own_copy(source_analyzer) if source_analyzer is not None else None
+            )
+            fork_secrets = {
+                name: _own_copy(source)
+                for name, source in self._state.secret_registry.secret_sources.items()
+            }
 
             # Determine persistence_dir for the fork.
             # Pass the *base* directory only — __init__ calls
@@ -984,32 +1004,16 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            fork_conv._state.invoked_skills = list(self._state.invoked_skills)
             fork_conv._state.confirmation_policy = self._state.confirmation_policy
-            # The fork gets its own analyzer: analyzers keep mutable runtime
-            # state in PrivateAttrs (e.g. ToolShieldLLMSecurityAnalyzer's action
-            # history) that a shared reference would mix between the two
-            # conversations. Round-trip via JSON like the agent above rather
-            # than model_copy(deep=True): a guardrail LLM may hold a lock that
-            # cannot be deep-copied, and expose_secrets keeps its credentials
-            # for the fork's cipher to re-encrypt.
-            source_analyzer = self._state.security_analyzer
-            if source_analyzer is not None:
-                fork_conv._state.security_analyzer = type(
-                    source_analyzer
-                ).model_validate(
-                    source_analyzer.model_dump(context={"expose_secrets": True}),
-                )
+            fork_conv._state.security_analyzer = fork_analyzer
             # Conversation secrets (``secrets=`` / update_secrets) live in the
             # registry, not the agent. Assigning the field (rather than
             # mutating the registry) autosaves them, encrypted with the cipher.
-            source_secrets = self._state.secret_registry.secret_sources
             fork_conv._state.secret_registry = SecretRegistry(
                 secret_sources={
                     **fork_conv._state.secret_registry.secret_sources,
-                    **{
-                        name: source.model_copy(deep=True)
-                        for name, source in source_secrets.items()
-                    },
+                    **fork_secrets,
                 }
             )
 
