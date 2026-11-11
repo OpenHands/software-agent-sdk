@@ -15,13 +15,14 @@ from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool import registry
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
+    FinishExecutor,
     FinishObservation,
     FinishTool,
 )
 from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.tool.registry import register_tool, resolve_tool
 from openhands.sdk.tool.spec import Tool
-from openhands.sdk.tool.tool import ToolDefinition
+from openhands.sdk.tool.tool import ToolDefinition, ToolExecutor
 
 
 class TaskResult(BaseModel):
@@ -395,6 +396,78 @@ def test_response_schema_rejects_toolsets():
             ),
             conv_state=MagicMock(),
         )
+
+
+_closed_executors: list[ToolExecutor] = []
+
+
+class _ClosingFinishExecutor(FinishExecutor):
+    def close(self) -> None:
+        _closed_executors.append(self)
+
+
+class _ClosingFinishTool(FinishTool):
+    @classmethod
+    def create(cls, conv_state=None, count: int = 1, **params):
+        [tool] = super().create(conv_state, **params)
+        return [tool.set_executor(_ClosingFinishExecutor()) for _ in range(count)]
+
+
+class _ReservedSummary(BaseModel):
+    summary: str
+
+
+class _CollidingMessage(BaseModel):
+    message: str
+
+
+@pytest.mark.parametrize(
+    ("schema", "count", "message"),
+    [
+        (_ReservedSummary, 1, "response_schema fields ['summary'] are reserved"),
+        (
+            _CollidingMessage,
+            1,
+            "response_schema fields ['message'] collide with existing fields "
+            "on FinishAction",
+        ),
+        (
+            TaskResult,
+            2,
+            "response_schema requires a spec that resolves to exactly one tool",
+        ),
+    ],
+    ids=["reserved", "collision", "toolset"],
+)
+def test_rejected_response_schema_closes_built_executors(schema, count, message):
+    """Regression for #6748: a rejected schema must not leak started executors."""
+    _closed_executors.clear()
+    register_tool("ClosingFinishTool", _ClosingFinishTool)
+
+    with pytest.raises(ValueError) as exc_info:
+        resolve_tool(
+            Tool(
+                name="ClosingFinishTool",
+                params={"count": count, "response_schema": schema},
+            ),
+            conv_state=MagicMock(),
+        )
+
+    assert str(exc_info.value) == message
+    assert len(_closed_executors) == count
+
+
+def test_accepted_response_schema_keeps_executor_open():
+    _closed_executors.clear()
+    register_tool("ClosingFinishTool", _ClosingFinishTool)
+
+    [tool] = resolve_tool(
+        Tool(name="ClosingFinishTool", params={"response_schema": TaskResult}),
+        conv_state=MagicMock(),
+    )
+
+    assert tool.response_schema is TaskResult
+    assert _closed_executors == []
 
 
 def test_client_tool_supports_response_schema():
