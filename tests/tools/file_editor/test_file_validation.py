@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import (
     FileValidationError,
 )
+from openhands.tools.file_editor.impl import file_editor
 
 
 def test_validate_large_file(tmp_path):
@@ -156,3 +158,29 @@ def test_view_image_file_returns_image_content(tmp_path):
     image_content = [c for c in result.content if isinstance(c, ImageContent)][0]
     assert len(image_content.image_urls) == 1
     assert image_content.image_urls[0].startswith("data:image/png;base64,")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX permissions and a non-root user",
+)
+@pytest.mark.parametrize(
+    "command, args",
+    [
+        ("view", {}),
+        ("str_replace", {"old_str": "secret", "new_str": "public"}),
+        ("insert", {"insert_line": 0, "new_str": "public"}),
+        ("undo_edit", {}),
+    ],
+)
+def test_unreadable_file_returns_error_observation(tmp_path, command, args):
+    path = tmp_path / "secret.txt"
+    path.write_text("secret\n")
+    os.chmod(path, 0)
+    try:
+        result = file_editor(command=command, path=str(path), **args)
+    finally:
+        os.chmod(path, 0o644)
+
+    assert result.is_error
+    assert "secret.txt" in result.text

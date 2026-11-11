@@ -55,3 +55,15 @@ def apply_extra_body(user_kwargs: dict[str, Any], llm: LLM) -> dict[str, Any]:
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
     return out
+
+
+def is_openrouter(llm: LLM) -> bool:
+    """Return whether this LLM routes through OpenRouter.
+
+    Matches the ``openrouter/`` model prefix and the ``openrouter.ai`` base URL
+    that the OpenRouter runtime-metadata resolver also keys off, so the two
+    agree on what counts as OpenRouter.
+    """
+    model = llm.model or ""
+    base_url = llm.base_url or ""
+    return model.startswith("openrouter/") or "openrouter.ai" in base_url

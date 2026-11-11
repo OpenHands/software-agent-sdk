@@ -170,7 +170,13 @@ class LLMRegistry:
         Args:
             usage_id: Usage slot to drop from the registry.
         """
-        if self._usage_to_llm.pop(usage_id, None) is not None:
+        llm = self._usage_to_llm.pop(usage_id, None)
+        if llm is not None:
+            # The slot no longer holds this instance, so its metrics are no
+            # longer shared with anyone here. Keeping the id would make a later
+            # add() mistake the same instance for a shared-metrics copy and
+            # reset the usage it has already accumulated.
+            self._metrics_ids.discard(id(llm.metrics))
             logger.debug(
                 f"[LLM registry {self.registry_id}]: Removed LLM for usage {usage_id}"
             )

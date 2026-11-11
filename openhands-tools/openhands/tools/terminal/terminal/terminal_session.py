@@ -10,6 +10,7 @@ from openhands.sdk.utils import maybe_truncate
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
     MAX_CMD_OUTPUT_SIZE,
+    MIN_POLL_INTERVAL,
     NO_CHANGE_TIMEOUT_SECONDS,
     POLL_INTERVAL,
     TIMEOUT_MESSAGE_TEMPLATE,
@@ -659,6 +660,15 @@ class TerminalSession(TerminalSessionBase):
 
         # Loop until the command completes or times out
         while True:
+            # A closed terminal never shows the command finishing, and a command with
+            # a timeout skips the no-change timeout, so stop waiting on it here.
+            if self._closed or self.terminal.closed:
+                return TerminalObservation.from_text(
+                    text="[The terminal was closed while the command was running.]",
+                    command=command,
+                    exit_code=-1,
+                    is_error=True,
+                )
             _start_time = time.time()
             logger.debug(f"GETTING TERMINAL CONTENT at {_start_time}")
             cur_terminal_output = self.terminal.read_screen()
@@ -769,5 +779,6 @@ class TerminalSession(TerminalSessionBase):
                     )
                     return obs
 
-            # Sleep before next check
-            time.sleep(POLL_INTERVAL)
+            # Poll in proportion to the command's run time so a short command is
+            # noticed within milliseconds, not at the next POLL_INTERVAL tick.
+            time.sleep(min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4)))

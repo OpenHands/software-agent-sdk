@@ -1,4 +1,5 @@
 import httpx
+import pytest
 from litellm.exceptions import (
     AuthenticationError,
     BadRequestError,
@@ -7,10 +8,12 @@ from litellm.exceptions import (
     PermissionDeniedError,
 )
 
+from openhands.sdk import LLM
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
     LLMBadRequestError,
     LLMContentPolicyViolationError,
+    LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
     map_provider_exception,
 )
@@ -118,3 +121,57 @@ def test_passthrough_unknown_exception():
     e = MyCustom("random")
     mapped = map_provider_exception(e)
     assert mapped is e
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "Requested token count exceeds the model's maximum context length "
+            "of 131066 tokens. You requested a total of 140000 tokens.",
+            LLMContextWindowExceedError,
+        ),
+        ("Invalid request: unsupported parameter", LLMBadRequestError),
+        ("Requested token count is invalid", LLMBadRequestError),
+    ],
+)
+async def test_sglang_context_error_mapping_preserves_cause(
+    asynchronous: bool, message: str, expected: type[Exception]
+):
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "http://localhost/v1/chat/completions"),
+        headers={"x-request-id": "sglang-request"},
+        json={"error": {"message": message}},
+    )
+    error = BadRequestError(message, MODEL, "openai", response=response)
+    assert type(map_provider_exception(error)) is expected
+    llm = LLM(model="openai/test-model", api_key="test-key", num_retries=0)
+
+    def unexpected_fallback(_llm: LLM):
+        pytest.fail("No fallback configured")
+
+    with pytest.raises(expected) as caught:
+        try:
+            raise error
+        except BadRequestError as original:
+            if asynchronous:
+                await llm._ahandle_error(original, unexpected_fallback)
+            else:
+                llm._handle_error(original, unexpected_fallback)
+    assert type(caught.value) is expected
+    assert str(caught.value) == str(error)
+    assert caught.value.__cause__ is error
+    assert error.response is response
+    assert error.status_code == 400
+    assert error.model == MODEL
+    assert error.llm_provider == "openai"
+    assert error.response.headers["x-request-id"] == "sglang-request"
+
+
+def test_sglang_wording_does_not_map_unrelated_exception_type():
+    error = ValueError(
+        "Requested token count exceeds the model's maximum context length"
+    )
+    assert map_provider_exception(error) is error

@@ -190,6 +190,7 @@ export type {
   FileOperationResult,
   FileDownloadResult,
   GitChange,
+  GitChangeStatus,
   GitDiff,
   ExecuteBashRequest,
   BashEventBase,
@@ -221,8 +222,9 @@ export type {
 
 // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
-export type { ACPModelOption, ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
 export type {
+  ACPEffortOption,
   ACPModelDiscovery,
   ACPModelDiscoveryError,
   ACPModelDiscoveryRequest,

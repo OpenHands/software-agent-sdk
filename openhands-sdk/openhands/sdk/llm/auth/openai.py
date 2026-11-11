@@ -33,6 +33,9 @@ from openhands.sdk.llm.auth.credentials import (
     OAuthCredentials,
     get_credentials_dir,
 )
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -131,7 +134,16 @@ JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 # Models available via ChatGPT subscription (not API).
 OPENAI_CODEX_MODELS = frozenset(
-    {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
+    {
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    }
 )
 
 
@@ -966,10 +978,7 @@ def subscription_login(
 # Message transformation utilities for subscription mode
 # =========================================================================
 
-DEFAULT_SYSTEM_MESSAGE = (
-    "You are OpenHands agent, a helpful AI assistant that can interact "
-    "with a computer to solve tasks."
-)
+DEFAULT_SYSTEM_MESSAGE = OPENHANDS_SYSTEM_IDENTITY
 
 
 def inject_system_prefix(

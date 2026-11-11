@@ -84,7 +84,7 @@ def test_get_git_diff_modified_file():
 
 
 def test_get_git_diff_deleted_file():
-    """Test get_git_diff with a deleted file."""
+    """A working-tree-deleted file diffs as its base text against ''."""
     with tempfile.TemporaryDirectory() as temp_dir:
         setup_git_repo(temp_dir)
 
@@ -99,11 +99,56 @@ def test_get_git_diff_deleted_file():
         # Delete the file
         os.remove(test_file)
 
-        # The function will raise GitPathError for deleted files
+        diff = run_in_directory(temp_dir, get_git_diff, "deleted_file.txt")
+
+        assert diff.original == original_content
+        assert diff.modified == ""
+
+
+def test_get_git_diff_missing_path_that_is_a_directory_at_base():
+    """A missing path that was a directory at the base is not a file diff."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        nested = Path(temp_dir) / "pkg"
+        nested.mkdir()
+        (nested / "a.txt").write_text("a")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+        run_bash_command("rm -rf pkg", temp_dir)
+
         from openhands.sdk.git.exceptions import GitPathError
 
-        with pytest.raises(GitPathError):
-            run_in_directory(temp_dir, get_git_diff, "deleted_file.txt")
+        with pytest.raises(GitPathError, match="File does not exist"):
+            run_in_directory(temp_dir, get_git_diff, "pkg")
+        with pytest.raises(GitPathError, match="File does not exist"):
+            run_in_directory(temp_dir, get_git_diff, "never_existed.txt")
+
+
+def test_get_git_diff_deleted_file_too_large():
+    """A deleted file's base text is held to the same size cap."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        big = Path(temp_dir) / "big.txt"
+        big.write_text("a" * (1024 * 1024 + 1))
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+        os.remove(big)
+
+        from openhands.sdk.git.exceptions import GitPathError
+
+        with pytest.raises(GitPathError, match="File too large"):
+            run_in_directory(temp_dir, get_git_diff, "big.txt")
+
+
+def test_get_git_diff_missing_file_outside_repo():
+    """A missing path outside any repository still reports a missing file."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        from openhands.sdk.git.exceptions import GitPathError
+
+        with pytest.raises(GitPathError, match="File does not exist"):
+            run_in_directory(temp_dir, get_git_diff, "nope.txt")
 
 
 def test_get_git_diff_nested_path():
@@ -158,7 +203,7 @@ def test_get_git_diff_nonexistent_file():
 
         from openhands.sdk.git.exceptions import GitPathError
 
-        with pytest.raises(GitPathError):
+        with pytest.raises(GitPathError, match="File does not exist"):
             run_in_directory(temp_dir, get_git_diff, "nonexistent.txt")
 
 
@@ -356,3 +401,29 @@ def test_get_git_diff_committed_branch_change_diffs_against_fork_point():
         # Assert — original is the fork-point (main) content.
         assert diff.original == "base"
         assert diff.modified == "changed by agent"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "  indented line\nbody\n",
+        "body\n\n\n",
+        "\n\nbody\n",
+        "one\r\ntwo\r\n",
+    ],
+    ids=["leading-indent", "trailing-blank-lines", "leading-blank-lines", "crlf"],
+)
+def test_get_git_diff_unchanged_file_has_identical_sides(content):
+    """An unchanged file keeps its edge whitespace on both sides of the diff."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        test_file = Path(temp_dir) / "unchanged.txt"
+        test_file.write_bytes(content.encode())
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        diff = run_in_directory(temp_dir, get_git_diff, "unchanged.txt", ref="HEAD")
+
+        assert diff.original == diff.modified
+        assert diff.modified == "\n".join(content.splitlines())

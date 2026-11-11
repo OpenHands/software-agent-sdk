@@ -73,6 +73,42 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
     assert response.json()["usable_tools"] == ["terminal", "file_editor"]
 
 
+def test_server_info_leaves_out_browser_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """With enable_browser=False, usable_tools agrees with the catalog."""
+    monkeypatch.setattr(
+        sdr,
+        "list_usable_tools",
+        lambda: ["terminal", "browser_tool_set", "file_editor"],
+    )
+    client = TestClient(
+        create_app(Config(static_files_path=None, enable_browser=False))
+    )
+
+    response = client.get("/server_info")
+
+    assert response.status_code == 200
+    assert response.json()["usable_tools"] == ["terminal", "file_editor"]
+
+
+def test_server_info_browser_follows_configured_availability(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A config-fixed browser availability overrides the process probe."""
+    monkeypatch.setattr(sdr, "list_usable_tools", lambda: ["terminal"])
+    monkeypatch.setattr(
+        sdr, "list_registered_tools", lambda: ["terminal", "browser_tool_set"]
+    )
+
+    assert sdr.build_server_info(browser_available=None).usable_tools == ["terminal"]
+    assert sdr.build_server_info(browser_available=True).usable_tools == [
+        "terminal",
+        "browser_tool_set",
+    ]
+    assert sdr.build_server_info(browser_available=False).usable_tools == ["terminal"]
+
+
 def test_server_info_reports_credential_binding_probe(client):
     response = client.get("/server_info")
 
@@ -85,6 +121,8 @@ def test_server_info_reports_credential_binding_probe(client):
         "credential_binding_readiness_probe_v1",
         "credential_binding_activation_guard_v1",
         "conversation_runtime_routes_v1",
+        "agent_launch_pipeline_v1",
+        "profile_public_skills_v1",
     } <= set(payload["capabilities"])
     assert payload["conversation_runtime"] == "local"
 

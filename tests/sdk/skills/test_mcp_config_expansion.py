@@ -3,7 +3,14 @@
 import json
 import os
 
-from openhands.sdk.skills.utils import expand_mcp_variables, load_mcp_config
+import pytest
+
+from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.skills.utils import (
+    expand_mcp_servers,
+    expand_mcp_variables,
+    load_mcp_config,
+)
 
 
 class TestExpandMcpVariables:
@@ -322,3 +329,45 @@ class TestLoadMcpConfigWithSecrets:
         assert (
             result["mcpServers"]["my-server"]["env"]["DB_URL"] == "sqlite://default.db"
         )
+
+
+def test_expand_mcp_servers_reports_references_nothing_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Only a name used without a default that neither the secrets nor the
+    environment resolved; a malformed reference in one value does not hide
+    one in the next."""
+    monkeypatch.setenv("FROM_ENV", "env-value")
+    monkeypatch.delenv("REQUIRED", raising=False)
+    monkeypatch.delenv("WITH_DEFAULT", raising=False)
+    servers = {
+        "s": MCPServer.model_validate(
+            {
+                "transport": "http",
+                "url": "https://h/mcp",
+                "headers": {
+                    "A": "${X:-oops",
+                    "B": "${REQUIRED}",
+                    "C": "${WITH_DEFAULT:-d}",
+                    "D": "${FROM_ENV}",
+                    "E": "${SAVED}",
+                },
+            }
+        )
+    }
+    unresolved: list[str] = []
+
+    expanded = expand_mcp_servers(
+        servers, {"SAVED": "saved-value"}.get, on_unresolved=unresolved.append
+    )
+
+    assert unresolved == ["REQUIRED"]
+    headers = expanded["s"].headers
+    assert headers is not None
+    assert {name: value.get_secret_value() for name, value in headers.items()} == {
+        "A": "${X:-oops",
+        "B": "${REQUIRED}",
+        "C": "d",
+        "D": "env-value",
+        "E": "saved-value",
+    }

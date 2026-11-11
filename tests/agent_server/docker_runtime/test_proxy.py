@@ -136,6 +136,41 @@ async def test_http_client_lives_until_the_stream_is_consumed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_http_response_drops_upstream_date_and_server(monkeypatch):
+    """The serving uvicorn adds its own Date and Server; copying the upstream's
+    would send two of each."""
+    import httpx
+
+    from openhands.agent_server.docker_runtime import proxy
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ok"
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={
+                    "Date": "Wed, 14 Oct 2026 10:00:00 GMT",
+                    "Server": "Python/3.13 aiohttp/3.14.3",
+                    "Content-Type": "text/plain",
+                    "X-Upstream": "kept",
+                },
+                stream=Body(),
+            )
+        )
+    )
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
+    response = await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
+    assert [chunk async for chunk in response.body_iterator] == [b"ok"]
+    assert "date" not in response.headers
+    assert "server" not in response.headers
+    assert response.headers["x-upstream"] == "kept"
+    assert response.headers["content-type"] == "text/plain"
+
+
+@pytest.mark.asyncio
 async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     tmp_path, monkeypatch
 ):
@@ -181,3 +216,67 @@ async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     chunks = [chunk async for chunk in response.body_iterator]
     assert chunks == [b"first", b"second"]
     assert not registry.has_attached_sessions(conversation_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "headers", "chunks", "expected_headers", "expected_body"),
+    [
+        ("GET", [], [], {}, b""),
+        (
+            "POST",
+            [(b"content-length", b"13")],
+            [b'{"qa":', b'"body"}'],
+            {"content-length": "13"},
+            b'{"qa":"body"}',
+        ),
+        (
+            "POST",
+            [(b"transfer-encoding", b"chunked")],
+            [b"a", b"b"],
+            {"transfer-encoding": "chunked"},
+            b"ab",
+        ),
+    ],
+)
+async def test_http_request_keeps_the_client_body_framing(
+    monkeypatch, method, headers, chunks, expected_headers, expected_body
+):
+    import httpx
+    from starlette.requests import Request
+
+    from openhands.agent_server.docker_runtime import proxy
+    from openhands.agent_server.docker_runtime.registry import ConversationContainer
+
+    messages = [
+        {"type": "http.request", "body": chunk, "more_body": True} for chunk in chunks
+    ] + [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive():
+        return messages.pop(0)
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ok"
+
+    seen = {}
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        seen["headers"] = {
+            key: request.headers.get(key)
+            for key in ("content-length", "transfer-encoding")
+            if key in request.headers
+        }
+        seen["body"] = await request.aread()
+        return httpx.Response(200, stream=Body())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
+    request = Request({"type": "http", "method": method, "headers": headers}, receive)
+    response = await proxy.proxy_http(
+        request,
+        ConversationContainer("http://upstream", "inner-key", "test-container"),
+        upstream_path="/echo",
+    )
+    assert [chunk async for chunk in response.body_iterator] == [b"ok"]
+    assert seen == {"headers": expected_headers, "body": expected_body}

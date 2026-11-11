@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import _add_exception_handlers
+from openhands.agent_server.conversation_lease import ConversationOwnershipLostError
 from openhands.agent_server.conversation_service import (
     CredentialBindingActivationRequired,
 )
@@ -65,3 +66,20 @@ def test_credential_binding_activation_required_is_retryable():
         "detail": "credential_binding_activation_required",
         "retryable": True,
     }
+
+
+def test_conversation_ownership_lost_is_conflict(tmp_path):
+    app = FastAPI()
+    _add_exception_handlers(app)
+
+    @app.patch("/conversation")
+    async def conversation():
+        raise ConversationOwnershipLostError(
+            conversation_dir=tmp_path, owner_instance_id="stale", generation=1
+        )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.patch("/conversation")
+
+    assert response.status_code == 409
+    assert "owned by another agent server instance" in response.json()["detail"]

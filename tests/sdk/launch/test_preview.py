@@ -30,6 +30,19 @@ def test_a_dangling_mcp_ref_still_reports_the_llm_and_skills():
     assert report.resolved_skills == ["alpha"]
 
 
+def test_the_report_applies_the_public_skill_selection():
+    profile = OpenHandsAgentProfile(
+        name="p", llm_profile_ref="default", public_skills=["beta"]
+    )
+    catalog = [*CATALOG, Skill(name="mine", content="m")]
+    stores = fakes.stores(skills=catalog, public_skill_names=["alpha", "beta"])
+
+    report = preview_launch(profile, stores, LaunchRuntime())
+
+    assert report.public_skills == ["beta"]
+    assert report.resolved_skills == ["beta", "mine"]
+
+
 def test_resolved_settings_match_what_the_launch_builds():
     profile = ACPAgentProfile(name="a", acp_server="claude-code")
 
