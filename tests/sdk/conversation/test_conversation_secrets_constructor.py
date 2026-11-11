@@ -13,9 +13,10 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
-from openhands.sdk.secret import SecretSource
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.secret import LookupSecret, SecretSource
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.workspace import RemoteWorkspace
 
 from .conftest import create_mock_http_client
@@ -394,3 +395,47 @@ def test_update_secrets_saves_base_state_before_returning():
             "RUNTIME_TOKEN": "runtime-value",
         }
         resumed.close()
+
+
+@pytest.mark.parametrize(
+    "cipher", [Cipher("test-secret-key"), None], ids=["cipher", "no-cipher"]
+)
+def test_secrets_state_update_event_never_carries_a_secret_value(cipher):
+    """A secrets change is announced as one state update with names and masked
+    values: in the event, in its printed form and in the saved event file."""
+    agent = create_test_agent()
+    secrets = {
+        "TOKEN": "plain-secret-value",
+        "LOOKUP": LookupSecret(
+            url="http://127.0.0.1:9/secret",
+            headers={"Authorization": "Bearer header-secret-value"},
+        ),
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            cipher=cipher,
+            visualizer=None,
+        )
+        # The agent-server publishes state changes as conversation events.
+        conv.state.set_on_state_change(conv._on_event)
+        conv.update_secrets(secrets)
+        conv.update_secrets(secrets)
+
+        updates = [
+            event
+            for event in conv.state.events
+            if isinstance(event, ConversationStateUpdateEvent)
+            and event.key == "secret_registry"
+        ]
+        assert len(updates) == 1
+        event_json = updates[0].model_dump_json()
+        assert "TOKEN" in event_json
+        assert FERNET_TOKEN_PREFIX not in event_json
+        saved = "".join(p.read_text() for p in Path(tmpdir).rglob("*.json"))
+        for text in (event_json, str(updates[0]), saved):
+            assert "plain-secret-value" not in text
+            assert "header-secret-value" not in text
+        conv.close()

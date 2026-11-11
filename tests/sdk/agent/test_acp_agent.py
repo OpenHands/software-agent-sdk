@@ -10517,8 +10517,7 @@ async def test_live_token_masking_follows_update_secrets_reassignment(tmp_path):
         streamed: list[str] = []
         bridge.on_token = streamed.append
 
-        # Mirror LocalConversation.update_secrets: build a fresh registry object
-        # carrying the new secret and reassign it onto the state.
+        # Replace the registry, as a secrets update does.
         new_registry = state.secret_registry.model_copy(
             update={"secret_sources": dict(state.secret_registry.secret_sources)}
         )

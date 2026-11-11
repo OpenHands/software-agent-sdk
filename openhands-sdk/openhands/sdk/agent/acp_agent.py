@@ -3170,12 +3170,8 @@ class ACPAgent(AgentBase):
         # (rather than per-turn in _reset_client_for_turn) keeps it available for
         # session updates AND for ask_agent() forks, which run on the shared
         # client and may fire while no step()/astep() turn is active.
-        #
-        # Read state.secret_registry lazily on each call rather than capturing a
-        # bound method: update_secrets() reassigns state.secret_registry to a new
-        # object, so a captured bound method would mask against a stale registry
-        # and leak a newly-added secret through the live on_token relay. This
-        # mirrors the persistence-boundary mask in _finalize_successful_turn.
+        # The registry is looked up on every call: the state's registry object
+        # is replaced when secrets change.
         def _mask_with_current_registry(text: str) -> str:
             return state.secret_registry.mask_secrets_in_output(text)
 
