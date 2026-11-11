@@ -47,6 +47,7 @@ from openhands.agent_server.conversation_lease import (
     ConversationOwnershipLostError,
     _is_pid_alive,
 )
+from openhands.agent_server.conversation_mcp import create_conversation_mcp
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
@@ -939,6 +940,13 @@ def _add_exception_handlers(api: FastAPI) -> None:
         )
 
 
+@asynccontextmanager
+async def _conversation_mcp_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    mcp_app = app.state.conversation_mcp_app
+    async with mcp_app.lifespan(mcp_app), api_lifespan(app):
+        yield
+
+
 def create_app(config: Config | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -957,6 +965,11 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)
+    mcp, mcp_app = create_conversation_mcp(app)
+    app.state.conversation_mcp = mcp
+    app.state.conversation_mcp_app = mcp_app
+    app.mount("/mcp", mcp_app)
+    app.router.lifespan_context = _conversation_mcp_lifespan
     _setup_static_files(app, config)
     if config.conversation_runtime_selectable:
         from openhands.agent_server.docker_runtime.hybrid import (

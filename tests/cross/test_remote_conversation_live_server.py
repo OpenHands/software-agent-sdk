@@ -433,6 +433,28 @@ def authenticated_server_env(
         yield env
 
 
+def test_mcp_tools_are_session_authenticated_over_real_http(authenticated_server_env):
+    url = f"{authenticated_server_env['host']}/mcp/"
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    headers = {"accept": "application/json, text/event-stream"}
+    with httpx.Client(timeout=10) as client:
+        assert client.post(url, json=payload, headers=headers).status_code == 401
+        response = client.post(
+            url,
+            json=payload,
+            headers={
+                **headers,
+                "X-Session-API-Key": authenticated_server_env["api_key"],
+            },
+        )
+        assert response.status_code == 200
+        assert {tool["name"] for tool in response.json()["result"]["tools"]} == {
+            "start_conversation",
+            "get_conversation",
+            "send_message",
+        }
+
+
 @pytest.fixture
 def patched_llm(monkeypatch: pytest.MonkeyPatch) -> list[list[Message]]:
     """Patch LLM.completion to a deterministic assistant message response."""
