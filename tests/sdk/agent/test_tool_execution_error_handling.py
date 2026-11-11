@@ -136,6 +136,14 @@ def test_tool_execution_valueerror_returns_error_event():
     assert "Cannot use reset=True with is_input=True" in error_event.error
     assert error_event.tool_name == "raising_tool"
     assert error_event.tool_call_id == "call_1"
+    assert error_event.classification is not None
+    assert error_event.classification.kind == "agent_action"
+    assert error_event.classification.retryable is True
+    assert error_event.origin is not None
+    assert error_event.grouping_key is not None
+    diagnostic = f"{error_event.origin} {error_event.grouping_key}"
+    assert "Cannot use reset=True with is_input=True" not in diagnostic
+    assert "raising_tool" not in error_event.origin
 
     # Verify that the conversation is NOT finished
     with conversation.state:

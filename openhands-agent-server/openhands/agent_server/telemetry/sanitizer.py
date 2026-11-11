@@ -7,12 +7,15 @@ Two rules carry the privacy guarantee, and both are testable:
    path in this module. Messages routinely embed prompts, file paths, request
    bodies and API keys, so the only safe policy is to never look.
 
-2. **The traceback is never formatted.** We walk ``exc.__traceback__``
-   manually, reading only ``tb_frame.f_globals["__name__"]`` and
-   ``tb.tb_lineno``. ``traceback.extract_tb`` / ``format_exception`` are
-   forbidden here because :class:`traceback.FrameSummary` reads the actual
-   *source line* off disk into the object, and ``f_locals`` obviously holds
-   live values.
+2. **The traceback is never formatted.** Frames come from
+   :func:`openhands.sdk.event.error_origin.iter_traceback_frames`, which reads
+   only the module name, the code object's name, and ``tb_lineno``. The
+   fingerprint preimage still uses module and line, not the function name.
+   The fingerprint walk stops after 256 links, and a frame with no module
+   name still consumes one of those links. ``traceback.extract_tb`` /
+   ``format_exception`` stay forbidden because
+   :class:`traceback.FrameSummary` reads the source line off disk, and
+   ``f_locals`` holds live values.
 
 The fingerprint is a grouping key, not a redaction mechanism: its preimage is
 already PII-free, so the hash is defence in depth rather than the thing being
@@ -33,22 +36,24 @@ from openhands.agent_server.telemetry.models import (
     TELEMETRY_SCHEMA_VERSION,
     ErrorCategory,
 )
+from openhands.sdk.event.error_origin import (
+    FIRST_PARTY_ROOT as _FIRST_PARTY_ROOT,
+    UNKNOWN_ERROR_CLASS as UNKNOWN_ERROR_CLASS,
+    iter_traceback_frames,
+    safe_identifier,
+)
 
 
-_FIRST_PARTY_ROOT: Final[str] = __name__.split(".", 1)[0]
 _MAX_FINGERPRINT_FRAMES: Final[int] = 5
+# Every traceback link counts, including a frame whose globals have no module name.
+_FINGERPRINT_TRACE_LINKS: Final[int] = 256
 
 _SAFE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")
-_SAFE_IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*([.:][A-Za-z_][A-Za-z0-9_]*)*$"
-)
-_SAFE_IDENTIFIER_MAX_LEN: Final[int] = 96
 _VERSION_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.+\-/]{0,63}$"
 )
 
 UNKNOWN_TOKEN: Final[str] = "unknown"
-UNKNOWN_ERROR_CLASS: Final[str] = "UnknownError"
 _UNKNOWN_CATEGORY: Final[ErrorCategory] = "unknown"
 
 
@@ -62,16 +67,6 @@ def safe_token(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
         return default
     candidate = value.strip().lower()
     return candidate if _SAFE_TOKEN_RE.match(candidate) else default
-
-
-def safe_identifier(value: object, *, default: str = UNKNOWN_ERROR_CLASS) -> str:
-    """Coerce to a dotted identifier, or ``default`` if it doesn't fit."""
-    if not isinstance(value, str):
-        return default
-    candidate = value.strip()
-    if len(candidate) > _SAFE_IDENTIFIER_MAX_LEN:
-        return default
-    return candidate if _SAFE_IDENTIFIER_RE.match(candidate) else default
 
 
 def safe_version(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
@@ -228,20 +223,9 @@ class ErrorFingerprint:
 
 
 def _walk_frames(tb: TracebackType | None) -> Iterator[tuple[str, int]]:
-    """Collect ``(module, lineno)`` pairs without materialising source.
-
-    Reads only ``f_globals["__name__"]`` and ``tb_lineno``. Never touches
-    ``f_locals``, and never calls into :mod:`traceback`.
-    """
-    current = tb
-    # Bounded: a runaway recursion produces a huge chain.
-    remaining = 256
-    while current is not None and remaining > 0:
-        module = current.tb_frame.f_globals.get("__name__")
-        if isinstance(module, str) and module:
-            yield module, current.tb_lineno
-        current = current.tb_next
-        remaining -= 1
+    """Collect ``(module, lineno)`` pairs without materialising source."""
+    for frame in iter_traceback_frames(tb, max_links=_FINGERPRINT_TRACE_LINKS):
+        yield frame.module, frame.lineno
 
 
 def _classify(exc: BaseException) -> tuple[str, bool]:

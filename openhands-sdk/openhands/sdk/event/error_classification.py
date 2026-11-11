@@ -1,4 +1,9 @@
-"""Small, privacy-safe failure contract shared by SDK, UI, and telemetry."""
+"""Small, privacy-safe failure contract shared by SDK, UI, and telemetry.
+
+User-facing kind, retryability, and action live here. Sanitized origin and
+grouping keys are derived separately in :mod:`openhands.sdk.event.error_origin`
+and do not change this classification.
+"""
 
 from enum import StrEnum
 from typing import Literal
@@ -21,11 +26,12 @@ FailureAction = Literal["none", "retry", "settings"]
 
 
 class ErrorClassification(BaseModel):
-    """The only failure metadata that crosses the event/API boundary.
+    """User-facing failure semantics that cross the event/API boundary.
 
     It is intentionally small. ``detail`` is inspected locally only to map
     broad third-party errors to this closed vocabulary; it is never copied
-    here or sent to telemetry.
+    here or sent to telemetry. Origin and grouping are separate fields on the
+    error events and are not part of this classification.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

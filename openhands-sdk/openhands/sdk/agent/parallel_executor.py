@@ -31,6 +31,7 @@ from openhands.sdk.event.error_classification import (
     ErrorClassification,
     FailureKind,
 )
+from openhands.sdk.event.error_origin import diagnostics_from_exception
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import record_tool_result
@@ -312,12 +313,15 @@ class ParallelToolExecutor:
 
         except ValueError as e:
             logger.info(f"Tool error in '{action.tool_name}': {e}")
+            diagnostics = diagnostics_from_exception(e)
             return [
                 AgentErrorEvent(
                     error=f"Error executing tool '{action.tool_name}': {e}",
                     tool_name=action.tool_name,
                     tool_call_id=action.tool_call_id,
                     classification=AGENT_OUTCOME,
+                    origin=diagnostics.origin,
+                    grouping_key=diagnostics.grouping_key,
                 )
             ]
         except Exception as e:
@@ -325,12 +329,15 @@ class ParallelToolExecutor:
                 f"Unexpected error in tool '{action.tool_name}': {e}",
                 exc_info=True,
             )
+            diagnostics = diagnostics_from_exception(e)
             return [
                 AgentErrorEvent(
                     error=f"Error executing tool '{action.tool_name}': {e}",
                     tool_name=action.tool_name,
                     tool_call_id=action.tool_call_id,
                     classification=_INTERNAL,
+                    origin=diagnostics.origin,
+                    grouping_key=diagnostics.grouping_key,
                 )
             ]
 

@@ -8,6 +8,7 @@ from pydantic import BeforeValidator, Field, PrivateAttr
 
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_origin import origin_from_exception
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observability_headers_from_env
@@ -134,6 +135,7 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
                     source="environment",
                     code=type(cause).__name__,
                     detail=str(cause),
+                    origin=origin_from_exception(cause),
                 )
             payload["error"] = error.model_dump(mode="json")
 
