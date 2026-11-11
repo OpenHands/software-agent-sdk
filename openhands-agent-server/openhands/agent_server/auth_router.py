@@ -8,7 +8,10 @@ frontend wants to embed workspace artifacts (HTML reports, plots, PDFs).
 These endpoints let a client that already has a valid session API key
 exchange it for a short-lived cookie which the browser will automatically
 attach to every workspace request — including cross-site iframes, thanks
-to ``SameSite=None; Secure; Partitioned``.
+to ``SameSite=None; Secure; Partitioned``. Over plain HTTP to non-loopback
+hosts the cookie is minted with ``SameSite=Lax`` instead, because browsers
+reject ``SameSite=None`` without ``Secure``; cross-site iframes are a
+secure-context-only feature.
 
 The cookie is honored by ``workspace_router`` ONLY. Every other API route
 continues to require the ``X-Session-API-Key`` header. This is deliberate:
@@ -88,12 +91,18 @@ def _set_workspace_cookie(
     in third-party contexts; without it, the cookie may be silently
     dropped under third-party-cookie phase-out.
 
-    We always set ``SameSite=None`` so the same cookie works for both
-    same-site and cross-site iframes, and always set ``HttpOnly`` so JS
-    in workspace HTML can't read it back. ``Secure`` is set whenever
-    the request comes from a secure context (HTTPS or loopback) — the
-    only contexts where a ``SameSite=None`` cookie will actually be
-    stored by the browser.
+    In secure contexts (HTTPS or loopback) we set ``SameSite=None`` plus
+    ``Secure`` — the only attribute combination browsers will store, so
+    the same cookie works for both same-site and cross-site iframes. We
+    always set ``HttpOnly`` so JS in workspace HTML can't read it back.
+
+    In non-secure contexts (plain HTTP against a non-loopback host) we
+    mint with ``SameSite=Lax`` instead: Chromium refuses to store any
+    ``SameSite=None`` cookie without ``Secure``, so a ``None`` cookie
+    would never be stored and the workspace preview would always 401
+    (OpenHands/OpenHands#15567). ``Lax`` cookies are stored and sent on
+    the same-site requests the canvas makes when served from the same
+    origin; cross-site iframes remain unsupported on plain HTTP.
     """
     response.set_cookie(
         key=WORKSPACE_SESSION_COOKIE_NAME,
@@ -102,7 +111,7 @@ def _set_workspace_cookie(
         path=path,
         secure=secure,
         httponly=True,
-        samesite="none",
+        samesite="none" if secure else "lax",
     )
     # Starlette plumbs ``partitioned`` through to ``http.cookies.Morsel``,
     # which only recognized the attribute starting in Python 3.14. We need
