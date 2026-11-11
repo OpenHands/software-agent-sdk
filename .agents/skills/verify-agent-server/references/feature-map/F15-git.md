@@ -14,7 +14,10 @@ operation except repository search also exists under
 `/api/conversations/{runtime_conversation_id}/git/...`, where `path` must
 resolve inside the conversation's workspace. Repository search is not about
 local directories: it lists the repositories a GitHub token stored in the
-server's secrets can access (`missing_token` when there is none).
+server's secrets can access (`missing_token` when there is none), and
+pull-request status reads one GitHub pull request's state and the combined CI
+result of its head commit with the same token (409 `missing_provider_token`
+when there is none), for status badges.
 
 Source: `openhands-agent-server/openhands/agent_server/git_router.py`, `openhands-agent-server/openhands/agent_server/git_provider_service.py`, `openhands-agent-server/openhands/agent_server/runtime_router.py`, `openhands-sdk/openhands/sdk/git/`, `openhands-sdk/openhands/sdk/workspace/remote/remote_workspace_mixin.py`, `clients/typescript/src/workspace/remote-workspace.ts`, `clients/typescript/src/client/git-client.ts`
 
@@ -25,7 +28,8 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 `GET /api/conversations/{runtime_conversation_id}/git/commits`,
 `GET /api/conversations/{runtime_conversation_id}/git/commits/{sha}/changes`,
 `GET /api/git/repositories/search`, `GET /api/git/changes`,
-`GET /api/git/diff`, `GET /api/git/commits`, `GET /api/git/commits/{sha}/changes`
+`GET /api/git/diff`, `GET /api/git/commits`, `GET /api/git/commits/{sha}/changes`,
+`GET /api/git/repositories/{owner}/{repo}/pull-requests/{number}`
 
 ## Sub-features
 
@@ -58,6 +62,13 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub repository search timed out` and no token in it.
 - `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter.
 - `F15.repo-search-rejected-token`: a provider's HTTP 401 for a rejected token is passed through as 401 with a generic error, without exposing the token.
+- `F15.pr-status-token`: without a stored GitHub token, pull-request status is 409 with `detail.code` `missing_provider_token` (no request leaves the server).
+- `F15.pr-status-errors`: `gitlab`, `bitbucket`, `azure_devops` and `bitbucket_data_center` are 400 (not supported, checked before the token); a missing or unknown `provider`, `number` below 1 or not an integer, an `owner` or `repo` of `.` or `..`, and an `owner` or `repo` outside `[A-Za-z0-9_.-]` are 422.
+- `F15.pr-status-unreachable`: when GitHub cannot be reached, pull-request status is 502 with the masked body `GitHub request failed` and no token in it.
+- `F15.pr-status-state`: against a local TLS stand-in for `api.github.com`, the status reports `open`, `closed`, `merged` and `draft`, `head_sha` (null without a head), and `checks` folded from check runs and commit statuses (`success`, `failure` wins over `pending`, `none` when there are none, `pending` when more than 500 check runs exist); the token is picked up under `GITHUB_TOKEN` or `github` and sent as a bearer token.
+- `F15.pr-status-provider-errors`: GitHub's 404 stays 404, a rate limit (429, or 403 with `X-RateLimit-Remaining: 0`) is 429 with GitHub's `Retry-After`, a rejected token (401, other 403) is 502 `GitHub rejected the configured token`, 5xx (also from the check-runs call) is 502 and other 4xx 400, never exposing the token.
+- `F15.pr-status-timeout`: when GitHub does not answer within 15 s the status is 504 with the masked body `GitHub request timed out`.
+- `F15.pr-status-github`: with a real GitHub token, a real merged pull request reads back as `merged` with its 40-hex `head_sha` and a valid `checks` value.
 
 ## How to get to it (agent POV)
 
@@ -79,6 +90,14 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
   `GET /api/git/repositories/search?provider=github&query=...&limit=1..100&page_id=...`;
   the token comes from the server's secrets store (`PUT /api/settings/secrets`,
   names `GITHUB_TOKEN`, `github_token`, `GH_TOKEN`, `github`, in that order).
+- REST, pull-request status (global only):
+  `GET /api/git/repositories/{owner}/{repo}/pull-requests/{number}?provider=github`
+  returns `GitPullRequestStatus` (`git_provider`, `repository`, `number`,
+  `state` `open|closed|merged`, `draft`, `title`, `url`, `head_sha`, `checks`
+  `success|failure|pending|none`); same token lookup as search. No SDK or
+  TypeScript client method calls it yet. Driven by the `F15.pr-status-*`
+  bullets; the provider-dependent ones go through a local TLS stand-in for
+  `api.github.com` (translated), and `F15.pr-status-github` is the real one.
 - SDK: `RemoteWorkspace.git_changes(path)` and `git_diff(path)` (and the
   `AsyncRemoteWorkspace` versions) join a relative `path` to `working_dir` and
   call the global routes, or the scoped ones when the workspace has
@@ -91,8 +110,8 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
   limit, pageId})`. Driven by `F15.ts-client` (a `node` program on
   `clients/typescript/dist`).
 - Agent Canvas (context only): the Changes tab (changes and diff), the
-  Commits tab (commits, commit changes, diff with `commit`) and the
-  repository picker (search).
+  Commits tab (commits, commit changes, diff with `commit`), the
+  repository picker (search) and pull-request status badges.
 
 ## Driving it with control-agent-server
 
