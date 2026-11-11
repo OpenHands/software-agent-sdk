@@ -1,4 +1,4 @@
-"""Routes for user-facing experimental features (see :mod:`.features`)."""
+"""Routes for user-facing experimental features (see :mod:`.experimental_features`)."""
 
 import asyncio
 
@@ -6,10 +6,11 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.experimental_features import (
-    EXPERIMENTAL_FEATURES_BY_KEY,
     ExperimentalFeature,
     ExperimentalFeatureUpdate,
     experimental_feature_flags,
+    find_experimental_feature,
+    is_enabled,
 )
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 
@@ -30,17 +31,17 @@ async def list_experimental_features(request: Request) -> list[ExperimentalFeatu
 @experimental_features_router.patch(
     "/{key}",
     response_model=ExperimentalFeature,
-    responses={404: {"description": "There is no feature with this key"}},
+    responses={
+        404: {"description": "There is no feature with this key"},
+        409: {"description": "The settings file cannot be read"},
+    },
 )
 def update_experimental_feature(
     request: Request, key: str, payload: ExperimentalFeatureUpdate
 ) -> ExperimentalFeature:
-    """Turn a feature on or off.
-
-    The change applies to conversations started after it; running ones keep
-    what they started with.
-    """
-    if key not in EXPERIMENTAL_FEATURES_BY_KEY:
+    """Turn a feature on or off."""
+    feature = find_experimental_feature(key)
+    if feature is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown experimental feature: {key}",
@@ -61,8 +62,9 @@ def update_experimental_feature(
             status_code=status.HTTP_409_CONFLICT,
             detail="Settings file is corrupted or encrypted with a different key",
         )
-    return next(
-        f
-        for f in experimental_feature_flags(settings.experimental_features)
-        if f.key == key
+    return ExperimentalFeature(
+        key=feature.key,
+        label=feature.label,
+        description=feature.description,
+        enabled=is_enabled(settings.experimental_features, key),
     )

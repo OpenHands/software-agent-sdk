@@ -24,7 +24,7 @@ Source: `openhands-sdk/openhands/sdk/event/reaction.py`, `openhands-sdk/openhand
 
 Needs: `llm`
 
-Routes: `POST /api/conversations/{conversation_id}/reactions`, `GET /api/settings/experimental`, `PATCH /api/settings/experimental/{key}`
+Routes: `POST /api/conversations/{conversation_id}/reactions`
 
 ## Sub-features
 
@@ -33,6 +33,7 @@ Routes: `POST /api/conversations/{conversation_id}/reactions`, `GET /api/setting
 - `F37.rest`: `POST .../reactions` with `{emoji, target_event_id}` saves a user `ReactionEvent` on that message and returns it; `removed: true` saves the removal; the conversation stays `idle`.
 - `F37.rest-validation`: an emoji outside the set is 422, an unknown target is 400, and leaving out the target with no agent message yet is 400; nothing is saved.
 - `F37.tool`: an agent with `react` reacts to the person's latest message when asked to react first, and leaves the reaction on after it answers: the log has the tool's `ObservationEvent` followed by one agent `ReactionEvent` whose target is that message, and no removal.
+- `F37.rest-while-confirming`: a reaction posted while a tool call waits for confirmation is saved at once, and after the call is accepted the agent's next model call succeeds and the run finishes: the agent sees the reaction before the call, never between the call and its result.
 - `F37.rest-default`: after the agent has answered, a reaction without `target_event_id` goes on its answer: the latest agent message or `finish`.
 
 ## How to get to it (agent POV)
@@ -132,6 +133,28 @@ Preconditions:
   With no target the person's reaction goes on the agent's answer: its
   `finish` action when it finished with the tool (then the latest agent
   action), or its latest `MessageEvent` when it answered in plain text.
+- **Reacting while a tool call waits (`F37.rest-while-confirming`).** A
+  conversation that confirms every action answers once, then stops at its
+  next tool call; the person reacts to the first answer while it waits.
+  Requires: `F37.flag-gates`
+  ```sh
+  WC=$(control-agent-server conversation start --confirmation-policy always --prompt 'Run: echo first' --wait --until waiting_for_confirmation --print-id)
+  control-agent-server api POST "/api/conversations/$WC/events/respond_to_confirmation" --json '{"accept": true}' --expect 200
+  control-agent-server conversation wait "$WC" --until finished
+  control-agent-server conversation send "$WC" --text 'Now run: echo second' --wait --until waiting_for_confirmation
+  control-agent-server api POST "/api/conversations/$WC/reactions" --json '{"emoji": "heart"}' --expect 200 \
+    --check source eq user --save F37.rest-while-confirming/add
+  control-agent-server api POST "/api/conversations/$WC/events/respond_to_confirmation" --json '{"accept": true}' --expect 200
+  control-agent-server conversation wait "$WC" --until finished
+  control-agent-server api GET "/api/conversations/$WC/events/search" --query kind=Condensation --check items len-eq 0
+  control-agent-server api GET "/api/conversations/$WC/events/search" --query kind=ObservationEvent --query limit=100 \
+    --check items len-eq 2 --save F37.rest-while-confirming/observations
+  ```
+  The reaction is saved between the pending call and its result in the log,
+  yet the run finishes with exactly the two commands the person asked for
+  and no condensation. Before the fix the model's API refused that history
+  (a tool call must be followed by its result), the SDK condensed to
+  recover, and the agent ran `echo first` again.
 
 ## Gotchas
 

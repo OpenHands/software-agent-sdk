@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from typing import Final, Literal, get_args
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
@@ -48,7 +48,10 @@ class ReactionEvent(LLMConvertibleEvent):
     The agent sees the person's reactions on its next turn, as one line naming
     the emoji and the end of the message (``target_text_ending``); a reaction
     does not start a run. Its own reactions stay out of what it sees
-    (``View`` skips them): its ``react`` call is already there.
+    (``View`` skips them): its ``react`` call is already there. A reaction
+    that arrives while tool calls wait for their results (for example during
+    a confirmation) is shown to the agent just before those calls, never
+    between a call and its result.
     """
 
     source: SourceType = "user"
@@ -74,6 +77,13 @@ class ReactionEvent(LLMConvertibleEvent):
         default=False,
         description="True when the message is longer than `target_text_ending`.",
     )
+
+    @field_validator("source")
+    @classmethod
+    def _agent_or_person(cls, source: SourceType) -> SourceType:
+        if source not in ("agent", "user"):
+            raise ValueError("A reaction comes from the agent or the user.")
+        return source
 
     def to_llm_message(self) -> Message:
         who = "The person" if self.source == "user" else "You"

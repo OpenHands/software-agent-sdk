@@ -1,7 +1,6 @@
 """Tests for emoji reactions: the event, the tools and LocalConversation.react."""
 
 import json
-import threading
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +14,7 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event import (
     REACTION_EMOJI,
@@ -27,7 +27,6 @@ from openhands.sdk.event import (
 from openhands.sdk.event.reaction import (
     CLIPPED_MESSAGE_START,
     REACTION_TEXT_ENDING_MAX,
-    ReactionEmoji,
     check_reaction_emoji,
     find_reaction_target,
 )
@@ -37,7 +36,9 @@ from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.tools.reaction import (
     ReactAction,
     ReactionObservation,
+    ReactTool,
     UnreactAction,
+    UnreactTool,
 )
 from openhands.tools.reaction.impl import ReactionExecutor
 
@@ -122,6 +123,11 @@ def test_reaction_round_trips_as_an_event():
     loaded = Event.model_validate(json.loads(event.model_dump_json()))
     assert isinstance(loaded, ReactionEvent)
     assert (loaded.emoji, loaded.removed, loaded.source) == ("+1", False, "agent")
+
+
+def test_only_the_agent_and_the_person_react():
+    with pytest.raises(ValueError, match="agent or the user"):
+        ReactionEvent(source="environment", target_event_id="m1", emoji="eyes")
 
 
 def test_observations_have_no_follow_up_events_by_default():
@@ -260,107 +266,18 @@ def test_messages_off_the_active_branch_are_not_targets(conversation):
         conversation.react("+1", answer.id)
 
 
-def test_execute_tool_records_the_reaction(conversation):
+def test_execute_tool_returns_the_reaction_without_recording_it(conversation):
     observation = conversation.execute_tool("react", ReactAction(emoji="tada"))
 
     assert not observation.is_error
-    (saved,) = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
-    assert saved.source == "agent" and saved.emoji == "tada"
-    assert saved.target_event_id == _user_message(conversation).id
+    (follow_up,) = observation.follow_up_events()
+    assert isinstance(follow_up, ReactionEvent) and follow_up.emoji == "tada"
+    assert not [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
 
 
-def test_execute_tool_from_a_worker_does_not_wait_for_the_run_loops_lock(
-    conversation,
-):
-    # The run loop holds the state lock across a step while it waits for a
-    # tool on a worker thread; that tool's direct calls must not wait for the
-    # lock. Their events are recorded by the run loop once the step returns.
-    _user_message(conversation)
-    results: list[object] = []
-
-    def worker(emoji: ReactionEmoji) -> None:
-        results.append(conversation.execute_tool("react", ReactAction(emoji=emoji)))
-
-    conversation._step_holds_state_lock = True
-    try:
-        with conversation._state:
-            threads = [
-                threading.Thread(target=worker, args=(emoji,))
-                for emoji in ("eyes", "tada")
-            ]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=5)
-                assert not thread.is_alive(), "execute_tool waited for the lock"
-            assert not [
-                e for e in conversation.state.events if isinstance(e, ReactionEvent)
-            ]
-            # What the run loop does right after the step.
-            conversation._end_step()
-    finally:
-        conversation._step_holds_state_lock = False
-
-    assert len(results) == 2
-    # Both reactions are on the active branch, one after the other.
-    on_branch = [
-        e for e in conversation.state.active_branch() if isinstance(e, ReactionEvent)
-    ]
-    assert sorted(e.emoji for e in on_branch) == ["eyes", "tada"]
-    assert on_branch[1].parent_id == on_branch[0].id
-
-
-class _PausingLock:
-    """A lock that, on a worker's first acquire, lets the main thread run
-    first, to land a step's end between the worker's steps."""
-
-    def __init__(self, worker_reached, step_ended):
-        self._lock = threading.Lock()
-        self._worker_reached = worker_reached
-        self._step_ended = step_ended
-
-    def __enter__(self):
-        if threading.current_thread() is not threading.main_thread():
-            if not self._worker_reached.is_set():
-                self._worker_reached.set()
-                assert self._step_ended.wait(timeout=5)
-        self._lock.acquire()
-        return self
-
-    def __exit__(self, *exc):
-        self._lock.release()
-
-
-def test_execute_tool_racing_the_end_of_a_step_keeps_its_reaction(conversation):
-    # A direct call that sees a step running must not queue its events after
-    # that step has drained the queue: they would never be recorded although
-    # the call returned success. Here the step ends just as the call reaches
-    # the queue.
-    _user_message(conversation)
-    worker_reached, step_ended = threading.Event(), threading.Event()
-    conversation._deferred_events_lock = _PausingLock(worker_reached, step_ended)
-    results: list[object] = []
-
-    def worker() -> None:
-        results.append(conversation.execute_tool("react", ReactAction(emoji="eyes")))
-
-    thread = threading.Thread(target=worker)
-    conversation._step_holds_state_lock = True
-    try:
-        with conversation._state:
-            thread.start()
-            assert worker_reached.wait(timeout=5)
-            conversation._end_step()
-        step_ended.set()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
-    finally:
-        conversation._step_holds_state_lock = False
-
-    assert len(results) == 1
-    assert not conversation._deferred_events
-    saved = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
-    assert [e.emoji for e in saved] == ["eyes"]
+def test_reaction_tools_are_not_offered_in_agent_settings():
+    assert ReactTool.user_selectable is False
+    assert UnreactTool.user_selectable is False
 
 
 # What the agent sees of reactions
@@ -401,6 +318,38 @@ def test_the_agent_sees_the_persons_reaction_on_its_next_turn(conversation):
     assert conversation.state.execution_status == status
     texts = _texts(_messages_on_next_step(conversation))
     assert f"[The person reacted 👍 to this message:]\n{question}" in texts
+
+
+def test_a_reaction_during_a_pending_tool_call_stays_out_of_the_call(conversation):
+    """LLM APIs reject anything between a tool call and its result."""
+    conversation.state.append_event(_message("agent", "Shall I run it?"))
+    emitted: list[Event] = []
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        side_effect=lambda messages, **kw: _react_call(),
+    ):
+        conversation.agent.step(conversation, on_event=emitted.append)
+    call = next(e for e in emitted if isinstance(e, ActionEvent))
+    result = next(e for e in emitted if isinstance(e, ObservationEvent))
+
+    # The call waits (a confirmation, a pause); the person reacts meanwhile.
+    conversation.state.append_event(call)
+    conversation.react("heart")
+    conversation.state.append_event(result)
+
+    def kinds(events) -> list[str]:
+        return [type(e).__name__ for e in events][-3:]
+
+    assert kinds(conversation.state.events) == [
+        "ActionEvent",
+        "ReactionEvent",
+        "ObservationEvent",
+    ]
+    seen = ["ReactionEvent", "ActionEvent", "ObservationEvent"]
+    assert kinds(conversation.state.view.events) == seen
+    assert kinds(View.from_events(conversation.state.events).events) == seen
+    roles = [m["role"] for m in _messages_on_next_step(conversation)]
+    assert roles[-3:] == ["user", "assistant", "tool"]
 
 
 def test_a_long_message_is_clipped_to_its_ending(conversation):

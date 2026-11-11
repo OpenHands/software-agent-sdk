@@ -39,14 +39,14 @@ python main.py
 ```python
 HookDefinition(
     type=HookType.AGENT,
-    name="security-reviewer",      # bucket for cost metrics (agent-hook:<name>)
-    system_prompt="...",           # instructs the hook agent; must request JSON
-    tools=["file_editor"],         # optional tools the hook agent may use
-                                   # (use registered names, e.g. "file_editor",
-                                   # "terminal" — not class names like
-                                   # "FileEditorTool")
-    timeout=60,                    # forwarded to the per-hook LLM copy
-    max_iterations=3,              # cap on hook sub-conversation steps
+    name="security-reviewer",  # bucket for cost metrics (agent-hook:<name>)
+    system_prompt="...",  # instructs the hook agent; must request JSON
+    tools=["file_editor"],  # optional tools the hook agent may use
+    # (use registered names, e.g. "file_editor",
+    # "terminal" — not class names like
+    # "FileEditorTool")
+    timeout=60,  # forwarded to the per-hook LLM copy
+    max_iterations=3,  # cap on hook sub-conversation steps
 )
 ```
 

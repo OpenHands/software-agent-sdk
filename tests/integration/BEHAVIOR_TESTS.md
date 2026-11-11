@@ -68,6 +68,7 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 
 INSTRUCTION = "Your user prompt that might trigger undesirable behavior"
 
+
 class YourBehaviorTest(BaseIntegrationTest):
     INSTRUCTION: str = INSTRUCTION
     # Note: Test type is automatically determined by filename (b*.py = behavior)
@@ -88,8 +89,7 @@ class YourBehaviorTest(BaseIntegrationTest):
 
         if editing_ops:
             return TestResult(
-                success=False,
-                reason="Agent edited files when it shouldn't have"
+                success=False, reason="Agent edited files when it shouldn't have"
             )
 
         return TestResult(success=True, reason="Agent behaved correctly")

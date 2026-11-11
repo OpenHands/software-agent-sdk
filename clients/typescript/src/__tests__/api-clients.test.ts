@@ -2325,15 +2325,14 @@ describe('Auxiliary API clients', () => {
     }
   });
 
-  it('SettingsClient lists and switches feature flags', async () => {
-    const flag = {
-      key: 'conversation_reactions',
-      label: 'Conversation reactions',
-      description: 'Emoji reactions.',
-      default: false,
+  it('SettingsClient lists and switches experimental features', async () => {
+    const feature = {
+      key: 'qa_feature',
+      label: 'QA feature',
+      description: 'A feature for tests.',
       enabled: true,
     };
-    const responses = [[{ ...flag, enabled: false }], flag];
+    const responses = [[{ ...feature, enabled: false }], feature];
     global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify(responses.shift()), {
@@ -2344,10 +2343,10 @@ describe('Auxiliary API clients', () => {
     ) as typeof fetch;
 
     const client = new SettingsClient({ host: 'http://example.com' });
-    await expect(client.listExperimentalFeatures()).resolves.toEqual([{ ...flag, enabled: false }]);
-    await expect(client.updateExperimentalFeature('conversation_reactions', true)).resolves.toEqual(
-      flag
-    );
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([
+      { ...feature, enabled: false },
+    ]);
+    await expect(client.updateExperimentalFeature('qa_feature', true)).resolves.toEqual(feature);
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
@@ -2356,7 +2355,7 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      'http://example.com/api/settings/experimental/conversation_reactions',
+      'http://example.com/api/settings/experimental/qa_feature',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
     );
   });

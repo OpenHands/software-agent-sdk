@@ -61,11 +61,13 @@ class LogDataAction(Action):
     level: LogLevel  # Enum: debug, info, warning, error
     data: dict[str, Any]  # Additional structured data
 
+
 # Define the observation (output from the tool)
 class LogDataObservation(Observation):
     success: bool
     log_file: str
     entry_count: int
+
 
 # Auto-register the tool when module is imported
 register_tool("LogDataTool", LogDataTool)
@@ -190,31 +192,38 @@ Create a new Python file in `custom_tools/`:
 from openhands.sdk import Action, Observation, ToolDefinition
 from openhands.sdk.tool import ToolExecutor, register_tool
 
+
 class MyAction(Action):
     # Define your input fields
     param1: str
     param2: int
+
 
 class MyObservation(Observation):
     # Define your output fields
     result: str
     success: bool
 
+
 class MyExecutor(ToolExecutor[MyAction, MyObservation]):
     def __call__(self, action: MyAction, conversation=None):
         # Implement your tool logic
         return MyObservation(result="...", success=True)
 
+
 class MyTool(ToolDefinition[MyAction, MyObservation]):
     @classmethod
     def create(cls, conv_state, **params):
         executor = MyExecutor()
-        return [cls(
-            description="Tool description",
-            action_type=MyAction,
-            observation_type=MyObservation,
-            executor=executor,
-        )]
+        return [
+            cls(
+                description="Tool description",
+                action_type=MyAction,
+                observation_type=MyObservation,
+                executor=executor,
+            )
+        ]
+
 
 # Auto-register
 register_tool("MyTool", MyTool)

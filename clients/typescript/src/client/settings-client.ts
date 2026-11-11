@@ -22,12 +22,11 @@ import type {
 } from '../models/agent-server-api';
 import type { MCPServer, MCPServerPatch } from '../models/mcp-settings';
 
-/** A user-facing feature flag and whether it is on (`GET /api/settings/experimental`). */
+/** An experimental feature and whether it is on (`GET /api/settings/experimental`). */
 export interface ExperimentalFeature {
   key: string;
   label: string;
   description: string;
-  default: boolean;
   enabled: boolean;
 }
 
@@ -65,10 +64,7 @@ export class SettingsClient {
     return response.data;
   }
 
-  /**
-   * Turn one feature on or off. It applies to conversations started after the
-   * change. An unknown key is a 404.
-   */
+  /** Turn one experimental feature on or off. An unknown key is a 404. */
   async updateExperimentalFeature(key: string, enabled: boolean): Promise<ExperimentalFeature> {
     const response = await this.client.patch<ExperimentalFeature>(
       `/api/settings/experimental/${encodeURIComponent(key)}`,
