@@ -1785,6 +1785,27 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.switchAcpEffort('low');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'low' }) })
+    );
+  });
+
   it('RemoteConversation.switchAcpModel POSTs the model to the switch_acp_model endpoint', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
@@ -2097,6 +2118,25 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: JSON.stringify({ profile_name: 'fast' }),
       })
+    );
+  });
+
+  it('ConversationClient.switchAcpEffort posts the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await new ConversationClient({ host: 'http://example.com' }).switchAcpEffort(
+      'conversation-1',
+      'high'
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'high' }) })
     );
   });
 

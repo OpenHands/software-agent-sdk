@@ -1498,6 +1498,35 @@ def test_switch_acp_model_success(
         client.app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize(
+    ("side_effect", "status_code"),
+    [(None, 200), (ValueError("not offered"), 400), (TimeoutError("slow"), 504)],
+)
+def test_switch_acp_effort(
+    client,
+    mock_conversation_service,
+    mock_event_service,
+    sample_conversation_id,
+    side_effect,
+    status_code,
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_effort.side_effect = side_effect
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_effort",
+            json={"effort": "high"},
+        )
+        assert response.status_code == status_code
+        mock_event_service.switch_acp_effort.assert_awaited_once_with("high")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_switch_acp_model_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):

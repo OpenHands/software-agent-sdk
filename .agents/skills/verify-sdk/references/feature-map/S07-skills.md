@@ -100,7 +100,7 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
     --check longdesc_full_in_prompt eq false --check longdesc_points_to_invoke_skill eq true \
     --check longdesc_leaks_location eq false
   ```
-  Expected: the description is cut at 1024 characters with `Call invoke_skill(name="longdesc") to load the full skill`, and no file location is shown (`to_prompt` omits `<location>` on purpose). Known failure (reproduced 2026-10-13, not yet filed): `Skill` truncates the description when the `SKILL.md` is loaded, with the notice `<response clipped><NOTE>... You can view the complete skill content at /abs/path/.agents/skills/longdesc/SKILL.md.</NOTE>`, so the prompt carries the absolute file path and no `invoke_skill` pointer (`longdesc_points_to_invoke_skill` false, `longdesc_leaks_location` true). The unit test `test_to_prompt_truncates_long_descriptions` sets the description after construction and so never sees the load-time notice.
+  Expected: the description is cut at 1024 characters with `Call invoke_skill(name="longdesc") to load the full skill`, and no file location is shown (`to_prompt` omits `<location>` on purpose). `Skill` truncates a long description already when the `SKILL.md` is loaded; since #6644 that notice also points at `invoke_skill` and not at the file.
 - **Path rules (`S07.path-rules`).** A `paths: [src/**/*.py]` AgentSkills rule and a nested `docs/AGENTS.md`; the scripted agent views `README.md`, `src/app/main.py`, `src/app/other.py` and `docs/guide.md` with `file_editor`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
