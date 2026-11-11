@@ -239,15 +239,19 @@ class EventService:
     stored: StoredConversation
     conversations_dir: Path
     # What a NEW conversation starts with. base_state.json owns these from
-    # then on: a resume loads the agent, policy and analyzer from it and
-    # ignores the values here. ``secrets`` are added on every start, which is
-    # how a resume receives a credential its caller just supplied.
+    # then on: a resume loads the agent, policy, analyzer and budget from it
+    # and ignores the values here.
     agent: AgentBase | None = None
-    confirmation_policy: ConfirmationPolicyBase = field(default_factory=NeverConfirm)
-    security_analyzer: SecurityAnalyzerBase | None = field(default=None)
-    secrets: dict[str, SecretSource] = field(default_factory=dict)
-    # Budget for a new conversation; base_state.json owns it from then on.
+    initial_confirmation_policy: ConfirmationPolicyBase = field(
+        default_factory=NeverConfirm, kw_only=True
+    )
+    initial_security_analyzer: SecurityAnalyzerBase | None = field(
+        default=None, kw_only=True
+    )
     initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
+    # Added to the registry on every start, new or resumed: a resume gets a
+    # credential its caller just supplied this way.
+    secrets: dict[str, SecretSource] = field(default_factory=dict, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -1425,8 +1429,8 @@ class EventService:
             if missing:
                 conversation.update_secrets(missing)
         else:
-            conversation.set_confirmation_policy(self.confirmation_policy)
-            conversation.set_security_analyzer(self.security_analyzer)
+            conversation.set_confirmation_policy(self.initial_confirmation_policy)
+            conversation.set_security_analyzer(self.initial_security_analyzer)
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.

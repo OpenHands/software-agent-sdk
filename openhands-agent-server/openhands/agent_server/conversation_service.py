@@ -2177,8 +2177,9 @@ class ConversationService:
         """Start a child conversation on this server, derived from *parent_id*.
 
         Like :meth:`fork_conversation`, the child inherits the parent's stored
-        configuration (secrets, client tools, plugins, hooks, tags, ...) and its
-        resolved agent, but it starts with a fresh event history: ``task`` is
+        configuration (client tools, plugins, hooks, tags, ...), its resolved
+        agent and its current confirmation policy, security analyzer and
+        secrets, but it starts with a fresh event history: ``task`` is
         delivered as the child's first user message. With
         ``isolation="worktree"`` the child runs in a git worktree carved from
         the parent's workspace when that workspace is a git repository with
@@ -2562,10 +2563,10 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=launched.agent if launched is not None else None,
-            confirmation_policy=confirmation_policy or NeverConfirm(),
-            security_analyzer=security_analyzer,
-            secrets=secrets or {},
+            initial_confirmation_policy=confirmation_policy or NeverConfirm(),
+            initial_security_analyzer=security_analyzer,
             initial_max_budget_per_run=max_budget_per_run,
+            secrets=secrets or {},
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,

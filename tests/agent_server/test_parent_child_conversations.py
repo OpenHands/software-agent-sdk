@@ -298,8 +298,8 @@ def _event_service_factory(services: dict[UUID, Any]):
             agent=agent,
             workspace=stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
-            confirmation_policy=kwargs["confirmation_policy"],
-            security_analyzer=kwargs["security_analyzer"],
+            confirmation_policy=kwargs["initial_confirmation_policy"],
+            security_analyzer=kwargs["initial_security_analyzer"],
             secret_registry=SecretRegistry(secret_sources=kwargs["secrets"]),
         )
         services[stored.id] = event_service
