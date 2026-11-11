@@ -35,7 +35,7 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.analyzer-set-clear`: `POST .../security_analyzer` sets `PatternSecurityAnalyzer` or `LLMSecurityAnalyzer` and clears it with `null`; GET, `base_state.json` and the socket reflect each change.
 - `F08.analyzer-errors`: a missing `security_analyzer` field and an unknown kind are 422; an unknown conversation is 404; no key is 401; the stored analyzer is unchanged.
 - `F08.confirm-risky`: under `ConfirmRisky` with `PatternSecurityAnalyzer`, a low-risk command runs unasked and `rm -rf` waits for confirmation; once the analyzer is cleared, an unrated command waits too.
-- `F08.secrets-update`: `POST .../secrets` accepts plain strings, `{"value": ...}` and `StaticSecret` objects (200); once the state is saved, GET lists the names with masked values and `base_state.json` holds them encrypted, never in plaintext.
+- `F08.secrets-update`: `POST .../secrets` accepts plain strings, `{"value": ...}` and `StaticSecret` objects (200); GET lists the names with masked values and `base_state.json` holds them encrypted, never in plaintext.
 - `F08.secrets-visible`: a secret posted at runtime is listed by GET right away, without waiting for another state change.
 - `F08.secrets-errors`: a missing or non-object `secrets`, an unknown secret kind and a `LookupSecret` without `url` are 422; an unknown conversation is 404; no key is 401; nothing is stored.
 - `F08.secrets-bad-value`: a number, `null` or a boolean as a secret value is refused with 422, not a 500.
