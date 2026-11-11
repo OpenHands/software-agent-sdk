@@ -47,6 +47,11 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.secrets-no-cipher`: on a server with no cipher (no `OH_SECRET_KEY`, no session key) a runtime secret reaches commands while the conversation lives, is persisted only as the redaction placeholder (the server warns at startup), and is empty after a restart although GET still lists the name.
 - `F08.secrets-restart`: a runtime secret that reached `base_state.json` is still injected into commands after a server restart.
 - `F08.secrets-unsaved-restart`: a runtime secret survives a restart even when nothing else changed in the conversation after it was posted.
+- `F08.state-on-disk`: a conversation's `confirmation_policy`, `security_analyzer` and `secrets` are in `base_state.json` from creation on and never in `meta.json`, also after a runtime change.
+- `F08.policy-restart`: a confirmation policy set at runtime is the one in force after a server restart, not the start-time one.
+- `F08.analyzer-restart`: a security analyzer set or cleared at runtime stays so after a server restart.
+- `F08.secrets-override-restart`: a runtime value that replaced a start-time secret is what commands get after a server restart.
+- `F08.upgrade-from-release`: conversations the latest released server created and never ran keep their start-time secret, policy and analyzer after the same state is restarted on this checkout.
 
 ## How to get to it (agent POV)
 
@@ -70,8 +75,9 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - WebSocket (owned by the events family): `/sockets/events/{conversation_id}`
   pushes the state updates above and the `UserRejectObservation` live.
 - Start-time fields of `POST /api/conversations` (`confirmation_policy`,
-  `security_analyzer`, `secrets`) are stored in `meta.json` and re-applied on
-  every reload; the runtime routes here change only the live state.
+  `security_analyzer`, `secrets`) seed the new conversation's state once.
+  From then on `base_state.json` is their only home (`meta.json` never has
+  them): the runtime routes here change it, and a reload keeps what it holds.
 - SDK (`openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py`):
   `RemoteConversation.set_confirmation_policy()`, `set_security_analyzer()`,
   `update_secrets()` (serializes `SecretSource` objects, calls callables), and
@@ -116,8 +122,10 @@ Preconditions:
   (write `$QA_F08_ROT` to a file, finish), `$LOOKUP_AGENT` (write
   `$QA_F08_LOOKUP` to a file and echo it, finish) and `$SELF_AGENT` (write
   `$QA_F08_HOSTLESS`, `$QA_F08_ABSOLUTE` and `$QA_F08_ABSENT` to three files
-  and echo the first, finish). The
-  no-cipher bullet makes its own stub on its own server. Last, it creates
+  and echo the first, finish) and `$ROTR_AGENT` (write `$QA_F08_ROTR` to a
+  file, finish). The
+  no-cipher and upgrade bullets make their own stubs on their own servers.
+  Last, it creates
   `$KID`, an idle conversation on the offline agent that the knob, error and
   secret-form bullets share.
 - Every `known bug` bullet uses only these variables and arranges the rest
@@ -129,7 +137,7 @@ Preconditions:
 control-agent-server llm preset deepseek
 W="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f08"
 mkdir -p "$W/knobs" "$W/accept" "$W/reject/qa-f08-victim" "$W/risky/qa-f08-victim" "$W/secret" "$W/rotate" \
-  "$W/lookup" "$W/self" "$W/scoped" "$W/nocipher" "$W/real"
+  "$W/lookup" "$W/self" "$W/scoped" "$W/nocipher" "$W/real" "$W/rotate-restart" "$W/upgrade"
 NOPE=$(python3 -c 'import uuid; print(uuid.uuid4())')
 OFFLINE_AGENT='{"llm": {"model": "openai/qa-offline", "api_key": "qa-offline-key", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "tools": []}'
 MSG='{"role": "user", "content": [{"type": "text", "text": "Run the command."}]}'
@@ -150,6 +158,9 @@ LOOKUP_STEP='tool:terminal:{"command":"printf %s \"$QA_F08_LOOKUP\" > qa-f08-loo
 LOOKUP_AGENT=$(stub_agent qa-f08-lookup --step "$LOOKUP_STEP" --step "$FINISH")
 SELF_STEP='tool:terminal:{"command":"printf %s \"$QA_F08_HOSTLESS\" > qa-f08-hostless.txt; printf %s \"$QA_F08_ABSOLUTE\" > qa-f08-absolute.txt; printf %s \"$QA_F08_ABSENT\" > qa-f08-absent.txt; echo \"self=$QA_F08_HOSTLESS\""}'
 SELF_AGENT=$(stub_agent qa-f08-self --step "$SELF_STEP" --step "$FINISH")
+ROTR_STEP='tool:terminal:{"command":"printf %s \"$QA_F08_ROTR\" > qa-f08-rotr.txt"}'
+ROTR_AGENT=$(stub_agent qa-f08-rotr --step "$ROTR_STEP" --step "$FINISH")
+QUEUED='{"role": "user", "content": [{"type": "text", "text": "QA_F08 queued"}], "run": false}'
 REJECT_KIND=openhands.sdk.event.llm_convertible.observation.UserRejectObservation
 OBSERVATION_KIND=openhands.sdk.event.llm_convertible.observation.ObservationEvent
 KID=$(control-agent-server api POST /api/conversations \
@@ -686,6 +697,118 @@ KID=$(control-agent-server api POST /api/conversations \
   eviction (default 20 minutes) or a sandbox pause right after
   `POST .../secrets` keeps it.
 
+- **Where the three live on disk (`F08.state-on-disk`).** A conversation
+  created with all three in the start body, read on disk before anything
+  else happens, then after a runtime change.
+  ```sh
+  DSK=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"security_analyzer\": {\"kind\": \"LLMSecurityAnalyzer\"}, \"secrets\": {\"QA_F08_DISK\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-disk-value\"}}}" \
+    --expect 201 --field id)
+  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
+    --check confirmation_policy.kind eq AlwaysConfirm --check security_analyzer.kind eq LLMSecurityAnalyzer \
+    --check secret_registry.secret_sources.QA_F08_DISK.kind eq StaticSecret --not-contains qa-f08-disk-value
+  control-agent-server state cat meta.json --conversation "$DSK" --max-chars 200 --check id exists \
+    --check confirmation_policy missing --check security_analyzer missing --check secrets missing --check secrets_encrypted missing
+  control-agent-server api POST "/api/conversations/$DSK/confirmation_policy" --json '{"policy": {"kind": "NeverConfirm"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$DSK/secrets" --json '{"secrets": {"QA_F08_DISK2": "qa-f08-disk2-value"}}' --expect 200
+  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
+    --check confirmation_policy.kind eq NeverConfirm --check secret_registry.secret_sources.QA_F08_DISK2.kind eq StaticSecret
+  control-agent-server state cat meta.json --conversation "$DSK" --max-chars 200 --check id exists \
+    --check confirmation_policy missing --check security_analyzer missing --check secrets missing
+  ```
+  `base_state.json` has the policy, the analyzer and the secret (cipher
+  text, never the value) as soon as the create returns, and follows the
+  runtime changes. `meta.json` is readable (it has the `id`) and has none of
+  the four keys, before and after.
+- **Policy and analyzer after a restart (`F08.policy-restart`, `F08.analyzer-restart`).**
+  `$RSP` starts with `AlwaysConfirm` and `LLMSecurityAnalyzer` and is
+  switched at runtime to `ConfirmRisky` and `PatternSecurityAnalyzer`; `$RSC`
+  starts with `PatternSecurityAnalyzer`, which is cleared. After the restart
+  a queued message loads each conversation into memory before it is read.
+  ```sh
+  RSP=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"security_analyzer\": {\"kind\": \"LLMSecurityAnalyzer\"}}" \
+    --expect 201 --field id)
+  RSC=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"security_analyzer\": {\"kind\": \"PatternSecurityAnalyzer\"}}" \
+    --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$RSP/confirmation_policy" \
+    --json '{"policy": {"kind": "ConfirmRisky", "threshold": "MEDIUM", "confirm_unknown": false}}' --expect 200
+  control-agent-server api POST "/api/conversations/$RSP/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$RSC/security_analyzer" --json '{"security_analyzer": null}' --expect 200
+  control-agent-server restart
+  control-agent-server doctor
+  control-agent-server api POST "/api/conversations/$RSP/events" --json "$QUEUED" --expect 200 --quiet
+  control-agent-server api POST "/api/conversations/$RSC/events" --json "$QUEUED" --expect 200 --quiet
+  control-agent-server api GET "/api/conversations/$RSP" --check confirmation_policy.kind eq ConfirmRisky \
+    --check confirmation_policy.threshold eq MEDIUM --check confirmation_policy.confirm_unknown eq false --save F08.policy-restart/after-restart
+  control-agent-server api GET "/api/conversations/$RSP" --check security_analyzer.kind eq PatternSecurityAnalyzer --save F08.analyzer-restart/set
+  control-agent-server api GET "/api/conversations/$RSC" --check security_analyzer eq null --save F08.analyzer-restart/cleared
+  control-agent-server api GET "/api/conversations/$RSC/events/count" --query body='QA_F08 queued' --check . eq 1
+  ```
+  With both conversations loaded again (each holds its queued message),
+  `$RSP` still has `ConfirmRisky` with its `MEDIUM` threshold and
+  `PatternSecurityAnalyzer`, not the `AlwaysConfirm` and
+  `LLMSecurityAnalyzer` it was created with, and `$RSC` still has no
+  analyzer.
+- **A replaced start-time secret after a restart (`F08.secrets-override-restart`).**
+  `QA_F08_ROTR` starts as `qa-f08-rotr-old`, is replaced at runtime, and the
+  server restarts before any command runs.
+  ```sh
+  RSS=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/rotate-restart\"}, \"agent\": $ROTR_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F08_ROTR\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-rotr-old\"}}}" \
+    --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$RSS/secrets" --json '{"secrets": {"QA_F08_ROTR": "qa-f08-rotr-new"}}' --expect 200
+  control-agent-server restart
+  control-agent-server doctor
+  control-agent-server conversation send "$RSS" --text 'Run the command.' --wait --until finished --timeout 120
+  test "$(cat "$W/rotate-restart/qa-f08-rotr.txt")" = qa-f08-rotr-new
+  control-agent-server state grep qa-f08-rotr-old --glob 'server/**/*' --expect-none
+  control-agent-server state grep qa-f08-rotr-new --glob 'server/**/*' --expect-none
+  ```
+  The command wrote `qa-f08-rotr-new`: the restart did not bring the
+  start-time value back, and neither value is stored in plaintext.
+- **Upgrade from the latest release (`F08.upgrade-from-release`).** A second
+  run starts on the newest release tag. `$UC` is created there with a
+  start-time secret and nothing else, `$UA` with `AlwaysConfirm` and
+  `PatternSecurityAnalyzer`; neither is touched again before the same state
+  is restarted on this checkout.
+
+  Needs: `network`
+  ```sh
+  HERE="${AGENT_SERVER_VERIFY_CHECKOUT:-$PWD}"
+  TAG=$(git -C "$HERE" describe --tags --abbrev=0 --match 'v*')
+  REL="$W/release-$TAG"
+  git -C "$HERE" worktree add --detach "$REL" "$TAG" >/dev/null 2>&1
+  UP=$(control-agent-server launch --new --name f08-upgrade --checkout "$REL" --timeout 900 --print-run)
+  trap 'control-agent-server stop --run "$UP" >/dev/null; git -C "$HERE" worktree remove --force "$REL"' EXIT
+  UP_STUB=$(control-agent-server fixture llm-stub --run "$UP" --name qa-f08-upgrade \
+    --step 'tool:terminal:{"command":"printf %s \"$QA_F08_UP\" > qa-f08-up.txt"}' --step "$FINISH" --print-path)
+  UC=$(control-agent-server api POST /api/conversations --run "$UP" \
+    --json "{\"workspace\": {\"working_dir\": \"$W/upgrade\"}, \"agent\": {\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$UP_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}, \"autotitle\": false, \"secrets\": {\"QA_F08_UP\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-up-value\"}}}" \
+    --expect 201 --field id)
+  UA=$(control-agent-server api POST /api/conversations --run "$UP" \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"security_analyzer\": {\"kind\": \"PatternSecurityAnalyzer\"}}" \
+    --expect 201 --field id)
+  control-agent-server restart --run "$UP" --checkout "$HERE"
+  control-agent-server conversation send "$UC" --run "$UP" --text 'Run the command.' --wait --until finished --timeout 120
+  test "$(cat "$W/upgrade/qa-f08-up.txt")" = qa-f08-up-value
+  control-agent-server api GET "/api/conversations/$UC" --run "$UP" --check secret_registry.secret_sources.QA_F08_UP.kind eq StaticSecret \
+    --save F08.upgrade-from-release/secret
+  control-agent-server state cat meta.json --run "$UP" --conversation "$UC" --max-chars 200 --check id exists --check secrets missing
+  control-agent-server api POST "/api/conversations/$UA/events" --run "$UP" --json "$QUEUED" --expect 200 --quiet
+  control-agent-server api GET "/api/conversations/$UA" --run "$UP" --check confirmation_policy.kind eq AlwaysConfirm \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --save F08.upgrade-from-release/policy
+  ```
+  On this checkout the command still gets `qa-f08-up-value`, and `$UA`,
+  loaded by its queued message, still has `AlwaysConfirm` and
+  `PatternSecurityAnalyzer`. A release that kept start-time secrets in
+  `meta.json` wrote `$UC`'s nowhere else (nothing saved the state after the
+  create), so this checkout takes it over on the first load; `meta.json` has
+  no `secrets` key afterwards. The first launch of a release worktree builds
+  its environment with `uv`, which needs the package index and can take
+  minutes; the trap stops the second server and removes the worktree.
+
 ## Gotchas
 
 - `respond_to_confirmation` with `accept: true` is exactly a run request: it
@@ -728,11 +851,19 @@ KID=$(control-agent-server api POST /api/conversations \
 - A command receives a secret only when its text mentions the secret's name
   (case-insensitive substring match); masking applies to every registered
   secret's last resolved value, wherever it appears in terminal output.
-- Runtime secret changes made through `POST .../secrets` live only in
-  `base_state.json` (written before the POST returns) and are never written
-  to `meta.json`, so a runtime secret survives a reload (restart, idle
-  eviction, sandbox pause). See `F08.secrets-restart` and
-  `F08.secrets-unsaved-restart`.
+- The confirmation policy, the security analyzer and the secrets live only
+  in `base_state.json`: the start body seeds them, the runtime routes write
+  them before answering, and `meta.json` never holds them
+  (`F08.state-on-disk`). A reload (restart, idle eviction, sandbox pause)
+  therefore keeps the current values (`F08.policy-restart`,
+  `F08.analyzer-restart`, `F08.secrets-restart`,
+  `F08.secrets-unsaved-restart`, `F08.secrets-override-restart`).
+- A server from before this layout kept start-time secrets in `meta.json`
+  and could leave them out of `base_state.json`. The first load by a newer
+  server takes over the names `base_state.json` lacks and then drops the
+  key (`F08.upgrade-from-release`). Going back to such an older server is
+  not symmetric: it re-applies its own defaults on load, so the policy
+  becomes `NeverConfirm` and the analyzer is cleared.
 - Unknown conversations answer 404 `{"detail": "Not Found"}` on the
   conversation routes and 404 `Conversation not found: <id>` on
   `respond_to_confirmation` (an events route).

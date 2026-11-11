@@ -31,6 +31,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.fork-errors`: an unknown source is 404, an unknown `from_event_id` is 404, a taken `id` is 409, a bad tag key or a title over 200 characters is 422, a malformed id is 422 and a missing key is 401; none of them creates a conversation.
 - `F10.fork-keeps-credentials`: the fork's `base_state.json` keeps the agent's (encrypted) model keys, like the source's.
 - `F10.fork-run-memory`: a fork of a finished DeepSeek conversation runs to `finished` with the source's history in context (it recalls a codename only the source was told).
+- `F10.fork-keeps-settings`: a fork has the source's current confirmation policy, security analyzer and conversation secrets, including what was changed after the source was created, in its own `base_state.json`; changing them on the fork leaves the source alone.
 - `F10.navigate-event`: `POST /navigate` with an earlier `event_id` answers 200 with `leaf_event_id` set to it; GET and `base_state.json` agree and no event is deleted.
 - `F10.navigate-branch`: after navigating, the next appended event's `parent_id` is the new HEAD (a sibling of the abandoned branch), pushed live on the events socket; the HEAD move itself is not broadcast.
 - `F10.navigate-empty`: `{}` or `{"event_id": null}` selects the empty tree (`leaf_event_id` null, `head_is_empty` true on disk); the next appended event becomes a new root (`parent_id` `__root__`).
@@ -287,6 +288,33 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   (`F10.fork-keeps-credentials`) instead ends in `error` within seconds with
   a `ConversationErrorEvent` `LLMAuthenticationError` ("Your LLM API key
   appears to be invalid or has expired.").
+- **The fork keeps the safety settings and secrets (`F10.fork-keeps-settings`).**
+  A conversation is given a policy, an analyzer and a secret after it was
+  created, then forked.
+  ```sh
+  PS=$(control-agent-server conversation start --placeholder-agent --no-autotitle --no-run --prompt QA_F10_SETTINGS --print-id)
+  control-agent-server api POST "/api/conversations/$PS/confirmation_policy" \
+    --json '{"policy": {"kind": "ConfirmRisky", "threshold": "MEDIUM", "confirm_unknown": false}}' --expect 200
+  control-agent-server api POST "/api/conversations/$PS/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$PS/secrets" --json '{"secrets": {"QA_F10_TOKEN": "qa-f10-token-value"}}' --expect 200
+  PF=$(control-agent-server api POST "/api/conversations/$PS/fork" --expect 201 --field id)
+  control-agent-server api GET "/api/conversations/$PF" --check confirmation_policy.kind eq ConfirmRisky --check confirmation_policy.threshold eq MEDIUM \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F10_TOKEN.kind eq StaticSecret \
+    --save F10.fork-keeps-settings/fork
+  control-agent-server state cat base_state.json --conversation "$PF" --max-chars 200 --check confirmation_policy.kind eq ConfirmRisky \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F10_TOKEN.value exists \
+    --not-contains qa-f10-token-value
+  control-agent-server state cat meta.json --conversation "$PF" --max-chars 200 --check id exists \
+    --check confirmation_policy missing --check security_analyzer missing --check secrets missing
+  control-agent-server api POST "/api/conversations/$PF/confirmation_policy" --json '{"policy": {"kind": "NeverConfirm"}}' --expect 200
+  control-agent-server api GET "/api/conversations/$PF" --check confirmation_policy.kind eq NeverConfirm
+  control-agent-server api GET "/api/conversations/$PS" --check confirmation_policy.kind eq ConfirmRisky --save F10.fork-keeps-settings/source
+  ```
+  The fork answers with `ConfirmRisky` at `MEDIUM`, `PatternSecurityAnalyzer`
+  and `QA_F10_TOKEN`, none of which the source had when it was created. They
+  are in the fork's `base_state.json` (the secret as cipher text) and not in
+  its `meta.json`. Switching the fork to `NeverConfirm` leaves the source on
+  `ConfirmRisky`.
 - **Navigate to an earlier event (`F10.navigate-event`).** Move `S`'s HEAD
   back to its first message.
   ```sh

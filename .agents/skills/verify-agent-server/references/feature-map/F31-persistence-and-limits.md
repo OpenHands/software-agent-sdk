@@ -54,8 +54,9 @@ Routes: none
   server on the same conversations directory
   (`launch --new --share-conversations-from RUN`).
 - Persisted layout, read with `state ls|cat|grep`: per conversation
-  `<conversations_path>/<id hex>/meta.json` (title, tags, encrypted secrets),
-  `base_state.json` (execution status, agent, encrypted secret registry),
+  `<conversations_path>/<id hex>/meta.json` (title, tags),
+  `base_state.json` (execution status, agent, confirmation policy, security
+  analyzer, encrypted secret registry),
   `events/` and, while it is loaded, `owner_lease.json`
   (`owner_instance_id`, `generation`, `expires_at`, `owner_host`,
   `owner_pid`) guarded by `.owner_lease.lock`; under `OH_PERSISTENCE_DIR`
