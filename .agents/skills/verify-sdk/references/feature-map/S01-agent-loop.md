@@ -265,6 +265,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
 
 ## Gotchas
 
+- A rejected `response_schema` on a terminal tool raises `ValueError` after the terminal has already started its tmux server, and nothing closes it: `close()` leaves the server running after the program exits ([#6748](https://github.com/OpenHands/software-agent-sdk/issues/6748)). `S01.structured-output` passes but leaves two such servers per run; end them with `TMUX_TMPDIR=<run tmux dir> tmux -L <socket> kill-server`.
 - `01_hello_world.py` is in `_EXCLUDED_EXAMPLES` in `tests/examples/test_examples.py`, so the `test-examples` label never runs it; the other seven examples here do run there (`pytest tests/examples/test_examples.py --run-examples`).
 - All examples read `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`; `56_structured_output.py` defaults `LLM_MODEL` to `anthropic/claude-sonnet-4-5-20250929`, the rest to `gpt-5.5`. `17_image_input.py` asserts `llm.vision_is_active()` and fails fast on a text-only model; it also fetches an image from python.org.
 - Examples run with the repo root as workspace and write files there (`FACTS.txt`, `image_report.md`, the document from example 18).

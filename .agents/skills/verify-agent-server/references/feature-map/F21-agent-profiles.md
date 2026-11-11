@@ -927,7 +927,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
   not name `dangling_llm_profile_ref`, which only the launch's 422 carries
   (#5871).
-- **TypeScript payload types (`F21.ts-payload-types`).** The
+- **TypeScript payload types (`F21.ts-payload-types`), known bug #6747.** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
@@ -961,7 +961,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const openhands: Shape<OpenHandsAgentProfile> = $OPENHANDS;" "export const acp: Shape<ACPAgentProfile> = $ACPKEYS;" \
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
-  $TSC "$D/contract.ts"
+  $TSC "$D/contract.ts"  # bug: exit 2
   $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
@@ -974,8 +974,14 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
   `acp_startup_timeout`. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
-  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`
-  (#6187, which closed #6183).
+  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`.
+  Today the server's ACP profile also carries `acp_effort`, which neither
+  the generated `AcpAgentProfile` (regenerated only from the pinned release
+  image, which predates the field) nor the exported `ACPAgentProfile`
+  declares, so `contract.ts` fails with `TS2353 ... '"acp_effort"' does not
+  exist` (#6747). When the next release regenerates the contract, the
+  `exported.ts` line fails the same way until `ACPAgentProfile` gains the
+  field.
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.

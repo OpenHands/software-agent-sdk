@@ -24,6 +24,7 @@ Routes: `WS /sockets/session/{conversation_id}`
 ## Sub-features
 
 - `F07.sync-first`: the first server frame is `{"type": "sync"}`; `from_seq` echoes `after_seq` (absent when live-only) and `through_seq` is the last on-disk `seq` (absent for an empty log).
+- `F07.sync-first-during-run`: while a run holds the conversation's state lock, `sync` is still the first frame; an `error` reply to an invalid frame sent right after connecting comes after it.
 - `F07.snapshot-transient`: every connection gets one `transient` frame with a `full_state` `ConversationStateUpdateEvent` and no `seq`, after `sync` (and after the replay when one ran); it is never persisted.
 - `F07.full-replay`: `after_seq=-1` (or any value below it) replays every persisted event as `durable` frames with `seq` 0..`through_seq`, in order, once each, with the same ids REST returns.
 - `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`.
@@ -652,8 +653,31 @@ Preconditions:
   (`pub_sub.py`, `session_socket.py`), so the client waits forever. The same
   bug holds the legacy events socket open (`F06.ws-delete-close`).
 
+- **Sync first while a run holds the lock (`F07.sync-first-during-run`), known bug #6745.**
+  Start a run whose agent sits in a 25 s `sleep`, connect while the tool
+  call is in flight, and send an `assistant` message at once.
+
+  Needs: `tmux`
+  ```sh
+  RUNC=$(control-agent-server conversation start --no-autotitle --prompt 'Run exactly this terminal command and nothing else: sleep 25 && echo QA_F07_LOCK' --print-id)
+  control-agent-server conversation wait "$RUNC" --until running --timeout 60
+  control-agent-server api GET "/api/conversations/$RUNC/events/search" --query kind=ActionEvent --check items len-ge 1 --until-ok 60 --quiet
+  control-agent-server ws listen "/sockets/session/$RUNC" --send '{"role":"assistant","content":[{"type":"text","text":"QA_F07_LOCK_ROLE"}]}' \
+    --until-kind sync --duration 90 --expect-kind error --save "F07.sync-first-during-run/order-$RUNC"
+  control-agent-server state cat "evidence/F07.sync-first-during-run/order-$RUNC.json" --check frames.2.kind eq sync  # bug: checks.0.actual eq error
+  control-agent-server conversation wait "$RUNC" --until finished,idle --timeout 120
+  ```
+  Expected: `sync` arrives first (when the step ends and the lock frees),
+  then the `error` frame (`AssertionError`, `Only user messages are allowed
+  to be sent to the agent.`). Today the socket reads client frames from the
+  moment it connects, before subscribing (which waits for the lock), so the
+  `error` frame is sent at once and `sync` only when the step ends, about
+  25 s later (#6745). A valid user message sent during the step is saved
+  either way.
+
 ## Gotchas
 
+- `F07.reject-non-user` reads the `error` frame at a fixed index after `sync` and the snapshot. While #6745 lasts, the `error` can overtake `sync` when the server is slow to subscribe (seen once under load), and the bullet then fails on `frames.4.frame.type`; `F07.sync-first-during-run` reproduces that order deterministically.
 - Neither the SDK nor the TypeScript client uses this socket yet, so a
   regression here breaks no shipped consumer's tests; only these recipes and
   `tests/agent_server/test_session_socket.py` notice.

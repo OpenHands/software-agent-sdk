@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@4db1ad742ad143ddc3411631f04efb70323f40f9 (2026-11-09). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **969 sub-features**.
+The map has **970 sub-features**.
 
 ## Baseline preconditions
 
@@ -71,7 +71,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F04 | [Conversation lifecycle and catalog](F04-conversation-lifecycle.md) | create from settings, an agent profile or an inline agent; client ids, parents, worktrees, start-time secrets, 422 redaction; get, batch get, search, count; PATCH; final response; DELETE; restart | `POST`/`GET`/`PATCH`/`DELETE /api/conversations[/{id}]`, `/search`, `/count`, `/agent_final_response`, `/children` | llm, git | 36 |
 | F05 | [Run, pause, interrupt and status transitions](F05-run-pause-interrupt.md) | run, pause and interrupt during model and tool calls; status transitions on every view; stuck detection and max_iterations stops; 409 and 429; graceful and SIGKILL restarts | `POST /api/conversations/{id}/run`, `/pause`, `/interrupt` | llm, tmux; launch `--config-json '{"max_concurrent_runs": 1}'` | 31 |
 | F06 | [Conversation events and the events WebSocket](F06-conversation-events.md) | appending messages, event search, count, get and batch get with filters and paging, the events WebSocket (auth, snapshot, replay, live frames), history across restart | `POST`/`GET /api/conversations/{id}/events[...]`, `WS /sockets/events/{id}` | llm; launch `--env TZ=UTC` | 29 |
-| F07 | [Session WebSocket protocol](F07-session-socket.md) | the resumable session socket: sync, durable and transient frames, seq replay, inbound messages, error and close codes, streaming deltas, backpressure, subscriber cap | `WS /sockets/session/{id}` | llm | 24 |
+| F07 | [Session WebSocket protocol](F07-session-socket.md) | the resumable session socket: sync, durable and transient frames, seq replay, inbound messages, error and close codes, streaming deltas, backpressure, subscriber cap | `WS /sockets/session/{id}` | llm | 25 |
 | F08 | [Confirmation policy, security analyzer and conversation secrets](F08-confirmation-security-secrets.md) | confirmation policies and accept/reject, the security analyzer, runtime conversation secrets (static, lookup, masking, encryption, no cipher), and what survives a restart | `POST /api/conversations/{id}/confirmation_policy`, `/security_analyzer`, `/secrets`, `/events/respond_to_confirmation` | llm, tmux | 23 |
 | F09 | [Model, profile and ACP switching; runtime plugins](F09-model-switching-plugins.md) | swap the agent LLM, switch to a saved profile, switch an ACP model, load a plugin at runtime; stats, hooks and restart persistence | `POST /api/conversations/{id}/switch_llm`, `/switch_profile`, `/switch_acp_model`, `/load_plugin` | llm, tmux, node, network | 37 |
 | F10 | [Fork, navigate, condense and ask_agent](F10-fork-navigate-condense-ask.md) | fork, navigate between branches, condense with a real summarizer, ask the agent a side question; state after restart | `POST /api/conversations/{id}/fork`, `/navigate`, `/condense`, `/ask_agent` | llm | 25 |

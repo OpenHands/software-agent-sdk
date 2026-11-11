@@ -774,7 +774,7 @@ Preconditions:
   non-zero with the `ModuleNotFoundError` before uvicorn starts, so nothing
   is served and no state is written. `api --until-ok` gives up on a refused connection,
   hence the `curl --retry-connrefused` wait.
-- **Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug.**
+- **Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug #6746.**
   Restart the run without `OH_EXTRA_PYTHON_PATH` and use the conversation of
   `F27.custom-tool-modules`, whose events include `qa_f27_echo` calls.
 
@@ -796,7 +796,7 @@ Preconditions:
   registered"`: the agent is built from the stored tool list on the first
   message, and `resolve_tool` raises. A deployment that drops or renames a
   custom tool module can read but no longer continue every conversation
-  that used it.
+  that used it (#6746).
 - **Playwright browsers directory (`F27.browser-playwright-path`), blocked on a machine with Chromium at a standard path (needs Chromium only in a Playwright directory).**
   Point the server at the run-owned Playwright directory through
   `PLAYWRIGHT_BROWSERS_PATH` only.
