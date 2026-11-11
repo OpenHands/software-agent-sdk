@@ -14,7 +14,6 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event import (
     REACTION_EMOJI,
@@ -320,7 +319,7 @@ def test_the_agent_sees_the_persons_reaction_on_its_next_turn(conversation):
     assert f"[The person reacted 👍 to this message:]\n{question}" in texts
 
 
-def test_a_reaction_during_a_pending_tool_call_stays_out_of_the_call(conversation):
+def test_a_reaction_during_a_pending_tool_call_waits_for_its_result(conversation):
     """LLM APIs reject anything between a tool call and its result."""
     conversation.state.append_event(_message("agent", "Shall I run it?"))
     emitted: list[Event] = []
@@ -332,24 +331,37 @@ def test_a_reaction_during_a_pending_tool_call_stays_out_of_the_call(conversatio
     call = next(e for e in emitted if isinstance(e, ActionEvent))
     result = next(e for e in emitted if isinstance(e, ObservationEvent))
 
-    # The call waits (a confirmation, a pause); the person reacts meanwhile.
-    conversation.state.append_event(call)
-    conversation.react("heart")
-    conversation.state.append_event(result)
-
     def kinds(events) -> list[str]:
-        return [type(e).__name__ for e in events][-3:]
+        return [type(e).__name__ for e in events]
 
-    assert kinds(conversation.state.events) == [
+    # The call waits (a confirmation, a pause); the person reacts meanwhile.
+    conversation._on_event(call)
+    held = conversation.react("heart")
+    conversation.react("heart", removed=True)
+    assert kinds(conversation.state.events)[-1] == "ActionEvent"
+
+    # The result arrives: the held reactions follow it, in order.
+    conversation._on_event(result)
+
+    assert kinds(conversation.state.events)[-4:] == [
         "ActionEvent",
-        "ReactionEvent",
         "ObservationEvent",
+        "ReactionEvent",
+        "ReactionEvent",
     ]
-    seen = ["ReactionEvent", "ActionEvent", "ObservationEvent"]
-    assert kinds(conversation.state.view.events) == seen
-    assert kinds(View.from_events(conversation.state.events).events) == seen
+    first, second = conversation.state.events[-2:]
+    assert (first.id, first.removed, second.removed) == (held.id, False, True)
+    assert first.timestamp >= conversation.state.events[-3].timestamp
+    assert (
+        kinds(conversation.state.view.events)[-4:]
+        == kinds(conversation.state.events)[-4:]
+    )
     roles = [m["role"] for m in _messages_on_next_step(conversation)]
-    assert roles[-3:] == ["user", "assistant", "tool"]
+    assert roles[-3:] == ["assistant", "tool", "user"]
+
+    # Nothing is open any more: the next reaction is an event at once.
+    conversation.react("tada")
+    assert kinds(conversation.state.events)[-1] == "ReactionEvent"
 
 
 def test_a_long_message_is_clipped_to_its_ending(conversation):

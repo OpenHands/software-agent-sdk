@@ -9,11 +9,9 @@ from pydantic import BaseModel, Field
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties import ALL_PROPERTIES
 from openhands.sdk.event import (
-    ActionEvent,
     Condensation,
     CondensationRequest,
     LLMConvertibleEvent,
-    ObservationBaseEvent,
     ReactionEvent,
 )
 from openhands.sdk.event.base import Event
@@ -132,13 +130,6 @@ class View(BaseModel):
             case ReactionEvent(source="agent"):
                 pass
 
-            # The person's reaction can arrive while tool calls wait for their
-            # results (a pending confirmation, a pause). LLM APIs reject
-            # anything between a tool call and its result, so it goes just
-            # before those calls.
-            case ReactionEvent():
-                self.events.insert(self._index_before_open_tool_calls(), event)
-
             case LLMConvertibleEvent():
                 self.events.append(event)
 
@@ -152,21 +143,6 @@ class View(BaseModel):
                     f"Skipping non-LLMConvertibleEvent of type {type(event)} "
                     "in View.append_event"
                 )
-
-    def _index_before_open_tool_calls(self) -> int:
-        """Where an event can go without separating tool calls from results."""
-        answered = {
-            e.tool_call_id for e in self.events if isinstance(e, ObservationBaseEvent)
-        }
-        open_responses = {
-            e.llm_response_id
-            for e in self.events
-            if isinstance(e, ActionEvent) and e.tool_call_id not in answered
-        }
-        for index, e in enumerate(self.events):
-            if isinstance(e, ActionEvent) and e.llm_response_id in open_responses:
-                return index
-        return len(self.events)
 
     @staticmethod
     def from_events(events: Sequence[Event]) -> View:

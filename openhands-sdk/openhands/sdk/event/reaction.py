@@ -48,10 +48,10 @@ class ReactionEvent(LLMConvertibleEvent):
     The agent sees the person's reactions on its next turn, as one line naming
     the emoji and the end of the message (``target_text_ending``); a reaction
     does not start a run. Its own reactions stay out of what it sees
-    (``View`` skips them): its ``react`` call is already there. A reaction
-    that arrives while tool calls wait for their results (for example during
-    a confirmation) is shown to the agent just before those calls, never
-    between a call and its result.
+    (``View`` skips them): its ``react`` call is already there. A person's
+    reaction that arrives while tool calls wait for their results (for example
+    during a confirmation) is held back and becomes an event once those calls
+    are answered, so it never sits between a call and its result.
     """
 
     source: SourceType = "user"
