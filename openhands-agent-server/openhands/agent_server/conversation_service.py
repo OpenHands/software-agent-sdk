@@ -1730,9 +1730,10 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
+        # Everything excluded here belongs to base_state.json, not meta.json:
+        # it goes to the EventService directly instead of StoredConversation.
         request_data = request.model_copy(
             update={
-                "secrets": secrets,
                 "workspace": workspace,
                 "tool_module_qualnames": tool_module_qualnames,
             }
@@ -1745,21 +1746,13 @@ class ConversationService:
                 "agent_profile_id",
                 "agent_launch_additions",
                 "max_budget_per_run",
+                "confirmation_policy",
+                "security_analyzer",
+                "secrets",
+                "secrets_encrypted",
             },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
-
-        # Pull out the init-only fields that belong to base_state.json (not
-        # meta.json) so they are not splatted into StoredConversation. They go
-        # to the EventService directly, decrypted when the request was
-        # secrets_encrypted (``secrets`` above already is).
-        for field_name in (
-            "secrets",
-            "secrets_encrypted",
-            "confirmation_policy",
-            "security_analyzer",
-        ):
-            request_data.pop(field_name, None)
         if request.secrets_encrypted:
             stored = StoredConversation.model_validate(
                 {
@@ -2686,7 +2679,7 @@ class ConversationService:
                 live_conversation.agent if live_conversation is not None else None
             )
             live_policy = (
-                live_conversation._state.confirmation_policy
+                live_conversation.state.confirmation_policy
                 if live_conversation is not None
                 else None
             )
