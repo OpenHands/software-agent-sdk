@@ -223,20 +223,16 @@ class ConversationWorktreeOptions(BaseModel):
         return self
 
 
-class ConversationConfig(BaseModel):
-    """Shared conversation configuration.
+class StoredConversationConfig(BaseModel):
+    """What the agent-server keeps about a conversation in its own record.
 
-    Covers everything except the agent and init-only fields.
-
-    This is the common base for :class:`StartConversationRequest` (which adds the
-    ``agent``/``agent_settings``/``agent_profile_id`` family and init-only fields
-    such as ``confirmation_policy``, ``security_analyzer``, and ``secrets``) and
-    the agent-server's ``StoredConversation`` (which persists only what is needed
-    for listing and resuming conversations — NOT the agent, confirmation policy,
-    security analyzer, or secrets, all of which are owned exclusively by
-    ``ConversationState`` / ``base_state.json`` after the conversation is created).
-    Keeping these off this base makes the duplication structurally impossible rather
-    than something a reviewer has to remember to exclude.
+    The base of :class:`ConversationConfig`, and through it of
+    :class:`StartConversationRequest`, and the base of the agent-server's
+    ``StoredConversation`` (``meta.json``). It leaves out everything the
+    conversation state (``ConversationState`` / ``base_state.json``) owns once
+    the conversation exists: the agent, the budget, the confirmation policy,
+    the security analyzer and the secrets. A record built on this base cannot
+    hold a second copy of them.
     """
 
     workspace: LocalWorkspace = Field(
@@ -413,28 +409,16 @@ class ConversationConfig(BaseModel):
     )
 
 
-class StartConversationRequest(ConversationConfig):
-    """Payload to create a new conversation.
+class ConversationConfig(StoredConversationConfig):
+    """Start-time conversation configuration, everything except the agent.
 
-    Extends :class:`ConversationConfig` with the agent source and init-only
-    fields whose post-creation source of truth is ``ConversationState`` /
-    ``base_state.json``.
-
-    The agent source is a stored Agent Profile (``agent_profile_id``), resolved
-    agent settings (``agent_settings``), or an ``agent`` built in code. The
-    server turns the source into the conversation's agent at launch; this model
-    only checks that exactly one source is given.
-
-    The agent, the budget and the init-only fields (``confirmation_policy``,
-    ``security_analyzer``, ``secrets``, ``secrets_encrypted``) live here on the
-    *request*, deliberately not on ``ConversationConfig``, so the persisted
-    record (``StoredConversation``) cannot carry them by construction. Their
-    single source of truth is ``ConversationState`` / ``base_state.json``.
+    Adds the values a start request hands to the conversation state:
+    ``confirmation_policy``, ``security_analyzer`` and ``secrets``. After
+    creation they belong to that state and are changed through the
+    conversation, so nothing that is persisted next to it should extend this
+    class; see :class:`StoredConversationConfig`.
     """
 
-    # Init-only fields: seeded into ConversationState on first start and never
-    # written to meta.json.  Mutations after creation go to ConversationState
-    # directly (autosaved to base_state.json) so they survive eviction/restart.
     confirmation_policy: ConfirmationPolicyBase = Field(
         default=NeverConfirm(),
         description="Controls when the conversation will prompt the user before "
@@ -461,6 +445,22 @@ class StartConversationRequest(ConversationConfig):
             "config with secrets_encrypted=True so the server can decrypt them."
         ),
     )
+
+
+class StartConversationRequest(ConversationConfig):
+    """Payload to create a new conversation.
+
+    Extends :class:`ConversationConfig` with the agent source: a stored Agent
+    Profile (``agent_profile_id``), resolved agent settings
+    (``agent_settings``), or an ``agent`` built in code. The
+    server turns the source into the conversation's agent at launch; this model
+    only checks that exactly one source is given.
+
+    Note: the agent and budget live here on the *request*, deliberately not on
+    ``ConversationConfig``. The persisted record (``StoredConversation``) does
+    not carry them — their single source of truth is ``ConversationState`` /
+    ``base_state.json``.
+    """
 
     agent_settings: dict[str, Any] | None = Field(
         default=None,
