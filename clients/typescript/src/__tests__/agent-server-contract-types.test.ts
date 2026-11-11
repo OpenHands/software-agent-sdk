@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import type { MCPClient } from '../client/mcp-client';
 import type { RemoteWorkspace } from '../workspace/remote-workspace';
 import type {
@@ -5,6 +7,8 @@ import type {
   GitChangeStatus as PublicGitChangeStatus,
 } from '../index';
 import type { SettingsClient } from '../client/settings-client';
+import type { ConversationInfo } from '../models/conversation';
+import type { ACPEffortOption } from '../models/acp-model-discovery';
 import type {
   AcpAgentProfile as GeneratedACPAgentProfile,
   AgentProfileDiagnostics as GeneratedAgentProfileDiagnostics,
@@ -18,6 +22,7 @@ import type {
 import type {
   ACPAgentProfile,
   AgentProfileDiagnostics,
+  AgentProfileSaveInput,
   AgentProfileSummary,
   OpenHandsAgentProfile,
 } from '../models/agent-profile';
@@ -67,6 +72,34 @@ function assertType<Type extends true>(_value: Type): void {
 }
 
 describe('Agent Server generated contract aliases', () => {
+  it('typechecks the contract assertions with TypeScript', () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const configPath = fileURLToPath(new URL('../../tsconfig.json', import.meta.url));
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
+    const program = ts.createProgram([fileURLToPath(import.meta.url)], {
+      ...parsed.options,
+      noEmit: true,
+    });
+    const diagnostics = [
+      ...(config.error ? [config.error] : []),
+      ...parsed.errors,
+      ...ts.getPreEmitDiagnostics(program),
+    ];
+    expect(
+      ts.formatDiagnostics(diagnostics, {
+        getCanonicalFileName: (fileName) => fileName,
+        getCurrentDirectory: ts.sys.getCurrentDirectory,
+        getNewLine: () => ts.sys.newLine,
+      })
+    ).toBe('');
+  }, 30_000);
+
+  it('exposes typed conversation effort fields', () => {
+    assertType<Equal<ConversationInfo['current_effort'], string | null | undefined>>(true);
+    assertType<Equal<ConversationInfo['available_efforts'], ACPEffortOption[] | undefined>>(true);
+  });
+
   it('statically checks settings client request and response types', () => {
     assertType<
       Equal<Awaited<ReturnType<SettingsClient['getAgentSchema']>>, AgentServerSettingsSchema>
@@ -166,5 +199,38 @@ describe('Agent Server generated contract aliases', () => {
     assertType<Equal<keyof OpenHandsAgentProfile, keyof GeneratedOpenHandsAgentProfile>>(true);
     assertType<Equal<keyof ACPAgentProfile, keyof GeneratedACPAgentProfile>>(true);
     assertType<Equal<keyof AgentProfileDiagnostics, keyof GeneratedAgentProfileDiagnostics>>(true);
+  });
+
+  it('preserves optional nullable ACP effort in profiles and save inputs', () => {
+    assertType<
+      Equal<Pick<ACPAgentProfile, 'acp_effort'>, Pick<GeneratedACPAgentProfile, 'acp_effort'>>
+    >(true);
+    assertType<
+      Equal<
+        Pick<Extract<AgentProfileSaveInput, { agent_kind: 'acp' }>, 'acp_effort'>,
+        Pick<GeneratedACPAgentProfile, 'acp_effort'>
+      >
+    >(true);
+  });
+
+  it('preserves optional nullable public-skill selection in profiles and diagnostics', () => {
+    assertType<
+      Equal<
+        Pick<OpenHandsAgentProfile, 'public_skills'>,
+        Pick<GeneratedOpenHandsAgentProfile, 'public_skills'>
+      >
+    >(true);
+    assertType<
+      Equal<
+        Pick<AgentProfileDiagnostics, 'public_skills'>,
+        Pick<GeneratedAgentProfileDiagnostics, 'public_skills'>
+      >
+    >(true);
+    assertType<
+      Equal<
+        Pick<Extract<AgentProfileSaveInput, { agent_kind: 'openhands' }>, 'public_skills'>,
+        Pick<GeneratedOpenHandsAgentProfile, 'public_skills'>
+      >
+    >(true);
   });
 });

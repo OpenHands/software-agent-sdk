@@ -44,6 +44,8 @@ export interface CreateConversationPayload {
   agent_profile_id?: string;
   agent?: unknown;
   agent_settings?: unknown;
+  /** Positive USD limit on accumulated conversation cost; a step may overshoot. */
+  max_budget_per_run?: number | null;
   [key: string]: unknown;
 }
 
@@ -420,6 +422,17 @@ export class ConversationClient {
   async switchAcpModel(conversationId: string, model: string): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_model`, {
       model,
+    });
+  }
+
+  /**
+   * Switch the reasoning effort of an ACP conversation. Live for a started
+   * conversation; persisted and applied at session start otherwise. 400 when
+   * the current model doesn't offer `effort`.
+   */
+  async switchAcpEffort(conversationId: string, effort: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_effort`, {
+      effort,
     });
   }
 
