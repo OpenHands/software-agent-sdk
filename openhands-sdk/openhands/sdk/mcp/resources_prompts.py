@@ -17,7 +17,7 @@ from functools import partial
 from typing import Any, Literal
 
 import mcp.types
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError
 from pydantic import BaseModel, Field
 
 from openhands.sdk.logger import get_logger

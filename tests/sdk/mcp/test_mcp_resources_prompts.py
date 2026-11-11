@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import mcp.types
 import pytest
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError
 
 from openhands.sdk.mcp import (
     MCPCapabilityNotSupportedError,
@@ -124,11 +124,7 @@ def test_failed_read_names_server_and_uri(config):
 
 
 def test_method_not_found_maps_to_capability_error(config):
-    error = McpError(
-        error=mcp.types.ErrorData(
-            code=mcp.types.METHOD_NOT_FOUND, message="Method not found"
-        )
-    )
+    error = McpError(mcp.types.METHOD_NOT_FOUND, "Method not found")
     with patch.object(MCPClient, "list_resources", side_effect=error):
         with pytest.raises(MCPCapabilityNotSupportedError) as exc_info:
             list_mcp_resources(config, "kanban")
