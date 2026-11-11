@@ -819,6 +819,9 @@ def test_prompt_cache_retention_support(model, expected_retention):
         # DeepSeek V4 Flash (dual-mode thinking)
         ("deepseek/deepseek-v4-flash", True),
         ("litellm_proxy/deepseek/deepseek-v4-flash", True),
+        # DeepSeek Flash (dual-mode thinking)
+        ("deepseek/deepseek-flash", True),
+        ("litellm_proxy/deepseek/deepseek-flash", True),
         # Models that should NOT match
         ("deepseek/deepseek-chat", False),  # Different DeepSeek model
         ("kimi-k2-instruct", False),  # Different variant
