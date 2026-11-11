@@ -12,6 +12,7 @@ import pytest
 from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -482,6 +483,56 @@ def test_fork_copies_secret_registry():
         assert fork.state.secret_registry.get_secret_value("MY_TOKEN") == (
             "s3kr3t-value"
         )
+
+
+def test_fork_secret_change_does_not_reach_the_source_masking():
+    """The fork resolves and masks with a registry of its own: replacing a
+    secret on the fork leaves the source masking its own value."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"TOKEN": "source-token-value"},
+        )
+        src_registry = src.state.secret_registry
+        assert src_registry.get_secrets_as_env_vars("echo $TOKEN") == {
+            "TOKEN": "source-token-value"
+        }
+
+        fork = src.fork()
+        fork.update_secrets({"TOKEN": "fork-token-value"})
+        assert fork.state.secret_registry.get_secrets_as_env_vars("echo $TOKEN") == {
+            "TOKEN": "fork-token-value"
+        }
+
+        assert (
+            src.state.secret_registry.mask_secrets_in_output("out: source-token-value")
+            == "out: <secret-hidden>"
+        )
+
+
+def test_fork_keeps_a_replacement_agents_own_secrets():
+    """`fork(agent=...)` with an agent that brings secrets in its context has
+    them next to the ones copied from the source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"SOURCE_TOKEN": "source-value"},
+        )
+        replacement = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("k"), usage_id="other"),
+            tools=[],
+            agent_context=AgentContext(secrets={"AGENT_TOKEN": "agent-value"}),
+        )
+
+        fork = src.fork(agent=replacement)
+
+        registry = fork.state.secret_registry
+        assert registry.get_secret_value("AGENT_TOKEN") == "agent-value"
+        assert registry.get_secret_value("SOURCE_TOKEN") == "source-value"
 
 
 def test_fork_gives_independent_security_analyzer():
