@@ -782,6 +782,8 @@ class ConversationService:
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+    # Agent resolves still writing; kept so they are not garbage collected.
+    _agent_resolves: set[asyncio.Task] = field(default_factory=set, init=False)
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
     # Set by get_instance(), once the projects store has its config: catch up
@@ -2245,6 +2247,30 @@ class ConversationService:
                     conversation_id, UpdateConversationRequest(tags=tags)
                 )
             return dict(event_service.stored.tags)
+
+    def resolve_for_agent(self, conversation_id: UUID) -> None:
+        """Resolve a conversation for its own agent, without waiting.
+
+        The agent asks from inside a tool call, and a running conversation
+        holds its state lock for the whole call, so waiting for the state's
+        copy of the tags would hold the call until it times out. The tags
+        are saved first, so the board sees the resolve at once; the state's
+        copy follows when the tool call ends.
+        """
+
+        async def resolve() -> None:
+            try:
+                await self.set_resolved(conversation_id, True, by="agent")
+            except Exception:
+                logger.warning(
+                    "Agent resolve failed for conversation %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+
+        task = asyncio.create_task(resolve())
+        self._agent_resolves.add(task)
+        task.add_done_callback(self._agent_resolves.discard)
 
     def _tag_lock(self, conversation_id: UUID) -> asyncio.Lock:
         lock = self._tag_locks.get(conversation_id)

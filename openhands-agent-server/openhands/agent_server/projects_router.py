@@ -864,6 +864,11 @@ async def _set_member_resolved(
     info = await service.get_conversation(conversation_id)
     if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
         raise HTTPException(status_code=404, detail="Conversation not in project")
+    if resolved and by == "agent":
+        # The agent is inside its own tool call: answer at once (see
+        # ConversationService.resolve_for_agent).
+        service.resolve_for_agent(conversation_id)
+        return Response(status_code=status.HTTP_202_ACCEPTED)
     if await service.set_resolved(conversation_id, resolved, by=by) is None:
         raise HTTPException(status_code=404, detail="Conversation not in project")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -872,7 +877,10 @@ async def _set_member_resolved(
 @projects_router.post(
     "/{project_id}/conversations/{conversation_id}/resolve",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: {"description": "Project not found, or conversation not a member"}},
+    responses={
+        202: {"description": "`by=agent`: accepted; the tags change at once"},
+        404: {"description": "Project not found, or conversation not a member"},
+    },
 )
 async def resolve_project_conversation(
     project_id: UUID,
@@ -885,8 +893,9 @@ async def resolve_project_conversation(
     its own agent (``by=agent``: ``resolved=auto``, note ``agent``). Idempotent.
 
     The person's resolve replaces an automatic one and its note; the agent's
-    never replaces the person's. The person's next message in the conversation
-    reopens it, as before.
+    never replaces the person's, and answers 202 without waiting, because the
+    agent calls it from inside its own tool call. The person's next message in
+    the conversation reopens it, as before.
     """
     by = body.by if body is not None else "user"
     return await _set_member_resolved(

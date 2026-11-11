@@ -69,7 +69,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`), and an `asked` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask`, `resolved` or `resolvenote`.
-- `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the person's "merged": `POST .../resolve` with `{"by": "agent"}` sets `resolved=auto` and `resolvenote=agent`, never over the person's `resolved=user`, and the resolution judge does not run on that turn.
+- `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the person's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the person's `resolved=user`, and the resolution judge does not run on that turn.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
 - `F36.artifacts-tool`: a member with `write_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused. With `list_artifacts` and `read_artifact` it sees the project's files and reads one: small UTF-8 text inline, anything else copied into its workspace (`.agent_tmp/artifacts/<name>` unless it names a path inside the workspace).
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
@@ -441,7 +441,7 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$SR" --check tags.resolved eq auto --check tags.resolvenote eq agent --until-ok 30 \
     --save F36.self-resolve/resolved
   control-agent-server api POST "/api/projects/$P2/conversations/$SR/resolve" --expect 204
-  control-agent-server api POST "/api/projects/$P2/conversations/$SR/resolve" --json '{"by": "agent"}' --expect 204
+  control-agent-server api POST "/api/projects/$P2/conversations/$SR/resolve" --json '{"by": "agent"}' --expect 202
   control-agent-server api GET "/api/conversations/$SR" --check tags.resolved eq user --check tags not-contains resolvenote
   ```
   The person's "merged" leaves nothing to do: the agent calls

@@ -2044,7 +2044,8 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_person(
 
     assert (
         await client.post(f"{base}/{member.hex}/resolve", **agent)
-    ).status_code == 204
+    ).status_code == 202
+    await asyncio.gather(*service._agent_resolves)
     assert await _tags(service, member) == {
         "project": project["id"],
         "turn": "answered",
@@ -2057,7 +2058,8 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_person(
     assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
     assert (
         await client.post(f"{base}/{member.hex}/resolve", **agent)
-    ).status_code == 204
+    ).status_code == 202
+    await asyncio.gather(*service._agent_resolves)
     assert (await _tags(service, member))["resolved"] == "user"
     assert "resolvenote" not in await _tags(service, member)
     bad = await client.post(f"{base}/{member.hex}/resolve", json={"by": "coordinator"})
