@@ -1,3 +1,4 @@
+import logging
 import os
 import stat
 import sys
@@ -62,6 +63,23 @@ def test_atomic_write_text_mode(
 
     assert stat.S_IMODE(path.stat().st_mode) == expected
     assert path.read_text() == "new"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="needs a user who may not give files to root",
+)
+def test_atomic_write_text_owner_is_best_effort(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "data.json"
+
+    with caplog.at_level(logging.WARNING):
+        atomic_write_text(path, "new", owner=(0, 0))
+
+    assert path.read_text() == "new"
+    assert path.stat().st_uid == tmp_path.stat().st_uid != 0
+    assert any("Could not keep the owner" in r.message for r in caplog.records)
 
 
 @pytest.mark.parametrize(

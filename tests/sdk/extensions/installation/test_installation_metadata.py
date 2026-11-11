@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -480,3 +481,53 @@ def test_save_to_dir_creates_new_file_with_umask_mode(
         os.umask(previous_umask)
 
     assert stat.S_IMODE(metadata_path.stat().st_mode) == expected
+
+
+# A uid and gid that are not root's: the user a root process (an agent-server
+# container) shares an installation directory with.
+_USER = 65534
+
+_requires_root = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() != 0, reason="changing owners needs root"
+)
+
+
+@_requires_root
+def test_root_session_keeps_the_directory_users_ownership(tmp_path: Path):
+    """When root saves in a user's installation directory, that user can still
+    read the metadata file and take the lock afterwards."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+    shutil.chown(installation_dir, _USER, _USER)
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    metadata_path.write_text('{"extensions": {}}')
+    metadata_path.chmod(0o600)
+    shutil.chown(metadata_path, _USER, _USER)
+
+    with InstallationMetadata.open(
+        installation_dir, interface=MockExtensionInstallationInterface()
+    ) as session:
+        session.sync()
+
+    for path in (metadata_path, installation_dir / ".metadata.lock"):
+        assert (path.stat().st_uid, path.stat().st_gid) == (_USER, _USER), path
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+
+
+@_requires_root
+def test_root_session_does_not_give_away_a_hard_linked_lock_file(tmp_path: Path):
+    """A lock file that is another file's second name is left alone: the
+    directory's owner must not be able to get that file through root."""
+    installation_dir = tmp_path / "installed"
+    installation_dir.mkdir()
+    shutil.chown(installation_dir, _USER, _USER)
+    other_file = tmp_path / "root-owned"
+    other_file.write_text("x")
+    os.link(other_file, installation_dir / ".metadata.lock")
+
+    with InstallationMetadata.open(
+        installation_dir, interface=MockExtensionInstallationInterface()
+    ):
+        pass
+
+    assert other_file.stat().st_uid == 0

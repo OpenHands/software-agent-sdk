@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import stat
+import sys
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Final
@@ -20,6 +22,40 @@ from openhands.sdk.utils.files import atomic_write_text, read_text_retrying
 logger = get_logger(__name__)
 
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
+
+
+def _running_as_root() -> bool:
+    return sys.platform != "win32" and os.geteuid() == 0
+
+
+def _give_lock_file_to_directory_owner(lock_path: Path) -> None:
+    """Make the installation directory's owner own the lock file root holds.
+
+    A root process (an agent-server container, say) sharing the directory with
+    its user would otherwise leave a root-owned lock file that user can never
+    open again. The file is changed through a descriptor opened without
+    following symlinks, and only if it is a regular file with a single link,
+    so the directory's owner can't redirect the change to another file. Best
+    effort: a failure is logged and the session goes on.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        directory = lock_path.parent.stat()
+        fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            current = os.fstat(fd)
+            if (
+                stat.S_ISREG(current.st_mode)
+                and current.st_nlink == 1
+                and (current.st_uid, current.st_gid)
+                != (directory.st_uid, directory.st_gid)
+            ):
+                os.fchown(fd, directory.st_uid, directory.st_gid)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        logger.warning(f"Could not give {lock_path} to its directory's owner: {e}")
 
 
 class InstallationMetadataLoadError(Exception):
@@ -204,7 +240,8 @@ class InstallationMetadata(BaseModel):
 
     @staticmethod
     def _acquire_lock(installed_dir: Path) -> BaseFileLock:
-        lock = FileLock(installed_dir / ".metadata.lock")
+        lock_path = installed_dir / ".metadata.lock"
+        lock = FileLock(lock_path)
         try:
             lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS)
         except Timeout as e:
@@ -215,6 +252,8 @@ class InstallationMetadata(BaseModel):
             raise InstallationMetadataLockTimeoutError(
                 installed_dir, _LOCK_TIMEOUT_SECONDS
             ) from e
+        if _running_as_root():
+            _give_lock_file_to_directory_owner(lock_path)
         return lock
 
     @classmethod
@@ -264,16 +303,26 @@ class InstallationMetadata(BaseModel):
     def save_to_dir(self, installed_dir: Path) -> None:
         """Save metadata to the installed extensions directory.
 
-        An existing file keeps its permission bits. A new file gets them from
-        the umask, as it did before saves became atomic.
+        An existing file keeps its permission bits, and, when root saves it, its
+        owner. A new file gets its mode from the umask. Both as before saves
+        became atomic, when the file was rewritten in place.
         """
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        mode: int | None = None
+        owner: tuple[int, int] | None = None
         try:
-            mode: int | None = stat.S_IMODE(metadata_path.stat().st_mode)
+            existing = metadata_path.lstat()
         except FileNotFoundError:
-            mode = None
-        atomic_write_text(metadata_path, self.model_dump_json(indent=2), mode=mode)
+            pass
+        else:
+            if stat.S_ISREG(existing.st_mode):
+                mode = stat.S_IMODE(existing.st_mode)
+                if _running_as_root():
+                    owner = (existing.st_uid, existing.st_gid)
+        atomic_write_text(
+            metadata_path, self.model_dump_json(indent=2), mode=mode, owner=owner
+        )
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.

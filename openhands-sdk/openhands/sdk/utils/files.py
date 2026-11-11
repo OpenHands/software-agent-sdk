@@ -7,6 +7,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
+from openhands.sdk.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 # Suffix that marks a file as still being written. ``atomic_write_text`` writes
 # to ``.<name>.<random>.tmp`` next to ``path`` and then renames it to ``<name>``.
@@ -84,11 +88,20 @@ def _create_temp_file_with_umask_mode(path: Path) -> tuple[int, str]:
     raise FileExistsError(f"No unused temporary file name next to {path}")
 
 
-def atomic_write_text(path: Path, value: str, mode: int | None = 0o600) -> None:
+def atomic_write_text(
+    path: Path,
+    value: str,
+    mode: int | None = 0o600,
+    owner: tuple[int, int] | None = None,
+) -> None:
     """Atomically write text to ``path`` by replacing it.
 
     ``mode`` is the permission bits ``path`` ends up with: owner-only by
     default. ``None`` leaves them to the umask, as for a file ``open()`` creates.
+
+    ``owner`` is a ``(uid, gid)`` for ``path`` to end up with, on POSIX. It is
+    best effort: if it can't be applied, ``path`` keeps the writer's owner and
+    a warning is logged.
     """
     if mode is None:
         fd, temporary_name = _create_temp_file_with_umask_mode(path)
@@ -104,6 +117,11 @@ def atomic_write_text(path: Path, value: str, mode: int | None = 0o600) -> None:
                 os.chmod(temporary_path, mode)
             else:
                 fchmod(fd, mode)
+        if owner is not None and sys.platform != "win32":
+            try:
+                os.fchown(fd, *owner)
+            except OSError as e:
+                logger.warning(f"Could not keep the owner of {path}: {e}")
         file = os.fdopen(fd, "w", encoding="utf-8")
         fd = -1
         with file:
