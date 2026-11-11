@@ -151,6 +151,20 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
         ),
         "open",
     ),
+    "second haiku written": (
+        ResolutionState(
+            task=(
+                "We will write two haiku: one about rain, then one about "
+                "snow. Write only the rain haiku now, and finish."
+            ),
+            request="Now the snow one.",
+            reply=(
+                "White hush on the pines\nfootsteps vanish as they form\n"
+                "the world holds its breath"
+            ),
+        ),
+        "resolved",
+    ),
 }
 
 

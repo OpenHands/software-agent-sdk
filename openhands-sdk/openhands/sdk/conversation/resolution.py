@@ -89,9 +89,15 @@ _CONTEXT = (
 RESOLUTION_QUESTIONS: Final[dict[str, Question]] = {
     "handled": Noul(
         instructions=_CONTEXT
-        + "Does `reply` show that what `request` asked for was done or answered?",
+        + "Do `reply` and `actions` show that what `request` asked for was done "
+        "or answered? A `request` that asks for nothing, such as news "
+        '("merged", "deployed") or thanks, is handled by acknowledging it, and '
+        "an emoji reaction in `actions` acknowledges it even with no `reply`.",
         criteria=NoulCriteria(
-            true="The agent did or answered what was asked, in full.",
+            true=(
+                "The agent did or answered what was asked, in full, or the "
+                "request asked for nothing and the agent acknowledged it."
+            ),
             false=(
                 "Part of the request is missing, the agent stopped early, or "
                 "it only explained what it would do."
@@ -102,7 +108,8 @@ RESOLUTION_QUESTIONS: Final[dict[str, Question]] = {
         instructions=_CONTEXT
         + "`task` and `earlier` say what the conversation as a whole is for. "
         "Is all of it done now, including parts planned for later, with no "
-        "step the agent promised still pending?",
+        "step the agent promised still pending? Doing one part now, as "
+        "asked, leaves the parts planned for later open.",
         criteria=NoulCriteria(
             true=(
                 "Nothing from the task or earlier requests is left undone, or "
