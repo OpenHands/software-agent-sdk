@@ -113,7 +113,7 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -197,6 +197,15 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
     return a.model_dump(mode="json", context=context) == b.model_dump(
         mode="json", context=context
     )
+
+
+def _is_undecrypted(secret: SecretValue) -> bool:
+    """True for what a load under a key that cannot decrypt the state leaves
+    in the agent's context secrets: cipher text kept as a string, or a
+    ``StaticSecret`` without its value."""
+    if isinstance(secret, str):
+        return secret.startswith(FERNET_TOKEN_PREFIX)
+    return isinstance(secret, StaticSecret) and secret.value is None
 
 
 class LocalConversation(BaseConversation):
@@ -564,6 +573,10 @@ class LocalConversation(BaseConversation):
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
                 for name, secret in ctx_secrets.items():
+                    if _is_undecrypted(secret):
+                        # Filling it in would save the state, and with it
+                        # every other value this load could not decrypt.
+                        continue
                     existing = existing_sources.get(name)
                     # Refill only when absent, or when a StaticSecret lost its
                     # value to redacted/no-cipher serialization (value is None).

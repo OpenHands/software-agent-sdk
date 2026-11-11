@@ -9,6 +9,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
@@ -395,6 +396,45 @@ def test_update_secrets_saves_base_state_before_returning():
             "RUNTIME_TOKEN": "runtime-value",
         }
         resumed.close()
+
+
+def test_load_under_a_key_that_cannot_decrypt_leaves_the_saved_state_alone():
+    """A conversation opened with the wrong key shows no credentials, and it
+    must not save that: once the right key is back, the agent's key and its
+    context secret are too."""
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("agent-key"), usage_id="agent"),
+        tools=[],
+        agent_context=AgentContext(secrets={"CTX_TOKEN": "ctx-value"}),
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        def reopen(key: str, conversation_id=None, agent=None) -> LocalConversation:
+            return LocalConversation(
+                agent=agent,
+                workspace=tmpdir,
+                persistence_dir=tmpdir,
+                conversation_id=conversation_id,
+                cipher=Cipher(key),
+                visualizer=None,
+            )
+
+        created = reopen("right-key", agent=agent)
+        conversation_id = created.id
+        created.close()
+
+        reopen("another-key", conversation_id).close()
+
+        restored = reopen("right-key", conversation_id)
+        api_key = restored.agent.llm.api_key
+        assert isinstance(api_key, SecretStr)
+        assert api_key.get_secret_value() == "agent-key"
+        registry = restored.state.secret_registry
+        assert registry.get_secrets_as_env_vars("$CTX_TOKEN") == {
+            "CTX_TOKEN": "ctx-value"
+        }
+        restored.close()
 
 
 @pytest.mark.parametrize(
