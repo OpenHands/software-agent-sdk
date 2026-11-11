@@ -730,9 +730,11 @@ KID=$(control-agent-server api POST /api/conversations \
   secret's last resolved value, wherever it appears in terminal output.
 - Runtime secret changes made through `POST .../secrets` live only in
   `base_state.json` (written before the POST returns) and are never written
-  to `meta.json`, so a runtime secret survives a reload (restart, idle
-  eviction, sandbox pause). See `F08.secrets-restart` and
-  `F08.secrets-unsaved-restart`.
+  to `meta.json`. A runtime secret with a new name therefore survives a
+  reload (restart, idle eviction, sandbox pause); see `F08.secrets-restart`
+  and `F08.secrets-unsaved-restart`. A new value for a name the conversation
+  was created with does not: the load re-applies the creation-time copy that
+  `meta.json` keeps.
 - "Written before the POST returns" holds for a conversation that is not in
   the middle of a step. While a run waits on its model, a secret, policy or
   analyzer posted from another request is live at once but is saved when
