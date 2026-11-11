@@ -31,6 +31,12 @@
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/3744"
     },
     {
+      "endpoints": ["GET /api/settings/experimental", "PATCH /api/settings/experimental/{}"],
+      "reason": "Client-ahead API for experimental features, added with the Agent Server endpoints in the same PR.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/6758"
+    },
+    {
       "endpoints": ["POST /api/acp/models"],
       "reason": "Client-ahead API stacked on the pending Agent Server ACP model discovery endpoint.",
       "owner": "OpenHands SDK maintainers",
