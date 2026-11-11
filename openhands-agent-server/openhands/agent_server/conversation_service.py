@@ -477,7 +477,7 @@ def _inheritable_state_config(
         name: type(source).model_validate(
             source.model_dump(context={"expose_secrets": True})
         )
-        for name, source in state.secret_registry.secret_sources.items()
+        for name, source in dict(state.secret_registry.secret_sources).items()
     }
     return state.confirmation_policy, analyzer, secrets
 
