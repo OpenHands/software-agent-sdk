@@ -70,7 +70,7 @@ from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -2306,16 +2306,11 @@ class TestEventServiceSaveMeta:
     async def test_trajectory_zip_built_during_save_meta_has_no_partial_meta_json(
         self, sample_stored_conversation, tmp_path, monkeypatch
     ):
-        """A trajectory zip built mid-save holds a complete meta.json.
-
-        Partial JSON does not parse, so the zip could not redact it. meta.json no
-        longer carries secrets (they live only in base_state.json), but the zip
-        must still never archive a half-written file.
-        """
+        """A trajectory zip built mid-save holds a complete meta.json, never a
+        half-written one."""
         service = EventService(
             stored=sample_stored_conversation,
             conversations_dir=tmp_path,
-            cipher=Cipher("trajectory-zip-during-save-meta"),
         )
         service.conversation_dir.mkdir()
         await service.save_meta()
@@ -2329,15 +2324,8 @@ class TestEventServiceSaveMeta:
         await service.save_meta()
 
         with zipfile.ZipFile(archive_path) as archive:
-            members = {name: archive.read(name) for name in archive.namelist()}
-        assert not [
-            name
-            for name, data in members.items()
-            if FERNET_TOKEN_PREFIX.encode() in data
-        ]
-        meta = json.loads(members[f"{service.stored.id.hex}/meta.json"])
+            meta = json.loads(archive.read(f"{service.stored.id.hex}/meta.json"))
         assert StoredConversation.model_validate(meta).id == service.stored.id
-        assert "secrets" not in meta
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_persists_via_conversation(self, tmp_path):

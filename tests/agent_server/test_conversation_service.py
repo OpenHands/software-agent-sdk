@@ -57,7 +57,7 @@ from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import dump_mcp_config
-from openhands.sdk.secret import SecretSource, StaticSecret
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
@@ -1945,126 +1945,6 @@ class TestConversationServiceCountConversations:
 
 class TestConversationServiceStartConversation:
     """Test cases for ConversationService.start_conversation method."""
-
-    @pytest.mark.asyncio
-    async def test_start_conversation_with_secrets(self, conversation_service):
-        """Test that secrets are passed to new conversations when starting."""
-        # Create test secrets
-        test_secrets: dict[str, SecretSource] = {
-            "api_key": StaticSecret(value=SecretStr("secret-api-key-123")),
-            "database_url": StaticSecret(
-                value=SecretStr("postgresql://user:pass@host:5432/db")
-            ),
-        }
-
-        # Create a start conversation request with secrets
-        with tempfile.TemporaryDirectory() as temp_dir:
-            request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-                workspace=LocalWorkspace(working_dir=temp_dir),
-                secrets=test_secrets,
-            )
-
-            # Mock the EventService constructor and start method
-            with patch(
-                "openhands.agent_server.conversation_service.EventService"
-            ) as mock_event_service_class:
-                mock_event_service = AsyncMock(spec=EventService)
-                mock_event_service_class.return_value = mock_event_service
-
-                # Mock the state that would be returned
-                mock_state = ConversationState(
-                    id=uuid4(),
-                    agent=request.agent,
-                    workspace=request.workspace,
-                    execution_status=ConversationExecutionStatus.IDLE,
-                )
-                mock_event_service.get_state.return_value = mock_state
-                mock_event_service.stored = StoredConversation(
-                    id=mock_state.id,
-                    workspace=request.workspace,
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                )
-
-                # Start the conversation
-                result, _ = await conversation_service.start_conversation(request)
-
-                # Verify EventService was created with the correct parameters
-                mock_event_service_class.assert_called_once()
-                call_args = mock_event_service_class.call_args
-                # secrets are passed directly to EventService, not StoredConversation
-                event_service_secrets = call_args.kwargs["secrets"]
-
-                # Verify that secrets were passed to EventService
-                assert event_service_secrets == test_secrets
-                assert "api_key" in event_service_secrets
-                assert "database_url" in event_service_secrets
-                assert (
-                    event_service_secrets["api_key"].get_value() == "secret-api-key-123"
-                )
-                assert (
-                    event_service_secrets["database_url"].get_value()
-                    == "postgresql://user:pass@host:5432/db"
-                )
-
-                # Verify the conversation was started
-                mock_event_service.start.assert_called_once()
-
-                # Verify the result
-                assert result.id == mock_state.id
-                assert result.execution_status == ConversationExecutionStatus.IDLE
-
-    @pytest.mark.asyncio
-    async def test_start_conversation_without_secrets(self, conversation_service):
-        """Test that conversations can be started without secrets."""
-        # Create a start conversation request without secrets
-        with tempfile.TemporaryDirectory() as temp_dir:
-            request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-                workspace=LocalWorkspace(working_dir=temp_dir),
-            )
-
-            # Mock the EventService constructor and start method
-            with patch(
-                "openhands.agent_server.conversation_service.EventService"
-            ) as mock_event_service_class:
-                mock_event_service = AsyncMock(spec=EventService)
-                mock_event_service_class.return_value = mock_event_service
-
-                # Mock the state that would be returned
-                mock_state = ConversationState(
-                    id=uuid4(),
-                    agent=request.agent,
-                    workspace=request.workspace,
-                    execution_status=ConversationExecutionStatus.IDLE,
-                )
-                mock_event_service.get_state.return_value = mock_state
-                mock_event_service.stored = StoredConversation(
-                    id=mock_state.id,
-                    workspace=request.workspace,
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                )
-
-                # Start the conversation
-                result, _ = await conversation_service.start_conversation(request)
-
-                # Verify EventService was created with the correct parameters
-                mock_event_service_class.assert_called_once()
-                call_args = mock_event_service_class.call_args
-                # secrets are passed directly to EventService, not StoredConversation
-                event_service_secrets = call_args.kwargs["secrets"]
-
-                # Verify that secrets is an empty dict (default)
-                assert event_service_secrets == {}
-
-                # Verify the conversation was started
-                mock_event_service.start.assert_called_once()
-
-                # Verify the result
-                assert result.id == mock_state.id
-                assert result.execution_status == ConversationExecutionStatus.IDLE
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_uses_git_worktree(
@@ -5062,12 +4942,7 @@ async def test_start_conversation_decrypts_encrypted_security_analyzer(
 
 @pytest.mark.asyncio
 async def test_fork_conversation_preserves_secrets(tmp_path):
-    """A server-level fork must inherit the source's secrets.
-
-    secrets live only in base_state.json (not meta.json), and the fork resumes
-    solely from its own base_state.json, so fork() must copy the source's
-    secret_registry and persist it under the fork's cipher.
-    """
+    """A fork made through the server has the source's secrets."""
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -5088,11 +4963,8 @@ async def test_fork_conversation_preserves_secrets(tmp_path):
 
         fork_event_service = await service.get_event_service(fork_info.id)
         assert fork_event_service is not None
-        assert fork_event_service._conversation is not None
-        registry = fork_event_service._conversation._state.secret_registry
-        secret = registry.secret_sources.get("MY_TOKEN")
-        assert secret is not None
-        assert secret.get_value() == "s3kr3t-value"
+        sources = (await fork_event_service.get_state()).secret_registry.secret_sources
+        assert sources["MY_TOKEN"].get_value() == "s3kr3t-value"
 
 
 @pytest.mark.asyncio

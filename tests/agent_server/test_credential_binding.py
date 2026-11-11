@@ -582,13 +582,8 @@ async def test_one_off_credential_survives_cold_restart_without_binding(
         event_service = await restarted.get_event_service(info.id)
         assert event_service is not None
         assert not event_service.credential_bindings
-        # secrets are now owned by ConversationState/base_state.json, not
-        # StoredConversation/meta.json; check the conversation registry.
-        assert event_service._conversation is not None
-        registry = event_service._conversation._state.secret_registry
-        secret = registry.secret_sources.get("CODEX_AUTH_JSON")
-        assert secret is not None
-        assert secret.get_value() == "one-off-credential"
+        sources = (await event_service.get_state()).secret_registry.secret_sources
+        assert sources["CODEX_AUTH_JSON"].get_value() == "one-off-credential"
 
 
 @pytest.mark.asyncio

@@ -641,34 +641,15 @@ async def test_interrupted_fallback_reports_usage_seen_before_close(factory):
     assert payload["cost_bucket"] == "0p1-1"
 
 
-def test_confirmation_policy_is_read_from_the_field_that_exists():
-    """Regression: the field is confirmation_policy, not confirmation_mode.
-
-    Reading a non-existent ``confirmation_mode`` via getattr silently reported
-    False for every conversation, and a bool would have collapsed ConfirmRisky
-    into NeverConfirm anyway.
-    """
-    import uuid as _uuid
-
+def test_telemetry_context_reports_the_policy_kind_and_no_workspace_path():
+    """The context names the policy's kind (a bool would collapse ConfirmRisky
+    into another policy) and carries nothing that identifies the workspace."""
     from openhands.agent_server.conversation_service import _build_telemetry_context
     from openhands.agent_server.models import StoredConversation
-    from openhands.agent_server.telemetry.factory import (
-        DiagnosticEventFactory,
-        build_runtime_properties,
-    )
-    from openhands.sdk.agent import Agent
-    from openhands.sdk.llm import LLM
-    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
-    from openhands.sdk.workspace import LocalWorkspace
-
-    assert "confirmation_mode" not in StoredConversation.model_fields
-    # confirmation_policy is now an init-only field on EventService /
-    # StartConversationRequest, not stored in StoredConversation / meta.json.
-    assert "confirmation_policy" not in StoredConversation.model_fields
 
     agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
     stored = StoredConversation(
-        id=_uuid.uuid4(),
+        id=uuid.uuid4(),
         workspace=LocalWorkspace(working_dir="/Users/alice/secret-project"),
         user_id="canvas-user-42",
     )

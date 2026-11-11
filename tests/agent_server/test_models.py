@@ -138,6 +138,7 @@ def test_stored_conversation_has_no_field_for_what_the_conversation_state_owns()
 
 
 def test_conversation_config_keeps_the_fields_released_servers_read():
-    """Released agent-servers build their record on ``ConversationConfig`` and
-    read these fields from it, and they do not pin the SDK version they run on."""
+    """Agent-servers up to 1.62.0 build their record on ``ConversationConfig``
+    and read these fields from it, and they do not pin the SDK version they run
+    on."""
     assert _START_ONLY_FIELDS <= set(ConversationConfig.model_fields)

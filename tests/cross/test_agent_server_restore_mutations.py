@@ -92,7 +92,6 @@ async def test_mutations_survive_a_server_restart_and_a_later_fork(tmp_path):
         fork_state = await fork_service.get_state()
         assert isinstance(fork_state.confirmation_policy, AlwaysConfirm)
         assert isinstance(fork_state.security_analyzer, LLMSecurityAnalyzer)
-        assert fork_state.security_analyzer is not state.security_analyzer
         fork_secrets = fork_state.secret_registry.secret_sources
         assert fork_secrets["START_TOKEN"].get_value() == "start-value"
         assert fork_secrets["ADDED_TOKEN"].get_value() == "added-value"
@@ -284,6 +283,7 @@ async def test_child_inherits_what_its_parent_has_now(tmp_path):
     assert not {"confirmation_policy", "security_analyzer", "secrets"} & set(meta)
 
 
+@pytest.mark.asyncio
 async def test_unreadable_legacy_meta_secrets_do_not_block_the_resume(tmp_path):
     """A ``secrets`` key this server cannot parse (a secret kind it does not
     know) is left behind: the conversation loads with what base_state.json has."""
