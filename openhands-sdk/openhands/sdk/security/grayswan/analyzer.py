@@ -13,13 +13,21 @@ from collections.abc import Sequence
 from typing import Any
 
 import httpx
-from pydantic import Field, PrivateAttr, SecretStr, model_validator
+from pydantic import (
+    Field,
+    PrivateAttr,
+    SecretStr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from openhands.sdk.event import ActionEvent, LLMConvertibleEvent, SystemPromptEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.grayswan.utils import convert_events_to_openai_messages
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 logger = get_logger(__name__)
@@ -78,6 +86,15 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
     # Internal state - not serialized (using PrivateAttr for Pydantic)
     _client: httpx.Client | None = PrivateAttr(default=None)
     _events: list[LLMConvertibleEvent] = PrivateAttr(default_factory=list)
+
+    @field_validator("api_key")
+    @classmethod
+    def _validate_api_key(cls, v: SecretStr | None, info):
+        return validate_secret(v, info)
+
+    @field_serializer("api_key", when_used="always")
+    def _serialize_api_key(self, v: SecretStr | None, info):
+        return serialize_secret(v, info)
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> GraySwanAnalyzer:

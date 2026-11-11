@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from pydantic import SecretStr
+from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation, LocalConversation
@@ -19,8 +19,8 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.confirmation_policy import ConfirmRisky
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_llm_analyzer import (
     ToolShieldLLMSecurityAnalyzer,
@@ -42,6 +42,16 @@ def _msg(event_id: str, text: str = "hi") -> MessageEvent:
         llm_message=Message(role="user", content=[TextContent(text=text)]),
         source="user",
     )
+
+
+class _LockedSecretSource(SecretSource):
+    """A secret source that holds something a deep copy cannot copy."""
+
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+
+    def get_value(self) -> str:
+        with self._lock:
+            return "locked-source-value"
 
 
 class ForkCopyMockAction(Action):
@@ -475,19 +485,57 @@ def test_fork_copies_secret_registry():
 
 
 def test_fork_gives_independent_security_analyzer():
-    """The fork must own its analyzer instance, not alias the source's.
-
-    A shared analyzer would let a stateful analyzer's runtime state (e.g.
-    ToolShieldLLMSecurityAnalyzer._action_history) leak between conversations.
-    """
+    """The fork's analyzer is a copy of its own, down to the guardrail LLM: a
+    shared analyzer, or a shallow copy of one, would mix the two conversations
+    in a stateful analyzer such as ToolShieldLLMSecurityAnalyzer."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        src.set_security_analyzer(LLMSecurityAnalyzer())
+        src.set_security_analyzer(
+            ToolShieldLLMSecurityAnalyzer(
+                llm=LLM(model="gpt-4o-mini", usage_id="guard"), history_window=7
+            )
+        )
 
         fork = src.fork()
 
-        assert fork.state.security_analyzer is not None
-        assert fork.state.security_analyzer is not src.state.security_analyzer
+        source_analyzer = src.state.security_analyzer
+        fork_analyzer = fork.state.security_analyzer
+        assert isinstance(source_analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert isinstance(fork_analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert fork_analyzer is not source_analyzer
+        assert fork_analyzer.llm is not source_analyzer.llm
+        assert fork_analyzer.history_window == 7
+        assert fork_analyzer.llm.model == "gpt-4o-mini"
+
+
+def test_fork_copies_a_secret_source_that_cannot_be_deep_copied():
+    """A custom secret source may hold a lock or a client; the fork still gets
+    a working copy of it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"LOCKED": _LockedSecretSource()},
+        )
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("LOCKED") == (
+            "locked-source-value"
+        )
+        fork_source = fork.state.secret_registry.secret_sources["LOCKED"]
+        assert fork_source is not src.state.secret_registry.secret_sources["LOCKED"]
+
+
+def test_fork_copies_invoked_skills():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src._state.invoked_skills = ["release-notes"]
+
+        fork = src.fork()
+
+        assert fork.state.invoked_skills == ["release-notes"]
 
 
 def test_fork_preserves_ciphered_security_analyzer_credentials():

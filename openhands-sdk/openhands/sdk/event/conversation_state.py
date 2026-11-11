@@ -101,4 +101,6 @@ class ConversationStateUpdateEvent(Event):
         return cls(key=FULL_STATE_KEY, value=state_snapshot)
 
     def __str__(self) -> str:
-        return f"ConversationStateUpdate(key={self.key}, value={self.value})"
+        # Through the serializer, so a secret in the value prints masked.
+        value = self.model_dump(mode="json")["value"]
+        return f"ConversationStateUpdate(key={self.key}, value={value})"
