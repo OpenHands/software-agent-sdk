@@ -12,7 +12,7 @@ that map's `Fnn`.
 
 Maintenance baseline: main@4db1ad742ad143ddc3411631f04efb70323f40f9 (2026-11-09). The first mapping; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **458 sub-features**, **29 of them untested** (no unit or cross
+The map has **460 sub-features**, **29 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
 
 ## What each sub-feature links
@@ -91,7 +91,7 @@ an interactive login are labeled **blocked**.
 | S18 | [Workspaces and sandbox backends](S18-workspace-backends.md) | the `Workspace` factory, `LocalWorkspace`, `RemoteWorkspace`, and the Docker, API-remote, Cloud, Apptainer and agent-sandbox backends (start, health, commands, files, pause, cleanup) | `Workspace(...)`, `LocalWorkspace`, `openhands.workspace.*Workspace` | docker, apptainer, cloud, k8s, network, llm, git | 24 | 3 |
 | S19 | [Agent settings, persisted schema migrations and agent profiles](S19-settings.md) | `OpenHandsAgentSettings`, ACP settings, schema migrations v0 to v8, settings diffs and export, the persisted-settings compatibility gate, agent profiles and their store | `openhands.sdk.settings`, `openhands.sdk.profiles`, `~/.openhands/agent-profiles/` | llm, tmux, network | 25 | 0 |
 | S20 | [Observability, tracing and logging](S20-observability.md) | enabling tracing, Laminar and OTLP backends, conversation, step, tool and LLM spans, sub-agent trace links, automation helpers, the logger | `LMNR_*`/`OTEL_*` env vars, `Conversation(observability_*=)`, `get_logger` | llm, network | 20 | 5 |
-| S21 | [ACP agent (in-process)](S21-acp-agent.md) | construction, provider registry, handshake, turns and tool-call events, permission auto-approval, timeouts and cancel, session resume, model switching, usage, MCP forwarding, secrets, cleanup | `ACPAgent(acp_command=...)`, `switch_acp_model`, `ACPAgentSettings` | node, network, llm | 24 | 2 |
+| S21 | [ACP agent (in-process)](S21-acp-agent.md) | construction, provider registry, handshake, turns and tool-call events, permission auto-approval, timeouts and cancel, session resume, model switching, usage, MCP forwarding, secrets, cleanup | `ACPAgent(acp_command=...)`, `switch_acp_model`, `ACPAgentSettings` | node, network, llm | 26 | 2 |
 
 ## Not mapped
 

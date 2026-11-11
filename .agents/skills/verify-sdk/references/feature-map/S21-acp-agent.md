@@ -50,7 +50,7 @@ Examples: `examples/01_standalone_sdk/40_acp_agent_example.py`
 
 Preconditions:
 - `uv sync --dev` has run; `control-sdk` is on `PATH` (`export PATH="$PWD/.agents/skills/verify-sdk/scripts:$PATH"`). `sdk-map run` does both.
-- The scripted bullets need nothing else. The ACP server is `programs/S21/fake_acp.py`, a real stdio JSON-RPC subprocess that the SDK spawns through `ACPAgent(acp_command=[python, fake_acp.py])`. It streams thoughts, tool calls with progress, a permission request, reply chunks and `usage_update`s; behaves according to a tag in the prompt (`[slow]`, `[hang]`, `[flaky]`, `[fail]`, `[cancel]`, `[secret]`, `[big]`, `[silent]`); and journals every request it receives, so a program can check what the SDK sent as well as what it made of the replies.
+- The scripted bullets need nothing else. The ACP server is `programs/S21/fake_acp.py`, a real stdio JSON-RPC subprocess that the SDK spawns through `ACPAgent(acp_command=[python, fake_acp.py])`. It reports models `m1` and `m2` as a `model` config option (with `FAKE_ACP_EFFORT` set, `m1` also offers a `thought_level` effort option); it streams thoughts, tool calls with progress, a permission request, reply chunks and `usage_update`s; behaves according to a tag in the prompt (`[slow]`, `[hang]`, `[flaky]`, `[fail]`, `[cancel]`, `[secret]`, `[big]`, `[silent]`); and journals every request it receives, so a program can check what the SDK sent as well as what it made of the replies.
 - The live handshake bullet needs `npx` (Node 22 here) and the npm registry (exit 3 when either is missing). Example 40 needs `ANTHROPIC_API_KEY`.
 
 - **A conversation through an ACP server (`S21.construct`, `S21.step`, `S21.tool-call-events`, `S21.permissions-auto-approve`, `S21.usage-cost`, `S21.mcp-forwarding`, `S21.secrets-env`, `S21.masking`, `S21.model-selection`, `S21.model-switch`, `S21.init-state`, `S21.cleanup`).** The program builds `ACPAgent(acp_command=..., acp_model="m2", mcp_config={stdio server, http server with headers}, agent_context=a skill)`. It runs a `Conversation` with `secrets={"FAKE_TOKEN": ..., "EMPTY_SECRET": ""}` and a token callback, sending one text + inline PNG turn and then a `[secret]` turn whose reply, thought and tool output echo the secret. It then switches the model with `switch_acp_model("m1")`, tries an unknown model, closes the agent twice, and switches the model on a second conversation before its first run. `npm_config_*` and `CLAUDECODE` are set in the parent's environment.
@@ -209,6 +209,50 @@ Preconditions:
     --check created.type eq ACPAgent --check created.acp_model eq m2 --check created.isolate eq true \
     --check created_status eq finished --check created_current_model eq m2
   ```
+- **Reasoning effort (`S21.effort`, `S21.effort-switch`, `S21.model-discovery`, `S21.settings`).** `programs/S21/acp_effort.py` runs `fake_acp.py` with `FAKE_ACP_EFFORT=1`: model `m1` offers a `thought_level` select (`effort`: `low`/`medium`/`high`, server default `medium`, reset by a model switch) and `m2` offers none. It drives:
+  - `ACPAgent(acp_model="m1", acp_effort="high")` for one turn, then `switch_acp_effort("low")` live, `"ultra"` and a blank level, `switch_acp_model("m2")`, `switch_acp_effort("low")` on `m2`, `switch_acp_model("m1")`, and another turn;
+  - `acp_effort="ultra"` at construction, which `m1` does not offer;
+  - `switch_acp_effort("high")` on a conversation that has not run, then its first turn;
+  - a server named `codex-acp` with `acp_model="gpt-5.5/high"`, alone and with `acp_effort="low"`;
+  - `switch_acp_effort` on a regular `Agent` conversation;
+  - `discover_acp_models` and `ACPAgentSettings(acp_effort="low")`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S21/acp_effort --timeout 180 \
+    --check start_error missing --check start.config_calls.0 eq model=m1 --check start.config_calls.1 eq effort=high \
+    --check start.current_effort eq high --check start.available_efforts len-eq 3 --check start.hint_effort eq high \
+    --check switched.config_calls.0 eq effort=low --check switched.current_effort eq low --check switched.acp_effort eq low \
+    --check switched.same_session eq true --check switched.persisted.acp_effort eq low --check switched.persisted.hint_effort eq low \
+    --check unoffered_error contains "Reasoning effort 'ultra' is not offered for the current model" \
+    --check blank_error contains "effort must be a non-empty string" \
+    --check after_refused.config_calls len-eq 0 --check after_refused.current_effort eq low --check after_refused.acp_effort eq low \
+    --check on_m2.current_model_id eq m2 --check on_m2.current_effort eq null --check on_m2.available_efforts len-eq 0 \
+    --check on_m2.acp_effort eq low --check on_m2_error contains "offers no reasoning effort setting" \
+    --check back_on_m1.config_calls.0 eq model=m1 --check back_on_m1.config_calls.1 eq effort=low --check back_on_m1.current_effort eq low \
+    --check next_turn_error missing --check next_turn.status eq finished --check next_turn.prompts eq 1 --check next_turn.same_session eq true \
+    --check skipped_error missing --check skipped.status eq finished --check skipped.config_calls len-eq 1 \
+    --check skipped.current_effort eq medium --check skipped.acp_effort eq ultra --check skipped.warned eq true \
+    --check deferred.processes_started eq 0 --check deferred.acp_effort eq high --check deferred.hint_effort eq high \
+    --check deferred.session_id eq null --check deferred.persisted.acp_effort eq high --check deferred.blank_error contains "non-empty" \
+    --check deferred_error missing --check deferred_started.config_calls.0 eq effort=high --check deferred_started.current_effort eq high \
+    --check legacy.suffix.current_model_id eq gpt-5.5 --check legacy.suffix.config_calls.1 eq reasoning_effort=high --check legacy.suffix.current_effort eq high \
+    --check legacy.explicit.current_model_id eq gpt-5.5 --check legacy.explicit.config_calls.1 eq reasoning_effort=low --check legacy.explicit.current_effort eq low \
+    --check native_error eq "ValueError: switch_acp_effort is only supported for ACP conversations." \
+    --check discovery.error eq null --check discovery.current_model_id eq m1 --check discovery.current_effort eq medium \
+    --check discovery.available_efforts len-eq 3 --check discovery.efforts_by_model.m1 len-eq 3 --check discovery.efforts_by_model.m2 len-eq 0 \
+    --check settings_agent_effort eq low --check settings_roundtrip_effort eq low
+  ```
+  What this shows:
+  - At session start the SDK sets the model, then the effort through the option tagged `thought_level`; `current_effort` and `available_efforts` come from the server's reply.
+  - A live switch is one `set_config_option(effort)` on the same session, and `acp_effort` plus the `acp_current_effort` hint land in `base_state.json`.
+  - A level the model does not offer, a blank level and a model with no effort option raise `ValueError` without a server call or a change.
+  - On `m2` the session reports no effort while `acp_effort` stays `low`; back on `m1` (whose effort the server reset to `medium`) the SDK re-applies `low`. The next turn runs in the same session.
+  - At start, an effort the model does not offer is skipped with a warning and the turn runs at the server default.
+  - Before the first run, the switch starts no subprocess; the first session applies it (no model is pinned, so only the effort is set).
+  - A legacy `gpt-5.5/high` id is split for codex-acp, `current_model_id` is the bare `gpt-5.5`, and an explicit `acp_effort` wins over the suffix.
+  - Discovery reports the default model's effort and the levels of every model.
+
+  The server's view of this is `F09.acp-effort-deferred`, `F09.acp-effort-live`, `F09.acp-effort-unoffered` and `F09.acp-effort-model-switch` (`POST /api/conversations/{id}/switch_acp_effort` calls `switch_acp_effort`).
 - **Traces of an ACP turn (`S21.tracing`).** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` points at the local collector from `programs/S20/otlp.py`. The user's message contains the secret value.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

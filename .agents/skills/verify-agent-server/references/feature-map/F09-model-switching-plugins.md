@@ -3,8 +3,8 @@
 What a consumer changes on a conversation that already exists, without
 recreating it: swap the agent's LLM for a caller-supplied config (inline key,
 a cipher token from an `encrypted` read, or a saved provider connection),
-switch it to a saved LLM profile, change the model an ACP conversation's
-subprocess runs, and load a plugin from the conversation's registered
+switch it to a saved LLM profile, change the model and the reasoning
+effort an ACP conversation's subprocess runs, and load a plugin from the conversation's registered
 marketplaces into the live agent (its skills, commands and hooks). Every
 switch answers `{"success": true}`, is written to the conversation's
 `base_state.json`, shows up in `GET /api/conversations/{id}` and as a
@@ -19,11 +19,12 @@ Needs: `llm`, `tmux`, `node`, `network`
 Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 `POST /api/conversations/{conversation_id}/switch_llm`,
 `POST /api/conversations/{conversation_id}/load_plugin`,
-`POST /api/conversations/{conversation_id}/switch_acp_model`
+`POST /api/conversations/{conversation_id}/switch_acp_model`,
+`POST /api/conversations/{conversation_id}/switch_acp_effort`
 
 ## Sub-features
 
-- `F09.auth-required`: all four routes answer 401 without a valid session key and change nothing.
+- `F09.auth-required`: all five routes answer 401 without a valid session key and change nothing.
 - `F09.switch-llm`: `switch_llm` with a fresh `usage_id` answers 200 `{"success": true}`; `GET` and `base_state.json` show the new model and `usage_id`, the condenser LLM that mirrored the old one follows, and the key is never echoed or stored in plaintext.
 - `F09.switch-llm-ws`: a switch pushes a `ConversationStateUpdateEvent` with key `agent` and the new model on the events socket, with the key masked.
 - `F09.switch-llm-errors`: an unknown conversation is 404, a body without `llm` or without `llm.model` is 422, and a dangling `provider_connection_id` is 422; the installed LLM is unchanged.
@@ -43,8 +44,17 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.acp-model-live`: on an ACP conversation with a live session, `switch_acp_model` switches the subprocess's model in place (same ACP session) and `current_model_id`, `acp_model` and `base_state.json` follow; a blank model is 400, a model the provider does not offer is refused and changes nothing, and the next turn runs on the switched model in the same session.
 - `F09.acp-model-live-unknown`: a live switch to a model id the provider does not offer (not in `available_models`) is a client error (400, as for a blank model), not a 500.
 - `F09.acp-model-live-timeout`: a live switch whose `session/set_model` round-trip outlasts `acp_prompt_timeout` is 504 with `detail` `Internal Server Error` and leaves the model unchanged.
+- `F09.acp-effort-native`: `switch_acp_effort` on a regular (non-ACP) conversation is 400 `switch_acp_effort is only supported for ACP conversations.`; a missing `effort` is 422 and an unknown conversation 404.
+- `F09.acp-effort-deferred`: on an ACP conversation that has not run yet, `switch_acp_effort` answers 200 without starting the subprocess and persists the level as `agent.acp_effort`, `agent_state.acp_current_effort` and `current_effort` (no level list exists before a session, so any non-blank level is stored); a blank level is 400.
+- `F09.acp-model-id-bare`: on a live ACP session `current_model_id` is the bare model id: a legacy `<model>/<effort>` `acp_model` (`sonnet/high`) still starts the session, `current_model_id` is `sonnet`, and an explicit `acp_effort` wins over the suffix in `current_effort`.
+- `F09.acp-effort-live`: on a live ACP session, `switch_acp_effort` to a level in `available_efforts` answers 200 and switches the session in place (same `acp_session_id`); `current_effort`, `agent.acp_effort`, `agent_state.acp_current_effort` and `base_state.json` follow, and the next turn finishes in the same session.
+- `F09.acp-effort-unoffered`: on a live session, a level the current model does not offer is 400 naming the offered levels, a blank level is 400, and `current_effort` and `acp_effort` are unchanged.
+- `F09.acp-effort-model-switch`: after `switch_acp_model` to a model without effort levels (`haiku`), `current_effort` is null and `available_efforts` empty while `acp_effort` is kept, `switch_acp_effort` is 400 `The current model offers no reasoning effort setting.`, and switching back to a model with levels re-applies the pinned `acp_effort`.
+- `F09.acp-effort-live-timeout`: a live `switch_acp_effort` whose round-trip outlasts `acp_prompt_timeout` is 504 with `detail` `Internal Server Error` and leaves the effort unchanged.
+- `F09.acp-effort-codex`: on a Codex (`codex`) ACP conversation signed in with a ChatGPT subscription, `available_efforts` lists the levels the current model offers and `switch_acp_effort` switches among them live (blocked: needs a ChatGPT login).
 - `F09.ts-client`: the TypeScript client's `ConversationClient.switchLLM`, `switchProfile` and `switchAcpModel` and `ConversationManager.switchProfile` reach the routes: each switch resolves and reads back through `getConversation`, an unknown profile rejects with 404, `switchAcpModel` on a regular conversation with 400, a call without a key with 401, and `switchAcpModel` on an ACP conversation that has not run resolves and stores the model.
 - `F09.ts-client-acp-docs`: the TypeScript client's `switchAcpModel` docstrings describe what the server does before an ACP conversation's first run (200, the model is stored for the first session), not a 409.
+- `F09.ts-client-acp-effort`: the TypeScript client's `ConversationClient.switchAcpEffort` stores the level on an ACP conversation that has not run (`getConversation` shows `acp_effort` and `current_effort`), and rejects with 400 on a regular conversation and with 401 without a key.
 - `F09.load-plugin`: `load_plugin` with `<plugin>@<marketplace>` from a local marketplace registered on the agent's `agent_context` answers 200 and merges the plugin's skill, its command and its hooks into the live agent, visible in `GET`, `base_state.json` and on the socket.
 - `F09.load-plugin-hook-runs`: after a runtime load, the next user turn runs the plugin's `UserPromptSubmit` hook (a `HookExecutionEvent` with its output) and finishes.
 - `F09.load-plugin-errors`: no registered marketplaces and no agent context are 400, a registered marketplace whose source is missing is 400, an unknown marketplace or plugin is 404, empty and malformed refs are 400, a missing `plugin_ref` is 422 and an unknown conversation 404; a bare plugin name resolves across the registered marketplaces.
@@ -58,10 +68,12 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   `POST /api/conversations/{id}/switch_llm` `{"llm": {...LLM fields...}}`,
   `POST /api/conversations/{id}/switch_profile` `{"profile_name": "..."}`,
   `POST /api/conversations/{id}/switch_acp_model` `{"model": "..."}`,
+  `POST /api/conversations/{id}/switch_acp_effort` `{"effort": "..."}`,
   `POST /api/conversations/{id}/load_plugin` `{"plugin_ref": "<plugin>[@<marketplace>]"}`.
   Each answers `{"success": true}`; every recipe below drives them.
 - Second views: `GET /api/conversations/{id}` (`agent.llm`, `agent.condenser.llm`,
   `stats.usage_to_metrics.<usage_id>`, `current_model_id`, `agent.acp_model`,
+  `current_effort`, `available_efforts`, `agent.acp_effort`,
   `agent_state`, `hook_config`, and `agent.agent_context.skills` with
   `include_skills=true`), the conversation's `base_state.json` (`state cat`),
   `WS /sockets/events/{conversation_id}` (`ConversationStateUpdateEvent` keys
@@ -72,22 +84,26 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   `POST /api/conversations` and `POST /api/conversations/{id}/events`
   (conversations and runs).
 - SDK: `LocalConversation.switch_llm(llm)`, `switch_profile(name)`,
-  `switch_acp_model(model)` and `load_plugin(ref)` are what the routes call;
+  `switch_acp_model(model)`, `switch_acp_effort(effort)` and `load_plugin(ref)`
+  are what the routes call (the SDK side of the effort switch is
+  `S21.effort-switch` in the SDK map);
   over HTTP `RemoteConversation.load_plugin(ref)` posts to `load_plugin`
   (`F09.load-plugin-sdk` drives it).
-  `RemoteConversation` has no `switch_llm`, `switch_profile` or
-  `switch_acp_model` method; Python consumers post to the routes directly.
+  `RemoteConversation` has no `switch_llm`, `switch_profile`,
+  `switch_acp_model` or `switch_acp_effort` method; Python consumers post to the routes directly.
 - TypeScript client: `ConversationClient.switchProfile(id, name)`,
-  `switchLLM(id, llm)`, `switchAcpModel(id, model)`;
-  `RemoteConversation.switchProfile`, `switchLlm`, `switchAcpModel`;
+  `switchLLM(id, llm)`, `switchAcpModel(id, model)`,
+  `switchAcpEffort(id, effort)`;
+  `RemoteConversation.switchProfile`, `switchLlm`, `switchAcpModel`,
+  `switchAcpEffort`;
   `ConversationManager.switchProfile`. There is no TypeScript `loadPlugin`.
   `F09.ts-client` drives the `ConversationClient` methods and
   `ConversationManager.switchProfile` (the `RemoteConversation` methods post
   the same bodies to the same routes).
 - Agent Canvas (context only): the per-conversation model picker calls
   `switch_profile` (or `switch_llm` with a profile config that may reference a
-  provider connection), and `switch_acp_model` for ACP conversations, picking
-  from `available_models`.
+  provider connection), and `switch_acp_model` / `switch_acp_effort` for ACP
+  conversations, picking from `available_models` and `available_efforts`.
 
 ## Driving it with control-agent-server
 
@@ -120,6 +136,7 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$CID/switch_llm" --auth none --json '{"llm": {"model": "openai/qa-f09-noauth", "usage_id": "qa-f09-noauth"}}' --expect 401 --check detail eq Unauthorized --save F09.auth-required/switch-llm
   control-agent-server api POST "/api/conversations/$CID/switch_profile" --auth none --json '{"profile_name": "deepseek-pro"}' --expect 401
   control-agent-server api POST "/api/conversations/$CID/switch_acp_model" --auth bad --json '{"model": "opus"}' --expect 401
+  control-agent-server api POST "/api/conversations/$CID/switch_acp_effort" --auth none --json '{"effort": "high"}' --expect 401
   control-agent-server api POST "/api/conversations/$CID/load_plugin" --auth none --json '{"plugin_ref": "qa-f09-mkt-plugin@qa-f09-mkt"}' --expect 401
   control-agent-server api GET "/api/conversations/$CID" --check agent.llm.model eq deepseek/deepseek-flash --check agent.llm.usage_id eq default --quiet
   ```
@@ -534,6 +551,135 @@ Preconditions:
   answers 504 with `detail` rewritten to `Internal Server Error` (the
   server's 5xx handler; `exception` is `504: `), and the conversation keeps
   `sonnet` everywhere: a timed-out switch changes nothing locally.
+- **ACP effort on a regular conversation (`F09.acp-effort-native`).** `CID`
+  runs an OpenHands `Agent`.
+  ```sh
+  control-agent-server api POST "/api/conversations/$CID/switch_acp_effort" --json '{"effort": "high"}' \
+    --expect 400 --check detail eq 'switch_acp_effort is only supported for ACP conversations.' --save F09.acp-effort-native/native
+  control-agent-server api POST "/api/conversations/$CID/switch_acp_effort" --json '{}' --expect 422 --check detail.0.loc.1 eq effort
+  control-agent-server api POST /api/conversations/00000000-0000-4000-8000-000000000000/switch_acp_effort --json '{"effort": "high"}' --expect 404
+  control-agent-server api GET "/api/conversations/$CID" --quiet --check agent.kind eq Agent --check current_effort eq null --check available_efforts len-eq 0
+  ```
+  400 with the exact message, 422 without `effort`, 404 for the unknown id;
+  the conversation reports no effort.
+- **ACP effort before the first run (`F09.acp-effort-deferred`).** A Claude
+  Code ACP conversation with `acp_model: sonnet`, no `acp_effort` and no
+  prompt, so no subprocess starts.
+  ```sh
+  EAID=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
+  control-agent-server api GET "/api/conversations/$EAID" --quiet --check agent.kind eq ACPAgent --check agent.acp_effort eq null \
+    --check current_effort eq null --check available_efforts len-eq 0 --check execution_status eq idle
+  control-agent-server api POST "/api/conversations/$EAID/switch_acp_effort" --json '{"effort": "high"}' --expect 200 --check success eq true --save F09.acp-effort-deferred/switch
+  control-agent-server api GET "/api/conversations/$EAID" --quiet --check agent.acp_effort eq high --check current_effort eq high \
+    --check agent_state.acp_current_effort eq high --check agent_state.acp_session_id missing --check current_model_id eq sonnet \
+    --check execution_status eq idle --save F09.acp-effort-deferred/get
+  control-agent-server state cat "server/workspace/conversations/${EAID//-/}/base_state.json" --max-chars 200 \
+    --check agent.acp_effort eq high --check agent_state.acp_current_effort eq high
+  control-agent-server api POST "/api/conversations/$EAID/switch_acp_effort" --json '{"effort": "  "}' --expect 400 --check detail eq 'effort must be a non-empty string'
+  control-agent-server api GET "/api/conversations/$EAID" --quiet --check agent.acp_effort eq high --check current_effort eq high
+  ```
+  The switch is 200 although no ACP session exists; `acp_effort`,
+  `agent_state.acp_current_effort` and `current_effort` say `high`, so the
+  first session starts on it. Before a session there is no level list to
+  check against, so only a blank level is refused (400), and it changes
+  nothing.
+- **Bare model id with a legacy effort suffix (`F09.acp-model-id-bare`).**
+  The translated Claude Code provider of `F09.acp-model-live`, on a
+  conversation created with the legacy `acp_model: sonnet/high` and an
+  explicit `acp_effort: low`; one turn starts the session.
+  ```sh
+  EID=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet/high", "acp_effort": "low"}}' \
+    --secret ANTHROPIC_API_KEY="$DEEPSEEK_API_KEY" --secret ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic --secret IS_SANDBOX=1 \
+    --prompt 'Reply with the single word: ok' --wait --until finished --timeout 300 --print-id)
+  ESESS=$(control-agent-server api GET "/api/conversations/$EID" --check execution_status eq finished --check current_model_id eq sonnet \
+    --check agent.acp_model eq sonnet/high --check agent.acp_effort eq low --check current_effort eq low \
+    --check available_efforts contains '"value": "high"' --check available_models contains '"model_id": "sonnet"' \
+    --save F09.acp-model-id-bare/get --field agent_state.acp_session_id)
+  test -n "$ESESS"
+  ```
+  The session starts on `sonnet` and `current_model_id` is the bare
+  `sonnet`, an id that appears in `available_models`; the `/high` suffix is
+  still accepted as input, but `acp_effort: low` wins, so `current_effort`
+  is `low`. `available_efforts` lists what the adapter offers for `sonnet`
+  (`default`, `low`, `medium`, `high`, `xhigh`, `max`).
+- **Live effort switch (`F09.acp-effort-live`).** Switch `EID`'s live
+  session to `high`, then run a turn.
+
+  Requires: `F09.acp-model-id-bare`
+  ```sh
+  control-agent-server api POST "/api/conversations/$EID/switch_acp_effort" --json '{"effort": "high"}' --expect 200 --check success eq true --save F09.acp-effort-live/switch
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check current_effort eq high --check agent.acp_effort eq high \
+    --check agent_state.acp_current_effort eq high --check agent_state.acp_session_id eq "$ESESS" --check current_model_id eq sonnet --save F09.acp-effort-live/get
+  control-agent-server state cat "server/workspace/conversations/${EID//-/}/base_state.json" --max-chars 200 --check agent.acp_effort eq high --check agent_state.acp_current_effort eq high
+  control-agent-server conversation send "$EID" --text 'Reply with the single word: ok' --wait --until finished,error --timeout 300
+  control-agent-server api GET "/api/conversations/$EID" --until-ok 30 --quiet --check execution_status eq finished --check agent_state.acp_session_id eq "$ESESS" \
+    --check current_effort eq high --save F09.acp-effort-live/second-turn
+  ```
+  The switch is 200, `current_effort`, `agent.acp_effort`,
+  `agent_state.acp_current_effort` and `base_state.json` say `high`, the
+  `acp_session_id` is unchanged (switched in place), and the next turn
+  finishes in the same session, still on `high`.
+- **Unoffered effort on a live session (`F09.acp-effort-unoffered`).**
+
+  Requires: `F09.acp-effort-live`
+  ```sh
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check available_efforts not-contains ultra --check current_effort eq high
+  control-agent-server api POST "/api/conversations/$EID/switch_acp_effort" --json '{"effort": "ultra"}' --expect 400 \
+    --check detail eq "Reasoning effort 'ultra' is not offered for the current model; choose one of: default, low, medium, high, xhigh, max." --save F09.acp-effort-unoffered/ultra
+  control-agent-server api POST "/api/conversations/$EID/switch_acp_effort" --json '{"effort": "  "}' --expect 400 --check detail eq 'effort must be a non-empty string'
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check current_effort eq high --check agent.acp_effort eq high --check agent_state.acp_current_effort eq high
+  ```
+  A level the adapter does not offer for `sonnet` is 400 and the detail
+  lists the offered levels; a blank level is 400; the effort stays `high`.
+- **Effort across a model switch (`F09.acp-effort-model-switch`).** Switch
+  `EID` to `haiku`, which offers no effort levels, and back to `sonnet`.
+
+  Requires: `F09.acp-effort-live`
+  ```sh
+  control-agent-server api POST "/api/conversations/$EID/switch_acp_model" --json '{"model": "haiku"}' --expect 200
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check current_model_id eq haiku --check current_effort eq null \
+    --check available_efforts len-eq 0 --check agent.acp_effort eq high --save F09.acp-effort-model-switch/haiku
+  control-agent-server api POST "/api/conversations/$EID/switch_acp_effort" --json '{"effort": "low"}' --expect 400 \
+    --check detail eq 'The current model offers no reasoning effort setting.' --save F09.acp-effort-model-switch/no-effort
+  control-agent-server api POST "/api/conversations/$EID/switch_acp_model" --json '{"model": "sonnet"}' --expect 200
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check current_model_id eq sonnet --check current_effort eq high \
+    --check available_efforts contains '"value": "max"' --check agent_state.acp_session_id eq "$ESESS" --save F09.acp-effort-model-switch/back
+  ```
+  On `haiku` the conversation reports no effort and no levels, while the
+  pinned `acp_effort` stays `high`; an effort switch there is 400. Back on
+  `sonnet` the levels return and `current_effort` is `high` again: the
+  server re-applies the pinned effort after the model switch, in the same
+  session.
+- **Live effort switch that times out (`F09.acp-effort-live-timeout`).**
+  `TOID` from `F09.acp-model-live-timeout` (`acp_prompt_timeout: 0.001`,
+  live session on `sonnet`, no pinned effort).
+
+  Requires: `F09.acp-model-live-timeout`
+  ```sh
+  control-agent-server api GET "/api/conversations/$TOID" --quiet --check agent_state.acp_session_id exists --check available_efforts contains '"value": "high"' \
+    --check current_effort eq default --check agent.acp_effort eq null
+  control-agent-server api POST "/api/conversations/$TOID/switch_acp_effort" --json '{"effort": "high"}' --expect 504 --check detail eq 'Internal Server Error' --save F09.acp-effort-live-timeout/switch
+  control-agent-server api GET "/api/conversations/$TOID" --quiet --check current_effort eq default --check agent.acp_effort eq null --check agent_state.acp_current_effort eq default
+  ```
+  The session runs at the adapter's own `default` effort. The adapter cannot
+  answer within 1 ms, so the switch is 504 (`detail` rewritten to `Internal
+  Server Error`) and nothing changes locally: `current_effort` stays
+  `default` and `acp_effort` unset.
+- **Codex effort levels (`F09.acp-effort-codex`), blocked: needs a ChatGPT subscription login for codex-acp (`CODEX_AUTH_JSON`).**
+  With the login
+  passed as the `CODEX_AUTH_JSON` conversation secret, a `codex` conversation
+  runs one turn; `available_efforts` should list the levels the current
+  model offers (a model such as `gpt-6.1-sol` also offers `ultra`), and
+  `switch_acp_effort` to one of them should switch the live session as in
+  `F09.acp-effort-live`. DeepSeek cannot stand in here: codex-acp signs in
+  only with an OpenAI key or a ChatGPT login.
+  ```sh
+  CXID=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "codex"}}' \
+    --secret CODEX_AUTH_JSON="$QA_CODEX_AUTH_JSON" --prompt 'Reply with the single word: ok' --wait --until finished --timeout 300 --print-id)
+  control-agent-server api GET "/api/conversations/$CXID" --quiet --check available_efforts contains '"value": "high"'
+  control-agent-server api POST "/api/conversations/$CXID/switch_acp_effort" --json '{"effort": "high"}' --expect 200 --save F09.acp-effort-codex/switch
+  control-agent-server api GET "/api/conversations/$CXID" --quiet --check current_effort eq high --check agent.acp_effort eq high
+  ```
 - **TypeScript client (`F09.ts-client`).** `ConversationClient` and
   `ConversationManager` from the built client in `clients/typescript/dist`
   (built here when missing, which needs `npm` and the network), on a fresh
@@ -602,6 +748,41 @@ Preconditions:
   `F09.ts-client` observe: before the first run the server answers 200 and
   stores the model for the first session, and a non-ACP conversation gets
   400. Neither promises a 409.
+- **TypeScript effort switch (`F09.ts-client-acp-effort`).**
+  `ConversationClient.switchAcpEffort` from the built client, on a fresh ACP
+  conversation `AID5` that never runs and a fresh placeholder conversation
+  `TID2`.
+  ```sh
+  test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
+  TID2=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --print-id)
+  AID5=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
+  F="$AGENT_SERVER_VERIFY_RUN/fixtures"
+  cat > "$F/qa-f09-ts-effort.mjs" <<'JS'
+  import assert from 'node:assert/strict';
+  import { resolve } from 'node:path';
+  import { pathToFileURL } from 'node:url';
+
+  const { ConversationClient } = await import(pathToFileURL(resolve('clients/typescript/dist/clients.js')).href);
+  const [tid, acp] = process.argv.slice(2);
+  const host = process.env.AGENT_SERVER_URL;
+  const client = new ConversationClient({ host, apiKey: process.env.SESSION_API_KEY });
+  await client.switchAcpEffort(acp, 'high');
+  const info = await client.getConversation(acp);
+  assert.equal(info.agent.acp_effort, 'high');
+  assert.equal(info.current_effort, 'high');
+  await assert.rejects(client.switchAcpEffort(tid, 'high'), (e) => e.status === 400);
+  await assert.rejects(new ConversationClient({ host }).switchAcpEffort(acp, 'low'), (e) => e.status === 401);
+  assert.equal((await client.getConversation(acp)).agent.acp_effort, 'high');
+  console.log('TS_EFFORT_OK');
+  JS
+  control-agent-server exec --expect-output TS_EFFORT_OK --save F09.ts-client-acp-effort/program -- node "$F/qa-f09-ts-effort.mjs" "$TID2" "$AID5"
+  control-agent-server state cat "server/workspace/conversations/${AID5//-/}/base_state.json" --max-chars 200 --check agent.acp_effort eq high
+  ```
+  `switchAcpEffort` on the ACP conversation that has not run resolves and
+  `getConversation` shows `acp_effort` and `current_effort` `high` (also in
+  `base_state.json`); on the regular conversation it rejects with an
+  `HttpError` 400 and without a key with 401, and the stored level is
+  unchanged.
 - **Load a plugin (`F09.load-plugin`).** Start `PID` from the saved settings
   with the `qa-f09-mkt` marketplace registered on its `agent_context` (not
   auto-loaded), then load the plugin while capturing the socket.
@@ -807,6 +988,20 @@ Preconditions:
   Error`; read `exception`. The TypeScript client's `switchAcpModel`
   docstrings document this 200-and-defer behaviour (`F09.acp-model-deferred`,
   `F09.ts-client`, `F09.ts-client-acp-docs`).
+- `switch_acp_effort` before the first run stores any non-blank level, since
+  no level list exists yet; the first session applies it only if the model
+  offers it (otherwise the server logs a warning and the session keeps the
+  adapter's default), and `current_effort` then reports what the session
+  runs. On a live session the level must be in `available_efforts`, which
+  are per model: `haiku` offers none, so switching to it clears
+  `current_effort` while `acp_effort` stays pinned and is re-applied when a
+  model with levels is selected again. With nothing pinned the session runs
+  at the adapter's own `default` level (`F09.acp-effort-deferred`,
+  `F09.acp-effort-model-switch`, `F09.acp-effort-live-timeout`).
+- `current_model_id` is the bare model id (`sonnet`), also for a legacy
+  `acp_model` such as `sonnet/high`; a cold read before the first session
+  falls back to the stored `acp_model`, suffix included
+  (`F09.acp-model-id-bare`).
 - A live ACP session needs the provider's CLI and an account for it. For
   `claude-code`, DeepSeek's Anthropic-compatible API works as the account
   (secrets `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and
