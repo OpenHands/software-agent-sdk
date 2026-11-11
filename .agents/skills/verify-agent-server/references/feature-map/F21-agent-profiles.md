@@ -1036,10 +1036,10 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - A profile always launches its LLM with streaming on; the meta-profile
   reference is only checked when `enable_classify_and_switch_llm_tool` is
   true.
-- Secrets given at conversation start are kept in memory and survive a
-  restart, but `GET /api/conversations/{id}` shows an empty
-  `secret_registry` until the conversation's state is saved again (a run,
-  a tag edit); the secret-scope bullet edits a tag first, as F08 does.
+- Secrets given at conversation start are saved with the conversation, so
+  `GET /api/conversations/{id}` lists them at once
+  (`F04.create-secrets-get`). The secret-scope bullet still edits a tag
+  before it reads the registry; that step is no longer needed for the read.
 - A profile file that is valid JSON but not a valid profile is listed
   (summaries read raw JSON) yet is 400 on GET. Through other families'
   routes the same profile is a deliberate 500 `Could not load agent
