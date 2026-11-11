@@ -12,6 +12,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.security.grayswan import GraySwanAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Action
+from openhands.sdk.utils.cipher import Cipher
 
 
 class GraySwanTestAction(Action):
@@ -533,3 +534,30 @@ class TestGraySwanAnalyzerHTTPClientLifecycle:
             assert result == SecurityRisk.UNKNOWN
         finally:
             analyzer.close()
+
+
+def test_api_key_survives_a_ciphered_save_and_load(monkeypatch):
+    """Saved with a cipher (as conversation state is), the key comes back."""
+    monkeypatch.delenv("GRAYSWAN_API_KEY", raising=False)
+    cipher = Cipher("grayswan-test-key")
+    analyzer = GraySwanAnalyzer(api_key=SecretStr("gs-secret-key"))
+
+    saved = analyzer.model_dump(mode="json", context={"cipher": cipher})
+    loaded = GraySwanAnalyzer.model_validate(saved, context={"cipher": cipher})
+
+    assert "gs-secret-key" not in json.dumps(saved)
+    assert loaded.api_key is not None
+    assert loaded.api_key.get_secret_value() == "gs-secret-key"
+
+
+def test_api_key_saved_without_a_cipher_loads_as_missing(monkeypatch):
+    """Without a cipher the key is redacted on save. It must load as no key,
+    not as the redaction placeholder sent to the API as a bearer token."""
+    monkeypatch.delenv("GRAYSWAN_API_KEY", raising=False)
+    analyzer = GraySwanAnalyzer(api_key=SecretStr("gs-secret-key"))
+
+    saved = analyzer.model_dump(mode="json")
+    loaded = GraySwanAnalyzer.model_validate(saved)
+
+    assert "gs-secret-key" not in json.dumps(saved)
+    assert loaded.api_key is None
