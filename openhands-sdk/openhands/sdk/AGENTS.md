@@ -78,7 +78,6 @@ When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic mode
    ```python
    from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
 
-
    class MyModel(BaseModel):
        model_config = ConfigDict(extra="forbid")
 

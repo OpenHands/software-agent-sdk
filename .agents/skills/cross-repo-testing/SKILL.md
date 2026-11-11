@@ -98,7 +98,7 @@ openhands-tools = { git = "https://github.com/OpenHands/software-agent-sdk.git",
 
 **`openhands/app_server/sandbox/sandbox_spec_service.py`** — use the SDK's merge-commit SHA:
 ```python
-AGENT_SERVER_IMAGE = "ghcr.io/openhands/agent-server:<merge-commit-sha>-python"
+AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:<merge-commit-sha>-python'
 ```
 
 **Regenerate lock files:**

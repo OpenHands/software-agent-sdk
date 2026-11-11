@@ -67,8 +67,8 @@ workspace smoke test, and a full agent run against a local Ollama model (no API 
 ### Pause / resume
 
 ```python
-workspace.pause()  # operatingMode -> Suspended; pod terminated, PVC retained
-workspace.resume()  # operatingMode -> Running; reconnects to the agent server
+workspace.pause()    # operatingMode -> Suspended; pod terminated, PVC retained
+workspace.resume()   # operatingMode -> Running; reconnects to the agent server
 ```
 
 ### Where configuration lives

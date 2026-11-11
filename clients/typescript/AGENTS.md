@@ -90,7 +90,7 @@ const state = conversation.state;
 # Python SDK (reference implementation)
 conversation = RemoteConversation(config)
 await conversation.start()
-await conversation.workspace.write_file("/path/file.txt", "content")
+await conversation.workspace.write_file('/path/file.txt', 'content')
 state = conversation.state
 ```
 

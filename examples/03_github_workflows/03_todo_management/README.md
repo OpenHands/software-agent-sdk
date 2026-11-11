@@ -75,7 +75,6 @@ Add TODO comments in the following format anywhere in your codebase:
 def process_user_email(email):
     return email.lower()
 
-
 # TODO(openhands): Implement caching mechanism for API responses
 def fetch_api_data(endpoint):
     # Current implementation without caching
