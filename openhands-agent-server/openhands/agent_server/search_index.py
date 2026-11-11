@@ -1,21 +1,13 @@
-"""Full-text search index for local conversation history.
+"""Full-text search index over local conversation history.
 
-Maintains a SQLite FTS5 index over conversation titles and MessageEvent text
-so past conversations can be found by their content, not just title.
+SQLite FTS5 index over conversation titles and MessageEvent text so past
+conversations can be found by content. The index is a derived, disposable
+artifact: deleting ``search-index.db`` only degrades search until the next
+backfill rebuilds it; conversations themselves are never modified.
 
-Design notes:
-- The index is a derived, disposable artifact: deleting ``search-index.db``
-  only degrades search (next backfill rebuilds it); conversations themselves
-  are never touched.
-- Only titles and MessageEvent text/thinking blocks are indexed. Tool
-  observations and other event kinds are deliberately excluded (noise and
-  secret-exposure risk).
-- High-signal secret patterns are masked before text enters the index.
-- Search is fuzzy: the porter tokenizer stems queries and text alike
-  (plurals/verb forms match), tokens not found as prefixes are expanded via
-  the raw-word vocabulary with typo tolerance (Damerau-Levenshtein) and a
-  substring fallback. An index file built by an older, non-fuzzy schema is
-  detected and transparently rebuilt.
+Only titles and MessageEvent text/thinking blocks are indexed; tool
+observations and other event kinds are excluded (noise and secret-exposure
+risk). Known secret patterns are masked before text enters the index.
 """
 
 from __future__ import annotations
@@ -56,13 +48,6 @@ def _quote_exact(token: str) -> str:
     return f'"{token.replace(chr(34), chr(34) * 2)}"'
 
 
-def _to_fts_query(query: str) -> str:
-    tokens = _tokens(query)
-    if tokens:
-        return " AND ".join(_quote(t) for t in tokens)
-    return ""
-
-
 def _is_subsequence(needle: str, hay: str) -> bool:
     """True when needle's letters appear in hay in the same order."""
     it = iter(hay)
@@ -70,12 +55,9 @@ def _is_subsequence(needle: str, hay: str) -> bool:
 
 
 def _levenshtein(a: str, b: str, cap: int = 2) -> int:
-    """Damerau-Levenshtein-lite: adjacent transposition counts as one edit.
+    """Damerau-Levenshtein distance, capped; returns cap+1 past the cap.
 
-    Swapped letters ("wobmat" for "wombat") are among the most common typing
-    slips, so ignoring them (plain Levenshtein) would miss the typo class
-    users actually make; full Damerau handles the rest of the classic set
-    (insert / delete / substitute) in the same pass.
+    Adjacent transpositions count as one edit ("wobmat" for "wombat").
     """
     if a == b:
         return 0
@@ -216,12 +198,11 @@ class SearchIndex:
     def _rebuild_if_old_tokenizer(self) -> None:
         """Drop pre-fuzzy indexes so the next backfill rebuilds them.
 
-        The index is a disposable artifact; an FTS table built with the old
-        unicode61 tokenizer cannot answer stemmed or fuzzy queries, and an
-        index missing its raw-words twin cannot expand typos, so either
-        mismatch triggers a full rebuild (titles, messages, everything).
-        Deleting the rows also clears ``dir_mtime``, which the incremental
-        backfill uses to skip unchanged conversations.
+        An FTS table built before the porter tokenizer (or before the
+        raw-words twin existed) cannot answer stemmed or fuzzy queries, so
+        either mismatch triggers a full rebuild. Deleting the rows also
+        clears ``dir_mtime``, which the incremental backfill uses to skip
+        unchanged conversations.
         """
         fts_sql = self._conn.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'messages_fts'"
@@ -252,21 +233,36 @@ class SearchIndex:
     def close(self) -> None:
         self._conn.close()
 
+    # -- incremental sync bookkeeping -----------------------------------
+
+    def conversation_mtime(self, conv_id: str) -> float | None:
+        """Indexed conversation's directory mtime, or None if unseen."""
+        row = self._conn.execute(
+            "SELECT dir_mtime FROM conversations WHERE conv_id=?", (conv_id,)
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def note_conversation_sync(self, conv_id: str, dir_mtime: float) -> None:
+        """Record that a conversation was fully re-indexed at this mtime."""
+        self._conn.execute(
+            "UPDATE conversations SET dir_mtime=? WHERE conv_id=?", (dir_mtime, conv_id)
+        )
+
+    def commit(self) -> None:
+        self._conn.commit()
+
     def _fuzzy_terms(self, token: str) -> list[str]:
         """Expand a user token into real indexed words.
 
-        ``messages_words_fts`` stores the same text with the plain unicode61
-        tokenizer, so its vocabulary holds RAW words. Stemming a typo with
-        the porter tokenizer is unreliable (``garage`` stems to ``garag`` but
-        its typo ``grage`` stems to itself), so typo/substring discovery
-        compares raw words instead; the discovered candidates are quoted into
-        the stemmed MATCH query, which stems them on its side. In order:
-        nothing if no indexed word relates to the token; raw words that
-        start with the token (the plain prefix query is NOT enough there:
-        porter stems ``huggin`` and ``hugging`` to different prefixes, so
-        the raw word itself is quoted in); typo matches (Damerau distance
-        1-2) for tokens of 4+ chars; substring matches for tokens of 5+
-        chars (``brella`` -> ``umbrellas``).
+        ``messages_words_fts`` holds the same text tokenized without
+        stemming, so its vocabulary contains raw words. Typos are compared
+        against raw words — porter stems are unreliable for them (``garage``
+        stems to ``garag`` but its typo ``grage`` stems to itself) — and the
+        discovered candidates are then quoted into the stemmed MATCH query.
+        In order: raw words starting with the token (quoting matters:
+        ``huggin`` prefixes raw ``hugging`` but their porter stems differ),
+        typo matches (1-2 edits) for 4+ char tokens, substring matches for
+        5+ char tokens.
         """
         if len(token) < 4:
             return []
@@ -274,10 +270,7 @@ class SearchIndex:
         if not terms:
             return []
 
-        # Prefix block: raw words starting with the token sit contiguously in
-        # the sorted list. Quoting them matters when stemming rewrites the
-        # word's prefix ("huggin" prefixes raw "hugging", but their porter
-        # stems are "huggin" vs "hug", so the bare prefix query misses).
+        # Raw words starting with the token sit contiguously in the sorted list.
         i = bisect.bisect_left(terms, token)
         prefix_terms: list[str] = []
         while i < len(terms) and terms[i].startswith(token):
@@ -431,16 +424,14 @@ class SearchIndex:
             return ""
         groups = []
         for token in tokens:
-            # _fuzzy_terms can return the token itself (substring and
-            # subsequence layers self-match); re-quoting it as a *prefix*
-            # would undo the truncated-stem guard below.
+            # Fuzzy expansion can return the token itself; re-quoting it as
+            # a prefix would undo the truncated-stem guard below.
             candidates = [w for w in self._fuzzy_terms(token) if w != token]
             if self._stem_truncated(token):
-                # Porter ate a large chunk of the token ("huing" -> "hu",
-                # "doing" -> "do"): its prefix is too broad to trust ("hu*"
-                # grabs "hub", "do*" grabs "door"). Demote to an exact-word
-                # match when the token is a real corpus word, else rely on
-                # the fuzzy candidates alone; none at all -> no results.
+                # The token's prefix would match every word sharing its
+                # stem ("huing" -> "hu*" grabs "hub"); match only real
+                # candidates, or the stemmed word itself when the token
+                # is a known word.
                 if self._vocab_contains(token):
                     group = [_quote_exact(token)] + [
                         _quote(w) for w in candidates
@@ -482,9 +473,8 @@ class SearchIndex:
     def _stem_truncated(self, token: str) -> bool:
         """True when the porter stemmer deletes a large chunk of the token.
 
-        "Large" = 3+ letters and at least a third of the token: "huing" ->
-        "hu", "doing" -> "do". Such stems match far too many unrelated words
-        to be used as prefixes.
+        "Large" = 3+ letters and at least a third of the token; such stems
+        match far too many unrelated words to be used as prefixes.
         """
         if len(token) < 5:
             return False
@@ -559,10 +549,9 @@ def backfill(
 ) -> dict:
     """Index every conversation found under ``conversations_path``.
 
-    Idempotent: events already present are skipped, so re-running after new
-    conversations appear only processes the delta. With ``incremental=True``,
-    conversations whose directory mtime is unchanged since the last run are
-    skipped entirely (cheap periodic sync).
+    Idempotent: events already present are skipped. With
+    ``incremental=True``, conversations whose directory mtime is unchanged
+    since the last run are skipped entirely.
     """
     indexed_events = 0
     conv_count = 0
@@ -574,10 +563,7 @@ def backfill(
         conv_id = conv_dir.name
         dir_mtime = conv_dir.stat().st_mtime
         if incremental:
-            row = index._conn.execute(
-                "SELECT dir_mtime FROM conversations WHERE conv_id=?", (conv_id,)
-            ).fetchone()
-            if row is not None and row[0] == dir_mtime:
+            if index.conversation_mtime(conv_id) == dir_mtime:
                 skipped += 1
                 continue
         conv_count += 1
@@ -586,9 +572,7 @@ def backfill(
         except json.JSONDecodeError:
             continue
         index.index_conversation(conv_id, meta.get("title"))
-        index._conn.execute(
-            "UPDATE conversations SET dir_mtime=? WHERE conv_id=?", (dir_mtime, conv_id)
-        )
+        index.note_conversation_sync(conv_id, dir_mtime)
         events_dir = conv_dir / _EVENTS_DIR
         if not events_dir.is_dir():
             continue
@@ -599,7 +583,7 @@ def backfill(
                 continue
             if index.index_event(conv_id, event):
                 indexed_events += 1
-    index._conn.commit()
+    index.commit()
     return {
         "conversations_seen": conv_count,
         "events_indexed": indexed_events,

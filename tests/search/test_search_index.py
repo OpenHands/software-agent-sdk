@@ -1,41 +1,17 @@
 """Tests for the conversation full-text search index."""
 
-import json
-import uuid
-
 import pytest
 
 from openhands.agent_server.search_index import SearchIndex, backfill, mask_secrets
 
-
-def _write_conversation(root, title, messages):
-    conv_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, title))
-    conv_dir = root / conv_id
-    events_dir = conv_dir / "events"
-    events_dir.mkdir(parents=True, exist_ok=True)
-    (conv_dir / "meta.json").write_text(
-        json.dumps({"conversation_id": conv_id, "title": title})
-    )
-    for i, (source, text) in enumerate(messages):
-        event = {
-            "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{title}:{i}")),
-            "timestamp": "2026-11-01T10:00:00",
-            "source": source,
-            "llm_message": {
-                "role": "user",
-                "content": [{"type": "text", "text": text}],
-            },
-        }
-        fname = f"event-{i:06d}-{event['id']}.json"
-        (events_dir / fname).write_text(json.dumps(event))
-    return conv_id
+from conftest import write_conversation
 
 
 @pytest.fixture
 def conv_root(tmp_path):
     convs = tmp_path / "conversations"
     convs.mkdir()
-    _write_conversation(
+    write_conversation(
         convs,
         "Garage door sensor",
         [
@@ -43,22 +19,22 @@ def conv_root(tmp_path):
             ("agent", "False alarms happen below five degrees at night."),
         ],
     )
-    _write_conversation(
+    write_conversation(
         convs,
         "Italy trip",
         [("user", "Draft a ten day itinerary for Italy starting in Rome.")],
     )
-    _write_conversation(
+    write_conversation(
         convs,
         "Secret keeper",
         [("user", "Store this key: sk-ABCDEFGHIJKLMNOPQRSTUV please.")],
     )
-    _write_conversation(
+    write_conversation(
         convs,
         "ML platform",
         [("agent", "The Hugging Face Hub hosts transformers models.")],
     )
-    _write_conversation(
+    write_conversation(
         convs,
         "Household chores",
         [("user", "I was doing laundry when the door bell rang.")],
@@ -285,7 +261,7 @@ def test_dropped_last_letter_still_matches(tmp_path, conv_root):
     """Porter stems "huggin" and "hugging" to different prefixes, so a bare
     prefix query misses; the raw prefix word must be quoted in instead."""
     idx = SearchIndex(conv_root.parent / "s.db")
-    _write_conversation(tmp_path / "convs2", "ML chat", [
+    write_conversation(tmp_path / "convs2", "ML chat", [
         ("user", "We tried hugging face transformers and it worked."),
     ])
     backfill(idx, tmp_path / "convs2")

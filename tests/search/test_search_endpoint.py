@@ -1,7 +1,5 @@
 """Tests for the /conversations/search-content endpoint and service wiring."""
 
-import json
-import uuid
 from pathlib import Path
 
 import pytest
@@ -9,39 +7,17 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.search_index import SearchIndex, backfill
+from openhands.agent_server.search_index import backfill
 from openhands.agent_server.search_service import ContentSearchService
 
-
-def _write_conversation(root: Path, title: str, messages: list) -> str:
-    conv_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, title))
-    conv_dir = root / conv_id
-    events_dir = conv_dir / "events"
-    events_dir.mkdir(parents=True, exist_ok=True)
-    (conv_dir / "meta.json").write_text(
-        json.dumps({"conversation_id": conv_id, "title": title})
-    )
-    for i, (source, text) in enumerate(messages):
-        event = {
-            "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{title}:{i}")),
-            "timestamp": "2026-11-01T10:00:00",
-            "source": source,
-            "llm_message": {
-                "role": "user",
-                "content": [{"type": "text", "text": text}],
-            },
-        }
-        (events_dir / f"event-{i:06d}-{event['id']}.json").write_text(
-            json.dumps(event)
-        )
-    return conv_id
+from conftest import write_conversation
 
 
 @pytest.fixture
 def conv_root(tmp_path):
     convs = tmp_path / "conversations"
     convs.mkdir()
-    _write_conversation(
+    write_conversation(
         convs,
         "Garage door sensor",
         [
@@ -49,7 +25,7 @@ def conv_root(tmp_path):
             ("agent", "False alarms happen below five degrees at night."),
         ],
     )
-    _write_conversation(
+    write_conversation(
         convs, "Italy trip", [("user", "Ten day itinerary starting in Rome.")]
     )
     return convs
@@ -156,7 +132,7 @@ def test_new_message_found_after_incremental_sync(conv_root, tmp_path):
     )
     svc = ContentSearchService(config)
     assert svc.search("kubernetes") == []
-    _write_conversation(
+    write_conversation(
         conv_root, "K8s migration", [("user", "Plan the kubernetes migration.")]
     )
     hits = svc.search("kubernetes")

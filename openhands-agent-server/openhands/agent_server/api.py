@@ -456,8 +456,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                         stats["messages"],
                     )
                 except Exception:
-                    logger.exception("Content search index initial sync failed; "
-                                     "search will retry on first query")
+                    logger.exception(
+                        "Content search index initial sync failed"
+                    )
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
