@@ -3093,6 +3093,10 @@ class LocalConversation(BaseConversation):
                      when a command references the secret key.
         """
         with self._state:
+            # The state saves itself when a field is assigned, not when one is
+            # changed in place, so the registry is replaced by an updated copy.
+            # model_copy keeps the masking cache shared with the previous
+            # object, which ACP credential and stream masking may still hold.
             registry = self._state.secret_registry.model_copy(
                 update={
                     "secret_sources": dict(self._state.secret_registry.secret_sources)
