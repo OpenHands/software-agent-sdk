@@ -395,6 +395,19 @@ def test_metrics_diff_method():
     assert diff.accumulated_token_usage.completion_tokens == 150  # 250 - 100
 
 
+def test_metrics_diff_keeps_cost_recorded_at_baseline_timestamp():
+    metrics = Metrics(model_name="m")
+    metrics.add_cost(1.0)
+    baseline = metrics.deep_copy()
+    metrics.add_cost(2.0)
+    metrics.costs[-1].timestamp = metrics.costs[0].timestamp
+
+    diff = metrics.diff(baseline)
+
+    assert diff.accumulated_cost == 2.0
+    assert [c.cost for c in diff.costs] == [2.0]
+
+
 def test_metrics_diff_with_none_token_usage():
     """Test diff method when one metrics has None token usage."""
     metrics1 = Metrics()

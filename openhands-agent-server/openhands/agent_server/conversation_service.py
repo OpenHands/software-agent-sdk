@@ -273,18 +273,21 @@ def _worktree_start_point(repo_root: Path, options: ConversationWorktreeOptions)
 
 def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
     repo_root = plan.repo_root
-    plan.worktree_root.parent.mkdir(parents=True, exist_ok=True)
+    worktree_root = plan.worktree_root
+    worktree_root.parent.mkdir(parents=True, exist_ok=True)
 
-    if plan.worktree_root.exists():
-        try:
-            run_git_command(
-                ["git", "worktree", "remove", "--force", str(plan.worktree_root)],
-                repo_root,
-            )
-        except GitCommandError:
-            safe_rmtree(plan.worktree_root)
-
-    run_git_command(["git", "worktree", "prune"], repo_root)
+    # Other containers' worktrees are not mounted here. Global pruning would
+    # unregister those live siblings, so remove only this conversation's entry.
+    registered_worktrees = run_git_command(
+        ["git", "worktree", "list", "--porcelain", "-z"], repo_root
+    ).split("\0")
+    if f"worktree {worktree_root}" in registered_worktrees:
+        run_git_command(
+            ["git", "worktree", "remove", "--force", str(worktree_root)],
+            repo_root,
+        )
+    elif worktree_root.exists():
+        safe_rmtree(worktree_root)
 
     if run_git_command(["git", "branch", "--list", plan.branch], repo_root):
         run_git_command(["git", "branch", "-D", plan.branch], repo_root)
@@ -376,7 +379,20 @@ def _compose_conversation_info(
         or agent_state.get("acp_available_models")
         or []
     )
-    # Static provider capability. Unlike the two fields above it has no
+    # Effort: live → persisted hint → the configured ``acp_effort`` before any
+    # session wrote a hint. A stored ``None`` hint means the model offers none.
+    current_effort = getattr(agent, "current_effort", None)
+    if current_effort is None:
+        if "acp_current_effort" in agent_state:
+            current_effort = agent_state["acp_current_effort"]
+        elif not agent_initialized:
+            current_effort = getattr(agent, "acp_effort", None)
+    available_efforts = (
+        getattr(agent, "available_efforts", None)
+        or agent_state.get("acp_available_efforts")
+        or []
+    )
+    # Static provider capability. Unlike the fields above it has no
     # meaningful live-vs-persisted distinction — it's derived from the stable
     # provider identity and written once at session init — so we read the
     # persisted value directly. Defaults False for non-ACP agents and
@@ -396,6 +412,8 @@ def _compose_conversation_info(
         sub_conversation_ids=sub_conversation_ids or [],
         current_model_id=current_model_id,
         available_models=available_models,
+        current_effort=current_effort,
+        available_efforts=available_efforts,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
         tool_module_qualnames=dict(stored.tool_module_qualnames),
@@ -436,6 +454,7 @@ def _register_agent_definitions(
     agent_defs: list["AgentDefinition"],
     *,
     context: str,
+    cipher: Cipher | None = None,
 ) -> None:
     """Register agent definitions into the subagent registry.
 
@@ -450,7 +469,7 @@ def _register_agent_definitions(
     registered = 0
     for agent_def in agent_defs:
         try:
-            factory = agent_definition_to_factory(agent_def)
+            factory = agent_definition_to_factory(agent_def, cipher=cipher)
             register_agent_if_absent(
                 name=agent_def.name,
                 factory_func=factory,
@@ -513,7 +532,7 @@ def _read_execution_status_sync(
     Validating the full ``ConversationState`` costs an agent, LLM config,
     workspace, secret registry and stats blob to reach one enum field.
     """
-    with suppress(OSError, ValueError):
+    with suppress(OSError, ValueError, AttributeError):
         with open(base_state_path, "rb") as f:
             payload = json.loads(f.read())
         return ConversationExecutionStatus(
@@ -1035,6 +1054,7 @@ class ConversationService:
             _register_agent_definitions(
                 stored.agent_definitions,
                 context=f"resuming conversation {stored.id}",
+                cipher=self.cipher,
             )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
@@ -1672,6 +1692,7 @@ class ConversationService:
             _register_agent_definitions(
                 request.agent_definitions,
                 context=f"conversation {conversation_id}",
+                cipher=self.cipher,
             )
 
         # Plugin loading is handled lazily by LocalConversation, which fetches
@@ -2913,7 +2934,7 @@ class WebhookSubscriber(Subscriber):
         # mode="json" makes types such as set and SecretStr JSON-safe.
         if hasattr(event, "model_dump"):
             return event.model_dump(mode="json")
-        return event.__dict__
+        return dict(event.__dict__)
 
     @classmethod
     def _event_size(cls, event: Event) -> int:

@@ -1273,6 +1273,72 @@ def test_llm_force_string_serializer_override():
     assert isinstance(formatted_cache[0]["content"], list)
 
 
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    "model,reasoning_content,expected_reasoning",
+    [
+        ("gpt-oss-120b", "Plan the edit.", "Plan the edit."),
+        ("openai/gpt-oss-120b", "Plan the edit.", "Plan the edit."),
+        ("openrouter/openai/gpt-oss-120b", "Plan the edit.", "Plan the edit."),
+        ("kimi-k2-thinking", "Plan the edit.", "Plan the edit."),
+        ("deepseek/deepseek-reasoner", "Plan the edit.", "Plan the edit."),
+        ("openrouter/minimax-m2", "Plan the edit.", "Plan the edit."),
+        ("gpt-4o", "Plan the edit.", None),
+        ("deepseek/deepseek-chat", "Plan the edit.", None),
+        ("kimi-k2-instruct", "Plan the edit.", None),
+        ("openai/gpt-oss-120b", None, None),
+        ("openai/gpt-oss-120b", "", None),
+    ],
+)
+async def test_llm_reasoning_content_in_tool_call_history(
+    model, reasoning_content, expected_reasoning, use_async
+):
+    llm = LLM(model=model, api_key=SecretStr("test_key"))
+    messages = [
+        Message(role="system", content=[TextContent(text="You are a coding agent.")]),
+        Message(role="user", content=[TextContent(text="Fix the bug.")]),
+    ]
+    for call_id in ("call_1", "call_2"):
+        messages.extend(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="")],
+                    reasoning_content=reasoning_content,
+                    tool_calls=[
+                        MessageToolCall(
+                            id=call_id,
+                            name="terminal",
+                            arguments='{"command": "git diff"}',
+                            origin="completion",
+                        )
+                    ],
+                ),
+                Message(
+                    role="tool",
+                    name="terminal",
+                    tool_call_id=call_id,
+                    content=[TextContent(text="No changes yet.")],
+                ),
+            ]
+        )
+
+    if use_async:
+        formatted = await llm.aformat_messages_for_llm(messages)
+    else:
+        formatted = llm.format_messages_for_llm(messages)
+
+    for assistant_index, call_id in ((2, "call_1"), (4, "call_2")):
+        assistant = formatted[assistant_index]
+        assert assistant["role"] == "assistant"
+        assert assistant["tool_calls"][0]["id"] == call_id
+        assert formatted[assistant_index + 1]["tool_call_id"] == call_id
+        if expected_reasoning is None:
+            assert "reasoning_content" not in assistant
+        else:
+            assert assistant["reasoning_content"] == expected_reasoning
+
+
 def test_llm_caching_support(default_llm):
     """Test LLM prompt caching support detection."""
     llm = default_llm
@@ -1536,32 +1602,23 @@ def test_token_usage_context_window():
 # Telemetry Tests
 
 
-def test_telemetry_cost_calculation_header_exception():
-    """Test telemetry cost calculation handles header parsing exceptions."""
-    # Create a mock response with headers that will cause an exception
-    mock_response = Mock()
-    mock_response.headers = {"x-litellm-cost": "invalid-float"}
+@pytest.mark.parametrize(
+    "additional_headers",
+    [None, {"llm_provider-x-litellm-response-cost": "invalid-float"}],
+    ids=["malformed-header-container", "invalid-cost-value"],
+)
+def test_telemetry_cost_calculation_invalid_headers(additional_headers):
+    """Malformed provider headers must still fall back to token pricing."""
+    response = create_mock_litellm_response()
+    response._hidden_params = {"additional_headers": additional_headers}
+    telemetry = Telemetry(model_name="gpt-4o", metrics=Metrics())
 
-    metrics = Metrics()
-    telemetry = Telemetry(model_name="test-model", metrics=metrics)
-
-    # Mock the logger to capture debug messages
-    with patch("openhands.sdk.llm.utils.telemetry.logger") as mock_logger:
-        # Mock litellm_completion_cost to return a valid cost
-        with patch(
-            "openhands.sdk.llm.utils.telemetry.litellm_completion_cost",
-            return_value=0.001,
-        ):
-            cost = telemetry._compute_cost(mock_response)
-
-            # Should fall back to litellm cost calculator
-            assert cost == 0.001
-
-            # Should have logged the debug message for header parsing failure (line 139)
-            mock_logger.debug.assert_called_once()
-            assert "Failed to get cost from LiteLLM headers:" in str(
-                mock_logger.debug.call_args
-            )
+    with patch(
+        "openhands.sdk.llm.utils.telemetry.litellm_completion_cost",
+        return_value=0.001,
+    ) as calculate_cost:
+        assert telemetry._compute_cost(response) == 0.001
+        assert calculate_cost.call_args.kwargs["completion_response"] is response
 
 
 def test_enable_encrypted_reasoning_respects_flag_and_defaults_true():
@@ -2094,3 +2151,148 @@ def test_max_output_tokens_not_capped_when_below_context_window(
 
 
 # LLM Registry Tests
+
+
+def test_proxy_system_identity_prepended_for_bare_chat_messages():
+    """System-less calls to the OpenHands proxy get the default identity.
+
+    The proxy rejects requests whose leading system text does not start with
+    the OpenHands identity (403 "Request rejected by proxy policy"), which hit
+    bare ``LLM.completion()`` calls that send no system message at all.
+    """
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    formatted = llm.format_messages_for_llm(
+        [Message(role="user", content=[TextContent(text="Hello")])]
+    )
+    assert formatted[0]["role"] == "system"
+    assert OPENHANDS_SYSTEM_IDENTITY in str(formatted[0]["content"])
+    assert formatted[1]["role"] == "user"
+
+
+def test_proxy_system_identity_prepended_before_caller_system():
+    """A caller system message is kept verbatim, after the identity lead.
+
+    Hook evaluators lead with a task-specific policy prompt; the proxy still
+    requires the identity first. The caller's message must not be rewritten.
+    """
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-caller-system",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    formatted = llm.format_messages_for_llm(
+        [
+            Message(role="system", content=[TextContent(text="Be concise.")]),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    assert len(formatted) == 3
+    assert OPENHANDS_SYSTEM_IDENTITY in str(formatted[0]["content"])
+    assert "Be concise." in str(formatted[1]["content"])
+
+
+def test_proxy_system_identity_not_duplicated_when_already_leading():
+    """Calls already leading with the identity are left untouched."""
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-already-leading",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    formatted = llm.format_messages_for_llm(
+        [
+            Message(
+                role="system",
+                content=[
+                    TextContent(text=f"<SOUL>\n{OPENHANDS_SYSTEM_IDENTITY}\n</SOUL>")
+                ],
+            ),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    # The <SOUL>-wrapped lead does not start with the identity, so one is
+    # prepended; the wrapped original is preserved as the second message.
+    assert len(formatted) == 3
+    assert OPENHANDS_SYSTEM_IDENTITY in str(formatted[0]["content"])
+
+
+def test_proxy_system_identity_not_prepended_off_proxy():
+    """Non-proxy endpoints keep system-less calls untouched."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-off-proxy",
+    )
+    formatted = llm.format_messages_for_llm(
+        [Message(role="user", content=[TextContent(text="Hello")])]
+    )
+    assert len(formatted) == 1
+    assert formatted[0]["role"] == "user"
+
+
+def test_proxy_system_identity_in_responses_instructions():
+    """Responses calls to the proxy get identity instructions when unset."""
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-responses",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    instructions, _ = llm.format_messages_for_responses(
+        [Message(role="user", content=[TextContent(text="Hello")])]
+    )
+    assert instructions == OPENHANDS_SYSTEM_IDENTITY
+
+    instructions, _ = llm.format_messages_for_responses(
+        [
+            Message(role="system", content=[TextContent(text="Be concise.")]),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    assert instructions == f"{OPENHANDS_SYSTEM_IDENTITY}\n\nBe concise."
+
+
+def test_proxy_routing_for_vendor_prefixed_model():
+    """Vendor-prefixed models pointed at the proxy route through it.
+
+    ``anthropic/claude-...`` with the proxy as base_url otherwise keeps the
+    Anthropic Messages transport, which the proxy rejects outright.
+    """
+    from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+
+    assert litellm_call_kwargs(
+        "anthropic/claude-sonnet-4-5-20250929",
+        "https://llm-proxy.app.all-hands.dev",
+    ) == {
+        "model": "litellm_proxy/claude-sonnet-4-5-20250929",
+        "api_base": "https://llm-proxy.app.all-hands.dev",
+    }
+    # Off-proxy, the vendor prefix is preserved.
+    assert litellm_call_kwargs("anthropic/claude-sonnet-4-5-20250929", None) == {
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "api_base": None,
+    }
+    assert litellm_call_kwargs(
+        "anthropic/claude-sonnet-4-5-20250929", "https://api.anthropic.com"
+    ) == {
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "api_base": "https://api.anthropic.com",
+    }

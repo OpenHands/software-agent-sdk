@@ -193,6 +193,21 @@ def test_load_installed_skills(sample_skill_dir: Path, installed_dir: Path) -> N
     assert skills[0].name == "sample-skill"
 
 
+def test_load_installed_skills_skips_skill_that_fails_to_load(
+    sample_skill_dir: Path, installed_dir: Path, tmp_path: Path
+) -> None:
+    broken_skill_dir = _create_skill_dir(tmp_path, "broken-skill")
+    install_skill(source=str(broken_skill_dir), installed_dir=installed_dir)
+    install_skill(source=str(sample_skill_dir), installed_dir=installed_dir)
+    (installed_dir / "broken-skill" / "SKILL.md").write_text(
+        "---\nname: broken-skill\ndescription: [unclosed\n---\nBody\n"
+    )
+
+    skills = load_installed_skills(installed_dir=installed_dir)
+
+    assert [skill.name for skill in skills] == ["sample-skill"]
+
+
 def test_disable_skill_filters_load(
     sample_skill_dir: Path, installed_dir: Path
 ) -> None:
