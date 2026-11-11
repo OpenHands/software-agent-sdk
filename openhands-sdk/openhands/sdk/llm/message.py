@@ -6,7 +6,14 @@ from typing import Annotated, Any, ClassVar, Literal
 from litellm import ChatCompletionMessageToolCall, ResponseFunctionToolCall
 from litellm.types.responses.main import OutputFunctionToolCall
 from litellm.types.utils import Message as LiteLLMMessage
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from openhands.sdk.llm._message_normalization import (
     ChatMessageMetadata,
@@ -244,6 +251,11 @@ class Message(BaseModel):
         default=None,
         description="OpenAI Responses reasoning item from model output",
     )
+
+    # Marks a turn synthesized only to shape a single request (never persisted
+    # or rendered as history), such as the trailing user nudge. Request-only
+    # turns must not be mistaken for the latest user-authored turn.
+    _request_only: bool = PrivateAttr(default=False)
 
     # Deprecated fields that were moved to to_chat_dict() parameters.
     # These are silently removed for backward compatibility when loading old events.
