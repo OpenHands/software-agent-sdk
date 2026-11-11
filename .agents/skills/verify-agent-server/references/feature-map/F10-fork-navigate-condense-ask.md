@@ -302,7 +302,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
     --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F10_TOKEN.kind eq StaticSecret \
     --save F10.fork-keeps-settings/fork
   control-agent-server state cat base_state.json --conversation "$PF" --max-chars 200 --check confirmation_policy.kind eq ConfirmRisky \
-    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F10_TOKEN.value exists \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F10_TOKEN.value matches '^gAAAAA' \
     --not-contains qa-f10-token-value
   control-agent-server state cat meta.json --conversation "$PF" --max-chars 200 --check id exists \
     --check confirmation_policy missing --check security_analyzer missing --check secrets missing

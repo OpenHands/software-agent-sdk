@@ -47,10 +47,15 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.secrets-no-cipher`: on a server with no cipher (no `OH_SECRET_KEY`, no session key) a runtime secret reaches commands while the conversation lives, is persisted only as the redaction placeholder (the server warns at startup), and is empty after a restart although GET still lists the name.
 - `F08.secrets-restart`: a runtime secret that reached `base_state.json` is still injected into commands after a server restart.
 - `F08.secrets-unsaved-restart`: a runtime secret survives a restart even when nothing else changed in the conversation after it was posted.
-- `F08.state-on-disk`: a conversation's `confirmation_policy`, `security_analyzer` and `secrets` are in `base_state.json` from creation on and never in `meta.json`, also after a runtime change.
-- `F08.policy-restart`: a confirmation policy set at runtime is the one in force after a server restart, not the start-time one.
-- `F08.analyzer-restart`: a security analyzer set or cleared at runtime stays so after a server restart.
+- `F08.start-values-restart`: a start-time `confirmation_policy`, `security_analyzer` and secret are returned by `GET /api/conversations/{id}` right after the create, and are still in force after a server restart with no runtime change.
+- `F08.state-on-disk`: a conversation's `confirmation_policy`, `security_analyzer` and secrets are in `base_state.json` from creation on and never in `meta.json` (no `confirmation_policy`, `security_analyzer`, `secrets` or `secrets_encrypted` key), also after runtime changes.
+- `F08.policy-restart`: a confirmation policy set at runtime is the one in force after a server restart, not the start-time one: the agent's next action still waits for confirmation.
+- `F08.analyzer-restart`: a security analyzer set at runtime is still set after a server restart.
+- `F08.analyzer-clear-restart`: a start-time security analyzer cleared at runtime stays cleared after a server restart.
 - `F08.secrets-override-restart`: a runtime value that replaced a start-time secret is what commands get after a server restart.
+- `F08.fork-after-restart`: a fork made after a server restart has the source's current confirmation policy, security analyzer and secrets (runtime changes included) in its own `base_state.json`, and its commands get the current secret value.
+- `F08.child-inherits-current`: a child started with `POST .../children` has the parent's current confirmation policy, security analyzer and secrets (runtime changes included), its commands get the current secret value, and its `meta.json` has none of them.
+- `F08.reload-after-pause`: a policy and an analyzer set at runtime are still in force after `POST /api/conversations/prepare-for-sandbox-pause` unloads the conversation and the next request loads it again.
 - `F08.upgrade-from-release`: conversations the latest released server created and never ran keep their start-time secret, policy and analyzer after the same state is restarted on this checkout.
 
 ## How to get to it (agent POV)
@@ -697,60 +702,131 @@ KID=$(control-agent-server api POST /api/conversations \
   eviction (default 20 minutes) or a sandbox pause right after
   `POST .../secrets` keeps it.
 
-- **Where the three live on disk (`F08.state-on-disk`).** A conversation
-  created with all three in the start body, read on disk before anything
-  else happens, then after a runtime change.
+- **Start-time values in GET and after a restart (`F08.start-values-restart`).**
+  A conversation created with a policy, an analyzer and a secret in the
+  start body is read at once, then again after a restart that nothing
+  preceded.
   ```sh
-  DSK=$(control-agent-server api POST /api/conversations \
-    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"security_analyzer\": {\"kind\": \"LLMSecurityAnalyzer\"}, \"secrets\": {\"QA_F08_DISK\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-disk-value\"}}}" \
-    --expect 201 --field id)
-  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
-    --check confirmation_policy.kind eq AlwaysConfirm --check security_analyzer.kind eq LLMSecurityAnalyzer \
-    --check secret_registry.secret_sources.QA_F08_DISK.kind eq StaticSecret --not-contains qa-f08-disk-value
-  control-agent-server state cat meta.json --conversation "$DSK" --max-chars 200 --check id exists \
-    --check confirmation_policy missing --check security_analyzer missing --check secrets missing --check secrets_encrypted missing
-  control-agent-server api POST "/api/conversations/$DSK/confirmation_policy" --json '{"policy": {"kind": "NeverConfirm"}}' --expect 200
-  control-agent-server api POST "/api/conversations/$DSK/secrets" --json '{"secrets": {"QA_F08_DISK2": "qa-f08-disk2-value"}}' --expect 200
-  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
-    --check confirmation_policy.kind eq NeverConfirm --check secret_registry.secret_sources.QA_F08_DISK2.kind eq StaticSecret
-  control-agent-server state cat meta.json --conversation "$DSK" --max-chars 200 --check id exists \
-    --check confirmation_policy missing --check security_analyzer missing --check secrets missing
-  ```
-  `base_state.json` has the policy, the analyzer and the secret (cipher
-  text, never the value) as soon as the create returns, and follows the
-  runtime changes. `meta.json` is readable (it has the `id`) and has none of
-  the four keys, before and after.
-- **Policy and analyzer after a restart (`F08.policy-restart`, `F08.analyzer-restart`).**
-  `$RSP` starts with `AlwaysConfirm` and `LLMSecurityAnalyzer` and is
-  switched at runtime to `ConfirmRisky` and `PatternSecurityAnalyzer`; `$RSC`
-  starts with `PatternSecurityAnalyzer`, which is cleared. After the restart
-  a queued message loads each conversation into memory before it is read.
-  ```sh
-  RSP=$(control-agent-server api POST /api/conversations \
-    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"security_analyzer\": {\"kind\": \"LLMSecurityAnalyzer\"}}" \
-    --expect 201 --field id)
-  RSC=$(control-agent-server api POST /api/conversations \
-    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"security_analyzer\": {\"kind\": \"PatternSecurityAnalyzer\"}}" \
-    --expect 201 --field id)
-  control-agent-server api POST "/api/conversations/$RSP/confirmation_policy" \
-    --json '{"policy": {"kind": "ConfirmRisky", "threshold": "MEDIUM", "confirm_unknown": false}}' --expect 200
-  control-agent-server api POST "/api/conversations/$RSP/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
-  control-agent-server api POST "/api/conversations/$RSC/security_analyzer" --json '{"security_analyzer": null}' --expect 200
+  mkdir -p "$W/start-values"
+  SV_STUB=$(control-agent-server fixture llm-stub --name qa-f08-start-values \
+    --step 'tool:terminal:{"command":"printf %s \"$QA_F08_START\" > qa-f08-start.txt"}' --step "$FINISH" --print-path)
+  SV_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$SV_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  SVC=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/start-values\"}, \"agent\": $SV_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"ConfirmRisky\", \"threshold\": \"MEDIUM\", \"confirm_unknown\": false}, \"security_analyzer\": {\"kind\": \"PatternSecurityAnalyzer\"}, \"secrets\": {\"QA_F08_START\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-start-value\", \"description\": \"qa start\"}}}" \
+    --expect 201 --check confirmation_policy.kind eq ConfirmRisky --check security_analyzer.kind eq PatternSecurityAnalyzer --field id)
+  control-agent-server api GET "/api/conversations/$SVC" --check confirmation_policy.kind eq ConfirmRisky --check confirmation_policy.threshold eq MEDIUM \
+    --check confirmation_policy.confirm_unknown eq false --check security_analyzer.kind eq PatternSecurityAnalyzer --save F08.start-values-restart/policy-analyzer
+  control-agent-server api GET "/api/conversations/$SVC" --check secret_registry.secret_sources.QA_F08_START.kind eq StaticSecret \
+    --check secret_registry.secret_sources.QA_F08_START.description eq 'qa start' --save F08.start-values-restart/secret
   control-agent-server restart
   control-agent-server doctor
-  control-agent-server api POST "/api/conversations/$RSP/events" --json "$QUEUED" --expect 200 --quiet
-  control-agent-server api POST "/api/conversations/$RSC/events" --json "$QUEUED" --expect 200 --quiet
-  control-agent-server api GET "/api/conversations/$RSP" --check confirmation_policy.kind eq ConfirmRisky \
-    --check confirmation_policy.threshold eq MEDIUM --check confirmation_policy.confirm_unknown eq false --save F08.policy-restart/after-restart
-  control-agent-server api GET "/api/conversations/$RSP" --check security_analyzer.kind eq PatternSecurityAnalyzer --save F08.analyzer-restart/set
-  control-agent-server api GET "/api/conversations/$RSC" --check security_analyzer eq null --save F08.analyzer-restart/cleared
-  control-agent-server api GET "/api/conversations/$RSC/events/count" --query body='QA_F08 queued' --check . eq 1
+  control-agent-server conversation send "$SVC" --text 'Run the command.' --wait --until finished --timeout 120
+  test "$(cat "$W/start-values/qa-f08-start.txt")" = qa-f08-start-value
+  control-agent-server api GET "/api/conversations/$SVC" --check confirmation_policy.kind eq ConfirmRisky --check confirmation_policy.threshold eq MEDIUM \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F08_START.kind eq StaticSecret \
+    --save F08.start-values-restart/after-restart
   ```
-  With both conversations loaded again (each holds its queued message),
-  `$RSP` still has `ConfirmRisky` with its `MEDIUM` threshold and
-  `PatternSecurityAnalyzer`, not the `AlwaysConfirm` and
-  `LLMSecurityAnalyzer` it was created with, and `$RSC` still has no
-  analyzer.
+  The GET right after the create shows `ConfirmRisky` at `MEDIUM`,
+  `PatternSecurityAnalyzer` and `QA_F08_START` (masked, description kept).
+  After the restart the low-risk command runs unasked and writes the secret's
+  value, and GET still shows all three. (A secret given alone, with the
+  default policy and no analyzer, is `F04.create-secrets-get`.)
+- **Where the three live on disk (`F08.state-on-disk`).** A
+  conversation created with all three in the start body, read on disk before
+  anything else happens, then after runtime changes.
+  ```sh
+  DSK=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"security_analyzer\": {\"kind\": \"PatternSecurityAnalyzer\"}, \"secrets\": {\"QA_F08_DISK\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-disk-value\"}}}" \
+    --expect 201 --field id)
+  DSK_META="$AGENT_SERVER_VERIFY_RUN/server/workspace/conversations/${DSK//-/}/meta.json"
+  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
+    --check confirmation_policy.kind eq AlwaysConfirm --check security_analyzer.kind eq PatternSecurityAnalyzer
+  control-agent-server state cat meta.json --conversation "$DSK" --max-chars 200 --check id exists \
+    --check confirmation_policy missing --check security_analyzer missing --check secrets missing --check secrets_encrypted missing
+  jq -e '[has("confirmation_policy"), has("security_analyzer"), has("secrets"), has("secrets_encrypted")] | any | not' "$DSK_META"
+  control-agent-server state grep QA_F08_DISK --glob "server/workspace/conversations/${DSK//-/}/meta.json" --expect-none
+  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
+    --check secret_registry.secret_sources.QA_F08_DISK.kind eq StaticSecret \
+    --check secret_registry.secret_sources.QA_F08_DISK.value matches '^gAAAAA' --not-contains qa-f08-disk-value
+  control-agent-server api POST "/api/conversations/$DSK/confirmation_policy" --json '{"policy": {"kind": "ConfirmRisky", "threshold": "MEDIUM"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$DSK/security_analyzer" --json '{"security_analyzer": null}' --expect 200
+  control-agent-server api POST "/api/conversations/$DSK/secrets" --json '{"secrets": {"QA_F08_DISK2": "qa-f08-disk2-value"}}' --expect 200
+  control-agent-server state cat base_state.json --conversation "$DSK" --max-chars 200 \
+    --check confirmation_policy.kind eq ConfirmRisky --check confirmation_policy.threshold eq MEDIUM --check security_analyzer eq null \
+    --check secret_registry.secret_sources.QA_F08_DISK2.value matches '^gAAAAA' --not-contains qa-f08-disk2-value
+  jq -e '[has("confirmation_policy"), has("security_analyzer"), has("secrets"), has("secrets_encrypted")] | any | not' "$DSK_META"
+  control-agent-server state grep QA_F08_DISK --glob "server/workspace/conversations/${DSK//-/}/meta.json" --expect-none
+  control-agent-server state grep QA_F08_DISK --glob "server/workspace/conversations/${DSK//-/}/base_state.json"
+  ```
+  `base_state.json` has the policy, the analyzer and the secret
+  (a Fernet token, never the value) as soon as the create returns, and
+  follows every runtime change. `meta.json` is readable (it has the `id`)
+  and has none of the four keys, before and after (`jq` tells an absent key
+  from a `null` one, which `--check ... missing` cannot); the last grep is
+  the positive control for the glob.
+- **A runtime policy after a restart (`F08.policy-restart`).**
+  A conversation created with the default `NeverConfirm` is switched to
+  `AlwaysConfirm` at runtime; the server restarts; an events read loads the
+  conversation again before it is read and driven.
+  ```sh
+  mkdir -p "$W/policy-restart"
+  PR_STUB=$(control-agent-server fixture llm-stub --name qa-f08-policy-restart \
+    --step 'tool:terminal:{"command":"echo qa-policy > qa-f08-policy.txt"}' --step "$FINISH" --print-path)
+  PR_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$PR_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  PRC=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/policy-restart\"}, \"agent\": $PR_AGENT, \"autotitle\": false}" \
+    --expect 201 --check confirmation_policy.kind eq NeverConfirm --field id)
+  control-agent-server api POST "/api/conversations/$PRC/confirmation_policy" --json '{"policy": {"kind": "AlwaysConfirm"}}' --expect 200
+  control-agent-server api GET "/api/conversations/$PRC" --check confirmation_policy.kind eq AlwaysConfirm
+  control-agent-server restart
+  control-agent-server doctor
+  control-agent-server api GET "/api/conversations/$PRC/events/count" --expect 200
+  control-agent-server state ls --conversation "$PRC" owner_lease.json --expect-count 1
+  control-agent-server api GET "/api/conversations/$PRC" --check confirmation_policy.kind eq AlwaysConfirm \
+    --save F08.policy-restart/after-restart
+  control-agent-server state cat base_state.json --conversation "$PRC" --max-chars 200 --check confirmation_policy.kind eq AlwaysConfirm
+  control-agent-server conversation send "$PRC" --text 'Run the command.' --wait --until waiting_for_confirmation,finished,error --timeout 120
+  control-agent-server api GET "/api/conversations/$PRC" --check execution_status eq waiting_for_confirmation --save F08.policy-restart/waiting
+  test ! -e "$W/policy-restart/qa-f08-policy.txt"
+  ```
+  With the conversation loaded again (its lease file is back), GET
+  and `base_state.json` still say `AlwaysConfirm`, and the agent's terminal
+  action waits unrun.
+- **A runtime analyzer after a restart (`F08.analyzer-restart`).**
+  A conversation created without an analyzer gets `PatternSecurityAnalyzer`
+  at runtime, then the server restarts and the conversation is loaded.
+  ```sh
+  ARS=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false}" \
+    --expect 201 --check security_analyzer eq null --field id)
+  control-agent-server api POST "/api/conversations/$ARS/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
+  control-agent-server api GET "/api/conversations/$ARS" --check security_analyzer.kind eq PatternSecurityAnalyzer
+  control-agent-server restart
+  control-agent-server doctor
+  control-agent-server api GET "/api/conversations/$ARS/events/count" --expect 200
+  control-agent-server state ls --conversation "$ARS" owner_lease.json --expect-count 1
+  control-agent-server api GET "/api/conversations/$ARS" --check security_analyzer.kind eq PatternSecurityAnalyzer \
+    --save F08.analyzer-restart/after-restart
+  control-agent-server state cat base_state.json --conversation "$ARS" --max-chars 200 --check security_analyzer.kind eq PatternSecurityAnalyzer
+  ```
+  The loaded conversation still has `PatternSecurityAnalyzer`.
+- **A cleared analyzer after a restart (`F08.analyzer-clear-restart`).**
+  A conversation created with `PatternSecurityAnalyzer` has it cleared at
+  runtime, then the server restarts and the conversation is loaded.
+  ```sh
+  ARC=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"security_analyzer\": {\"kind\": \"PatternSecurityAnalyzer\"}}" \
+    --expect 201 --check security_analyzer.kind eq PatternSecurityAnalyzer --field id)
+  control-agent-server api POST "/api/conversations/$ARC/security_analyzer" --json '{"security_analyzer": null}' --expect 200
+  control-agent-server api GET "/api/conversations/$ARC" --check security_analyzer eq null
+  control-agent-server restart
+  control-agent-server doctor
+  control-agent-server api GET "/api/conversations/$ARC/events/count" --expect 200
+  control-agent-server state ls --conversation "$ARC" owner_lease.json --expect-count 1
+  control-agent-server api GET "/api/conversations/$ARC" --check security_analyzer eq null \
+    --save F08.analyzer-clear-restart/after-restart
+  ```
+  The analyzer is still cleared.
 - **A replaced start-time secret after a restart (`F08.secrets-override-restart`).**
   `QA_F08_ROTR` starts as `qa-f08-rotr-old`, is replaced at runtime, and the
   server restarts before any command runs.
@@ -768,6 +844,110 @@ KID=$(control-agent-server api POST /api/conversations \
   ```
   The command wrote `qa-f08-rotr-new`: the restart did not bring the
   start-time value back, and neither value is stored in plaintext.
+- **A fork after a restart (`F08.fork-after-restart`).** The
+  source gets a policy, an analyzer, a replaced secret and a second secret
+  after it was created (a tags PATCH saves them); the server restarts and
+  the fork is the first request that loads the source.
+  ```sh
+  mkdir -p "$W/fork-restart"
+  FK_STUB=$(control-agent-server fixture llm-stub --name qa-f08-fork-restart \
+    --step 'tool:terminal:{"command":"printf %s \"$QA_F08_FORK\" > qa-f08-fork.txt"}' --step "$FINISH" --print-path)
+  FK_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$FK_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  FKS=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/fork-restart\"}, \"agent\": $FK_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F08_FORK\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-fork-old\"}}}" \
+    --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$FKS/confirmation_policy" \
+    --json '{"policy": {"kind": "ConfirmRisky", "threshold": "MEDIUM", "confirm_unknown": false}}' --expect 200
+  control-agent-server api POST "/api/conversations/$FKS/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$FKS/secrets" \
+    --json '{"secrets": {"QA_F08_FORK": "qa-f08-fork-new", "QA_F08_FORK2": "qa-f08-fork2-value"}}' --expect 200
+  control-agent-server api PATCH "/api/conversations/$FKS" --json '{"tags": {"qa": "f08-fork-saved"}}' --expect 200
+  control-agent-server restart
+  control-agent-server doctor
+  FKF=$(control-agent-server api POST "/api/conversations/$FKS/fork" --expect 201 --field id)
+  control-agent-server api GET "/api/conversations/$FKF" --check confirmation_policy.kind eq ConfirmRisky --check confirmation_policy.threshold eq MEDIUM \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F08_FORK.kind eq StaticSecret \
+    --check secret_registry.secret_sources.QA_F08_FORK2.kind eq StaticSecret --check forked_from_conversation_id eq "$FKS" \
+    --save F08.fork-after-restart/fork
+  control-agent-server state cat base_state.json --conversation "$FKF" --max-chars 200 --check confirmation_policy.kind eq ConfirmRisky \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F08_FORK.value matches '^gAAAAA' \
+    --check secret_registry.secret_sources.QA_F08_FORK2.value matches '^gAAAAA' --check agent.llm.api_key matches '^gAAAAA' \
+    --not-contains qa-f08-fork-new
+  control-agent-server state cat meta.json --conversation "$FKF" --max-chars 200 --check id exists \
+    --check confirmation_policy missing --check security_analyzer missing --check secrets missing
+  control-agent-server conversation send "$FKF" --text 'Run the command.' --wait --until finished,error --timeout 120
+  control-agent-server assert --value "$(cat "$W/fork-restart/qa-f08-fork.txt")" --check . eq qa-f08-fork-new
+  control-agent-server api GET "/api/conversations/$FKS" --check confirmation_policy.kind eq ConfirmRisky \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F08_FORK2.kind eq StaticSecret \
+    --save F08.fork-after-restart/source
+  control-agent-server api GET "/api/conversations/$FKS/events/count" --query kind="$OBSERVATION_KIND" --check . eq 0
+  ```
+  The fork answers with `ConfirmRisky` at `MEDIUM`,
+  `PatternSecurityAnalyzer` and both secrets, none of which the source had
+  when it was created; they are in the fork's `base_state.json` as Fernet
+  tokens (the model key too) and not in its `meta.json`; the fork's low-risk
+  command runs unasked and writes `qa-f08-fork-new`; the source keeps its
+  values and gains no observation from the fork's run.
+- **A child inherits the current values (`F08.child-inherits-current`).**
+  The parent gets a policy, an analyzer, a replaced secret and a second
+  secret after it was created (a tags PATCH saves them), then starts a child
+  in the shared workspace; the child's stub runs one command and finishes.
+  ```sh
+  mkdir -p "$W/child"
+  CH_STUB=$(control-agent-server fixture llm-stub --name qa-f08-child \
+    --step 'tool:terminal:{"command":"printf %s \"$QA_F08_CHILD\" > qa-f08-child.txt"}' --step "$FINISH" --print-path)
+  CH_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CH_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  CHP=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/child\"}, \"agent\": $CH_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F08_CHILD\": {\"kind\": \"StaticSecret\", \"value\": \"qa-f08-child-old\"}}}" \
+    --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$CHP/confirmation_policy" \
+    --json '{"policy": {"kind": "ConfirmRisky", "threshold": "MEDIUM", "confirm_unknown": false}}' --expect 200
+  control-agent-server api POST "/api/conversations/$CHP/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$CHP/secrets" \
+    --json '{"secrets": {"QA_F08_CHILD": "qa-f08-child-new", "QA_F08_CHILD2": "qa-f08-child2-value"}}' --expect 200
+  control-agent-server api PATCH "/api/conversations/$CHP" --json '{"tags": {"qa": "f08-child-saved"}}' --expect 200
+  CHC=$(control-agent-server api POST "/api/conversations/$CHP/children" \
+    --json '{"task": "Run the command.", "title": "QA F08 child", "isolation": "shared"}' \
+    --expect 201 --check parent_conversation_id eq "$CHP" --check isolation eq shared --field conversation_id)
+  control-agent-server conversation wait "$CHC" --until finished,error,waiting_for_confirmation --timeout 120
+  control-agent-server api GET "/api/conversations/$CHC" --check confirmation_policy.kind eq ConfirmRisky --check confirmation_policy.threshold eq MEDIUM \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F08_CHILD.kind eq StaticSecret \
+    --check secret_registry.secret_sources.QA_F08_CHILD2.kind eq StaticSecret --check execution_status eq finished \
+    --save F08.child-inherits-current/child
+  control-agent-server assert --value "$(cat "$W/child/qa-f08-child.txt")" --check . eq qa-f08-child-new
+  control-agent-server state cat base_state.json --conversation "$CHC" --max-chars 200 --check confirmation_policy.kind eq ConfirmRisky \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --check secret_registry.secret_sources.QA_F08_CHILD.value matches '^gAAAAA' \
+    --not-contains qa-f08-child-new
+  control-agent-server state cat meta.json --conversation "$CHC" --max-chars 200 --check parent_conversation_id exists \
+    --check confirmation_policy missing --check security_analyzer missing --check secrets missing
+  control-agent-server api GET "/api/conversations/$CHP" --check sub_conversation_ids contains "$CHC" \
+    --check confirmation_policy.kind eq ConfirmRisky --save F08.child-inherits-current/parent
+  ```
+  The child has `ConfirmRisky` at `MEDIUM`,
+  `PatternSecurityAnalyzer` and both secrets, its low-risk command runs
+  unasked and writes `qa-f08-child-new`, and the three are in its
+  `base_state.json`, not its `meta.json`.
+- **Runtime values after a sandbox pause (`F08.reload-after-pause`).**
+  No restart: the pause call unloads every conversation (its lease file
+  goes), and an events read loads this one again.
+  ```sh
+  PZ=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/knobs\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false}" \
+    --expect 201 --check confirmation_policy.kind eq NeverConfirm --check security_analyzer eq null --field id)
+  control-agent-server api POST "/api/conversations/$PZ/confirmation_policy" --json '{"policy": {"kind": "AlwaysConfirm"}}' --expect 200
+  control-agent-server api POST "/api/conversations/$PZ/security_analyzer" --json '{"security_analyzer": {"kind": "PatternSecurityAnalyzer"}}' --expect 200
+  control-agent-server state ls --conversation "$PZ" owner_lease.json --expect-count 1
+  control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
+  control-agent-server state ls --conversation "$PZ" owner_lease.json --expect-count 0
+  control-agent-server api GET "/api/conversations/$PZ/events/count" --expect 200
+  control-agent-server state ls --conversation "$PZ" owner_lease.json --expect-count 1
+  control-agent-server api GET "/api/conversations/$PZ" --check confirmation_policy.kind eq AlwaysConfirm \
+    --check security_analyzer.kind eq PatternSecurityAnalyzer --save F08.reload-after-pause/after-reload
+  control-agent-server state cat base_state.json --conversation "$PZ" --max-chars 200 \
+    --check confirmation_policy.kind eq AlwaysConfirm --check security_analyzer.kind eq PatternSecurityAnalyzer
+  ```
+  The reloaded conversation still has `AlwaysConfirm` and
+  `PatternSecurityAnalyzer`.
 - **Upgrade from the latest release (`F08.upgrade-from-release`).** A second
   run starts on the newest release tag. `$UC` is created there with a
   start-time secret and nothing else, `$UA` with `AlwaysConfirm` and
@@ -859,8 +1039,11 @@ KID=$(control-agent-server api POST /api/conversations \
   them before answering, and `meta.json` never holds them
   (`F08.state-on-disk`). A reload (restart, idle eviction, sandbox pause)
   therefore keeps the current values (`F08.policy-restart`,
-  `F08.analyzer-restart`, `F08.secrets-restart`,
-  `F08.secrets-unsaved-restart`, `F08.secrets-override-restart`).
+  `F08.analyzer-restart`, `F08.analyzer-clear-restart`,
+  `F08.secrets-restart`, `F08.secrets-unsaved-restart`,
+  `F08.secrets-override-restart`, `F08.reload-after-pause`), and a fork or
+  a child starts from them (`F08.fork-after-restart`,
+  `F08.child-inherits-current`).
 - A server from before this layout kept start-time secrets in `meta.json`
   and could leave them out of `base_state.json`. The first load by a newer
   server takes over the names `base_state.json` lacks and then drops the
