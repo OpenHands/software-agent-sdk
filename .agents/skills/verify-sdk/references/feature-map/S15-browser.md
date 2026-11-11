@@ -100,7 +100,7 @@ Preconditions:
     --check steps.blocked_domain.text not-contains "Navigated to: https://example.com/" \
     --check steps.blocked_domain.is_error eq true --check steps.blocked_domain.text contains "blocked by security policy"
   ```
-  Expected: the page outside `allowed_domains` is not opened, and the observation is an error that says the navigation was blocked by the security policy (#6641).
+  Expected: the page outside `allowed_domains` is not opened, and the observation is an error that says the navigation was blocked by the security policy.
 - **A hung page: timeouts, reset and recovery (`S15.session-recovery`, `S15.action-routing`, `S15.cleanup`).** With `action_timeout_seconds` 12, the agent opens a page whose script never yields, then makes three more calls. The third call triggers the session reset. Then it opens a normal page and reads its state. The program counts this run's Chromium processes after `conversation.close()`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -113,7 +113,7 @@ Preconditions:
     --check steps.recovered.is_error eq false --check steps.recovered_state.text contains page2.html \
     --check chrome_processes_after_close eq 0
   ```
-  Expected: after the reset the browser restarts on the next action ("The browser will be restarted on the next action. Please retry your action."), and closing the conversation leaves no Chromium behind. Known failure (reproduced 2026-10-13, not yet filed): both later calls time out again after 12 s. In a run with a 40 s timeout, the first call after the reset failed and the second worked. The reset's cleanup (`run_async(self.cleanup, timeout=5.0)`) does not end the hung Chromium. It is still running after `conversation.close()` and after the program exits, re-parented to PID 1. Four of four hung-page runs left one behind.
+  Expected: after the reset the browser restarts on the next action ("The browser will be restarted on the next action. Please retry your action."), and closing the conversation leaves no Chromium behind. Known failure (reproduced 2026-10-13, [#6650](https://github.com/OpenHands/software-agent-sdk/issues/6650)): both later calls time out again after 12 s. In a run with a 40 s timeout, the first call after the reset failed and the second worked. The reset's cleanup (`run_async(self.cleanup, timeout=5.0)`) does not end the hung Chromium. It is still running after `conversation.close()` and after the program exits, re-parented to PID 1. Four of four hung-page runs left one behind.
 - **Session recording (`S15.recording-start-stop`, `S15.recording-storage`), blocked: needs `network` to unpkg.com.** Recording loads rrweb from `https://unpkg.com/rrweb@2.0.0-alpha.17/...`, which the egress proxy refuses here. A scripted agent starts recording on the local page, scrolls, changes page and comes back, waits past one 5-second flush, and stops.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

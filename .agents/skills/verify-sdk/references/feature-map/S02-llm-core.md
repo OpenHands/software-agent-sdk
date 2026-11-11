@@ -161,7 +161,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check chat.text eq hi --check chat.temperatures.1 eq 1.0 \
     --check chat_exhausted.error eq LLMNoResponseError
   ```
-  Known failure (reproduced 2026-11-03, not yet filed; it moved with the LiteLLM 1.93 to 1.105 upgrade): the chat path now behaves as documented, but on the Responses path a stream that ends without its completed event no longer reaches the SDK's `LLMNoResponseError` check. LiteLLM raises `APIConnectionError` first, the SDK retries it as a transient error without the temperature bump (`responses.temperatures` is `[0.0, 0.0]`), and an exhausted async call ends in `LLMServiceUnavailableError`. On 2026-10-13, with LiteLLM 1.93, it was the other way round: the Responses path worked and a chat reply with `"choices": []` became `LLMServiceUnavailableError`. The unit tests mock the LiteLLM call, so they meet neither.
+  Known failure (reproduced 2026-11-03, [#6657](https://github.com/OpenHands/software-agent-sdk/issues/6657)): the chat path now behaves as documented, but on the Responses path a stream that ends without its completed event no longer reaches the SDK's `LLMNoResponseError` check. LiteLLM raises `APIConnectionError` first, the SDK retries it as a transient error without the temperature bump (`responses.temperatures` is `[0.0, 0.0]`), and an exhausted async call ends in `LLMServiceUnavailableError`. The unit tests mock the LiteLLM call, so they do not meet it.
 - **Error mapping (`S02.error-mapping`).** Each provider error body, as an OpenAI-compatible endpoint sends it, and a dead endpoint.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -261,7 +261,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check patterns len-eq 8 --check rejections_typed eq true \
     --check results.unmatched_tool_use.error_type eq LLMMalformedConversationHistoryError
   ```
-  On 2026-11-03 DeepSeek rejected all eight. Five came back as `LLMMalformedConversationHistoryError`; the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order) came back as the generic `LLMBadRequestError`, so a caller that recovers from malformed histories by catching the specific error misses them.
+  Known failure (reproduced 2026-11-03, [#6658](https://github.com/OpenHands/software-agent-sdk/issues/6658)): DeepSeek rejects all eight. Five come back as `LLMMalformedConversationHistoryError`; the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order) come back as the generic `LLMBadRequestError`, so a caller that recovers from malformed histories by catching the specific error misses them.
 - **Examples 22 and 23 and the thinking-block condenser test (`S02.anthropic-thinking`, `S02.responses-reasoning`), blocked.** Example 22 and `c01_thinking_block_condenser` need an Anthropic extended-thinking model and key; example 23 hardcodes `openhands/gpt-5-mini-2025-08-07` and needs an OpenHands provider key. The run's DeepSeek key reaches neither.
 
 ## Gotchas

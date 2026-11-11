@@ -79,7 +79,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check sub_cache_key_is_parent.0 eq true --check sub_cache_key_is_parent.1 eq true \
     --check sub_cache_key_is_parent.2 eq true --check sub_session_differs eq true
   ```
-  Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Known failure (reproduced 2026-10-13, not yet filed): the two calls of the created task carry the parent's key, but the call made after `task(resume=...)` carries the sub-conversation's own id (`sub_cache_key_is_parent` is `[true, true, false]`): `TaskManager._resume_task` builds the `LocalConversation` without `prompt_cache_key=...`, unlike `_get_conversation`.
+  Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Known failure (reproduced 2026-10-13, [#6655](https://github.com/OpenHands/software-agent-sdk/issues/6655)): the two calls of the created task carry the parent's key, but the call made after `task(resume=...)` carries the sub-conversation's own id (`sub_cache_key_is_parent` is `[true, true, false]`): `TaskManager._resume_task` builds the `LocalConversation` without `prompt_cache_key=...`, unlike `_get_conversation`.
 - **Delegate trace metadata (`S11.task-observability`), blocked.** `is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, the parent span link and the `delegate` tag go only to the observability backend; proving them needs a Laminar/OpenTelemetry collector to read spans from.
 - **Registry, Markdown definitions and factories (`S11.register-programmatic`, `S11.register-if-absent`, `S11.markdown-schema`, `S11.file-discovery`, `S11.file-precedence`, `S11.plugin-agents`, `S11.definition-factory`, `S11.definition-model`).** The program lays out agent files in the workspace (`.agents/agents/`, `.openhands/agents/`, a `README.md`, a nested dir), the user's home (`~/.agents/agents/`) and `$OH_PERSISTENCE_DIR/agents/`, saves an LLM profile, and goes through `openhands.sdk.subagent`.
   ```sh
@@ -125,7 +125,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
   control-sdk program S11/builtins \
     --check example_in_description.general-purpose eq true --check example_in_description.web-researcher eq true
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): with all four built-ins registered, only the `code-explorer` and `bash-runner` examples appear. `TASK_TOOL_EXAMPLES` keys the other two as `"general purpose"` and `"web researcher"` (spaces), while the built-ins register as `general-purpose` and `web-researcher`, so their examples never match.
+  Known failure (reproduced 2026-10-13, [#6656](https://github.com/OpenHands/software-agent-sdk/issues/6656)): with all four built-ins registered, only the `code-explorer` and `bash-runner` examples appear. `TASK_TOOL_EXAMPLES` keys the other two as `"general purpose"` and `"web researcher"` (spaces), while the built-ins register as `general-purpose` and `web-researcher`, so their examples never match.
 - **Workspace Markdown agents picked up by the conversation (`S11.conversation-autoregister`, `S11.builtin-agents`, `S11.task-persistence`).** The workspace holds `.agents/agents/ws-reviewer.md`; the program never calls `register_file_agents`. A non-persisted parent delegates to it and to the built-in `bash-runner`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
