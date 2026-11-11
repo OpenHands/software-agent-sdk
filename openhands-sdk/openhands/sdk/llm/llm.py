@@ -538,7 +538,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     log_completions: bool = Field(
         default=False,
-        description="Enable logging of completions.",
+        description="Enable completion JSON logging to log_completions_folder or a "
+        "configured completion-log callback. OpenTelemetry tracing is configured "
+        "separately and can export LLM message content while completion logging "
+        "is disabled.",
         json_schema_extra=field_meta(),
     )
     log_completions_folder: str = Field(

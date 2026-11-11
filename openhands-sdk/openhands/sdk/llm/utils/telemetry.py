@@ -150,7 +150,13 @@ class Telemetry(BaseModel):
 
     # --- Config fields ---
     model_name: str = Field(default="unknown", description="Name of the LLM model")
-    log_enabled: bool = Field(default=False, description="Whether to log completions")
+    log_enabled: bool = Field(
+        default=False,
+        description="Enable completion JSON logging to log_dir or the configured "
+        "completion-log callback. OpenTelemetry tracing is configured separately "
+        "and can export LLM message content while completion logging is "
+        "disabled.",
+    )
     log_dir: str | None = Field(
         default=None, description="Directory to write logs if enabled"
     )
@@ -202,6 +208,9 @@ class Telemetry(BaseModel):
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
+        # Span lifecycle and content annotation are controlled by whether an OTel
+        # exporter is configured (see openhands.sdk.observability), independently
+        # of log_enabled.
         self._open_span()
         self._annotate_span_messages("input", lambda: _request_messages(self._req_ctx))
 

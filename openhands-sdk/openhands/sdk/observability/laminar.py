@@ -1,3 +1,16 @@
+"""OpenTelemetry tracing integration (optional, OTLP-compatible).
+
+When enabled (via env vars such as ``LMNR_PROJECT_API_KEY``/an OTLP endpoint, or a
+user-side ``Laminar.initialize()`` call), each LLM call is wrapped in a span
+and annotated with request/response message content on
+``gen_ai.input.messages`` and ``gen_ai.output.messages``. Enabling tracing is
+a deliberate choice to export conversation content to the configured OTLP
+backend, and configuring that backend is a separate step from
+``LLM.log_completions`` / ``Telemetry.log_enabled``, which controls completion
+JSON logging through a folder or callback. Additional tool instrumentation controls its
+own recorded inputs and outputs.
+"""
+
 from __future__ import annotations
 
 import contextlib
