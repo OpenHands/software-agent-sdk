@@ -96,12 +96,18 @@ _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
 
 def _configuration_changes_schema() -> dict:
     schema = ConversationConfigurationChangesRequest.model_json_schema()
-    variants = schema["$defs"]
+    variants = schema.pop("$defs")
     items = schema["properties"]["operations"]["items"]
     items["oneOf"] = [
         variants[ref["$ref"].rsplit("/", 1)[-1]] for ref in items["oneOf"]
     ]
     items.pop("discriminator", None)
+    install = next(
+        variant
+        for variant in items["oneOf"]
+        if variant["properties"]["type"]["const"] == "mcp.install"
+    )
+    install["properties"]["server"] = {"$ref": "#/components/schemas/MCPServer"}
     return schema
 
 

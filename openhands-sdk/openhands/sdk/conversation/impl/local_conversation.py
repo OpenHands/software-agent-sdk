@@ -1501,6 +1501,9 @@ class LocalConversation(BaseConversation):
             raise ValueError(f"MCP server {name!r} is disabled")
         self._ensure_agent_ready()
         old_agent = self.agent
+        old_state_agent: AgentBase | None = None
+        old_attached: list[str] = []
+        old_dirty = False
         client: MCPClient | None = None
         active = False
         changed = False
@@ -1549,6 +1552,7 @@ class LocalConversation(BaseConversation):
             active = True
         except BaseException:
             if changed:
+                assert old_state_agent is not None
                 with self._state:
                     self._state.agent = old_state_agent
                     self._state.attached_mcp_servers = old_attached

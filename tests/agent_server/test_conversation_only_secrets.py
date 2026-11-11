@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -14,7 +15,9 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.openapi import build_public_openapi
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -45,6 +48,14 @@ def _client(service: ConversationService, *, cipher: Cipher | None) -> AsyncClie
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+async def _event_service(
+    service: ConversationService, conversation_id: UUID
+) -> EventService:
+    event_service = await service.get_event_service(conversation_id)
+    assert event_service is not None
+    return event_service
+
+
 async def _start(service: ConversationService, workspace_dir):
     info, _ = await service.start_conversation(
         StartConversationRequest(
@@ -53,6 +64,27 @@ async def _start(service: ConversationService, workspace_dir):
         )
     )
     return info.id
+
+
+def test_conversation_configuration_openapi_references_resolve():
+    schema = build_public_openapi()
+    request_schema = schema["paths"][
+        "/api/conversations/{conversation_id}/configuration/changes"
+    ]["post"]["requestBody"]["content"]["application/json"]["schema"]
+
+    def check_references(value):
+        if isinstance(value, dict):
+            if ref := value.get("$ref"):
+                target = schema
+                for key in ref.removeprefix("#/").split("/"):
+                    target = target[key.replace("~1", "/").replace("~0", "~")]
+            for child in value.values():
+                check_references(child)
+        elif isinstance(value, list):
+            for child in value:
+                check_references(child)
+
+    check_references(request_schema)
 
 
 @pytest.mark.asyncio
@@ -94,8 +126,8 @@ async def test_conversation_secret_is_encrypted_isolated_and_restored(tmp_path):
                 },
             )
             assert duplicate.status_code == 409
-        first_state = await (await service.get_event_service(first)).get_state()
-        second_state = await (await service.get_event_service(second)).get_state()
+        first_state = await (await _event_service(service, first)).get_state()
+        second_state = await (await _event_service(service, second)).get_state()
         assert first_state.secret_registry.get_secret_value("ONLY_FIRST") == (
             "unique-private-value"
         )
@@ -103,13 +135,13 @@ async def test_conversation_secret_is_encrypted_isolated_and_restored(tmp_path):
         assert get_secrets_store().get_secret("ONLY_FIRST") is None
         fork = await service.fork_conversation(first)
         assert fork is not None
-        fork_state = await (await service.get_event_service(fork.id)).get_state()
+        fork_state = await (await _event_service(service, fork.id)).get_state()
         assert "ONLY_FIRST" not in fork_state.secret_registry.secret_sources
         saved = (root / first.hex / "base_state.json").read_text()
         assert "unique-private-value" not in saved
         assert json.loads(saved)["secret_registry"]["secret_sources"]
     async with ConversationService(conversations_dir=root, cipher=cipher) as service:
-        state = await (await service.get_event_service(first)).get_state()
+        state = await (await _event_service(service, first)).get_state()
         assert state.secret_registry.get_secret_value("ONLY_FIRST") == (
             "unique-private-value"
         )
@@ -158,7 +190,7 @@ async def test_rejects_secret_outside_launched_profile_allowlist(tmp_path):
                 },
             )
             assert allowed.status_code == 200
-        state = await (await service.get_event_service(info.id)).get_state()
+        state = await (await _event_service(service, info.id)).get_state()
         assert "DENIED" not in state.secret_registry.secret_sources
         assert state.secret_registry.get_secret_value("ALLOWED") == "approved-value"
 
@@ -272,7 +304,7 @@ async def test_no_cipher_or_invalid_value_never_adds_secret(tmp_path):
                     },
                 )
             ).status_code == 422
-        state = await (await service.get_event_service(conversation_id)).get_state()
+        state = await (await _event_service(service, conversation_id)).get_state()
         assert "TOKEN" not in state.secret_registry.secret_sources
 
 
@@ -324,18 +356,21 @@ async def test_attach_saved_mcp_is_live_and_conversation_only(tmp_path):
                     url, json={"operations": [{"type": "mcp.attach", "ref": "missing"}]}
                 )
             ).status_code == 404
-        first_service = await service.get_event_service(first)
+        first_service = await _event_service(service, first)
         assert "fetch_fetch" in first_service.get_conversation().agent.tools_map
         first_state = await first_service.get_state()
-        second_state = await (await service.get_event_service(second)).get_state()
+        second_state = await (await _event_service(service, second)).get_state()
         assert "fetch" in first_state.agent.mcp_config
         assert not second_state.agent.mcp_config
-        assert "fetch" in settings_store.load().agent_settings.mcp_config
+        settings_snapshot = settings_store.load()
+        assert settings_snapshot is not None
+        assert "fetch" in settings_snapshot.agent_settings.mcp_config
         fork = await service.fork_conversation(first)
-        fork_state = await (await service.get_event_service(fork.id)).get_state()
+        assert fork is not None
+        fork_state = await (await _event_service(service, fork.id)).get_state()
         assert not fork_state.agent.mcp_config
     async with ConversationService(conversations_dir=root, cipher=cipher) as service:
-        resumed = await service.get_event_service(first)
+        resumed = await _event_service(service, first)
         assert "fetch" in (await resumed.get_state()).agent.mcp_config
         resumed.get_conversation()._ensure_agent_ready()
         assert "fetch_fetch" in resumed.get_conversation().agent.tools_map
@@ -373,7 +408,7 @@ async def test_unreachable_or_disabled_mcp_does_not_change_conversation(tmp_path
                 url, json={"operations": [{"type": "mcp.attach", "ref": "broken"}]}
             )
             assert response.status_code in (409, 422), response.text
-        event_service = await service.get_event_service(conversation_id)
+        event_service = await _event_service(service, conversation_id)
         state = await event_service.get_state()
         assert not state.agent.mcp_config
         assert "broken" not in event_service.get_conversation().agent.tools_map
@@ -430,8 +465,9 @@ async def test_mcp_policy_is_captured_at_launch_not_from_edited_profile(tmp_path
                 },
             )
             assert inline.status_code == 403, inline.text
-            event_service = await service.get_event_service(info.id)
+            event_service = await _event_service(service, info.id)
             snapshot = event_service.stored.launched_agent_profile
+            assert snapshot is not None
             legacy = LaunchedAgentProfile.model_validate(
                 snapshot.model_dump(exclude={"mcp_server_refs"})
             )
@@ -450,7 +486,7 @@ async def test_mcp_policy_is_captured_at_launch_not_from_edited_profile(tmp_path
             assert response.status_code == 403, response.text
             event_service.stored.launched_agent_profile = snapshot
         assert not (
-            await (await service.get_event_service(info.id)).get_state()
+            await (await _event_service(service, info.id)).get_state()
         ).agent.mcp_config
 
 
@@ -559,12 +595,15 @@ async def test_inline_mcp_install_live_inventory_isolated_encrypted_and_restored
             )
             assert invalid.status_code == 422
             assert "never-reflect-me" not in invalid.text
-        assert not settings.load().agent_settings.mcp_config
+        settings_snapshot = settings.load()
+        assert settings_snapshot is not None
+        assert not settings_snapshot.agent_settings.mcp_config
         saved = (root / first.id.hex / "base_state.json").read_text()
         assert "inline-secret-value" not in saved
         fork = await service.fork_conversation(first.id)
+        assert fork is not None
         fork_tools = (
-            await (await service.get_event_service(fork.id)).get_state()
+            await (await _event_service(service, fork.id)).get_state()
         ).agent.mcp_config
         assert "inline" not in fork_tools
     async with ConversationService(conversations_dir=root, cipher=cipher) as service:
@@ -612,7 +651,7 @@ async def test_inline_mcp_install_failure_rolls_back(tmp_path):
         assert (
             "broken"
             not in (
-                await (await service.get_event_service(conversation_id)).get_state()
+                await (await _event_service(service, conversation_id)).get_state()
             ).agent.mcp_config
         )
 
@@ -651,5 +690,5 @@ async def test_concurrent_inline_installs_keep_both_servers(tmp_path):
                 "first_fetch",
                 "second_fetch",
             }
-        state = await (await service.get_event_service(conversation_id)).get_state()
+        state = await (await _event_service(service, conversation_id)).get_state()
         assert {"first", "second"} <= set(state.agent.mcp_config)

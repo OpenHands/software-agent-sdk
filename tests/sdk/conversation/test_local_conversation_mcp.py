@@ -17,6 +17,7 @@ from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.event import ObservationEvent
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
@@ -557,6 +558,7 @@ def test_attach_mcp_server_rolls_back_failed_state_write(tmp_path: Path) -> None
         visualizer=None,
     )
     conversation._ensure_agent_ready()
+    assert isinstance(conversation.state._fs, LocalFileStore)
     state_path = Path(conversation.state._fs.get_full_path(BASE_STATE))
     original_state = state_path.read_text()
     original_agent = conversation.agent
