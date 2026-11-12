@@ -114,7 +114,9 @@ def test_patch_persists_profile_revision_and_private_credentials(conversation):
 
 def test_patch_adds_mcp_connection_to_gateway_without_changing_prompt(conversation):
     conversation._ensure_agent_ready()
-    assert "list_mcp_tools" not in conversation.agent.tools_map
+    gateway = conversation.mcp_gateway
+    assert gateway.list_tools()["tools"] == []
+    tools = dict(conversation.agent.tools_map)
     prompt_events = list(conversation.state.events)
     request = UpdateConversationAgentRequest.model_validate(
         {
@@ -133,7 +135,10 @@ def test_patch_adds_mcp_connection_to_gateway_without_changing_prompt(conversati
     result = apply_conversation_agent_patch(conversation, request)
     assert result.conversation_profile_revision == 1
     assert conversation.agent is conversation.state.agent
-    assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+    assert conversation.mcp_gateway is gateway
+    assert all(
+        conversation.agent.tools_map[name] is tool for name, tool in tools.items()
+    )
     assert [
         tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
     ] == ["docs.fetch"]

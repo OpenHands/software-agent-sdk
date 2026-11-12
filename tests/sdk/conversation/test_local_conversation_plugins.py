@@ -1139,14 +1139,16 @@ class TestLocalConversationPlugins:
         )
         try:
             conversation._ensure_agent_ready()
-            previous_client = (
-                conversation.mcp_gateway.clients["existing"] if existing else None
-            )
+            gateway = conversation.mcp_gateway
+            previous_client = gateway.clients["existing"] if existing else None
+            tools = dict(conversation.agent.tools_map)
             if not existing:
-                assert "list_mcp_tools" not in conversation.agent.tools_map
+                assert gateway.list_tools()["tools"] == []
             conversation.load_plugin("mcp-plugin")
-            assert {"list_mcp_tools", "call_mcp_tool"} <= set(
-                conversation.agent.tools_map
+            assert conversation.mcp_gateway is gateway
+            assert all(
+                conversation.agent.tools_map[name] is tool
+                for name, tool in tools.items()
             )
             assert {
                 tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]

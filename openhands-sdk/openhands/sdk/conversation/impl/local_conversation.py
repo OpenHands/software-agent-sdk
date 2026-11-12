@@ -120,11 +120,7 @@ from openhands.sdk.subagent import (
     register_plugin_agents,
 )
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.builtins import (
-    CallMCPToolTool,
-    InvokeSkillTool,
-    ListMCPToolsTool,
-)
+from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -1679,10 +1675,8 @@ class LocalConversation(BaseConversation):
         self.agent._on_mcp_tools_reconciled(client, tools)
 
     def _prepare_mcp_gateway(self) -> None:
-        if (
-            not self.agent.supports_openhands_tools
-            or not self.agent.mcp_config
-            or not getattr(self.agent, "mcp_gateway", False)
+        if not self.agent.supports_openhands_tools or not getattr(
+            self.agent, "mcp_gateway", False
         ):
             return
         selected = self._state.mcp_gateway_selected_tools
@@ -1692,7 +1686,8 @@ class LocalConversation(BaseConversation):
         gateway = MCPToolGateway(
             selected, filter_tools_regex=self.agent.filter_tools_regex
         )
-        gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
+        if self.agent.mcp_config:
+            gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
         self._mcp_gateway = self._state._mcp_gateway = gateway
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
@@ -3292,32 +3287,12 @@ class LocalConversation(BaseConversation):
             duplicates = config.keys() & self.agent.mcp_config.keys()
             if duplicates:
                 raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
-            if self._agent_ready and not getattr(self.agent, "mcp_gateway", False):
+            gateway = self._mcp_gateway
+            if self._agent_ready and gateway is None:
                 raise ValueError("Runtime MCP additions require the MCP gateway")
             for name, server in config.items():
-                if self._agent_ready and server.enabled:
-                    gateway = self._mcp_gateway
-                    if gateway is None:
-                        gateway = MCPToolGateway(
-                            self._state.mcp_gateway_selected_tools,
-                            filter_tools_regex=self.agent.filter_tools_regex,
-                        )
-                        try:
-                            gateway.add_server(name, server, self._mcp_tool_provider)
-                            self._state._mcp_gateway = gateway
-                            self.agent.add_runtime_tools(
-                                [
-                                    *ListMCPToolsTool.create(self._state),
-                                    *CallMCPToolTool.create(self._state),
-                                ]
-                            )
-                        except BaseException:
-                            gateway.close()
-                            self._state._mcp_gateway = None
-                            raise
-                        self._mcp_gateway = gateway
-                    else:
-                        gateway.add_server(name, server, self._mcp_tool_provider)
+                if gateway is not None and server.enabled:
+                    gateway.add_server(name, server, self._mcp_tool_provider)
                 updated = self.agent.model_copy(
                     update={"mcp_config": {**self.agent.mcp_config, name: server}}
                 )

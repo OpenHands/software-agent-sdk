@@ -1,5 +1,6 @@
 """Runtime MCP additions retain existing local stdio connections."""
 
+import json
 import sys
 import threading
 from pathlib import Path
@@ -118,38 +119,113 @@ def test_add_before_initialization_defers_connection(tmp_path: Path) -> None:
         conversation.close()
 
 
-def test_first_server_added_after_initialization_registers_gateway_tools(
+def test_empty_gateway_restores_and_can_add_first_server(tmp_path: Path) -> None:
+    first = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        first._ensure_agent_ready()
+        assert first.mcp_gateway.list_tools()["tools"] == []
+        assert {"list_mcp_tools", "call_mcp_tool"} <= set(first.agent.tools_map)
+        conversation_id = first.state.id
+    finally:
+        first.close()
+
+    resumed = LocalConversation(
+        agent=None,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        conversation_id=conversation_id,
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        resumed._ensure_agent_ready()
+        gateway = resumed.mcp_gateway
+        assert gateway.list_tools()["tools"] == []
+        tools = dict(resumed.agent.tools_map)
+        resumed.add_mcp_servers(coerce_mcp_config({"docs": FETCH_SERVER}))
+        assert resumed.mcp_gateway is gateway
+        assert all(
+            resumed.agent.tools_map[name] is tool for name, tool in tools.items()
+        )
+        assert mcp_tool_names(resumed) == {"docs.fetch"}
+    finally:
+        resumed.close()
+
+
+def test_first_server_uses_gateway_tools_registered_at_initialization(
     tmp_path: Path,
 ) -> None:
     conversation = conversation_with_servers(tmp_path, {})
     try:
         conversation._ensure_agent_ready()
-        assert "list_mcp_tools" not in conversation.agent.tools_map
+        tools = {
+            name: conversation.agent.tools_map[name]
+            for name in ("list_mcp_tools", "call_mcp_tool")
+        }
+        gateway = conversation.mcp_gateway
+        assert gateway.clients == {}
+        list_tool = tools["list_mcp_tools"]
+        call_tool = tools["call_mcp_tool"]
+        assert (
+            json.loads(
+                list_tool(list_tool.action_from_arguments({}), conversation).text
+            )["tools"]
+            == []
+        )
         prompt_events = list(conversation.state.events)
         conversation.add_mcp_servers(coerce_mcp_config({"docs": FETCH_SERVER}))
-        assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+        assert conversation.mcp_gateway is gateway
+        assert all(
+            conversation.agent.tools_map[name] is tool for name, tool in tools.items()
+        )
         assert mcp_tool_names(conversation) == {"docs.fetch"}
         assert list(conversation.state.events) == prompt_events
-        listing = conversation.mcp_gateway.list_tools()
-        assert not conversation.mcp_gateway.call(
-            "docs.fetch", {"url": "x"}, listing["revision"], conversation
-        ).is_error
+        listing = json.loads(
+            list_tool(list_tool.action_from_arguments({}), conversation).text
+        )
+        assert [tool["name"] for tool in listing["tools"]] == ["docs.fetch"]
+        result = call_tool(
+            call_tool.action_from_arguments(
+                {
+                    "name": "docs.fetch",
+                    "arguments": {"url": "https://example.com"},
+                    "revision": listing["revision"],
+                }
+            ),
+            conversation,
+        )
+        assert not result.is_error
+        assert "Fetched https://example.com" in result.text
     finally:
         conversation.close()
 
 
-def test_failed_first_server_leaves_gateway_tools_unregistered(tmp_path: Path) -> None:
+def test_failed_first_server_preserves_empty_gateway_and_tools(tmp_path: Path) -> None:
     conversation = conversation_with_servers(tmp_path, {})
     try:
         conversation._ensure_agent_ready()
+        gateway = conversation.mcp_gateway
+        tools = dict(conversation.agent.tools_map)
         with pytest.raises(Exception):
             conversation.add_mcp_servers(
                 coerce_mcp_config({"broken": {"command": "nonexistent-mcp-executable"}})
             )
         assert conversation.agent.mcp_config == {}
         assert conversation.agent is conversation.state.agent
-        assert "list_mcp_tools" not in conversation.agent.tools_map
-        assert conversation._mcp_gateway is None
+        assert conversation.mcp_gateway is gateway
+        assert gateway.clients == {}
+        assert gateway.list_tools()["tools"] == []
+        assert conversation.agent.tools_map == tools
     finally:
         conversation.close()
 
