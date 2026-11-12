@@ -135,7 +135,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
   control-sdk conversation send "$CID" --text "List files" --run --check execution_status eq stuck
   control-sdk conversation run "$CID" --check script_left lt 2
   ```
-  Expected: `run()` on a detector-STUCK conversation makes at least one more LLM call. Before #6648, the detector still saw the repeated pairs since the last user message and set STUCK again before any LLM call (`script_left` stayed 2); resuming now starts a fresh detection window, as a new user message does.
+Expected: `run()` on a detector-STUCK conversation makes at least one more LLM call. Before #6648, the detector still saw the repeated pairs since the last user message and set STUCK again before any LLM call (`script_left` stayed 2); resuming now starts a fresh detection window, as a new user message does.
 - **Custom thresholds (`S01.stuck-thresholds`).** Three identical `ls` calls with the defaults (no stuck) and with `stuck_detection_thresholds={"action_observation": 2}`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

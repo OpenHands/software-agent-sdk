@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from acp.schema import SetSessionConfigOptionResponse
 from pydantic import BaseModel
 
 from openhands.sdk.agent.acp_contracts import (
@@ -12,13 +13,14 @@ from openhands.sdk.agent.acp_contracts import (
     ACPMcpCapabilities,
     ACPRevisionedCredentialBinding,
     extract_model_config_option,
+    extract_session_effort,
     extract_session_models,
     is_model_dumpable,
     normalize_acp_error,
     normalize_auth_method,
     normalize_mcp_capabilities,
 )
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 
 
 class TestAuthMethodContracts:
@@ -296,3 +298,46 @@ class TestTaskCleanup:
 
         assert task1.cancel.called
         assert task2.cancel.called
+
+
+class TestSessionEffortContract:
+    def test_reads_the_thought_level_select(self):
+        response = SetSessionConfigOptionResponse.model_validate(
+            {
+                "configOptions": [
+                    {
+                        "id": "reasoning_effort",
+                        "name": "Reasoning effort",
+                        "type": "select",
+                        "category": "thought_level",
+                        "currentValue": "high",
+                        "options": [
+                            {"value": "low", "name": "Low"},
+                            {"value": "high", "name": "High"},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        state = extract_session_effort(response)
+
+        assert state is not None
+        assert state.config_id == "reasoning_effort"
+        assert state.current == "high"
+        assert state.available == [
+            ACPEffortOption(value="low", name="Low"),
+            ACPEffortOption(value="high", name="High"),
+        ]
+
+    def test_options_without_effort_mean_the_model_offers_none(self):
+        state = extract_session_effort(
+            {"config_options": [{"id": "model", "type": "select", "options": []}]}
+        )
+
+        assert state is not None
+        assert state.config_id is None
+
+    def test_no_config_options_is_unknown(self):
+        assert extract_session_effort({}) is None
+        assert extract_session_effort(MagicMock(config_options=None)) is None

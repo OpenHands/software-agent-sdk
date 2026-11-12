@@ -37,7 +37,10 @@ from openhands.sdk.agent.acp_file_credentials import (
 )
 from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import (
+    UNREADABLE_EVENT_FILE_CODE,
+    EventLog,
+)
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
@@ -72,6 +75,7 @@ from openhands.sdk.credential import (
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
+    ReactionEvent,
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -603,7 +607,7 @@ class EventService:
 
     def _get_searchable_event(self, events: EventsListBase, index: int) -> Event | None:
         try:
-            return events[index]
+            event = events[index]
         except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
             logger.warning(
                 "Skipping unreadable event at index %d for conversation %s (%s)",
@@ -612,6 +616,12 @@ class EventService:
                 type(exc).__name__,
             )
             return None
+        if (
+            isinstance(event, ConversationErrorEvent)
+            and event.code == UNREADABLE_EVENT_FILE_CODE
+        ):
+            return None  # the log's stand-in for a damaged file
+        return event
 
     def _search_events_sync(
         self,
@@ -806,7 +816,9 @@ class EventService:
             return
         with self._conversation._state as state:
             if state.execution_status != ConversationExecutionStatus.ERROR:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "run failed outside the run loop"
+                )
 
     def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
@@ -1446,7 +1458,9 @@ class EventService:
         # should be surfaced back to the agent.
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
-            state.execution_status = ConversationExecutionStatus.ERROR
+            state.transition(
+                ConversationExecutionStatus.ERROR, "stale running status on load"
+            )
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
             # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
@@ -1482,6 +1496,7 @@ class EventService:
                         classification=ErrorClassification(
                             kind=FailureKind.INTERNAL, retryable=False
                         ),
+                        recovery_reason="server_restart",
                     )
                     self._conversation._on_event(error_event)
 
@@ -2125,6 +2140,27 @@ class EventService:
         else:
             await self.reject_pending_actions(request.reason)
 
+    async def react(
+        self,
+        emoji: str,
+        target_event_id: str | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the user's reaction on a message; it does not run the agent.
+
+        Raises:
+            ValueError: The emoji is not allowed or there is no such message.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        conversation = self._conversation
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            partial(conversation.react, emoji, target_event_id, removed=removed),
+        )
+
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""
         if not self._conversation:
@@ -2252,6 +2288,21 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
+
+    async def switch_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort on an ACP conversation.
+
+        Same lifecycle as :meth:`switch_acp_model`: a live switch runs in a
+        worker thread, a not-yet-run conversation only persists the value.
+        """
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.switch_acp_effort, effort)
+
+    async def close_connections(self, code: int, reason: str) -> None:
+        """Close the client sockets subscribed to this conversation."""
+        await self._pub_sub.close_connections(code, reason)
 
     async def close(self):
         if self.bash_event_service is not None:

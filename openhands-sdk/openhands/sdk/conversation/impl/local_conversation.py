@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -46,12 +47,19 @@ from openhands.sdk.event import (
     EventID,
     InterruptEvent,
     MessageEvent,
+    ObservationBaseEvent,
     ObservationEvent,
     PauseEvent,
+    ReactionEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.reaction import (
+    check_reaction_emoji,
+    find_reaction_target,
+    reaction_target_text,
+)
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -452,6 +460,10 @@ class LocalConversation(BaseConversation):
             recovered_specs = extract_client_tool_specs(agent.tools)
             if recovered_specs:
                 register_client_tools(recovered_specs)
+        else:
+            with self._state:
+                self._state.ambient_plugin_skills = []
+                self._state.ambient_plugin_mcp_servers = []
         self.agent = agent
 
         # Default callback: persist every event to state
@@ -475,6 +487,25 @@ class LocalConversation(BaseConversation):
                 # Stop-hook feedback is emitted with source="environment".
                 self._state.last_user_message_id = e.id
 
+        # The user's reactions that arrived while tool calls were waiting
+        # for their results. They join the log once every call is answered:
+        # nothing may sit between a tool call and its result. In memory only.
+        self._pending_reactions: list[ReactionEvent] = []
+
+        def _flush_pending_reactions(e):
+            if not self._pending_reactions or not isinstance(e, ObservationBaseEvent):
+                return
+            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+                return
+            pending, self._pending_reactions = self._pending_reactions, []
+            for reaction in pending:
+                # Restamped: the log's order is also its timestamp order.
+                self._on_event(
+                    reaction.model_copy(
+                        update={"timestamp": datetime.now().isoformat()}
+                    )
+                )
+
         callback_list = list(callbacks) if callbacks else []
         # _default_callback (persist) runs before the caller-supplied callbacks
         # (e.g. a PubSub publish), so no subscriber is told about an event that
@@ -483,7 +514,11 @@ class LocalConversation(BaseConversation):
         # list never run. The visualizer is prepended below and so still renders
         # ahead of persist — that is local terminal output, not an announcement
         # a client can act on.
-        composed_list = [_default_callback] + callback_list + [_track_last_user_message]
+        composed_list = (
+            [_default_callback]
+            + callback_list
+            + [_track_last_user_message, _flush_pending_reactions]
+        )
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -784,7 +819,7 @@ class LocalConversation(BaseConversation):
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
         """Mark the run failed with a run-limit ConversationErrorEvent."""
         logger.error(detail)
-        self._state.execution_status = ConversationExecutionStatus.ERROR
+        self._state.transition(ConversationExecutionStatus.ERROR, code)
         self._on_event(
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
@@ -825,7 +860,9 @@ class LocalConversation(BaseConversation):
 
         if self._stuck_detector.is_stuck():
             logger.warning("Stuck pattern detected.")
-            self._state.execution_status = ConversationExecutionStatus.STUCK
+            self._state.transition(
+                ConversationExecutionStatus.STUCK, "stuck pattern detected"
+            )
             return True
 
         return False
@@ -977,6 +1014,13 @@ class LocalConversation(BaseConversation):
             fork_conv._state.head_is_empty = (
                 self._state.head_is_empty if from_event_id is None else False
             )
+            if agent is None:
+                fork_conv._state.ambient_plugin_skills = copy.copy(
+                    self._state.ambient_plugin_skills
+                )
+                fork_conv._state.ambient_plugin_mcp_servers = copy.copy(
+                    self._state.ambient_plugin_mcp_servers
+                )
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -1059,6 +1103,48 @@ class LocalConversation(BaseConversation):
 
         merged_context = self.agent.agent_context
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+        # Discover ambient plugins up front (they are merged further below).
+        # ``None`` means discovery failed: then the previous contributions are
+        # kept and their record is left as is, so a transient failure does not
+        # strip a still-enabled plugin from the resumed conversation.
+        try:
+            ambient_plugins: dict[str, Plugin] | None = load_available_plugins(
+                work_dir=self.workspace.working_dir,
+                include_user=True,
+                include_project=True,
+                strict=bool(
+                    self._state.ambient_plugin_skills
+                    or self._state.ambient_plugin_mcp_servers
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load ambient (installed/local) plugins; "
+                "keeping previous contributions",
+                exc_info=True,
+            )
+            ambient_plugins = None
+
+        # Drop what ambient plugins contributed at the last load: ambient
+        # discovery only adds, so without this a plugin disabled or removed
+        # since then would keep its skills and MCP servers on resume.
+        stale_skills, stale_servers = (
+            self._previous_ambient_contributions()
+            if ambient_plugins is not None
+            else (set(), set())
+        )
+        ambient_contributions_dropped = False
+        if merged_context is not None and stale_skills:
+            kept = [s for s in merged_context.skills if s.name not in stale_skills]
+            if len(kept) != len(merged_context.skills):
+                merged_context = merged_context.model_copy(update={"skills": kept})
+                ambient_contributions_dropped = True
+        for server_name in stale_servers & merged_mcp.keys():
+            del merged_mcp[server_name]
+            ambient_contributions_dropped = True
+        ambient_skill_names: set[str] = set()
+        ambient_server_names: set[str] = set()
 
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
@@ -1226,21 +1312,7 @@ class LocalConversation(BaseConversation):
         # like project skills. Automation/sandbox runs lack the user's installed
         # and home directories, so discovery naturally yields nothing there.
         ambient_plugins_loaded = False
-        try:
-            ambient_plugins = load_available_plugins(
-                work_dir=self.workspace.working_dir,
-                include_user=True,
-                include_project=True,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to load ambient (installed/local) plugins; "
-                "continuing without them",
-                exc_info=True,
-            )
-            ambient_plugins = {}
-
-        for plugin in ambient_plugins.values():
+        for plugin in (ambient_plugins or {}).values():
             if plugin.name in explicit_plugin_names:
                 logger.debug(
                     f"Skipping ambient plugin '{plugin.name}' "
@@ -1251,6 +1323,8 @@ class LocalConversation(BaseConversation):
             merged_context = plugin.add_skills_to(merged_context)
             merged_mcp = plugin.add_mcp_config_to(merged_mcp)
             has_mcp_config = has_mcp_config or bool(merged_mcp)
+            ambient_skill_names.update(s.name for s in plugin.get_all_skills())
+            ambient_server_names.update(plugin.mcp_config)
 
             if plugin.hooks and not plugin.hooks.is_empty():
                 all_plugin_hooks.append(plugin.hooks)
@@ -1342,6 +1416,7 @@ class LocalConversation(BaseConversation):
             or has_mcp_config
             or project_skills_loaded
             or ambient_plugins_loaded
+            or ambient_contributions_dropped
             or marketplace_skills_loaded
             or memory_loaded
         ):
@@ -1355,6 +1430,17 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
+
+        # Record this load's ambient contributions for the next resume.
+        recorded_skills = sorted(ambient_skill_names)
+        recorded_servers = sorted(ambient_server_names)
+        if ambient_plugins is not None and (
+            self._state.ambient_plugin_skills != recorded_skills
+            or self._state.ambient_plugin_mcp_servers != recorded_servers
+        ):
+            with self._state:
+                self._state.ambient_plugin_skills = recorded_skills
+                self._state.ambient_plugin_mcp_servers = recorded_servers
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -1405,6 +1491,14 @@ class LocalConversation(BaseConversation):
             self._hook_processor.run_session_start()
 
         self._plugins_loaded = True
+
+    def _previous_ambient_contributions(self) -> tuple[set[str], set[str]]:
+        # Legacy conversations have no ownership record. Matching names alone
+        # cannot distinguish their caller-supplied content from plugin content.
+        return (
+            set(self._state.ambient_plugin_skills or []),
+            set(self._state.ambient_plugin_mcp_servers or []),
+        )
 
     def _expand_plugin_source(self, source: str) -> str:
         # As strict fetch does: a value in a URL's user info is percent-encoded.
@@ -1556,8 +1650,8 @@ class LocalConversation(BaseConversation):
             create_kwargs["on_tools_changed"] = lambda tools: on_changed(named(tools))
         on_reconciled = create_kwargs.get("on_tools_reconciled")
         if on_reconciled is not None:
-            create_kwargs["on_tools_reconciled"] = lambda client, tools: (
-                on_reconciled(client, named(tools))
+            create_kwargs["on_tools_reconciled"] = lambda client, tools: on_reconciled(
+                client, named(tools)
             )
         client = self._mcp_tool_provider.create_tools(
             {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
@@ -1966,47 +2060,87 @@ class LocalConversation(BaseConversation):
             live = self.agent.has_live_acp_session
             if live:
                 self.agent.set_acp_model(model)
-            # Persist the switched model as the authoritative value. ``acp_model``
-            # is frozen, so we replace the agent with a copy carrying the new
-            # value. This matters on two counts the in-place mutation missed:
-            #   1. A fresh object identity makes the autosave path actually
-            #      write base_state.json (re-assigning the same object is a
-            #      no-op because old == new).
-            #   2. model_post_init / _start_acp_server derive the sentinel model
-            #      and the resumed session model from ``acp_model`` on reload, so
-            #      it must hold the switched value, not the construction-time one.
-            #
-            # model_copy is shallow, so a live copy shares the ACP runtime
-            # (_conn/_executor/_process) with the old agent. Disarm the old
-            # agent's finalizer before dropping it: otherwise ACPAgent.__del__
-            # -> close() on the discarded agent would tear down the session the
-            # copy now owns, leaving the next turn pointing at a dead connection.
-            # Pre-session there is no runtime to hand off, so release_runtime is
-            # unnecessary (the discarded agent's close() is already a no-op).
-            old_agent = self.agent
-            new_agent = old_agent.model_copy(update={"acp_model": model})
+            new_agent = self._replace_acp_agent({"acp_model": model}, live=live)
+            # Keep the persisted hints in sync with the switch. The live agent's
+            # PrivateAttrs already reflect it and win on warm reads, but cold
+            # list reads after a process restart fall back to ``agent_state`` —
+            # which would otherwise still name the pre-switch model until the
+            # next resume. Write unconditionally: a successful switch is
+            # authoritative even for an older/custom server that reported no
+            # ``models`` at init (so the key may not exist yet). A model switch
+            # can also change which efforts the session offers.
+            hints: dict[str, object] = {
+                "acp_current_model_id": new_agent.current_model_id if live else model
+            }
             if live:
-                new_agent._register_atexit_cleanup(replace=True)
-                new_agent._bind_file_credential_masking()
-                old_agent.release_runtime()
-            # ``self.agent`` is the live reference used by subsequent ``step()``
-            # calls; ``self._state.agent`` is what the autosave path serializes
-            # to base_state.json. Update both so the running conversation and the
-            # persisted state agree on the switched model.
-            self.agent = new_agent
-            self._state.agent = new_agent
-            # Keep the persisted model hint in sync with the switch. The live
-            # agent's ``current_model_id`` (a PrivateAttr) already reflects the
-            # new model and wins on warm reads, but cold list reads after a
-            # process restart fall back to ``agent_state`` — which would
-            # otherwise still name the pre-switch model until the next resume.
-            # Write unconditionally: a successful switch is authoritative even
-            # for an older/custom server that reported no ``models`` at init
-            # (so the key may not exist yet).
+                hints["acp_current_effort"] = new_agent.current_effort
+                hints["acp_available_efforts"] = [
+                    option.model_dump() for option in new_agent.available_efforts
+                ]
+            self._state.agent_state = {**self._state.agent_state, **hints}
+
+    def switch_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort of an ACP conversation.
+
+        Mirrors :meth:`switch_acp_model`: with a live session the effort applies
+        to subsequent turns of the same session; before the first ``run()`` it
+        is only persisted, and session creation applies it.
+
+        Raises:
+            ValueError: If the conversation's agent is not an :class:`ACPAgent`,
+                if ``effort`` is empty, or (for a live switch) the current model
+                does not offer it or the ACP server rejects it.
+            TimeoutError: If a live switch exceeds ``acp_prompt_timeout`` seconds.
+        """
+        if not isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_acp_effort is only supported for ACP conversations."
+            )
+        if not effort or not effort.strip():
+            raise ValueError("effort must be a non-empty string")
+        with self._state:
+            live = self.agent.has_live_acp_session
+            if live:
+                self.agent.set_acp_effort(effort)
+            new_agent = self._replace_acp_agent({"acp_effort": effort}, live=live)
             self._state.agent_state = {
                 **self._state.agent_state,
-                "acp_current_model_id": model,
+                "acp_current_effort": new_agent.current_effort if live else effort,
             }
+
+    def _replace_acp_agent(self, update: dict[str, object], *, live: bool) -> ACPAgent:
+        """Persist a switched ACP field by swapping in an agent copy.
+
+        The ACP fields are frozen, so we replace the agent with a copy carrying
+        the new value. This matters on two counts an in-place mutation missed:
+          1. A fresh object identity makes the autosave path actually write
+             base_state.json (re-assigning the same object is a no-op because
+             old == new).
+          2. model_post_init / _start_acp_server derive the sentinel model and
+             the resumed session settings from these fields on reload, so they
+             must hold the switched value, not the construction-time one.
+
+        model_copy is shallow, so a live copy shares the ACP runtime
+        (_conn/_executor/_process) with the old agent. Disarm the old agent's
+        finalizer before dropping it: otherwise ACPAgent.__del__ -> close() on
+        the discarded agent would tear down the session the copy now owns,
+        leaving the next turn pointing at a dead connection. Pre-session there
+        is no runtime to hand off, so release_runtime is unnecessary (the
+        discarded agent's close() is already a no-op).
+        """
+        old_agent = self.agent
+        assert isinstance(old_agent, ACPAgent)
+        new_agent = old_agent.model_copy(update=update)
+        if live:
+            new_agent._register_atexit_cleanup(replace=True)
+            new_agent._bind_file_credential_masking()
+            old_agent.release_runtime()
+        # ``self.agent`` is the live reference used by subsequent ``step()``
+        # calls; ``self._state.agent`` is what the autosave path serializes to
+        # base_state.json. Update both so they agree on the switched value.
+        self.agent = new_agent
+        self._state.agent = new_agent
+        return new_agent
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -2038,8 +2172,9 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.FINISHED,
                 ConversationExecutionStatus.STUCK,
             ):
-                self._state.execution_status = (
-                    ConversationExecutionStatus.IDLE
+                self._state.transition(
+                    ConversationExecutionStatus.IDLE,
+                    "new user message after the run ended",
                 )  # new message resets terminal states
 
             activated_skill_names: list[str] = []
@@ -2072,6 +2207,52 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+    def react(
+        self,
+        emoji: str,
+        target_event_id: EventID | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the user's emoji reaction on a message, or remove it.
+
+        Without ``target_event_id`` it reacts to the agent's latest message.
+        The agent reacts through the ``react``/``unreact`` tools instead.
+        A reaction does not wake the agent; it sees it on its next turn, with
+        the end of the message's text. While tool calls wait for their results
+        (a pending confirmation, a pause) the reaction is held back, and joins
+        the events once every call is answered.
+
+        Returns:
+            The reaction as stored, with its ``parent_id``. A reaction held back
+            has no ``parent_id`` yet: it gets one when it joins the events.
+
+        Raises:
+            ValueError: The emoji is not allowed, or there is no such message.
+        """
+        checked = check_reaction_emoji(emoji)
+        with self._state:
+            target = find_reaction_target(
+                self._state.active_branch(), target_event_id, source="user"
+            )
+            ending, clipped = reaction_target_text(target)
+            event = ReactionEvent(
+                source="user",
+                target_event_id=target.id,
+                emoji=checked,
+                removed=removed,
+                target_text_ending=ending,
+                target_text_clipped=clipped,
+            )
+            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+                self._pending_reactions.append(event)
+            else:
+                # Stamp here, as the log will, so the caller gets the event as
+                # stored rather than the unstamped original.
+                event = cast(ReactionEvent, self._state._stamp_parent_id(event))
+                self._on_event(event)
+        return event
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
@@ -2141,7 +2322,9 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
             ]:
-                self._state.execution_status = ConversationExecutionStatus.RUNNING
+                self._state.transition(
+                    ConversationExecutionStatus.RUNNING, "run started"
+                )
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
@@ -2181,8 +2364,9 @@ class LocalConversation(BaseConversation):
                                         ),
                                     )
                                     self._on_event(feedback_msg)
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.RUNNING
+                                self._state.transition(
+                                    ConversationExecutionStatus.RUNNING,
+                                    "stop hook denied stopping",
                                 )
                                 continue
                         # No hooks or hooks allowed stopping
@@ -2197,8 +2381,9 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self._state.transition(
+                            ConversationExecutionStatus.RUNNING,
+                            "pending actions confirmed",
                         )
 
                     # Mark the step as holding the state lock so state-mutating
@@ -2249,7 +2434,10 @@ class LocalConversation(BaseConversation):
                             f"({self.max_iteration_per_run})."
                         )
                         logger.error(error_msg)
-                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._state.transition(
+                            ConversationExecutionStatus.ERROR,
+                            "maximum iterations reached",
+                        )
                         self._on_event(
                             ConversationErrorEvent(
                                 source="environment",
@@ -2260,7 +2448,9 @@ class LocalConversation(BaseConversation):
                         break
         except LLMAuthenticationError as e:
             with self._state:
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR, "LLM authentication failed"
+                )
                 self._on_event(
                     ConversationErrorEvent(
                         source="environment",
@@ -2275,7 +2465,10 @@ class LocalConversation(BaseConversation):
             ) from e
         except Exception as e:
             with self._state:
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR,
+                    f"run failed with {type(e).__name__}",
+                )
 
                 # Add an error event — unless the agent already surfaced a typed,
                 # detailed one for this failure (e.g. ACPAgent._emit_turn_error),
@@ -2361,7 +2554,9 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
             ]:
-                self._state.execution_status = ConversationExecutionStatus.RUNNING
+                self._state.transition(
+                    ConversationExecutionStatus.RUNNING, "run started"
+                )
             last_acp_prompt_user_message_id = self._state.agent_state.get(
                 ACP_LAST_PROMPT_USER_MESSAGE_ID
             )
@@ -2402,8 +2597,9 @@ class LocalConversation(BaseConversation):
                                         ),
                                     )
                                     self._on_event(feedback_msg)
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.RUNNING
+                                self._state.transition(
+                                    ConversationExecutionStatus.RUNNING,
+                                    "stop hook denied stopping",
                                 )
                                 continue
                         break
@@ -2415,8 +2611,9 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self._state.transition(
+                            ConversationExecutionStatus.RUNNING,
+                            "pending actions confirmed",
                         )
 
                     if isinstance(self.agent, ACPAgent):
@@ -2534,16 +2731,18 @@ class LocalConversation(BaseConversation):
                                     "User message arrived during final iteration; "
                                     "leaving conversation idle for a follow-up run"
                                 )
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.IDLE
+                                self._state.transition(
+                                    ConversationExecutionStatus.IDLE,
+                                    "user message arrived on the final iteration",
                                 )
                                 break
                             if not step_awaiting_confirmation:
                                 logger.info(
                                     "User message arrived during step; continuing run"
                                 )
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.RUNNING
+                            self._state.transition(
+                                ConversationExecutionStatus.RUNNING,
+                                "user message arrived during the step",
                             )
 
                         if (
@@ -2570,8 +2769,9 @@ class LocalConversation(BaseConversation):
                                 f"({self.max_iteration_per_run})."
                             )
                             logger.error(error_msg)
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.ERROR
+                            self._state.transition(
+                                ConversationExecutionStatus.ERROR,
+                                "maximum iterations reached",
                             )
                             self._on_event(
                                 ConversationErrorEvent(
@@ -2604,19 +2804,22 @@ class LocalConversation(BaseConversation):
                                     "User message arrived before ACP finish; "
                                     "leaving conversation idle for a follow-up run"
                                 )
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.IDLE
+                                self._state.transition(
+                                    ConversationExecutionStatus.IDLE,
+                                    "user message arrived on the final iteration",
                                 )
                                 break
                             logger.info(
                                 "User message arrived before ACP finish; continuing run"
                             )
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.RUNNING
+                            self._state.transition(
+                                ConversationExecutionStatus.RUNNING,
+                                "user message arrived during the step",
                             )
                             continue
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.FINISHED
+                        self._state.transition(
+                            ConversationExecutionStatus.FINISHED,
+                            "no ACP prompt left to send",
                         )
                     break
 
@@ -2678,8 +2881,9 @@ class LocalConversation(BaseConversation):
                     ):
                         break
                     if pause_requested_during_acp_step:
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.PAUSED
+                        self._state.transition(
+                            ConversationExecutionStatus.PAUSED,
+                            "pause requested during the ACP step",
                         )
                         break
 
@@ -2698,15 +2902,17 @@ class LocalConversation(BaseConversation):
                                 "User message arrived during final ACP iteration; "
                                 "leaving conversation idle for a follow-up run"
                             )
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.IDLE
+                            self._state.transition(
+                                ConversationExecutionStatus.IDLE,
+                                "user message arrived on the final iteration",
                             )
                             break
                         logger.info(
                             "User message arrived during ACP step; continuing run"
                         )
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self._state.transition(
+                            ConversationExecutionStatus.RUNNING,
+                            "user message arrived during the step",
                         )
 
                     if (
@@ -2734,7 +2940,10 @@ class LocalConversation(BaseConversation):
                             f"({self.max_iteration_per_run})."
                         )
                         logger.error(error_msg)
-                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._state.transition(
+                            ConversationExecutionStatus.ERROR,
+                            "maximum iterations reached",
+                        )
                         self._on_event(
                             ConversationErrorEvent(
                                 source="environment",
@@ -2777,11 +2986,15 @@ class LocalConversation(BaseConversation):
                 # the next completion call.
                 self._emit_orphaned_action_errors()
 
-                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._state.transition(
+                    ConversationExecutionStatus.PAUSED, "run interrupted"
+                )
                 self._on_event(InterruptEvent())
         except LLMAuthenticationError as e:
             with self._state:
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR, "LLM authentication failed"
+                )
                 self._on_event(
                     ConversationErrorEvent(
                         source="environment",
@@ -2800,7 +3013,10 @@ class LocalConversation(BaseConversation):
                 updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
                 updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
                 self._state.agent_state = updated_agent_state
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR,
+                    f"run failed with {type(e).__name__}",
+                )
                 # Skip the generic event if the agent already surfaced a typed,
                 # detailed one for this failure (see _agent_already_surfaced_error).
                 if not _agent_already_surfaced_error(
@@ -2877,7 +3093,9 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status
                 == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
             ):
-                self._state.execution_status = ConversationExecutionStatus.IDLE
+                self._state.transition(
+                    ConversationExecutionStatus.IDLE, "pending actions rejected"
+                )
 
             if not pending_actions:
                 logger.warning("No pending actions to reject")
@@ -2951,7 +3169,9 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status == ConversationExecutionStatus.IDLE
                 or self._state.execution_status == ConversationExecutionStatus.RUNNING
             ):
-                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._state.transition(
+                    ConversationExecutionStatus.PAUSED, "pause requested"
+                )
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
@@ -3328,6 +3548,8 @@ class LocalConversation(BaseConversation):
                         action_id=event.id,
                     )
                     rerun_log.append(obs_event)
+                    for follow_up in observation.follow_up_events():
+                        rerun_log.append(follow_up)
             except Exception as e:
                 logger.error(
                     f"Action {action_count} ({tool_name}) failed during rerun: {e}"
