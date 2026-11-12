@@ -55,8 +55,9 @@ def test_old_name_only_sets_new_field_and_warns():
     assert llm.log_completions_to_file is True
 
 
-def test_old_and_new_equal_values_allowed():
-    with pytest.warns(DeprecatedWarning):
+def test_old_and_new_equal_values_allowed_without_warning():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecatedWarning)
         llm = _llm(log_completions=True, log_completions_to_file=True)
     assert llm.log_completions_to_file is True
 
@@ -182,7 +183,8 @@ def test_persisted_configuration_retains_legacy_enabled_key():
     llm = _llm(log_completions_to_file=True)
     saved = json.loads(json.dumps(llm.to_persisted()))
     assert saved["log_completions"] is True
-    with pytest.warns(DeprecatedWarning):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecatedWarning)
         restored = LLM.from_persisted(saved)
     assert restored.log_completions_to_file is True
 
@@ -266,3 +268,25 @@ def test_canonical_assignment_keeps_old_wire_value_enabled():
     llm = _llm()
     llm.log_completions_to_file = True
     assert llm.model_dump()["log_completions"] is True
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_canonical_configuration_round_trips_without_alias_warning(enabled):
+    llm = _llm(log_completions_to_file=enabled)
+    telemetry = Telemetry(
+        metrics=Metrics(model_name="test"), completion_logging_enabled=enabled
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecatedWarning)
+        restored_llm = LLM.model_validate(llm.model_dump())
+        copied_llm = llm.model_copy(
+            update={"log_completions_to_file": enabled, "log_completions": enabled}
+        )
+        restored_telemetry = Telemetry.model_validate(telemetry.model_dump())
+        copied_telemetry = telemetry.model_copy(
+            update={"completion_logging_enabled": enabled, "log_enabled": enabled}
+        )
+    assert restored_llm.log_completions_to_file is enabled
+    assert copied_llm.log_completions_to_file is enabled
+    assert restored_telemetry.completion_logging_enabled is enabled
+    assert copied_telemetry.completion_logging_enabled is enabled

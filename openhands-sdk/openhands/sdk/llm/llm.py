@@ -782,13 +782,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     )
             else:
                 d["log_completions_to_file"] = old_val
-            warn_deprecated(
-                "LLM(log_completions=...)",
-                deprecated_in="1.63.0",
-                removed_in="1.68.0",
-                details="Use log_completions_to_file instead.",
-                stacklevel=4,
-            )
+                warn_deprecated(
+                    "LLM(log_completions=...)",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=4,
+                )
 
         if "log_completions_to_file" in d:
             d["log_completions"] = d["log_completions_to_file"]
@@ -905,13 +905,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     )
             else:
                 update["log_completions_to_file"] = old_val
-            warn_deprecated(
-                "LLM.model_copy(update={'log_completions': ...})",
-                deprecated_in="1.63.0",
-                removed_in="1.68.0",
-                details="Use log_completions_to_file instead.",
-                stacklevel=3,
-            )
+                warn_deprecated(
+                    "LLM.model_copy(update={'log_completions': ...})",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
         if update is not None and "log_completions_to_file" in update:
             update = dict(update)
             update["log_completions"] = update["log_completions_to_file"]

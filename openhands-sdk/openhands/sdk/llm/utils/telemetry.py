@@ -218,13 +218,13 @@ class Telemetry(BaseModel):
                     )
             else:
                 normalized["completion_logging_enabled"] = old_value
-            warn_deprecated(
-                "Telemetry(log_enabled=...)",
-                deprecated_in="1.63.0",
-                removed_in="1.68.0",
-                details="Use completion_logging_enabled instead.",
-                stacklevel=4,
-            )
+                warn_deprecated(
+                    "Telemetry(log_enabled=...)",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use completion_logging_enabled instead.",
+                    stacklevel=4,
+                )
         if "completion_logging_enabled" in normalized:
             normalized["log_enabled"] = normalized["completion_logging_enabled"]
         return normalized
