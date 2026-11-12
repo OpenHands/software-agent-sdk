@@ -144,11 +144,6 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
     }
     assert updated_mcp_tools == {"replacement"}
     assert old_mcp_tools == {"initial"}
-    inventory = conversation.live_tools()
-    mcp_entries = [item for item in inventory if item["source"] == "global"]
-    assert len(mcp_entries) == 1
-    assert mcp_entries[0]["name"] == "replacement"
-    assert mcp_entries[0]["server_name"] == "fake"
     conversation.close()
 
 

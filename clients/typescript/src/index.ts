@@ -281,8 +281,6 @@ export type {
   ConversationConfigurationChangesResponse,
   ConversationConfigurationOperation,
   AppliedConfigurationChange,
-  ConversationToolInfo,
-  ConversationToolsResponse,
   StaticSecret,
   LookupSecret,
   SecretObject,

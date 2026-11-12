@@ -191,31 +191,13 @@ describe('Auxiliary API clients', () => {
       );
     });
 
-    it('ConversationClient installs inline MCP and retrieves live tool inventory', async () => {
-      global.fetch = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ applied: [{ type: 'mcp.install', name: 'inline' }] }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          })
-        )
-        .mockResolvedValueOnce(
-          new Response(
-            JSON.stringify({
-              tools: [
-                {
-                  name: 'inline_fetch',
-                  description: 'Fetch',
-                  parameters: { type: 'object' },
-                  source: 'conversation',
-                  server_name: 'inline',
-                },
-              ],
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } }
-          )
-        ) as typeof fetch;
+    it('ConversationClient installs inline MCP', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ applied: [{ type: 'mcp.install', name: 'inline' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
       const client = new ConversationClient({ host: 'http://example.com', apiKey: 'session' });
       const request = {
         operations: [
@@ -234,17 +216,10 @@ describe('Auxiliary API clients', () => {
         operations: [...request.operations],
       });
       expect(changed.applied).toEqual([{ type: 'mcp.install', name: 'inline' }]);
-      const inventory = await client.getTools('conversation-1');
-      expect(inventory.tools[0]).toMatchObject({ source: 'conversation', server_name: 'inline' });
-      expect(global.fetch).toHaveBeenNthCalledWith(
-        1,
+      expect(global.fetch).toHaveBeenCalledOnce();
+      expect(global.fetch).toHaveBeenCalledWith(
         'http://example.com/api/conversations/conversation-1/configuration/changes',
         expect.objectContaining({ method: 'POST', body: JSON.stringify(request) })
-      );
-      expect(global.fetch).toHaveBeenNthCalledWith(
-        2,
-        'http://example.com/api/conversations/conversation-1/tools',
-        expect.objectContaining({ method: 'GET' })
       );
     });
 

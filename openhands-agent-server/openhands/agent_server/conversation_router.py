@@ -49,7 +49,6 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     ConversationSortOrder,
-    ConversationToolsResponse,
     ForkConversationRequest,
     GrantConversationSecret,
     InstallConversationMCP,
@@ -730,24 +729,6 @@ async def change_conversation_configuration(
     else:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unsupported change")
     return ConversationConfigurationChangesResponse(applied=[applied])
-
-
-@conversation_router.get(
-    "/{conversation_id}/tools",
-    response_model=ConversationToolsResponse,
-    response_model_exclude_none=True,
-    responses={404: {"description": "Conversation not found"}},
-)
-async def get_conversation_tools(
-    conversation_id: UUID,
-    conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ConversationToolsResponse:
-    """List tools currently available to this conversation's agent."""
-    event_service = await conversation_service.get_event_service(conversation_id)
-    if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
-    tools = await event_service.get_live_tools()
-    return ConversationToolsResponse(tools=tools)
 
 
 @conversation_router.post(

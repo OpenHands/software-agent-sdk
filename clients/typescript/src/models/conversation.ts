@@ -213,27 +213,6 @@ export interface ConversationConfigurationChangesResponse {
   applied: [AppliedConfigurationChange];
 }
 
-export type ConversationToolParameterValue =
-  | string
-  | number
-  | boolean
-  | null
-  | ConversationToolParameterValue[]
-  | { [key: string]: ConversationToolParameterValue };
-
-/** Snapshot of tools registered on the live agent, never server configuration. */
-export interface ConversationToolInfo {
-  name: string;
-  description: string;
-  parameters: Record<string, ConversationToolParameterValue>;
-  source: 'conversation' | 'global' | 'builtin';
-  server_name?: string;
-}
-
-export interface ConversationToolsResponse {
-  tools: ConversationToolInfo[];
-}
-
 export interface ConversationSearchRequest {
   page_id?: string;
   limit?: number;

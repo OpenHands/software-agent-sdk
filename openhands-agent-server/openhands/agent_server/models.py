@@ -575,29 +575,6 @@ class ConversationConfigurationChangesResponse(BaseModel):
     applied: list[AppliedConfigurationChange]
 
 
-type ToolParameterValue = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list[ToolParameterValue]
-    | dict[str, ToolParameterValue]
-)
-
-
-class ConversationToolInfo(BaseModel):
-    name: str
-    description: str
-    parameters: dict[str, ToolParameterValue]
-    source: Literal["conversation", "global", "builtin"]
-    server_name: str | None = None
-
-
-class ConversationToolsResponse(BaseModel):
-    tools: list[ConversationToolInfo]
-
-
 class UpdateSecretsRequest(BaseModel):
     """Payload to update secrets in a conversation."""
 

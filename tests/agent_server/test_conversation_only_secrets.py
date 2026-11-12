@@ -651,13 +651,6 @@ async def test_attach_saved_mcp_is_live_and_conversation_only(tmp_path):
             assert response.json() == {
                 "applied": [{"type": "mcp.attach", "ref": "fetch"}],
             }
-            inventory = (await client.get(f"/api/conversations/{first}/tools")).json()
-            assert any(
-                tool["name"] == "fetch_fetch"
-                and tool["source"] == "conversation"
-                and tool["server_name"] == "fetch"
-                for tool in inventory["tools"]
-            )
             assert (
                 await client.post(
                     url, json={"operations": [{"type": "mcp.attach", "ref": "fetch"}]}
@@ -811,9 +804,7 @@ async def test_mcp_explicit_attach_records_conversation_overrides_not_saved_prof
 
 
 @pytest.mark.asyncio
-async def test_inline_mcp_install_live_inventory_isolated_encrypted_and_restored(
-    tmp_path,
-):
+async def test_inline_mcp_install_isolated_encrypted_and_restored(tmp_path):
     cipher = Cipher("inline-mcp-key")
     root = tmp_path / "conversations"
     repo = Path(__file__).resolve().parents[2]
@@ -838,14 +829,9 @@ async def test_inline_mcp_install_live_inventory_isolated_encrypted_and_restored
         second = await _start(service, tmp_path / "second")
         async with _client(service, cipher=cipher) as client:
             url = f"/api/conversations/{first.id}"
-            initial = await client.get(f"{url}/tools")
-            assert initial.status_code == 200, initial.text
-            assert any(
-                t["name"] == "fetch"
-                and t["source"] == "global"
-                and t["server_name"] == "base"
-                for t in initial.json()["tools"]
-            )
+            conversation = (await _event_service(service, first.id)).get_conversation()
+            await asyncio.to_thread(conversation._ensure_agent_ready)
+            assert "fetch" in conversation.agent.tools_map
             response = await client.post(
                 f"{url}/configuration/changes",
                 json={
@@ -865,28 +851,9 @@ async def test_inline_mcp_install_live_inventory_isolated_encrypted_and_restored
             assert response.json() == {
                 "applied": [{"type": "mcp.install", "name": "inline"}]
             }
-            inventory = await client.get(f"{url}/tools")
-            assert inventory.status_code == 200, inventory.text
-            assert "inline-secret-value" not in inventory.text
-            assert "PRIVATE_TOKEN" not in inventory.text
-            tools = inventory.json()["tools"]
-            assert any(
-                t["name"] == "inline_fetch"
-                and t["source"] == "conversation"
-                and t["server_name"] == "inline"
-                and isinstance(t["parameters"], dict)
-                for t in tools
-            )
-            assert any(t["source"] == "builtin" for t in tools)
-            assert (
-                await client.get(f"/api/conversations/{second}/tools")
-            ).status_code == 200
-            assert not any(
-                t["name"] == "inline_fetch"
-                for t in (
-                    await client.get(f"/api/conversations/{second}/tools")
-                ).json()["tools"]
-            )
+            assert "inline_fetch" in conversation.agent.tools_map
+            second_state = await (await _event_service(service, second)).get_state()
+            assert "inline" not in second_state.agent.mcp_config
             assert (
                 await client.post(
                     f"{url}/configuration/changes",
@@ -927,14 +894,9 @@ async def test_inline_mcp_install_live_inventory_isolated_encrypted_and_restored
         ).agent.mcp_config
         assert "inline" not in fork_tools
     async with ConversationService(conversations_dir=root, cipher=cipher) as service:
-        async with _client(service, cipher=cipher) as client:
-            response = await client.get(f"/api/conversations/{first.id}/tools")
-            assert response.status_code == 200, response.text
-            assert any(
-                t["name"] == "inline_fetch" and t["source"] == "conversation"
-                for t in response.json()["tools"]
-            )
-            assert "inline-secret-value" not in response.text
+        restored = (await _event_service(service, first.id)).get_conversation()
+        await asyncio.to_thread(restored._ensure_agent_ready)
+        assert "inline_fetch" in restored.agent.tools_map
 
 
 @pytest.mark.asyncio
@@ -964,10 +926,6 @@ async def test_inline_mcp_install_failure_rolls_back(tmp_path):
             )
             assert response.status_code == 409, response.text
             assert "private-failure" not in response.text
-            assert not any(
-                t.get("server_name") == "broken"
-                for t in (await client.get(f"{url}/tools")).json()["tools"]
-            )
         assert (
             "broken"
             not in (
@@ -1005,10 +963,7 @@ async def test_concurrent_inline_installs_keep_both_servers(tmp_path):
                 )
             )
             assert [response.status_code for response in responses] == [200, 200]
-            inventory = (await client.get(f"{url}/tools")).json()["tools"]
-            assert {t["name"] for t in inventory if t["source"] == "conversation"} == {
-                "first_fetch",
-                "second_fetch",
-            }
+        active = (await _event_service(service, conversation_id)).get_conversation()
+        assert {"first_fetch", "second_fetch"} <= set(active.agent.tools_map)
         state = await (await _event_service(service, conversation_id)).get_state()
         assert {"first", "second"} <= set(state.agent.mcp_config)
