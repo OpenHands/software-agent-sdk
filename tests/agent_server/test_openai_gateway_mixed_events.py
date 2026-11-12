@@ -1,6 +1,7 @@
 """A direct event must not change a gateway turn's reply or token usage."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -20,12 +21,14 @@ from openhands.agent_server.event_router import (
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.openai import service as gateway
 from openhands.agent_server.openai.service import GatewayConflict, OpenAIAgentRunResult
+from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
+from openhands.sdk.workspace import LocalWorkspace
 
 
 class _InterleavedEventService:
@@ -199,6 +202,52 @@ async def test_cancelled_local_gateway_allows_next_direct_event() -> None:
         event_service,
     )
     assert fake.sent == ["gateway", "direct"]
+
+
+async def test_cancelled_new_gateway_lookup_allows_next_direct_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conversation_id = uuid4()
+    lookup_started = asyncio.Event()
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as owner:
+        original_lookup = owner.get_event_service
+
+        async def blocked_lookup(_conversation_id):
+            lookup_started.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(owner, "get_event_service", blocked_lookup)
+        gateway_task = asyncio.create_task(
+            gateway._run_agent(
+                start_request=StartConversationRequest(
+                    conversation_id=conversation_id,
+                    agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+                    workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                    autotitle=False,
+                ),
+                user_content=[TextContent(text="gateway")],
+                conversation_service=owner,
+                reusable_conversation_id=None,
+                config=Config(),
+                registry=None,
+            )
+        )
+        await asyncio.wait_for(lookup_started.wait(), timeout=5)
+        gateway_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await gateway_task
+
+        event_service = await original_lookup(conversation_id)
+        assert event_service is not None
+        await send_message(
+            SendMessageRequest(
+                role="user", content=[TextContent(text="direct")], run=False
+            ),
+            event_service,
+        )
+        assert await event_service.count_events(source="user") == 1
 
 
 async def test_local_gateway_rejects_active_direct_run_before_saving() -> None:

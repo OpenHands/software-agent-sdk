@@ -617,16 +617,22 @@ async def _run_agent(
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
         raise launch_error(exc) from exc
     conversation_id = conversation_info.id
-    event_service = await conversation_service.get_event_service(conversation_info.id)
-    if event_service is None:
-        raise OperationFailed("Conversation did not start")
-
-    if not created:
-        return await _run_reused_local_agent(
-            event_service, conversation_info.id, user_content
-        )
+    created_event_service = None
+    if created:
+        # Capture the registration before the lookup can wait on a lifecycle lock.
+        event_services = conversation_service._event_services
+        if event_services is None or conversation_id not in event_services:
+            raise OperationFailed("Conversation did not start")
+        created_event_service = event_services[conversation_id]
 
     try:
+        event_service = await conversation_service.get_event_service(conversation_id)
+        if event_service is None:
+            raise OperationFailed("Conversation did not start")
+        if not created:
+            return await _run_reused_local_agent(
+                event_service, conversation_id, user_content
+            )
         try:
             status_value = await event_service.wait_for_run_completion(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
@@ -644,7 +650,8 @@ async def _run_agent(
             usage=usage,
         )
     finally:
-        event_service._active_gateway_runs -= 1
+        if created_event_service is not None:
+            created_event_service._active_gateway_runs -= 1
 
 
 async def _run_docker_agent(
