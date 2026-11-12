@@ -12,6 +12,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from filelock import FileLock
 from litellm.exceptions import BadRequestError
+from openai.types.responses.response import IncompleteDetails
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -23,7 +24,7 @@ from openhands.agent_server import (
 )
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
     LLMBadRequestError,
@@ -79,8 +80,10 @@ def mock_completion(monkeypatch, text: str, captured: list | None = None) -> Non
     async def complete(llm, messages, tools=None, **kwargs):
         if captured is not None:
             captured.append((llm, messages, tools, kwargs))
-        return SimpleNamespace(
-            message=Message(role="assistant", content=[TextContent(text=text)])
+        return LLMResponse(
+            message=Message(role="assistant", content=[TextContent(text=text)]),
+            metrics=llm.metrics.get_snapshot(),
+            raw_response=create_mock_litellm_response(text),
         )
 
     monkeypatch.setattr(LLM, "acompletion", complete)
@@ -89,8 +92,10 @@ def mock_completion(monkeypatch, text: str, captured: list | None = None) -> Non
 def mock_responses(monkeypatch, text: str, captured: list) -> None:
     async def complete(llm, messages, tools=None, **kwargs):
         captured.append((llm, messages, tools, kwargs))
-        return SimpleNamespace(
-            message=Message(role="assistant", content=[TextContent(text=text)])
+        return LLMResponse(
+            message=Message(role="assistant", content=[TextContent(text=text)]),
+            metrics=llm.metrics.get_snapshot(),
+            raw_response=create_mock_responses_response(text),
         )
 
     monkeypatch.setattr(LLM, "aresponses", complete)
@@ -228,6 +233,50 @@ def test_enhance_makes_one_provider_call(
     assert store.load("draft-profile").model_dump(mode="json") == profile_before
     assert sentinel not in response.text
     assert sentinel not in caplog.text
+
+
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+def test_enhance_rejects_truncated_provider_output(
+    client_and_store, monkeypatch, api_mode
+):
+    client, store = client_and_store
+    store.save(
+        "draft-profile",
+        LLM(
+            model="openai/gpt-4.1-mini",
+            api_mode=api_mode,
+            api_key=SecretStr("sk-profile-secret"),
+            max_output_tokens=32,
+        ),
+        include_secrets=True,
+    )
+    partial = "Only change /src/views/Map.vue."
+    if api_mode == "chat":
+        raw = create_mock_litellm_response(partial, finish_reason="length")
+        transport_name = "litellm_acompletion"
+    else:
+        raw = create_mock_responses_response(partial)
+        raw.status = "incomplete"
+        raw.incomplete_details = IncompleteDetails(reason="max_output_tokens")
+        transport_name = "litellm_aresponses"
+    transport = AsyncMock(return_value=raw)
+    monkeypatch.setattr(f"openhands.sdk.llm.llm.{transport_name}", transport)
+
+    response = client.post(
+        "/api/prompt-enhancement/enhance",
+        json={
+            "profile_name": "draft-profile",
+            "text": (
+                "Only change /src/views/Map.vue. Keep tenantId=acme. Run pnpm test."
+            ),
+        },
+    )
+
+    assert transport.await_count == 1
+    assert response.status_code == 502
+    assert error_code(response) == "invalid_model_output"
+    assert "enhanced_text" not in response.json()
+    assert partial not in response.text
 
 
 @pytest.mark.parametrize(

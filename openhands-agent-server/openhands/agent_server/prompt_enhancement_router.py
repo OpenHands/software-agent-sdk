@@ -6,6 +6,7 @@ from enum import StrEnum
 
 from fastapi import APIRouter, Path, Request, status
 from fastapi.responses import JSONResponse
+from litellm import ResponsesAPIResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server._secrets_exposure import get_config
@@ -329,6 +330,20 @@ async def enhance_prompt(
             status.HTTP_502_BAD_GATEWAY,
             PromptEnhancementErrorCode.PROVIDER_ERROR,
             "The model provider could not complete prompt enhancement.",
+        )
+
+    raw_response = result.raw_response
+    if isinstance(raw_response, ResponsesAPIResponse):
+        complete = raw_response.status == "completed"
+    else:
+        complete = bool(raw_response.choices) and all(
+            choice.finish_reason == "stop" for choice in raw_response.choices
+        )
+    if not complete:
+        return _error_response(
+            status.HTTP_502_BAD_GATEWAY,
+            PromptEnhancementErrorCode.INVALID_MODEL_OUTPUT,
+            "The model did not return a complete draft.",
         )
 
     if result.message.tool_calls or any(
