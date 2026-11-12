@@ -135,7 +135,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
   control-sdk program S11/builtins \
     --check example_in_description.general-purpose eq true --check example_in_description.web-researcher eq true
   ```
-  Known failure (reproduced 2026-11-12, [#6656](https://github.com/OpenHands/software-agent-sdk/issues/6656)): with all four built-ins registered, only the `code-explorer` and `bash-runner` examples appear. `TASK_TOOL_EXAMPLES` keys the other two as `"general purpose"` and `"web researcher"` (spaces), while the built-ins register as `general-purpose` and `web-researcher`, so their examples never match.
+  Expected: with all four built-ins registered, the description holds an example for each, keyed by the names the built-ins register under.
 - **Workspace Markdown agents picked up by the conversation (`S11.conversation-autoregister`, `S11.builtin-agents`, `S11.task-persistence`).** The workspace holds `.agents/agents/ws-reviewer.md`; the program never calls `register_file_agents`. A non-persisted parent delegates to it and to the built-in `bash-runner`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
