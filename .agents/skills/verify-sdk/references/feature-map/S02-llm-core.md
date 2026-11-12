@@ -96,6 +96,21 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check sync_callback.tool_arguments.0 eq '{"q": 1}'
   ```
   Content, reasoning and tool-call deltas reach the callback and the final message is reassembled (tool arguments and cache-read tokens included); `stream=True` without a callback sends a plain request and returns the full reply.
+- **A streamed Responses reasoning summary (`S02.streaming`, `S02.responses-reasoning`).** `openai/gpt-5-mini` with `api_mode="responses"`, `reasoning_summary="auto"` and `stream=True`; the reply streams a reasoning item (`response.reasoning_summary_text.delta` events) and then a message, and `llm.responses(..., on_token=...)` collects the deltas.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S02/llm_calls --arg responses-stream \
+    --check final_text eq "the answer" --check final_summary.0 eq "plan the reply" --check content_text eq "the answer" \
+    --check summary_as_reasoning eq "plan the reply"
+  ```
+  Expected: the summary reaches the callback as `delta.reasoning_content`, as chat-path reasoning does, and the answer as `delta.content`; the final message carries both. Known failure (reproduced 2026-11-12, [#6695](https://github.com/OpenHands/software-agent-sdk/issues/6695)): no summary delta reaches the callback at all (`summary_as_reasoning` is empty; every delta is the message's `content`, chunk id `msg_1`). With the installed LiteLLM (1.105.1) a `response.reasoning_summary_text.delta` event is parsed as a `GenericEvent`, never the `ReasoningSummaryTextDeltaEvent` that `LLM._process_stream_event` looks for (which would send it as `delta.content`, the issue's first symptom). The final message still has the summary.
+- **Cache-write tokens on the Responses path (`S02.metrics`).** The same program: the Responses reply reports `input_tokens_details.cache_write_tokens: 600`, and a Chat Completions reply reports `prompt_tokens_details.cache_creation_tokens: 600`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S02/llm_calls --arg responses-stream \
+    --check chat_cache_write eq 600 --check responses_cache_read eq 200 --check responses_cache_write eq 600
+  ```
+  Expected: `TokenUsage.cache_write_tokens` is 600 on both paths. Known failure (reproduced 2026-11-12, [#6691](https://github.com/OpenHands/software-agent-sdk/issues/6691)): the Responses path records 0 (`normalize_usage` reads only `cached_tokens` from `input_tokens_details`); the chat path records 600.
 - **Timeouts (`S02.timeouts`).** A reply slower than `timeout=1`, a stream that stalls longer than `stream_idle_timeout=1` on `acompletion`, and the same stall inside `await conversation.arun()`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -123,12 +138,14 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check features.anthropic/claude-sonnet-4-5-20250929.thinking_mode eq manual \
     --check features.anthropic/claude-sonnet-4-5-20250929.prompt_cache eq true \
     --check features.deepseek/deepseek-chat.vision eq false --check proxy_prefix_stripped eq true \
+    --check 'features.deepseek/deepseek-v4\.1-flash.vision' eq true --check 'features.deepseek/deepseek-v4\.1-flash.force_string' eq false \
+    --check 'features.litellm_proxy/deepseek-v4\.1-flash.vision' eq true \
     --check sent.gpt5.reasoning_effort eq high --check sent.gpt5.temperature missing --check sent.gpt5.top_p missing \
     --check sent.gpt4o.reasoning_effort missing --check sent.gpt4o.temperature eq 0.5 --check sent.gpt4o.top_p eq 0.9 \
     --check sent.azure.max_tokens eq true --check sent.azure.max_completion_tokens eq false \
     --check sent.openrouter.openrouter_headers eq true
   ```
-  A reasoning model gets `reasoning_effort` (default `high`) and loses `temperature`/`top_p`; a non-reasoning model keeps them; Azure gets `max_tokens`. (Prompt-cache keys show in the Responses bullet above.)
+  A reasoning model gets `reasoning_effort` (default `high`) and loses `temperature`/`top_p`; a non-reasoning model keeps them; Azure gets `max_tokens`. `deepseek-v4.1-flash`, which LiteLLM's registry does not mark as visual, is vision-capable from the SDK's own list, under a proxy prefix too, and keeps list content. (Prompt-cache keys show in the Responses bullet above.)
 - **Prompted tool calling (`S02.prompted-tool-calling`, `S02.native-tool-calling`).** `native_tool_calling=False`: the agent's tools are described in the prompt and the model's `<function=...>` text becomes real tool calls.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

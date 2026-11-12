@@ -11,6 +11,9 @@ Usage: store.py MODE
             traversal, a non-kebab name, requested/resolved refs, and an
             untracked directory picked up by list_installed.
   legacy    a .installed.json with the old `plugins` and `skills` keys.
+  resume    an installed plugin (skill and .mcp.json server) loads into a
+            persisted conversation; the plugin is disabled and the same
+            conversation is resumed in a new Conversation and sent a message.
 """
 
 import json
@@ -18,7 +21,7 @@ import os
 import sys
 from pathlib import Path
 
-from build import commit, git_repo, head, skill_md, write
+from build import claude_code_plugin, commit, git_repo, head, skill_md, write
 from recorder import recording_llm
 from sdk_verify import emit, run_paths
 
@@ -223,5 +226,46 @@ elif mode == "legacy":
     out["both_source"] = listed["both"].source
     out["loaded"] = sorted(p.name for p in load_installed_plugins(installed_dir=store))
     out["keys_after"] = sorted(metadata(store))
+
+elif mode == "resume":
+    plug = claude_code_plugin(run / "src" / "resplug", "resplug")
+    install_plugin(str(plug))
+    base = run / "conversations"
+
+    def open_conv(cid=None):
+        agent = Agent(llm=recording_llm([{"finish": "done"}] * 2), tools=[])
+        return Conversation(
+            agent=agent,
+            workspace=str(workspace),
+            persistence_dir=str(base),
+            conversation_id=cid,
+            visualizer=None,
+        )
+
+    def snapshot(conv) -> dict:
+        ctx = conv.agent.agent_context
+        return {
+            "skills": sorted(s.name for s in ctx.skills) if ctx else [],
+            "mcp_servers": sorted(conv.agent.mcp_config or {}),
+            "recorded_skills": conv.state.ambient_plugin_skills,
+            "recorded_mcp": conv.state.ambient_plugin_mcp_servers,
+        }
+
+    conv = open_conv()
+    cid = conv.id
+    conv.send_message("hi")
+    out["enabled"] = snapshot(conv)
+    conv.close()
+    out["disable"] = disable_plugin("resplug")
+    resumed = open_conv(cid)
+    out["resumed_same_id"] = resumed.id == cid
+    resumed.send_message("again")
+    out["after_disable"] = snapshot(resumed)
+    resumed.close()
+    enable_plugin("resplug")
+    again = open_conv(cid)
+    again.send_message("and again")
+    out["after_enable"] = snapshot(again)
+    again.close()
 
 emit(out)

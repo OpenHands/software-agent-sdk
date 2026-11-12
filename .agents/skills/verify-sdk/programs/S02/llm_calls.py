@@ -14,6 +14,9 @@ Usage: llm_calls.py MODE
   inline-image    http image URLs inlined as data: URLs
   serialization   dump, masking, round trip, model_copy, load_from_env
   features        model feature table and the chat options sent per model
+  responses-stream a streamed Responses reply with a reasoning summary and
+                  a message, through on_token; cache-write tokens on the
+                  Responses and Chat Completions paths
 """
 
 import asyncio
@@ -438,6 +441,54 @@ elif mode == "serialization":
         },
     }
 
+elif mode == "responses-stream":
+    step = {
+        "reasoning": "plan the reply",
+        "stream_summary": True,
+        "text": "the answer",
+        "usage": {"cached": 200, "cache_write": 600},
+    }
+    deltas: list = []
+    with FakeProvider([step], model="gpt-5-mini") as s:
+        llm = chat_llm(
+            s,
+            model="openai/gpt-5-mini",
+            api_mode="responses",
+            reasoning_summary="auto",
+            stream=True,
+        )
+        r = llm.responses(MESSAGES, on_token=deltas.append)
+        usage = llm.metrics.accumulated_token_usage
+    summary_chunks = []
+    for c in deltas:
+        for ch in getattr(c, "choices", None) or []:
+            d = ch.delta
+            summary_chunks.append(
+                {
+                    "id": getattr(c, "id", None),
+                    "content": getattr(d, "content", None),
+                    "reasoning": getattr(d, "reasoning_content", None),
+                }
+            )
+    out["deltas"] = summary_chunks
+    out["summary_as_reasoning"] = "".join(d["reasoning"] or "" for d in summary_chunks)
+    out["content_text"] = "".join(d["content"] or "" for d in summary_chunks)
+    out["chunk_ids"] = sorted({d["id"] for d in summary_chunks if d["id"]})
+    out["final_text"] = text_of(r)
+    out["final_summary"] = list(
+        getattr(r.message, "responses_reasoning_item", None).summary
+        if getattr(r.message, "responses_reasoning_item", None)
+        else []
+    )
+    out["responses_cache_read"] = usage.cache_read_tokens if usage else None
+    out["responses_cache_write"] = usage.cache_write_tokens if usage else None
+    step = {"text": "hi", "usage": {"cached": 200, "cache_write": 600}}
+    with FakeProvider([step]) as s:
+        llm = chat_llm(s)
+        llm.completion(MESSAGES)
+        usage = llm.metrics.accumulated_token_usage
+    out["chat_cache_write"] = usage.cache_write_tokens if usage else None
+
 elif mode == "features":
     from openhands.sdk.llm.utils.model_features import get_features
 
@@ -448,6 +499,8 @@ elif mode == "features":
         "anthropic/claude-opus-4-5-20251101",
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "deepseek/deepseek-chat",
+        "deepseek/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek-v4.1-flash",
         "moonshot/kimi-k2-0711-preview",
     ]
     table = {}
