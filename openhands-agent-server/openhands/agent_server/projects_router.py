@@ -10,6 +10,15 @@ Membership lives on the conversations, not in the project record: a
 conversation belongs to a project when its ``project`` tag holds the project's
 id. Child conversations copy their parent's tags, so the conversations a coordinator
 starts with ``start_child_conversation`` join its project without another call.
+
+Two limits. Projects are local to this server: the record, its files and its
+memory live in this server's persistence folder, and a conversation running in
+another server (a Docker runtime) is not a member here. And project scoping is
+a guard rail for the project tools, not a security boundary: every caller
+holds the same session key, so a conversation with a terminal can reach any
+route. The tools read the project from the caller's tags and the send route
+checks a sender's project, which keeps well-behaved agents inside their
+project and never lets one conversation approve or resume another's work.
 """
 
 import asyncio
@@ -78,6 +87,7 @@ from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
     PROJECT_TAG_KEY,
+    PROJECTS_OFF_DETAIL,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
@@ -110,7 +120,7 @@ async def _require_projects(request: Request) -> None:
     the projects on disk are kept and come back when it is turned on again.
     """
     if not await feature_enabled_now("projects", get_config(request)):
-        raise NotFound("Projects are turned off")
+        raise NotFound(PROJECTS_OFF_DETAIL)
 
 
 projects_router = APIRouter(

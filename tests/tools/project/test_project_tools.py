@@ -190,6 +190,26 @@ def test_list_reports_server_errors(tmp_path):
     assert "(404): Project not found" in observation.text
 
 
+def test_tools_say_so_when_projects_was_turned_off(tmp_path):
+    """A coordinator started while Projects was on keeps its tools; once the
+    user turns the feature off, each call tells it so instead of a bare 404."""
+
+    def projects_off(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "Projects are turned off"})
+
+    executor = ListProjectConversationsExecutor(
+        _conv_state(tmp_path, tags={"project": uuid4().hex}),
+        transport=httpx.MockTransport(projects_off),
+    )
+
+    observation = executor(ListProjectConversationsAction())
+
+    assert observation.is_error
+    assert "Projects is turned off" in observation.text
+    assert "do not retry" in observation.text
+    assert "404" not in observation.text
+
+
 @pytest.mark.parametrize(
     ("status", "attention"),
     [

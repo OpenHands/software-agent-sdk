@@ -25,6 +25,10 @@ PROJECT_TAG_KEY = "project"
 """Tag whose value is the id (hex) of the agent-server project a conversation
 belongs to. Child conversations copy their parent's tags, so they join it too."""
 
+PROJECTS_OFF_DETAIL = "Projects are turned off"
+"""Detail of the 404 every ``/api/projects`` route answers while the user has
+the Projects feature off; project tools recognize it."""
+
 RESOLVED_TAG_KEY = "resolved"
 """Tag marking a conversation's work as done: ``user`` when the user resolved
 it, ``auto`` when the server judged that nothing is left for the user (see

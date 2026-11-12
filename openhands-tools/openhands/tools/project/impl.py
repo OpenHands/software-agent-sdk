@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from openhands.sdk.conversation.types import (
     HELD_FOR_PERSON_STATUSES,
     PROJECT_TAG_KEY,
+    PROJECTS_OFF_DETAIL,
     conversation_mention,
 )
 from openhands.sdk.logger import get_logger
@@ -71,6 +72,12 @@ _NOT_IN_PROJECT = (
 )
 
 
+_PROJECTS_OFF = (
+    "Projects is turned off on this server, so the project tools do nothing "
+    "until the user turns the feature back on. Tell the user; do not retry."
+)
+
+
 class ProjectToolError(Exception):
     """A failure to report to the agent as an error observation."""
 
@@ -112,9 +119,11 @@ class _ProjectClient:
             response.raise_for_status()
             return response
         except httpx.HTTPStatusError as exc:
+            detail = response_detail(exc.response)
+            if exc.response.status_code == 404 and detail == PROJECTS_OFF_DETAIL:
+                raise ProjectToolError(_PROJECTS_OFF) from exc
             raise ProjectToolError(
-                f"{method} {path} failed ({exc.response.status_code}): "
-                f"{response_detail(exc.response)}"
+                f"{method} {path} failed ({exc.response.status_code}): {detail}"
             ) from exc
         except httpx.TimeoutException as exc:
             raise ProjectToolError(
