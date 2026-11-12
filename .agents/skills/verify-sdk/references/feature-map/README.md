@@ -10,7 +10,7 @@ agent-server map
 and follows its layout. Family IDs here are `Snn`, so they never collide with
 that map's `Fnn`.
 
-Maintenance baseline: main@4db1ad742ad143ddc3411631f04efb70323f40f9 (2026-11-09). The first mapping; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@9bf835c7873c33f837880eefa8e986f1fe54d604 (2026-11-12). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
 The map has **464 sub-features**, **31 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
