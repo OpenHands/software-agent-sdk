@@ -16,7 +16,6 @@ from collections.abc import (
     Sequence,
 )
 from contextvars import ContextVar
-from functools import partial
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -689,7 +688,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # This is the one behind ``llm.metrics`` / ``llm.telemetry``; see
     # ``session_for`` for how it relates to a conversation's.
     _session: LLMSession | None = PrivateAttr(default=None)
-    _call_session: LLMSession | None = PrivateAttr(default=None)
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: dict[str, object] | None = PrivateAttr(default=None)
@@ -964,7 +962,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def session_for(self, call_context: LLMCallContext | None = None) -> LLMSession:
         """Return the session a call made with ``call_context`` records in.
 
-        A fallback call stays bound to its original caller's session.
         That is the session the conversation keeps for this LLM's role
         (``usage_id``). Without a conversation in the context it is the session
         of the registry this object was last added to, and failing that the
@@ -975,10 +972,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         records in a second session keeps one of its own apart, and every
         session it records in also counts there.
         """
-        session = self._call_session
-        if session is None:
-            sessions = resolve_llm_call_context(call_context).sessions
-            session = sessions.get(self.usage_id) if sessions is not None else None
+        sessions = resolve_llm_call_context(call_context).sessions
+        session = sessions.get(self.usage_id) if sessions is not None else None
         if session is None:
             session = self._registered_session()
         if session is None:
@@ -987,12 +982,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self._keep_own_session_apart()
         session.follow(self)
         return session
-
-    def _bind_call_session(self, session: LLMSession, own_session: LLMSession) -> None:
-        """Bind a temporary LLM to a caller's selected and aggregate sessions."""
-        self._session = own_session
-        self._call_session = session
-        self._registry_session = None
 
     def _registered_session(self) -> LLMSession | None:
         try:
@@ -1082,7 +1071,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         instance from the session a conversation's registry opened for it.
         """
         self._session = LLMSession(self)
-        self._call_session = None
         self._registry_session = None
 
     def _handle_error(
@@ -1106,7 +1094,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 primary_metrics=session.metrics,
                 call_fn=fallback_call_fn,
                 primary=self,
-                session=session,
             )
             if result is not None:
                 return result
@@ -1125,25 +1112,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         The *fallback_call_fn* is synchronous (it calls the fallback LLM's
         sync ``completion``/``responses``), so the fallback attempt is
-        offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
+        offloaded to a thread via :func:`asyncio.to_thread` to
         avoid blocking the event loop.
         """
         if session is None:
             session = self.session
         session.telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                partial(
-                    self.fallback_strategy.try_fallback,
-                    self.model,
-                    error,
-                    session.metrics,
-                    fallback_call_fn,
-                    primary=self,
-                    session=session,
-                ),
+            result = await asyncio.to_thread(
+                self.fallback_strategy.try_fallback,
+                self.model,
+                error,
+                session.metrics,
+                fallback_call_fn,
+                primary=self,
             )
             if result is not None:
                 return result
@@ -1876,7 +1858,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # cached (1h TTL) and negative-cached on failure, and the probe is a
         # no-op for providers without runtime metadata.
         self.resolve_runtime_metadata()
-        call_context = resolve_llm_call_context(call_context)
         session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
@@ -1999,7 +1980,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # probe is a no-op for providers without runtime metadata, so repeated
         # calls are cheap.
         await self.aresolve_runtime_metadata()
-        call_context = resolve_llm_call_context(call_context)
         session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
@@ -2142,7 +2122,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Cached (1h TTL) / negative-cached; no-op for providers without runtime
         # metadata.
         self.resolve_runtime_metadata()
-        call_context = resolve_llm_call_context(call_context)
         session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
@@ -2310,7 +2289,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # the first request so context management reads runtime (not model-level)
         # limits. No blocking network I/O in-process.
         await self.aresolve_runtime_metadata()
-        call_context = resolve_llm_call_context(call_context)
         session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()

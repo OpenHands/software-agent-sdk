@@ -21,7 +21,6 @@ from openhands.sdk.llm.exceptions.classifier import (
     is_transient_http_error,
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.logger import get_logger
 
 
@@ -79,18 +78,15 @@ class FallbackStrategy(BaseModel):
         call_fn: Callable[[Any], LLMResponse],
         *,
         primary: LLM | None = None,
-        session: LLMSession | None = None,
     ) -> LLMResponse | None:
         """Try fallback models in the caller's role and session.
 
         Args:
             primary_model: The primary model name (for logging).
             primary_error: The error from the primary model.
-            primary_metrics: The caller's metrics, used directly when no session
-                is supplied.
+            primary_metrics: The primary LLM's metrics for legacy direct callers.
             call_fn: A callable that takes an LLM instance and returns an LLMResponse.
             primary: The caller whose usage ID and aggregate accounting are kept.
-            session: The caller's selected session, including telemetry callbacks.
 
         Returns:
             LLMResponse from the first successful fallback, or None if all fail.
@@ -115,18 +111,15 @@ class FallbackStrategy(BaseModel):
                         "fallback_strategy": None,
                     }
                 )
-                if session is None:
-                    session = LLMSession(fallback)
-                    session.restore_metrics(primary_metrics)
-                own_session = (
-                    primary.session if primary is not None else LLMSession(fallback)
+                metrics_before = (
+                    fallback.metrics.deep_copy() if primary is None else None
                 )
-                if primary is None:
-                    own_session.restore_metrics(
-                        primary_metrics.rolls_up_into or primary_metrics
-                    )
-                fallback._bind_call_session(session, own_session)
+                if primary is not None:
+                    fallback._session = primary.session
+                    fallback._registry_session = primary._registered_session()
                 result = call_fn(fallback)
+                if metrics_before is not None:
+                    primary_metrics.merge(fallback.metrics.diff(metrics_before))
                 logger.info(f"[Fallback Strategy] Fallback LLM ({fb.model}) succeeded")
                 return result
             except Exception as fb_error:

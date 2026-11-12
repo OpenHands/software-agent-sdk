@@ -227,17 +227,14 @@ async def test_fallback_preserves_caller_accounting(
         assert other_registry.sessions[role].metrics.accumulated_cost == 0
 
 
-@pytest.mark.parametrize("with_context", [False, True])
 def test_direct_fallback_preserves_supplied_metrics(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_context: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     primary = LLM(model="gpt-4o", usage_id="condenser")
     registry, other_registry = LLMRegistry(), LLMRegistry()
     registry.add(primary)
     other_registry.add(primary)
-    registry.add(LLM(model="gpt-4o"))
     metrics = registry.sessions["condenser"].metrics
-    context = LLMCallContext(sessions=registry.sessions) if with_context else None
     LLMProfileStore(base_dir=tmp_path).save(
         "backup", LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
     )
@@ -268,7 +265,7 @@ def test_direct_fallback_preserves_supplied_metrics(
             message="primary unavailable", llm_provider="openai", model=primary.model
         ),
         metrics,
-        lambda fallback: fallback.completion(messages, call_context=context),
+        lambda fallback: fallback.completion(messages),
     )
 
     assert result is not None
@@ -277,5 +274,4 @@ def test_direct_fallback_preserves_supplied_metrics(
     assert metrics.accumulated_token_usage.prompt_tokens == 10
     assert primary.metrics.accumulated_token_usage.prompt_tokens == 10
     assert len(metrics.token_usages) == 1
-    assert registry.sessions["default"].metrics.token_usages == []
     assert other_registry.sessions["condenser"].metrics.token_usages == []
