@@ -278,7 +278,8 @@ class TestInitServiceTransitions:
             assert observed_env == "hello"
         finally:
             await svc.teardown()
-            monkeypatch.delenv("DEFERRED_INIT_TEST_VAR", raising=False)
+        # The server that set it is gone, and so is the variable.
+        assert "DEFERRED_INIT_TEST_VAR" not in os.environ
 
     @pytest.mark.asyncio
     async def test_init_bash_service_uses_user_supplied_dir(self, tmp_path):

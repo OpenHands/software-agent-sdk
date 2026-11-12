@@ -12,10 +12,13 @@ at the end of this file).
 from __future__ import annotations
 
 import ast
+import asyncio
 import dataclasses
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -27,11 +30,14 @@ from openhands.agent_server import init_router as init_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.init_router import InitRequest, InitService
 from openhands.agent_server.server_context import (
     ServerContext,
+    build_server_context,
     install_server_context,
     server_context_of,
 )
+from openhands.agent_server.telemetry import NoOpTelemetrySink, get_telemetry_sink
 from openhands.agent_server.vscode_service import VSCodeService
 from openhands.sdk.utils.cipher import Cipher
 
@@ -74,7 +80,7 @@ def _app(client: TestClient) -> FastAPI:
     return app
 
 
-def _init(client: TestClient, tmp_path: Path):
+def _init(client: TestClient, tmp_path: Path, **more: Any):
     """Deliver the user's key, session key and directories through /api/init."""
     return client.post(
         "/api/init",
@@ -85,6 +91,7 @@ def _init(client: TestClient, tmp_path: Path):
             "conversations_path": str(tmp_path / "user" / "conversations"),
             "bash_events_dir": str(tmp_path / "user" / "bash"),
             "env": {"OH_PERSISTENCE_DIR": str(tmp_path / "user" / "persistence")},
+            **more,
         },
     )
 
@@ -162,7 +169,13 @@ def test_a_failed_init_leaves_the_dormant_context_in_place(
         init_router_module.ConversationService, "get_instance", recording_get_instance
     )
 
-    failed = _init(dormant, tmp_path)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    delivered_telemetry = {
+        "exporter": "http",
+        "http_endpoint": "http://127.0.0.1:9/telemetry",
+    }
+
+    failed = _init(dormant, tmp_path, telemetry=delivered_telemetry)
 
     assert failed.status_code == 500
     assert dormant.get("/api/init").json()["state"] == "dormant"
@@ -170,9 +183,15 @@ def test_a_failed_init_leaves_the_dormant_context_in_place(
     assert server_context_of(app) is before
     assert before.conversation_service is None
     assert before.config.deferred_init is True
-    # ... and the service the attempt started was stopped, not left running.
+    # ... the service the attempt started was stopped, not left running ...
     (attempted,) = started
     assert attempted._event_services is None
+    # ... and the process is the dormant server's again: its directory, no
+    # exported session key, and its telemetry sink rather than the delivered
+    # exporter's.
+    assert os.environ["OH_PERSISTENCE_DIR"] == str(tmp_path / "boot" / "persistence")
+    assert "OH_SESSION_API_KEYS_0" not in os.environ
+    assert isinstance(get_telemetry_sink(), NoOpTelemetrySink)
     # The dormant key still guards /api/init, so the orchestrator can retry.
     assert dormant.post("/api/init", json={}).status_code == 401
 
@@ -181,6 +200,79 @@ def test_a_failed_init_leaves_the_dormant_context_in_place(
     retried = server_context_of(app)
     assert retried is not before
     assert retried.conversation_service is started[-1]
+
+
+def test_an_init_that_cannot_derive_its_root_path_changes_nothing(
+    dormant: TestClient, tmp_path: Path
+) -> None:
+    """The root path is derived before anything is started or published."""
+    app = _app(dormant)
+    before = server_context_of(app)
+
+    failed = _init(dormant, tmp_path, web_url="http://[")
+
+    assert failed.status_code == 500
+    assert dormant.get("/api/init").json()["state"] == "dormant"
+    assert server_context_of(app) is before
+    assert os.environ["OH_PERSISTENCE_DIR"] == str(tmp_path / "boot" / "persistence")
+    # The bootstrap key was not replaced by the delivered one, so a corrected
+    # request is accepted.
+    assert _init(dormant, tmp_path).status_code == 200
+    assert server_context_of(app).config.session_api_keys == [SESSION_KEY]
+
+
+async def test_a_cancelled_init_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "boot" / "persistence"))
+    monkeypatch.delenv("CANCELLED_INIT_VAR", raising=False)
+    config = Config(
+        deferred_init=True,
+        conversations_path=tmp_path / "boot" / "conversations",
+        bash_events_dir=tmp_path / "boot" / "bash",
+        enable_vscode=False,
+        preload_tools=False,
+    )
+    app = FastAPI()
+    install_server_context(app, build_server_context(config))
+    before = server_context_of(app)
+    init_service = InitService(app, base_config=config)
+    request = InitRequest(
+        conversations_path=tmp_path / "user" / "conversations",
+        bash_events_dir=tmp_path / "user" / "bash",
+        env={"CANCELLED_INIT_VAR": "delivered"},
+    )
+
+    hangs = True
+    starting = asyncio.Event()
+    real_start = ConversationService.__aenter__
+
+    async def start(self: ConversationService) -> ConversationService:
+        if hangs:
+            starting.set()
+            await asyncio.Event().wait()
+        return await real_start(self)
+
+    monkeypatch.setattr(ConversationService, "__aenter__", start)
+
+    attempt = asyncio.create_task(init_service.initialize(request))
+    await starting.wait()
+    assert os.environ["CANCELLED_INIT_VAR"] == "delivered"
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+
+    assert init_service.state == "dormant"
+    assert server_context_of(app) is before
+    assert "CANCELLED_INIT_VAR" not in os.environ
+
+    hangs = False
+    try:
+        assert (await init_service.initialize(request)).state == "ready"
+        assert server_context_of(app).conversation_service is not None
+    finally:
+        await init_service.teardown()
+    assert "CANCELLED_INIT_VAR" not in os.environ
 
 
 def test_the_lifespan_adds_services_to_the_context_it_was_created_with(
