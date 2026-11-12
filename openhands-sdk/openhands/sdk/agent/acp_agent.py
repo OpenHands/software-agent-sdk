@@ -2257,6 +2257,11 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # The conversation's session for the sentinel LLM: its registry opened
+        # it, so this resolves on the portal thread as well as on the caller's.
+        session = self.llm.session_for()
+        metrics = session.metrics
+
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
@@ -2265,7 +2270,7 @@ class ACPAgent(AgentBase):
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
-                self.llm.metrics.add_cost(delta)
+                metrics.add_cost(delta)
                 cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
@@ -2275,7 +2280,7 @@ class ACPAgent(AgentBase):
             _extract_token_usage(response)
         )
         if input_tokens or output_tokens:
-            self.llm.metrics.add_token_usage(
+            metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 cache_read_tokens=cache_read,
@@ -2296,7 +2301,7 @@ class ACPAgent(AgentBase):
                 self.acp_model, input_tokens, output_tokens
             )
             if cost > 0:
-                self.llm.metrics.add_cost(cost)
+                metrics.add_cost(cost)
 
         if not cost_recorded and not input_tokens and not output_tokens:
             # gemini-cli currently returns response.usage=None and
@@ -2308,13 +2313,9 @@ class ACPAgent(AgentBase):
             )
 
         if elapsed is not None:
-            self.llm.metrics.add_response_latency(elapsed, session_id)
+            metrics.add_response_latency(elapsed, session_id)
 
-        if self.llm.telemetry._stats_update_callback is not None:
-            try:
-                self.llm.telemetry._stats_update_callback()
-            except Exception:
-                logger.debug("Stats update callback failed", exc_info=True)
+        session.telemetry.notify_stats_update()
 
     # -- Capability helpers ------------------------------------------------
 
@@ -4865,9 +4866,12 @@ class ACPAgent(AgentBase):
         # authoritative current model is persisted by
         # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
         self.llm.model = model
-        self.llm.metrics.model_name = model
-        if self.llm.metrics.accumulated_token_usage is not None:
-            self.llm.metrics.accumulated_token_usage.model = model
+        # Both ledgers carry the model name: the LLM's own and the one the
+        # conversation keeps for it (the same object outside a conversation).
+        for metrics in (self.llm.metrics, self.llm.session_for().metrics):
+            metrics.model_name = model
+            if metrics.accumulated_token_usage is not None:
+                metrics.accumulated_token_usage.model = model
         # Refresh the surfaced model state so the chip/picker
         # (``ConversationInfo.current_model_id``) reflects the switch instead
         # of the stale session-start value. ``_current_model_id`` is a
