@@ -1680,12 +1680,9 @@ class LocalConversation(BaseConversation):
             or not self.agent.mcp_gateway
         ):
             return
-        selected = self._state.mcp_gateway_selected_tools
-        if not self._state.events and selected is None:
-            selected = self.agent.mcp_gateway_initial_tools
-            self._state.mcp_gateway_selected_tools = selected
         gateway = MCPToolGateway(
-            selected, filter_tools_regex=self.agent.filter_tools_regex
+            self._state.mcp_gateway_selected_tools,
+            filter_tools_regex=self.agent.filter_tools_regex,
         )
         gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
         self._mcp_gateway = self._state._mcp_gateway = gateway

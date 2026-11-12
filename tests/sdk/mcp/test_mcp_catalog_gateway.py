@@ -28,7 +28,6 @@ def gateway_conversation(
     tmp_path: Path,
     *,
     startup_catalog: bool = False,
-    initial_tools: list[str] | None = None,
     filter_regex: str | None = None,
 ) -> LocalConversation:
     return LocalConversation(
@@ -38,7 +37,6 @@ def gateway_conversation(
             include_default_tools=[],
             mcp_config={"alpha": SERVER, "beta": SERVER},
             mcp_gateway_startup_catalog=startup_catalog,
-            mcp_gateway_initial_tools=initial_tools,
             filter_tools_regex=filter_regex,
         ),
         workspace=tmp_path,
@@ -71,6 +69,7 @@ def test_new_agents_and_settings_use_gateway_by_default(tmp_path: Path):
         mcp_config={"alpha": SERVER},
     )
     assert agent.mcp_gateway is True
+    assert "mcp_gateway_initial_tools" not in Agent.model_fields
     assert (
         OpenHandsAgentSettings(mcp_config={"alpha": SERVER}).create_agent().mcp_gateway
     )
@@ -239,18 +238,16 @@ def test_gateway_lists_real_schemas_and_validates_calls(tmp_path: Path):
 
 
 def test_gateway_can_include_initial_schemas_in_system_prompt(tmp_path: Path):
-    conversation = gateway_conversation(
-        tmp_path, startup_catalog=True, initial_tools=["alpha.fetch"]
-    )
+    conversation = gateway_conversation(tmp_path, startup_catalog=True)
     try:
         conversation._ensure_agent_ready()
         prompt = conversation.agent.static_system_message
         assert "<MCP_CATALOG>" in prompt
         assert '"alpha.fetch"' in prompt
-        assert '"beta.fetch"' not in prompt
+        assert '"beta.fetch"' in prompt
         assert '"input_schema"' in prompt
         assert '"url"' in prompt
-        assert conversation.state.mcp_gateway_selected_tools == ["alpha.fetch"]
+        assert conversation.state.mcp_gateway_selected_tools is None
     finally:
         conversation.close()
 
@@ -369,10 +366,9 @@ def test_selection_changes_revision_without_registering_new_tools(tmp_path: Path
 
 
 def test_gateway_selection_restored_with_fresh_catalog_epoch(tmp_path: Path):
-    first = gateway_conversation(
-        tmp_path, initial_tools=["beta.fetch"], filter_regex=r"^alpha\."
-    )
+    first = gateway_conversation(tmp_path, filter_regex=r"^alpha\.")
     first._ensure_agent_ready()
+    first.select_mcp_tools(["beta.fetch"])
     assert first.mcp_gateway.list_tools()["tools"] == []
     initial = first.mcp_gateway.revision
     first.select_mcp_tools(["alpha.fetch"])
