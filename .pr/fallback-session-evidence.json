@@ -1,0 +1,227 @@
+{
+  "base_commit": "0a68ab94cb3f447254bdc68ce778048ce517be22",
+  "fixed_source_sha256": {
+    "openhands-sdk/openhands/sdk/llm/fallback_strategy.py": "a129313e3ec36fdc2d505a30ab2404e6f4824b2a80cd3f829384c3777f01eee5",
+    "openhands-sdk/openhands/sdk/llm/llm.py": "a9a7de5fa0fa7a549828a325eb1b33944d641468976a5ca9bc5ed72e076cec67",
+    "openhands-sdk/openhands/sdk/llm/utils/metrics.py": "c8b6977296c1274fdd8f63a2e4556d9be2303469e9b559065048536e8996f93b",
+    "openhands-sdk/openhands/sdk/llm/utils/telemetry.py": "bed4636f931f6dd95f3275ac63cca3d77e533e2d4f1648d4d56a864eee5e73b4"
+  },
+  "runtime": "macOS, Python 3.13.11, PR checkout editable dependencies",
+  "entry_points": [
+    "OpenHandsAgentSettings.create_agent",
+    "LLMProfileStore.save/load",
+    "Conversation.run",
+    "Conversation.ask_agent",
+    "Conversation.condense"
+  ],
+  "provider": "Loopback HTTP provider: gpt-4o returns 503; gpt-4o-mini returns 200 with 100 prompt tokens and 5 completion tokens.",
+  "limitations": "Provider responses are simulated; SDK execution, profile persistence, HTTP transport and accounting are real. This artifact checks token totals and role attribution. It does not measure costs or callback invocation counts.",
+  "reproduce": "OH_PERSISTENCE_DIR=/tmp/fallback-repro-state OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True uv run python .pr/fallback-session-repro.py --assert-fixed",
+  "before": [
+    {
+      "operation": "run-1",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "default": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 200
+      },
+      "correct": false
+    },
+    {
+      "operation": "run-2",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "default": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 200
+      },
+      "correct": false
+    },
+    {
+      "operation": "run-3",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "default": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 200
+      },
+      "correct": false
+    },
+    {
+      "operation": "ask_agent",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "ask-agent-llm": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 100,
+        "ask-agent-llm": 100
+      },
+      "correct": false
+    },
+    {
+      "operation": "condense",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "condenser": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 100,
+        "condenser": 100
+      },
+      "correct": false
+    }
+  ],
+  "after": [
+    {
+      "operation": "run-1",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "default": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 100
+      },
+      "correct": true
+    },
+    {
+      "operation": "run-2",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "default": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 100
+      },
+      "correct": true
+    },
+    {
+      "operation": "run-3",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "default": 100
+      },
+      "actual_prompt_token_deltas": {
+        "default": 100
+      },
+      "correct": true
+    },
+    {
+      "operation": "ask_agent",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "ask-agent-llm": 100
+      },
+      "actual_prompt_token_deltas": {
+        "ask-agent-llm": 100
+      },
+      "correct": true
+    },
+    {
+      "operation": "condense",
+      "http_requests": [
+        {
+          "model": "gpt-4o",
+          "status": 503
+        },
+        {
+          "model": "gpt-4o-mini",
+          "status": 200
+        }
+      ],
+      "expected_prompt_token_deltas": {
+        "condenser": 100
+      },
+      "actual_prompt_token_deltas": {
+        "condenser": 100
+      },
+      "correct": true
+    }
+  ],
+  "fixed_commit": "90ff071e1f56d887e3bc9ddfb369b6a20516bc09"
+}
