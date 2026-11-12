@@ -131,8 +131,11 @@ def test_deepseek_vision_models_keep_images_in_chat_payload(model):
         ],
     )
     formatted = llm.format_messages_for_llm([msg])
-    assert isinstance(formatted[0]["content"], list)
-    assert len(_collect_image_url_parts(formatted[0])) == 1
+
+    # ``openhands/*`` models gain a prepended proxy-identity system message.
+    user_block = next(item for item in formatted if item["role"] == "user")
+    assert isinstance(user_block["content"], list)
+    assert len(_collect_image_url_parts(user_block)) == 1
 
 
 @patch(
