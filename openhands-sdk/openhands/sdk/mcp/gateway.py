@@ -1,13 +1,12 @@
-"""Two stable agent tools over a versioned, conversation-local MCP catalog."""
+"""Versioned, conversation-local MCP catalog and downstream session owner."""
 
-import json
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+from typing import TYPE_CHECKING, Any
 
-from pydantic import Field, ValidationError
+from pydantic import ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
@@ -17,26 +16,15 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     provider_supports_on_tools_reconciled,
 )
-from openhands.sdk.tool import (
-    Action,
-    Observation,
-    ToolAnnotations,
-    ToolDefinition,
-    ToolExecutor,
-)
+from openhands.sdk.tool.builtins.mcp_gateway import MCPGatewayObservation
 
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-    from openhands.sdk.conversation.state import ConversationState
 
 
 logger = get_logger(__name__)
 _GATEWAY_STARTUP_TIMEOUT = 30.0
-
-
-class MCPGatewayObservation(Observation):
-    """Observation from either stable MCP gateway tool."""
 
 
 class MCPToolGateway:
@@ -209,106 +197,3 @@ class MCPToolGateway:
             self._tools.clear()
         for client in clients:
             client.sync_close()
-
-
-class ListMCPToolsAction(Action):
-    query: str | None = Field(
-        default=None, description="Optional tool-name substring to search."
-    )
-
-
-class CallMCPToolAction(Action):
-    name: str = Field(description="Namespaced tool name returned by list_mcp_tools.")
-    arguments: dict[str, Any] = Field(
-        description="Arguments matching its input_schema."
-    )
-    revision: str = Field(description="Catalog revision returned by list_mcp_tools.")
-
-
-class ListMCPToolsExecutor(ToolExecutor[ListMCPToolsAction, MCPGatewayObservation]):
-    def __init__(self, gateway: MCPToolGateway):
-        self.gateway = gateway
-
-    def __call__(
-        self,
-        action: ListMCPToolsAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> MCPGatewayObservation:
-        return MCPGatewayObservation.from_text(
-            json.dumps(self.gateway.list_tools(action.query))
-        )
-
-    def close(self) -> None:
-        self.gateway.close()
-
-
-class CallMCPToolExecutor(ToolExecutor[CallMCPToolAction, MCPGatewayObservation]):
-    def __init__(self, gateway: MCPToolGateway):
-        self.gateway = gateway
-
-    def __call__(
-        self, action: CallMCPToolAction, conversation: "LocalConversation | None" = None
-    ) -> MCPGatewayObservation:
-        return self.gateway.call(
-            action.name, action.arguments, action.revision, conversation
-        )
-
-    def close(self) -> None:
-        self.gateway.close()
-
-
-class ListMCPToolsTool(ToolDefinition[ListMCPToolsAction, MCPGatewayObservation]):
-    name: ClassVar[str] = "list_mcp_tools"
-    user_selectable: ClassVar[bool] = False
-
-    @classmethod
-    def create(
-        cls,
-        conv_state: "ConversationState | None" = None,  # noqa: ARG003
-        *,
-        gateway: MCPToolGateway,
-    ) -> Sequence[Self]:
-        return [
-            cls(
-                description=(
-                    "List selected MCP tools with their current input schemas and "
-                    "catalog revision. Call before call_mcp_tool and again if the "
-                    "selection or server catalog changes."
-                ),
-                action_type=ListMCPToolsAction,
-                observation_type=MCPGatewayObservation,
-                executor=ListMCPToolsExecutor(gateway),
-                annotations=ToolAnnotations(readOnlyHint=True),
-            )
-        ]
-
-
-class CallMCPToolTool(ToolDefinition[CallMCPToolAction, MCPGatewayObservation]):
-    name: ClassVar[str] = "call_mcp_tool"
-    user_selectable: ClassVar[bool] = False
-
-    @classmethod
-    def create(
-        cls,
-        conv_state: "ConversationState | None" = None,  # noqa: ARG003
-        *,
-        gateway: MCPToolGateway,
-    ) -> Sequence[Self]:
-        return [
-            cls(
-                description=(
-                    "Invoke a selected downstream MCP tool using its name, arguments "
-                    "and current revision from list_mcp_tools. Calls can modify "
-                    "external systems; apply the downstream tool's security policy."
-                ),
-                action_type=CallMCPToolAction,
-                observation_type=MCPGatewayObservation,
-                executor=CallMCPToolExecutor(gateway),
-                annotations=ToolAnnotations(
-                    readOnlyHint=False,
-                    destructiveHint=True,
-                    idempotentHint=False,
-                    openWorldHint=True,
-                ),
-            )
-        ]

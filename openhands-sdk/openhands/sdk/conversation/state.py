@@ -1,11 +1,13 @@
 # state.py
+from __future__ import annotations
+
 import json
 import threading
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from pydantic import Field, PrivateAttr, model_validator
 
@@ -41,6 +43,10 @@ from openhands.sdk.security.confirmation_policy import (
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.mcp.gateway import MCPToolGateway
 
 
 logger = get_logger(__name__)
@@ -307,6 +313,7 @@ class ConversationState(OpenHandsModel):
     )
 
     # ===== Private attrs (NOT Fields) =====
+    _mcp_gateway: MCPToolGateway | None = PrivateAttr(default=None)
     _fs: FileStore = PrivateAttr(default=cast(Any, None))  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
     # Cached projection of `_events` for the *active branch*, lazily updated on
@@ -568,7 +575,7 @@ class ConversationState(OpenHandsModel):
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
     def create(
-        cls: type["ConversationState"],
+        cls: type[ConversationState],
         id: ConversationID,
         agent: AgentBase | None,
         workspace: BaseWorkspace,
@@ -579,7 +586,7 @@ class ConversationState(OpenHandsModel):
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
         max_budget_per_run: float | None = None,
-    ) -> "ConversationState":
+    ) -> ConversationState:
         """Create a new conversation state or resume from persistence.
 
         This factory method handles both new conversation creation and resumption

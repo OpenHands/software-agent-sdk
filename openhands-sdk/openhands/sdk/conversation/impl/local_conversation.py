@@ -75,11 +75,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
-from openhands.sdk.mcp.gateway import (
-    CallMCPToolTool,
-    ListMCPToolsTool,
-    MCPToolGateway,
-)
+from openhands.sdk.mcp.gateway import MCPToolGateway
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -1675,35 +1671,31 @@ class LocalConversation(BaseConversation):
     ) -> None:
         self.agent._on_mcp_tools_reconciled(client, tools)
 
+    def _prepare_mcp_gateway(self) -> None:
+        if (
+            not self.agent.supports_openhands_tools
+            or not self.agent.mcp_config
+            or not getattr(self.agent, "mcp_gateway", False)
+        ):
+            return
+        if self.agent.filter_tools_regex:
+            raise ValueError(
+                "MCP gateway does not support filter_tools_regex; use "
+                "select_mcp_tools to restrict downstream tools"
+            )
+        selected = self._state.mcp_gateway_selected_tools
+        if not self._state.events and selected is None:
+            selected = getattr(self.agent, "mcp_gateway_initial_tools", None)
+            self._state.mcp_gateway_selected_tools = selected
+        gateway = MCPToolGateway(selected)
+        gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
+        self._mcp_gateway = self._state._mcp_gateway = gateway
+
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
         if getattr(self.agent, "mcp_gateway", False):
-            if self.agent.filter_tools_regex:
-                raise ValueError(
-                    "MCP gateway does not support filter_tools_regex; use "
-                    "select_mcp_tools to restrict downstream tools"
-                )
-            selected = self._state.mcp_gateway_selected_tools
-            if not self._state.events and selected is None:
-                selected = getattr(self.agent, "mcp_gateway_initial_tools", None)
-                self._state.mcp_gateway_selected_tools = selected
-            gateway = MCPToolGateway(selected)
-            gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
-            self._mcp_gateway = gateway
-            list_tool = ListMCPToolsTool.create(gateway=gateway)[0]
-            if getattr(self.agent, "mcp_gateway_startup_catalog", False):
-                list_tool = list_tool.model_copy(
-                    update={
-                        "prompt_guidance": (
-                            "<MCP_CATALOG>\n"
-                            + json.dumps(gateway.list_tools())
-                            + "\n</MCP_CATALOG>\n"
-                            "Call list_mcp_tools again if this catalog changes."
-                        )
-                    }
-                )
-            return [list_tool, *CallMCPToolTool.create(gateway=gateway)]
+            return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
@@ -1890,6 +1882,7 @@ class LocalConversation(BaseConversation):
             runtime_mcp_tools: list[ToolDefinition] = []
             try:
                 if self.agent.supports_openhands_tools:
+                    self._prepare_mcp_gateway()
                     self.agent._initialize(self._state)
                     runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
                     self.agent.add_runtime_tools(runtime_mcp_tools)
@@ -1907,6 +1900,9 @@ class LocalConversation(BaseConversation):
                     self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
+                if self._mcp_gateway is not None:
+                    self._mcp_gateway.close()
+                    self._mcp_gateway = self._state._mcp_gateway = None
                 raise
 
             # Register LLMs in the registry (still holding lock).

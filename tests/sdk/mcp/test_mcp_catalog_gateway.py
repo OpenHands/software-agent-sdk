@@ -10,6 +10,9 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, builtin_tool_class
+from openhands.sdk.tool.registry import resolve_tool
+from openhands.sdk.tool.spec import Tool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -50,11 +53,34 @@ def call(conversation: LocalConversation, name: str, args: dict):
     return tool(tool.action_from_arguments(args), conversation)
 
 
+def test_gateway_tools_resolve_as_builtins():
+    for class_name, tool_name in (
+        ("ListMCPToolsTool", "list_mcp_tools"),
+        ("CallMCPToolTool", "call_mcp_tool"),
+    ):
+        tool_class = BUILT_IN_TOOL_CLASSES[class_name]
+        assert tool_class.__module__.startswith("openhands.sdk.tool.builtins.")
+        assert builtin_tool_class(tool_name) is tool_class
+        assert not tool_class.user_selectable
+
+
 def test_gateway_lists_real_schemas_and_validates_calls(tmp_path: Path):
     conversation = gateway_conversation(tmp_path)
     try:
         conversation._ensure_agent_ready()
         assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+        assert isinstance(
+            conversation.agent.tools_map["list_mcp_tools"],
+            BUILT_IN_TOOL_CLASSES["ListMCPToolsTool"],
+        )
+        assert isinstance(
+            conversation.agent.tools_map["call_mcp_tool"],
+            BUILT_IN_TOOL_CLASSES["CallMCPToolTool"],
+        )
+        assert isinstance(
+            resolve_tool(Tool(name="list_mcp_tools"), conversation.state)[0],
+            BUILT_IN_TOOL_CLASSES["ListMCPToolsTool"],
+        )
         assert "alpha.fetch" not in conversation.agent.tools_map
         assert "beta.fetch" not in conversation.agent.tools_map
         listing = json.loads(call(conversation, "list_mcp_tools", {}).text)
