@@ -5,7 +5,7 @@ from hashlib import sha256
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import TypeAdapter, ValidationError
@@ -14,6 +14,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.openai.idempotency import Claim, GatewayIdempotencyStore
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
@@ -34,6 +35,13 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
+)
+from openhands.sdk.errors import (
+    DomainError,
+    Invalid,
+    Unauthenticated,
+    Unavailable,
+    Unprocessable,
 )
 from openhands.sdk.logger import get_logger
 
@@ -74,16 +82,13 @@ def check_openai_api_key(
         return
     if bearer_token in config.session_api_keys:
         return
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    raise Unauthenticated()
 
 
 def _get_config(request: Request) -> Config:
     config = getattr(request.app.state, "config", None)
     if not isinstance(config, Config):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Agent server config is not available",
-        )
+        raise Unavailable("Agent server config is not available")
     return config
 
 
@@ -99,7 +104,7 @@ async def _claim_request(
     if key is None:
         return None
     if not key.strip() or len(key.encode()) > 255:
-        raise HTTPException(400, "Idempotency-Key must contain 1 to 255 bytes")
+        raise Invalid("Idempotency-Key must contain 1 to 255 bytes")
     effective_headers = [
         request.url.path,
         request.url.query,
@@ -123,11 +128,12 @@ async def _claim_request(
 _REJECTED_BEFORE_DISPATCH = frozenset({404, 422, 429, 503})
 
 
-def _rejected_before_dispatch(exc: HTTPException) -> bool:
+def _rejected_before_dispatch(exc: DomainError) -> bool:
     """Whether the gateway refused the request without saving its turn."""
-    if exc.status_code in _REJECTED_BEFORE_DISPATCH:
+    if status_for(exc) in _REJECTED_BEFORE_DISPATCH:
         return True
-    return bool(exc.headers) and exc.headers.get("x-should-retry") == "true"
+    # Gateway errors mark a retry as safe only before the message is saved.
+    return getattr(exc, "retry_safe", False) is True
 
 
 def _claim_store_error(conversation_id: UUID) -> JSONResponse:
@@ -200,15 +206,11 @@ def _parse_observability_overrides(
                 _OBSERVABILITY_METADATA_ADAPTER.validate_python(metadata_payload)
             )
     except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        raise Unprocessable(
+            "X-OpenHands-Observability-Metadata must be a JSON object"
         ) from exc
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=exc.errors(include_context=False),
-        ) from exc
+        raise Unprocessable(exc.errors(include_context=False)) from exc
     if parent_span_context:
         overrides["observability_parent_span_context"] = parent_span_context
     return overrides
@@ -288,7 +290,7 @@ async def create_chat_completion(
             observability_overrides=overrides,
             prepared=prepared,
         )
-    except HTTPException as exc:
+    except DomainError as exc:
         if keyed is not None and _rejected_before_dispatch(exc):
             assert keyed[1].claim_id is not None
             try:
@@ -383,7 +385,7 @@ async def create_response(
             observability_overrides=overrides,
             prepared=prepared,
         )
-    except HTTPException as exc:
+    except DomainError as exc:
         if keyed is not None and _rejected_before_dispatch(exc):
             assert keyed[1].claim_id is not None
             try:

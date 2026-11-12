@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from openhands.agent_server._secrets_exposure import get_config
@@ -20,6 +20,7 @@ from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.acp_model_discovery import discover_acp_models
 from openhands.sdk.agent.acp_models import ACPModelDiscovery
 from openhands.sdk.credential import VersionedCredentialBinding
+from openhands.sdk.errors import NotSupported, Unprocessable
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.model import ACPAgentSettings
@@ -158,15 +159,14 @@ async def discover_models(
     """
     config: Config = get_config(request)
     if config.conversation_runtime == "docker":
-        raise HTTPException(
-            status.HTTP_501_NOT_IMPLEMENTED,
-            "ACP model discovery runs only where conversations run in-process",
+        raise NotSupported(
+            "ACP model discovery runs only where conversations run in-process"
         )
     settings = body.agent_settings
     try:
         command = settings.resolve_acp_command()
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise Unprocessable(str(exc)) from exc
 
     secrets = await asyncio.to_thread(_resolve_secrets, body.secrets)
     bindings = await asyncio.to_thread(_codex_bindings, settings, config, secrets)

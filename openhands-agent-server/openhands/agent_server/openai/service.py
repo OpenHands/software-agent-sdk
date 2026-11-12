@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import HTTPException, status
 from pydantic import ValidationError
 
 from openhands.agent_server.agent_profiles_router import active_agent_profile
@@ -20,8 +19,9 @@ from openhands.agent_server.docker_runtime.routers import (
     _container,
     start_docker_conversation,
 )
+from openhands.agent_server.errors import ForwardedStatus
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.launch import launch_http_exception
+from openhands.agent_server.launch import launch_error
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionChoice,
     OpenAIChatCompletionChunk,
@@ -56,6 +56,15 @@ from openhands.sdk.conversation.request import (
 )
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    OperationFailed,
+    Unavailable,
+    UpstreamFailed,
+    UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.llm import Metrics
@@ -102,27 +111,18 @@ class PreparedGatewayRequest:
 def _profile_name_from_model(model: str) -> str:
     if model.startswith(_MODEL_PREFIX) and len(model) > len(_MODEL_PREFIX):
         return model[len(_MODEL_PREFIX) :]
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Unknown OpenHands model '{model}'. Use GET /v1/models.",
-    )
+    raise NotFound(f"Unknown OpenHands model '{model}'. Use GET /v1/models.")
 
 
 def _require_llm_profile(profile_name: str, config: Config) -> None:
     try:
         get_llm_profile_store().load(profile_name, cipher=config.cipher)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{profile_name}' not found",
-        )
+        raise NotFound(f"Profile '{profile_name}' not found")
     except TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Profile store is busy. Please retry.",
-        )
+        raise Unavailable("Profile store is busy. Please retry.")
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        raise Invalid(str(exc))
 
 
 def _content_to_sdk_parts(
@@ -146,16 +146,10 @@ def _content_to_sdk_parts(
             elif part.image_url is not None:
                 image_url = part.image_url.url
             else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="image_url content part is missing a url",
-                )
+                raise Invalid("image_url content part is missing a url")
             parts.append(ImageContent(image_urls=[image_url]))
             continue
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported content part type: {part.type}",
-        )
+        raise Invalid(f"Unsupported content part type: {part.type}")
     return parts
 
 
@@ -171,10 +165,7 @@ def _latest_user_message(messages: list[OpenAIChatMessage]) -> OpenAIChatMessage
     for message in reversed(messages):
         if message.role == "user":
             return message
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="At least one user message is required",
-    )
+    raise Invalid("At least one user message is required")
 
 
 def _system_text(messages: list[OpenAIChatMessage]) -> str:
@@ -202,16 +193,10 @@ def _response_content_to_sdk_parts(
             continue
         if part.type == "input_image":
             if not part.image_url:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="input_image content part is missing an image_url",
-                )
+                raise Invalid("input_image content part is missing an image_url")
             parts.append(ImageContent(image_urls=[part.image_url]))
             continue
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported Responses content part type: {part.type}",
-        )
+        raise Invalid(f"Unsupported Responses content part type: {part.type}")
     return parts
 
 
@@ -242,10 +227,7 @@ def _response_user_content(
 ) -> list[TextContent | ImageContent]:
     if isinstance(request.input, str):
         if not request.input:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Responses input must not be empty",
-            )
+            raise Invalid("Responses input must not be empty")
         return [TextContent(text=request.input)]
 
     messages = [
@@ -254,10 +236,7 @@ def _response_user_content(
         if message.role not in {"system", "developer"}
     ]
     if not any(message.role == "user" for message in messages):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Responses input must include a user message",
-        )
+        raise Invalid("Responses input must include a user message")
     if len(messages) == 1 and messages[0].role == "user":
         return _response_content_to_sdk_parts(messages[0])
 
@@ -281,10 +260,7 @@ def _create_conversation_request(
     _require_llm_profile(llm_profile, config)
     profile = active_agent_profile(config, config.cipher)
     if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No active Agent Profile; activate one to use the gateway",
-        )
+        raise Conflict("No active Agent Profile; activate one to use the gateway")
     settings = get_settings_store(config).load() or PersistedSettings()
     try:
         additions = AgentLaunchAdditions(
@@ -295,10 +271,7 @@ def _create_conversation_request(
             system_message_suffix_append=system_text or None,
         )
     except ValidationError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="System instructions are too long",
-        ) from None
+        raise Invalid("System instructions are too long") from None
     return settings.conversation_settings.create_request(
         StartConversationRequest,
         agent_profile_id=profile.id,
@@ -366,14 +339,12 @@ def prepare_response(
     conversation_id: UUID | None,
 ) -> PreparedGatewayRequest:
     if request.stream:
-        raise HTTPException(400, "Streaming responses are not supported yet")
+        raise Invalid("Streaming responses are not supported yet")
     if request.store:
-        raise HTTPException(
-            400, "Persistent response storage (store=True) is not supported yet"
-        )
+        raise Invalid("Persistent response storage (store=True) is not supported yet")
     if request.previous_response_id:
-        raise HTTPException(
-            400, "previous_response_id is not supported; replay input items instead"
+        raise Invalid(
+            "previous_response_id is not supported; replay input items instead"
         )
     user_content = _response_user_content(request)
     return PreparedGatewayRequest(
@@ -426,10 +397,7 @@ async def _wait_for_reused_conversation_completion(
             return last_status
 
         if time.monotonic() >= deadline:
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Agent run timed out",
-            )
+            raise UpstreamTimeout("Agent run timed out")
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 
@@ -438,22 +406,15 @@ def _raise_for_terminal_error(status_value: ConversationExecutionStatus) -> None
         ConversationExecutionStatus.ERROR,
         ConversationExecutionStatus.STUCK,
     ):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Agent run ended with status: {status_value.value}",
-        )
+        raise OperationFailed(f"Agent run ended with status: {status_value.value}")
     if status_value in (
         ConversationExecutionStatus.PAUSED,
         ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
     ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Agent run ended with status: {status_value.value}",
-        )
+        raise Conflict(f"Agent run ended with status: {status_value.value}")
     if status_value != ConversationExecutionStatus.FINISHED:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Agent run ended with unexpected status: {status_value.value}",
+        raise OperationFailed(
+            f"Agent run ended with unexpected status: {status_value.value}"
         )
 
 
@@ -579,10 +540,7 @@ async def list_openai_models() -> OpenAIModelListResponse:
     try:
         profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
     except TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Profile store is busy. Please retry.",
-        )
+        raise Unavailable("Profile store is busy. Please retry.")
     data = [
         OpenAIModel(
             id=f"{_MODEL_PREFIX}{profile['name']}",
@@ -632,7 +590,7 @@ async def _run_agent(
             registry=registry,
         )
     if config.conversation_runtime == "docker" and registry is None:
-        raise HTTPException(503, "Docker conversation runtime is unavailable")
+        raise Unavailable("Docker conversation runtime is unavailable")
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
@@ -666,16 +624,13 @@ async def _run_agent(
                 start_request
             )
         except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
-            raise launch_http_exception(exc) from exc
+            raise launch_error(exc) from exc
         conversation_id = conversation_info.id
         event_service = await conversation_service.get_event_service(
             conversation_info.id
         )
         if event_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Conversation did not start",
-            )
+            raise OperationFailed("Conversation did not start")
 
     if started_new_conversation:
         try:
@@ -683,10 +638,7 @@ async def _run_agent(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Agent run timed out",
-            ) from None
+            raise UpstreamTimeout("Agent run timed out") from None
     else:
         assert min_event_count is not None
         status_value = await _wait_for_reused_conversation_completion(
@@ -725,7 +677,7 @@ async def _run_docker_agent(
             .joinpath("meta.json")
             .is_file()
         ):
-            raise HTTPException(404, "Conversation not found")
+            raise NotFound("Conversation not found")
         docker_request = start_request.model_copy(
             update={
                 "workspace": LocalWorkspace(working_dir="/workspace"),
@@ -737,7 +689,7 @@ async def _run_docker_agent(
             registry,
         )
         if status_code >= 400:
-            raise HTTPException(
+            raise ForwardedStatus(
                 status_code, "Conversation runtime rejected the request"
             )
         await conversation_service.refresh_persisted_conversation(conversation_id)
@@ -763,11 +715,11 @@ async def _run_docker_agent(
                 except (ValueError, AttributeError):
                     detail = None
                 if detail == f"Conversation not found: {conversation_id}":
-                    raise HTTPException(404, detail)
-                raise HTTPException(
-                    502, "Conversation container does not provide the gateway route"
+                    raise NotFound(detail)
+                raise UpstreamFailed(
+                    "Conversation container does not provide the gateway route"
                 )
-            raise HTTPException(
+            raise ForwardedStatus(
                 response.status_code, "Conversation runtime rejected the gateway run"
             )
         result = response.json()
@@ -783,9 +735,9 @@ async def _run_docker_agent(
             ),
         )
     except httpx.TimeoutException as exc:
-        raise HTTPException(504, "Conversation runtime timed out") from exc
+        raise UpstreamTimeout("Conversation runtime timed out") from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(502, "Conversation container unreachable") from exc
+        raise UpstreamFailed("Conversation container unreachable") from exc
     finally:
         registry.detach_session(conversation_id)
 
@@ -802,10 +754,7 @@ async def run_chat_completion(
 ) -> OpenAIChatCompletionResult:
     if request.stream:
         # SSE streaming needs incremental agent-event forwarding; add it separately.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Streaming chat completions are not supported yet",
-        )
+        raise Invalid("Streaming chat completions are not supported yet")
 
     prepared = prepared or prepare_chat_completion(
         request, config, reusable_conversation_id
