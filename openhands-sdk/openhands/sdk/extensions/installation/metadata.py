@@ -303,9 +303,8 @@ class InstallationMetadata(BaseModel):
     def save_to_dir(self, installed_dir: Path) -> None:
         """Save metadata to the installed extensions directory.
 
-        An existing file keeps its permission bits, and, when root saves it, its
-        owner. A new file gets its mode from the umask. Both as before saves
-        became atomic, when the file was rewritten in place.
+        An existing regular file keeps its permission bits, and, when root saves
+        it, its owner. A new file gets its mode from the umask.
         """
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
