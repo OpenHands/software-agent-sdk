@@ -59,6 +59,10 @@ from openhands.agent_server.models import (
     trim_conversation_response_skills,
 )
 from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.agent_server.search_index import (
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+)
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -227,7 +231,14 @@ async def search_conversation_content(
             max_length=256,
         ),
     ],
-    limit: Annotated[int, Query(title="Max hits to return", gt=0, le=100)] = 50,
+    limit: Annotated[
+        int,
+        Query(
+            title="Max hits to return",
+            gt=0,
+            le=MAX_SEARCH_LIMIT,
+        ),
+    ] = DEFAULT_SEARCH_LIMIT,
 ) -> ContentSearchResponse:
     """Full-text content search over conversation history (local only).
 

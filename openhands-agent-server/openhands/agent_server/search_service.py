@@ -15,10 +15,17 @@ from pathlib import Path
 from uuid import UUID
 
 from openhands.agent_server.config import Config
-from openhands.agent_server.search_index import SearchIndex, backfill
+from openhands.agent_server.search_index import (
+    DEFAULT_SEARCH_LIMIT,
+    SearchIndex,
+    backfill,
+)
 
 
 logger = logging.getLogger(__name__)
+
+_UUID_HEX_LEN = 32  # len(UUID.hex): on-disk conversation dir names
+_WAL_COMPANION_SUFFIXES = ("-wal", "-shm")
 
 
 def _canonical_conversation_id(conv_id: str) -> str:
@@ -29,7 +36,7 @@ def _canonical_conversation_id(conv_id: str) -> str:
     else (``ConversationInfo.id``); clients use hits' ids to open
     conversations, so search hits must carry the dashed form.
     """
-    return str(UUID(conv_id)) if len(conv_id) == 32 else conv_id
+    return str(UUID(conv_id)) if len(conv_id) == _UUID_HEX_LEN else conv_id
 
 
 class ContentSearchService:
@@ -56,7 +63,7 @@ class ContentSearchService:
                     )
                     self._index_path.unlink(missing_ok=True)
                     # WAL companions can hold the same corruption.
-                    for suffix in ("-wal", "-shm"):
+                    for suffix in _WAL_COMPANION_SUFFIXES:
                         self._index_path.with_name(
                             self._index_path.name + suffix
                         ).unlink(missing_ok=True)
@@ -80,7 +87,9 @@ class ContentSearchService:
         with self._lock:
             self._index.remove_conversation(conv_id.replace("-", ""))
 
-    def search(self, query: str, limit: int = 50) -> tuple[list[dict], bool]:
+    def search(
+        self, query: str, limit: int = DEFAULT_SEARCH_LIMIT
+    ) -> tuple[list[dict], bool]:
         """Return ``(hits, capped)``; ``capped`` is True only when results were
         actually truncated (one extra row is fetched to tell)."""
         if not query.strip():

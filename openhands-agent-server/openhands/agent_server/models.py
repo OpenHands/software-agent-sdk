@@ -414,13 +414,17 @@ class ContentSearchHit(BaseModel):
 
     conversation_id: str = Field(description="Conversation this hit belongs to")
     title: str | None = Field(
-        default=None, description="Conversation title at index time"
+        default=None,
+        description="Conversation title at index time; null when the "
+        "conversation has no title yet (clients should fall back to an "
+        "'untitled' label)",
     )
     event_id: str = Field(description="Event whose text matched (synthetic for titles)")
     source: str = Field(description="'title' or the event's source (user/agent/…)")
     timestamp: str | None = Field(default=None, description="Event timestamp")
     snippet: str = Field(
-        description="Short text around the best match, no highlighting markup"
+        description="Short text around the best match; matched words are "
+        "wrapped in [ ] markers for clients to highlight"
     )
 
 

@@ -20,14 +20,20 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from openhands.sdk.conversation.persistence_const import EVENTS_DIR
 from openhands.sdk.utils.redact import (
     redact_text_secrets,
     redact_url_credentials_in_text,
 )
 
 
-_EVENTS_DIR = "events"
 _META_FILE = "meta.json"
+_EVENT_FILE_GLOB = "event-*.json"
+
+# API contract for the search endpoint's limit parameter; the router's
+# Query defaults/bounds and the service/index defaults all come from here.
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 100
 
 # Tokenizer mirror: the index's unicode61 tokenizer splits text on any
 # non-alphanumeric character, so the query is split the same way. Pasted
@@ -44,13 +50,16 @@ def _tokens(query: str) -> list[str]:
 # prefix query ("tok*") and neutralizes operators, quotes and parens.
 # The porter tokenizer stems both indexed text and MATCH queries, so
 # plural/verb variants match in both directions without extra work.
+_DQUOTE = '"'
+
+
 def _quote(token: str) -> str:
-    return f'"{token.replace(chr(34), chr(34) * 2)}"*'
+    return f'"{token.replace(_DQUOTE, _DQUOTE * 2)}"*'
 
 
 def _quote_exact(token: str) -> str:
     """Quoted token without the prefix star: matches the stemmed word only."""
-    return f'"{token.replace(chr(34), chr(34) * 2)}"'
+    return f'"{token.replace(_DQUOTE, _DQUOTE * 2)}"'
 
 
 def _is_subsequence(needle: str, hay: str) -> bool:
@@ -59,7 +68,7 @@ def _is_subsequence(needle: str, hay: str) -> bool:
     return all(ch in it for ch in needle)
 
 
-def _levenshtein(a: str, b: str, cap: int = 2) -> int:
+def _levenshtein(a: str, b: str, cap: int) -> int:
     """Damerau-Levenshtein distance, capped; returns cap+1 past the cap.
 
     Adjacent transpositions count as one edit ("wobmat" for "wombat").
@@ -95,6 +104,32 @@ def _levenshtein(a: str, b: str, cap: int = 2) -> int:
 # being "fast enough" on every search, so fuzzy expansion degrades to
 # prefix-only (stemmed prefix queries still work; typos stop being corrected).
 _VOCAB_FUZZY_LIMIT = 250_000
+
+# Fuzzy-expansion tuning knobs. Thresholds exist so short tokens do not
+# explode into noisy expansions: only 4+ letter tokens get typo/substring
+# correction, 7+ letter tokens tolerate two edits (shorter ones one),
+# and each token expands to at most this many candidates.
+_FUZZY_MIN_TOKEN_LEN = 4
+_FUZZY_TWO_TYPO_TOKEN_LEN = 7
+_FUZZY_SUBSTRING_TOKEN_LEN = 5
+_FUZZY_MAX_EXPANSIONS = 5
+# Typed-too-fast fallback cap: the matched word may skip at most this many
+# letters ("huing" -> "hugging"), so subsequence stays a last resort.
+_FUZZY_SUBSEQUENCE_GAP = 2
+
+# A porter stem counts as "truncated" when this many letters were removed
+# and that is at least a third of the token; truncated stems are too broad
+# to use as match prefixes (see SearchIndex._stem_truncated).
+_STEM_TRUNC_MIN_TOKEN_LEN = 5
+_STEM_TRUNC_MIN_REMOVED = 3
+
+# Snippet shaping for search results. The bracket markers are an API
+# contract with clients: the UI splits the snippet on them to bold the
+# matched words, so they must not collide with ordinary prose.
+_SNIPPET_MARKER_START = "["
+_SNIPPET_MARKER_END = "]"
+_SNIPPET_ELLIPSIS = "…"
+_SNIPPET_MAX_TOKENS = 12
 
 
 # Secret-literal shapes the SDK's redact utilities do not cover (verified
@@ -300,7 +335,7 @@ class SearchIndex:
         typo matches (1-2 edits) for 4+ char tokens, substring matches for
         5+ char tokens.
         """
-        if len(token) < 4:
+        if len(token) < _FUZZY_MIN_TOKEN_LEN:
             return []
         terms, buckets = self._vocab()
         if not terms:
@@ -313,36 +348,46 @@ class SearchIndex:
             if terms[i] != token:
                 prefix_terms.append(terms[i])
             i += 1
-            if len(prefix_terms) >= 5:
+            if len(prefix_terms) >= _FUZZY_MAX_EXPANSIONS:
                 break
         if prefix_terms:
             return prefix_terms
 
-        max_typos = 1 if len(token) < 7 else 2
+        max_typos = 1 if len(token) < _FUZZY_TWO_TYPO_TOKEN_LEN else 2
         fuzzy: list[str] = []
         for length in range(len(token) - max_typos, len(token) + max_typos + 1):
             for term in buckets.get(length, []):
                 if _levenshtein(token, term, max_typos) <= max_typos:
                     fuzzy.append(term)
-        if not fuzzy and len(token) >= 5:
+        if not fuzzy and len(token) >= _FUZZY_SUBSTRING_TOKEN_LEN:
             for term in terms:
                 if token in term:
                     fuzzy.append(term)
-        if not fuzzy and len(token) >= 5:
+        if not fuzzy and len(token) >= _FUZZY_SUBSTRING_TOKEN_LEN:
             # Typed-too-fast fallback: every letter present, in order, but
             # some letters were skipped ("huing" -> "hugging", "wobmt" ->
-            # "wombat"). Gap is capped at 2 letters so this stays a last
-            # resort, not a wildcard.
+            # "wombat"). Gap is capped so this stays a last resort, not a
+            # wildcard.
             for term in terms:
-                if 0 <= len(term) - len(token) <= 2 and _is_subsequence(token, term):
+                if 0 <= len(term) - len(
+                    token
+                ) <= _FUZZY_SUBSEQUENCE_GAP and _is_subsequence(token, term):
                     fuzzy.append(term)
-        return fuzzy[:5]
+        return fuzzy[:_FUZZY_MAX_EXPANSIONS]
 
     # -- writes ---------------------------------------------------------
 
+    # Stable FTS rowids are derived from sha256(conv_id, event_id): the
+    # first 8 digest bytes as a positive int63 keep ids unique across
+    # backfills while staying inside SQLite's signed rowid range.
+    _ROWID_HASH_BYTES = 8
+    _ROWID_INT63_MASK = (1 << 63) - 1
+
     def _fts_rowid(self, conv_id: str, event_id: str) -> int:
         h = hashlib.sha256(f"{conv_id}:{event_id}".encode()).digest()
-        return int.from_bytes(h[:8], "big") & 0x7FFFFFFFFFFFFFFF
+        return (
+            int.from_bytes(h[: self._ROWID_HASH_BYTES], "big") & self._ROWID_INT63_MASK
+        )
 
     def _fts_rowid_assign(self, conv_id: str, event_id: str) -> int:
         """Reserve a stable, collision-free FTS rowid for (conv_id, event_id)."""
@@ -355,6 +400,19 @@ class SearchIndex:
             if owner is None or owner == (conv_id, event_id):
                 return rowid
             rowid += 1  # astronomically rare hash collision; just step aside
+
+    def _upsert_fts_rows(self, rowid: int, text: str, conv_id: str) -> None:
+        """Write masked text to both FTS twins (stemmed and raw-word).
+
+        Both tables share the same rowids, so the fuzzy vocabulary always
+        mirrors the searchable index exactly.
+        """
+        masked = mask_secrets(text)
+        for table in ("messages_fts", "messages_words_fts"):
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO {table}(rowid, text, conv_id) VALUES(?,?,?)",
+                (rowid, masked, conv_id),
+            )
 
     def index_conversation(self, conv_id: str, title: str | None) -> None:
         """Index a conversation's title; re-indexing replaces the old one.
@@ -380,15 +438,7 @@ class SearchIndex:
             "VALUES(?,?,?,?,NULL)",
             (event_id, conv_id, rowid, "title"),
         )
-        self._conn.execute(
-            "INSERT OR REPLACE INTO messages_fts(rowid, text, conv_id) VALUES(?,?,?)",
-            (rowid, mask_secrets(title or ""), conv_id),
-        )
-        self._conn.execute(
-            "INSERT OR REPLACE INTO messages_words_fts(rowid, text, conv_id) "
-            "VALUES(?,?,?)",
-            (rowid, mask_secrets(title or ""), conv_id),
-        )
+        self._upsert_fts_rows(rowid, title or "", conv_id)
         self._conn.commit()
 
     def index_event(self, conv_id: str, event: dict) -> bool:
@@ -414,15 +464,7 @@ class SearchIndex:
         if cur.rowcount == 0:  # already indexed
             self._conn.commit()
             return False
-        self._conn.execute(
-            "INSERT OR REPLACE INTO messages_fts(rowid, text, conv_id) VALUES(?,?,?)",
-            (rowid, mask_secrets(text), conv_id),
-        )
-        self._conn.execute(
-            "INSERT OR REPLACE INTO messages_words_fts(rowid, text, conv_id) "
-            "VALUES(?,?,?)",
-            (rowid, mask_secrets(text), conv_id),
-        )
+        self._upsert_fts_rows(rowid, text, conv_id)
         self._conn.commit()
         self._vocab_cache = None  # new words may have entered the vocabulary
         return True
@@ -508,11 +550,11 @@ class SearchIndex:
         "Large" = 3+ letters and at least a third of the token; such stems
         match far too many unrelated words to be used as prefixes.
         """
-        if len(token) < 5:
+        if len(token) < _STEM_TRUNC_MIN_TOKEN_LEN:
             return False
         stem = self._porter_stem(token)
         removed = len(token) - len(stem)
-        return removed >= 3 and removed * 3 >= len(token)
+        return removed >= _STEM_TRUNC_MIN_REMOVED and removed * 3 >= len(token)
 
     def _porter_stem(self, word: str) -> str:
         """Porter-stem one word via a one-row in-memory fts5 probe table.
@@ -541,14 +583,14 @@ class SearchIndex:
         row = conn.execute("SELECT term FROM stem_probe_vocab").fetchone()
         return row[0] if row else word
 
-    def search(self, query: str, limit: int = 50) -> list[SearchHit]:
+    def search(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[SearchHit]:
         fts_query = self._build_fuzzy_fts_query(query)
         if not fts_query:
             return []
         rows = self._conn.execute(
             """
             SELECT f.conv_id, c.title, m.event_id, m.source, m.ts,
-                   snippet(messages_fts, 0, '[', ']', '…', 12) AS snip,
+                   snippet(messages_fts, 0, ?, ?, ?, ?) AS snip,
                    rank
             FROM messages_fts f
             JOIN messages m ON m.fts_rowid = f.rowid
@@ -557,7 +599,14 @@ class SearchIndex:
             ORDER BY rank
             LIMIT ?
             """,
-            (fts_query, limit),
+            (
+                _SNIPPET_MARKER_START,
+                _SNIPPET_MARKER_END,
+                _SNIPPET_ELLIPSIS,
+                _SNIPPET_MAX_TOKENS,
+                fts_query,
+                limit,
+            ),
         ).fetchall()
         return [
             SearchHit(
@@ -578,51 +627,57 @@ class SearchIndex:
         return {"conversations": convs, "messages": msgs}
 
 
+def _freshness_stamp(conv_dir: Path) -> float | None:
+    """Newest mtime among the conversation dir, ``meta.json`` and ``events/``.
+
+    Returns None for directories that are not conversations (no meta.json).
+    In-place edits (title renames via PATCH, ...) rewrite meta.json or files
+    under events/ without touching the conversation directory's own mtime,
+    so the stamp must be the newest of the three; new event files bump
+    events/ directly.
+    """
+    meta_file = conv_dir / _META_FILE
+    if not meta_file.is_file():
+        return None
+    stamp = max(conv_dir.stat().st_mtime, meta_file.stat().st_mtime)
+    events_dir = conv_dir / EVENTS_DIR
+    if events_dir.is_dir():
+        stamp = max(stamp, events_dir.stat().st_mtime)
+    return stamp
+
+
 def backfill(
     index: SearchIndex, conversations_path: Path, *, incremental: bool = False
 ) -> dict:
     """Index every conversation found under ``conversations_path``.
 
     Idempotent: events already present are skipped. With
-    ``incremental=True``, conversations whose directory mtime is unchanged
-    since the last run are skipped entirely.
+    ``incremental=True``, conversations whose freshness stamp (see
+    ``_freshness_stamp``) is unchanged since the last run are skipped.
     """
     indexed_events = 0
     conv_count = 0
     skipped = 0
     seen_ids: set[str] = set()
     for conv_dir in sorted(conversations_path.glob("*/")):
-        meta_file = conv_dir / _META_FILE
-        if not meta_file.is_file():
+        stamp = _freshness_stamp(conv_dir)
+        if stamp is None:
             continue
         conv_id = conv_dir.name
         seen_ids.add(conv_id)
-        # In-place edits (title renames via PATCH, ...) rewrite meta.json or
-        # files under events/ without touching the conversation directory's
-        # own mtime, so the freshness stamp must be the newest of the three:
-        # the directory, meta.json, and the events directory. New event
-        # files bump events/ directly, which the stamp below covers.
-        stamp = conv_dir.stat().st_mtime
-        meta_mtime = meta_file.stat().st_mtime
-        if meta_mtime > stamp:
-            stamp = meta_mtime
-        events_dir = conv_dir / _EVENTS_DIR
-        if events_dir.is_dir():
-            events_mtime = events_dir.stat().st_mtime
-            if events_mtime > stamp:
-                stamp = events_mtime
         if incremental:
             if index.conversation_mtime(conv_id) == stamp:
                 skipped += 1
                 continue
         conv_count += 1
+        meta_file = conv_dir / _META_FILE
         try:
             meta = json.loads(meta_file.read_text())
         except json.JSONDecodeError:
             continue
         index.index_conversation(conv_id, meta.get("title"))
         index.note_conversation_sync(conv_id, stamp)
-        for event_file in sorted(events_dir.glob("event-*.json")):
+        for event_file in sorted((conv_dir / EVENTS_DIR).glob(_EVENT_FILE_GLOB)):
             try:
                 event = json.loads(event_file.read_text())
             except json.JSONDecodeError:
