@@ -90,13 +90,6 @@ def _run_threads(*targets: tuple[str, Callable[[], object]]) -> list[BaseExcepti
     return errors
 
 
-def _source_of(installation_dir: Path, name: str) -> str:
-    data = json.loads(
-        InstallationMetadata.get_metadata_path(installation_dir).read_text()
-    )
-    return data["extensions"][name]["source"]
-
-
 @pytest.mark.parametrize("operation", ["install", "disable"])
 def test_list_cannot_load_metadata_while_another_session_is_open(
     manager: InstallationManager[MockExtension],

@@ -35,7 +35,6 @@ from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
     InstallationManager,
-    InstallationMetadata,
 )
 from openhands.sdk.extensions.installation.manager import DEFAULT_CACHE_DIR
 from openhands.sdk.logger import get_logger
@@ -80,19 +79,6 @@ def _manager(installed_dir: Path) -> InstallationManager[CanvasExtensionManifest
         installation_dir=installed_dir,
         installation_interface=CanvasExtensionInstallationInterface(),
     )
-
-
-def _tracked_names(installed_dir: Path) -> set[str]:
-    """Names with a real, valid tracked entry, not just a metadata key.
-
-    A stale record with no matching directory must not count as "already
-    installed" -- otherwise a real install of that name would wrongly
-    inherit its state as if this were a force-reinstall.
-    """
-    if not installed_dir.exists():
-        return set()
-    metadata = InstallationMetadata.load_from_dir(installed_dir)
-    return {info.name for info in metadata.validate_tracked(installed_dir)}
 
 
 def _force_disable_new(
@@ -181,9 +167,16 @@ def list_installed_canvas_extensions(
     discovered this way also land disabled.
     """
     installed_dir = _resolve_installed_dir(installed_dir)
+    if not installed_dir.exists():
+        return []
     manager = _manager(installed_dir)
-    pre_existing = _tracked_names(installed_dir)
-    infos = manager.list_installed()
+    # Decided under the lock the listing takes: a reinstall swapping the
+    # directory in can't make an installed extension look new meanwhile.
+    with manager.metadata_session() as session:
+        pre_existing = {
+            info.name for info in session.metadata.validate_tracked(installed_dir)
+        }
+        infos = session.sync()
     return [_force_disable_new(manager, info, pre_existing) for info in infos]
 
 
