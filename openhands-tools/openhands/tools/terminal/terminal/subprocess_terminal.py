@@ -508,7 +508,7 @@ class SubprocessTerminal(TerminalInterface):
             return
 
         with self.output_lock:
-            data = "".join(self.output_buffer)
+            data = "".join(self.output_buffer).replace("\r", "")
             start_idx = data.rfind(CMD_OUTPUT_PS1_BEGIN)
             end_idx = data.rfind(CMD_OUTPUT_PS1_END)
             self.output_buffer.clear()
