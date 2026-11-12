@@ -196,6 +196,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             check=False,
             env=sanitized_env(),
         )
+        if result.returncode not in (0, 1):
+            raise RuntimeError(
+                f"glob search failed (ripgrep exit {result.returncode}): "
+                f"{(result.stderr or '').strip()}"
+            )
 
         # Parse output into file paths (ripgrep already sorted by --sortr=modified)
         lines = []
