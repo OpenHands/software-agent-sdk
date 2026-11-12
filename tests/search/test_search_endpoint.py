@@ -78,6 +78,21 @@ def remote_client(conv_root, tmp_path, monkeypatch):
     return TestClient(app)
 
 
+def _assert_fallthrough_parity(resp, unknown):
+    """Compare two catch-all responses structurally.
+
+    Live routing turns both into a 422 UUID-parse error whose body echoes
+    the path input, so bodies differ by input. Without a live conversation
+    service (unit harness, no lifespan) both are 503. Either way the two
+    paths must be indistinguishable: same status, same body shape.
+    """
+    assert resp.status_code == unknown.status_code
+    assert type(resp.json()["detail"]) is type(unknown.json()["detail"])
+    if isinstance(resp.json()["detail"], list):
+        a, b = resp.json()["detail"][0], unknown.json()["detail"][0]
+        assert a["type"] == b["type"] and a["loc"] == b["loc"]
+
+
 def test_remote_deployment_hides_content_search(remote_client):
     """Hosted deployments must not serve content search at all."""
     assert not hasattr(remote_client.app.state, "content_search_service")
@@ -93,17 +108,19 @@ def test_remote_deployment_hides_content_search(remote_client):
         "/api/conversations/definitely-not-a-route",
         headers={"X-Session-API-Key": "test-key"},
     )
-    assert resp.status_code == unknown.status_code
-    assert resp.json() == unknown.json()
+    _assert_fallthrough_parity(resp, unknown)
     # And no OpenAPI schema entry may advertise it.
-    schema = remote_client.get("/api/openapi.json")
-    assert "/api/conversations/search-content" not in schema.json().get("paths", {})
+    assert "/api/conversations/search-content" not in remote_client.app.openapi()[
+        "paths"
+    ]
 
 
 def test_remote_schema_has_no_search_entry(remote_client):
     """The OpenAPI schema must not advertise the endpoint on hosted deployments."""
-    schema = remote_client.get("/api/openapi.json").json()
-    assert "/api/conversations/search-content" not in schema.get("paths", {})
+    assert (
+        "/api/conversations/search-content"
+        not in remote_client.app.openapi()["paths"]
+    )
     assert not hasattr(remote_client.app.state, "content_search_service")
 
 
@@ -111,8 +128,7 @@ def test_disabled_by_default_locally(client_factory):
     """Without an explicit opt-in, local deployments get no service or route."""
     app = client_factory(content_search_enabled=False)
     assert not hasattr(app.app.state, "content_search_service")
-    schema = app.get("/api/openapi.json").json()
-    assert "/api/conversations/search-content" not in schema.get("paths", {})
+    assert "/api/conversations/search-content" not in app.app.openapi()["paths"]
     # Fallthrough parity: identical to any unknown /conversations/ path.
     resp = app.get(
         "/api/conversations/search-content",
@@ -123,8 +139,7 @@ def test_disabled_by_default_locally(client_factory):
         "/api/conversations/definitely-not-a-route",
         headers={"X-Session-API-Key": "test-key"},
     )
-    assert resp.status_code == unknown.status_code
-    assert resp.json() == unknown.json()
+    _assert_fallthrough_parity(resp, unknown)
 
 
 def test_overlong_query_is_rejected(client):

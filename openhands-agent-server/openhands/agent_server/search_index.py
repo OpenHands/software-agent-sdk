@@ -331,6 +331,15 @@ class SearchIndex:
             rowid += 1  # astronomically rare hash collision; just step aside
 
     def index_conversation(self, conv_id: str, title: str | None) -> None:
+        """Index a conversation's title; re-indexing replaces the old one.
+
+        The synthetic event id stored in ``messages`` is the composite
+        ``conv_id:__title__``, so the rowid ownership check in
+        ``_fts_rowid_assign`` must see that same composite id — otherwise
+        every re-index steps aside to a fresh rowid, leaving the previous
+        title row in place (searchable as stale text) while the new text
+        lands in an orphan row the search join can never reach.
+        """
         self._vocab_cache = None
         self._conn.execute(
             "INSERT INTO conversations(conv_id, title) VALUES(?, ?) "
@@ -338,11 +347,12 @@ class SearchIndex:
             (conv_id, title),
         )
         # Titles are searchable via a synthetic per-conversation "title" row.
-        rowid = self._fts_rowid_assign(conv_id, "__title__")
+        event_id = f"{conv_id}:__title__"
+        rowid = self._fts_rowid_assign(conv_id, event_id)
         self._conn.execute(
             "INSERT OR IGNORE INTO messages(event_id, conv_id, fts_rowid, source, ts) "
             "VALUES(?,?,?,?,NULL)",
-            (f"{conv_id}:__title__", conv_id, rowid, "title"),
+            (event_id, conv_id, rowid, "title"),
         )
         self._conn.execute(
             "INSERT OR REPLACE INTO messages_fts(rowid, text, conv_id) VALUES(?,?,?)",
@@ -562,9 +572,22 @@ def backfill(
             continue
         conv_id = conv_dir.name
         seen_ids.add(conv_id)
-        dir_mtime = conv_dir.stat().st_mtime
+        # In-place edits (title renames via PATCH, ...) rewrite meta.json or
+        # files under events/ without touching the conversation directory's
+        # own mtime, so the freshness stamp must be the newest of the three:
+        # the directory, meta.json, and the events directory. New event
+        # files bump events/ directly, which the stamp below covers.
+        stamp = conv_dir.stat().st_mtime
+        meta_mtime = meta_file.stat().st_mtime
+        if meta_mtime > stamp:
+            stamp = meta_mtime
+        events_dir = conv_dir / _EVENTS_DIR
+        if events_dir.is_dir():
+            events_mtime = events_dir.stat().st_mtime
+            if events_mtime > stamp:
+                stamp = events_mtime
         if incremental:
-            if index.conversation_mtime(conv_id) == dir_mtime:
+            if index.conversation_mtime(conv_id) == stamp:
                 skipped += 1
                 continue
         conv_count += 1
@@ -573,10 +596,7 @@ def backfill(
         except json.JSONDecodeError:
             continue
         index.index_conversation(conv_id, meta.get("title"))
-        index.note_conversation_sync(conv_id, dir_mtime)
-        events_dir = conv_dir / _EVENTS_DIR
-        if not events_dir.is_dir():
-            continue
+        index.note_conversation_sync(conv_id, stamp)
         for event_file in sorted(events_dir.glob("event-*.json")):
             try:
                 event = json.loads(event_file.read_text())
