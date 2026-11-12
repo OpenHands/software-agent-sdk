@@ -1120,3 +1120,44 @@ async def test_a_worker_that_resolved_itself_is_not_judged():
         "resolved": "auto",
         "resolvenote": "agent",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_does_not_wait_for_the_last_turns_judge():
+    """Live F36.resolved: a message to a resolved conversation reopened it only
+    after the previous turn's judge answered, 8 to 25 seconds later."""
+    store = _Tags({"project": "p1"})
+    release = asyncio.Event()
+
+    async def slow_judge(state: ResolutionState) -> ResolutionVerdict | None:
+        await release.wait()
+        return verdict_from_judgments({"handled": 1, "task_done": 1})
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=slow_judge,
+    )
+    for event in (
+        _message("user", "Pick a colour"),
+        _status("running"),
+        _message("agent", "Blue."),
+        _status("finished"),
+    ):
+        await subscriber(event)
+    for _ in range(50):
+        if "turn" in store.tags:
+            break
+        await asyncio.sleep(0.01)
+    store.tags["resolved"] = "user"
+
+    await subscriber(_message("user", "Now pick a shape"))
+    for _ in range(50):
+        if "resolved" not in store.tags:
+            break
+        await asyncio.sleep(0.01)
+
+    assert "resolved" not in store.tags
+    assert not release.is_set()
+    await subscriber.drain()

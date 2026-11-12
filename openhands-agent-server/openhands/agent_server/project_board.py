@@ -307,6 +307,9 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     # Messages to the coordinator, delivered one after another in event order
     # and apart from the tag writes.
     _notify_tail: asyncio.Task | None = field(default=None, init=False)
+    _judging: "asyncio.Future[ResolutionVerdict | None] | None" = field(
+        default=None, init=False
+    )
 
     async def __call__(self, event: Event) -> None:
         try:
@@ -326,6 +329,10 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 # one.
                 return
             if event.source == "user":
+                # The user moved on: the last turn's verdict no longer
+                # matters, and the reopen below should not wait for it.
+                if self._judging is not None:
+                    self._judging.cancel()
                 self._reset()
                 self._asked_since_user = False
                 self._ask = None
@@ -510,7 +517,12 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             # outcome meanwhile rather than no outcome at all.
             await self._set_turn(turn, ask)
             shown = True
-            verdict = await self._judge(judged)
+            judging = asyncio.ensure_future(self._judge(judged))
+            self._judging = judging
+            await asyncio.wait({judging})
+            self._judging = None
+            # Cancelled by a new user message: keep the heuristic's outcome.
+            verdict = None if judging.cancelled() else judging.result()
         heuristic = (turn, ask)
         if verdict is not None:
             # The judge decides whether the reply waits on the user, also
