@@ -1748,6 +1748,8 @@ class LocalConversation(BaseConversation):
 
     def load_plugin(self, plugin_ref: str) -> None:
         """Load a plugin from the conversation's registered marketplaces."""
+        from openhands.sdk.agent.agent import Agent
+
         self._ensure_plugins_loaded()
         spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
 
@@ -1765,7 +1767,7 @@ class LocalConversation(BaseConversation):
         )
 
         get_secret = self._state.secret_registry.get_secret_value
-        gateway_mode = getattr(self.agent, "mcp_gateway", False)
+        gateway_mode = isinstance(self.agent, Agent) and self.agent.mcp_gateway
         runtime_plugin_mcp: dict[str, MCPServer] = {}
         if plugin.mcp_config:
             runtime_plugin_mcp = expand_mcp_servers(plugin.mcp_config, get_secret)
