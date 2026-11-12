@@ -156,6 +156,12 @@ class ConversationState(OpenHandsModel):
         description="Directory for persisting conversation state and events. "
         "If None, conversation will not be persisted.",
     )
+    mcp_gateway_selected_tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Namespaced MCP tools selected for this conversation; None means all."
+        ),
+    )
 
     max_iterations: int = Field(
         default=500,

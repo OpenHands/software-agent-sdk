@@ -75,6 +75,11 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.gateway import (
+    CallMCPToolTool,
+    ListMCPToolsTool,
+    MCPToolGateway,
+)
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -364,6 +369,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_gateway: MCPToolGateway | None = None
         self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -1672,11 +1678,57 @@ class LocalConversation(BaseConversation):
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
+        if getattr(self.agent, "mcp_gateway", False):
+            if self.agent.filter_tools_regex:
+                raise ValueError(
+                    "MCP gateway does not support filter_tools_regex; use "
+                    "select_mcp_tools to restrict downstream tools"
+                )
+            selected = self._state.mcp_gateway_selected_tools
+            if not self._state.events and selected is None:
+                selected = getattr(self.agent, "mcp_gateway_initial_tools", None)
+                self._state.mcp_gateway_selected_tools = selected
+            gateway = MCPToolGateway(selected)
+            gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
+            self._mcp_gateway = gateway
+            list_tool = ListMCPToolsTool.create(gateway=gateway)[0]
+            if getattr(self.agent, "mcp_gateway_startup_catalog", False):
+                list_tool = list_tool.model_copy(
+                    update={
+                        "prompt_guidance": (
+                            "<MCP_CATALOG>\n"
+                            + json.dumps(gateway.list_tools())
+                            + "\n</MCP_CATALOG>\n"
+                            "Call list_mcp_tools again if this catalog changes."
+                        )
+                    }
+                )
+            return [list_tool, *CallMCPToolTool.create(gateway=gateway)]
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
             on_tools_reconciled=self._on_mcp_tools_reconciled,
         )
+
+    @property
+    def mcp_gateway(self) -> MCPToolGateway:
+        self._ensure_agent_ready()
+        if self._mcp_gateway is None:
+            raise ValueError("MCP gateway is not enabled for this conversation")
+        return self._mcp_gateway
+
+    def select_mcp_tools(self, names: Sequence[str] | None) -> None:
+        """Change the selected gateway tools while the conversation is not running."""
+        gateway = self.mcp_gateway
+        with self._state:
+            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
+                raise RuntimeError(
+                    "Pause the conversation before changing MCP selection"
+                )
+            gateway.select_tools(names)
+            self._state.mcp_gateway_selected_tools = (
+                sorted(set(names)) if names is not None else None
+            )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -1717,6 +1769,10 @@ class LocalConversation(BaseConversation):
             repo_path=spec.repo_path,
         )
         plugin = Plugin.load(path)
+        if self._agent_ready and self._mcp_gateway and plugin.mcp_config:
+            raise ValueError(
+                "Runtime plugin MCP servers are not supported by the MCP gateway"
+            )
         logger.info(
             f"Loaded plugin '{plugin.manifest.name}'"
             + (f" @ {resolved_ref[:8]}" if resolved_ref else "")

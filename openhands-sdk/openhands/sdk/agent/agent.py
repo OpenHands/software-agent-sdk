@@ -466,6 +466,27 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "template receives it as the `persona` kwarg."
         ),
     )
+    mcp_gateway: bool = Field(
+        default=False,
+        description=(
+            "Expose configured MCP servers through stable list_mcp_tools and "
+            "call_mcp_tool tools instead of registering each downstream tool."
+        ),
+    )
+    mcp_gateway_startup_catalog: bool = Field(
+        default=False,
+        description=(
+            "Include the initial selected MCP tool schemas in the system prompt. "
+            "Off by default to avoid large catalogs consuming context."
+        ),
+    )
+    mcp_gateway_initial_tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Initially selected namespaced MCP tools; None exposes all. "
+            "Use LocalConversation.select_mcp_tools to change selection later."
+        ),
+    )
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
         default_factory=ParallelToolExecutor
     )

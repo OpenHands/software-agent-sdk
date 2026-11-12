@@ -36,8 +36,10 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.mcp import MCPClient, create_mcp_tools
 from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.mcp.gateway import MCPToolGateway
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
+    DefaultMCPToolProvider,
     _refresh_tools,
     _ToolListChangedHandler,
 )
@@ -327,6 +329,67 @@ def progressive_server():
     thread.start()
     _wait_for_port(port)
     yield port
+
+
+def test_gateway_catalog_refreshes_on_real_mcp_list_changed(progressive_server: int):
+    config = _native_config(
+        {
+            "mcpServers": {
+                "progressive": {
+                    "transport": "http",
+                    "url": f"http://127.0.0.1:{progressive_server}/mcp",
+                }
+            }
+        }
+    )
+    gateway = MCPToolGateway()
+    try:
+        gateway.connect(config, DefaultMCPToolProvider())
+        initial = gateway.list_tools()
+        names = {tool["name"] for tool in initial["tools"]}
+        assert "progressive.register_extra_tool" in names
+        assert "progressive.extra" not in names
+        result = gateway.call(
+            "progressive.register_extra_tool", {}, initial["revision"], None
+        )
+        assert not result.is_error
+
+        deadline = time.time() + 10
+        updated = gateway.list_tools()
+        while time.time() < deadline:
+            updated = gateway.list_tools()
+            if "progressive.extra" in {t["name"] for t in updated["tools"]}:
+                break
+            time.sleep(0.1)
+        assert "progressive.extra" in {t["name"] for t in updated["tools"]}
+        assert updated["revision"] != initial["revision"]
+        assert gateway.call(
+            "progressive.extra", {"value": 21}, initial["revision"], None
+        ).is_error
+        extra = gateway.call(
+            "progressive.extra", {"value": 21}, updated["revision"], None
+        )
+        assert not extra.is_error
+        assert "42" in extra.text
+
+        result = gateway.call(
+            "progressive.remove_extra_tool", {}, updated["revision"], None
+        )
+        assert not result.is_error
+        deadline = time.time() + 10
+        removed = gateway.list_tools()
+        while time.time() < deadline:
+            removed = gateway.list_tools()
+            if "progressive.extra" not in {t["name"] for t in removed["tools"]}:
+                break
+            time.sleep(0.1)
+        assert "progressive.extra" not in {t["name"] for t in removed["tools"]}
+        assert removed["revision"] != updated["revision"]
+        assert gateway.call(
+            "progressive.extra", {"value": 21}, removed["revision"], None
+        ).is_error
+    finally:
+        gateway.close()
 
 
 def test_no_callback_still_connects(progressive_server: int):
