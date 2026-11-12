@@ -119,7 +119,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check finish_over_budget.status eq finished --check finish_over_budget.codes len-eq 0 \
     --check factory_accepts_budget eq true
   ```
-  Fixed: a known failure on 2026-10-13 (the public `Conversation(...)` factory refused `max_budget_per_run` with a `TypeError`); the factory takes it since #6257, and the bullet passes again on 2026-11-03.
+  Expected: the public `Conversation(...)` factory accepts `max_budget_per_run` (`factory_accepts_budget` is true).
 - **Stuck on a repeating action (`S01.stuck-detect`, `S01.stuck-recover`).** Five identical `ls` calls: the fourth pair sets STUCK; a new message moves it to IDLE and the run then reaches the script's `finish`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

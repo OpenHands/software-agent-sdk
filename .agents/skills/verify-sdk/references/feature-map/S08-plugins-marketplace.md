@@ -175,7 +175,7 @@ The programs build every plugin, marketplace and git repository inside the run (
   control-sdk program S08/attach --arg fetch-ref \
     --check default_version eq v2 --check v1_after_cached_clone eq v1 --check v1_resolved_is_v1_sha eq true
   ```
-  Expected: the second fetch checks out the tag and returns v1 with v1's SHA. Fixed: a known failure on 2026-10-13 (the shallow single-branch cache silently returned v2 content and SHA); it passes since #5685, re-verified 2026-11-03.
+  Expected: the second fetch checks out the tag and returns v1 with v1's SHA.
 - **The install store (`S08.installed-plugins`, `S08.ambient-plugins`).** Plugins are installed into the default store, which lives under the run's `OH_PERSISTENCE_DIR`:
   - a git plugin at tag `v1`
   - a local plugin
@@ -215,7 +215,7 @@ The programs build every plugin, marketplace and git repository inside the run (
     --check update_requested_ref eq null --check update_version eq 2.0.0 \
     --check update_resolved_is_v2 eq true --check installed_file_version eq 2.0.0
   ```
-  Expected: the plugin moves to the latest version, as the docstring says ("Update an installed extension to the latest version"). Fixed: a known failure on 2026-10-13 (the plugin stayed at 1.0.0 while `requested_ref` was cleared, the same cache as the previous bullet); it passes since #5685, re-verified 2026-11-03.
+  Expected: the plugin moves to the latest version, as the docstring says ("Update an installed extension to the latest version").
 - **The generic installation manager and legacy metadata (`S08.installation-manager`).** These calls go to `InstallationManager` directly:
   - a manifest named `../escaped`
   - a non-kebab-case name
