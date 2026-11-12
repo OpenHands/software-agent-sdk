@@ -88,11 +88,13 @@ def test_computation_survives_initial_and_poll_waits(executor: TerminalExecutor)
     obs = executor(TerminalAction(command="", is_input=True, timeout=900000))
     assert time.monotonic() - start < 1
     assert obs.exit_code == -1
+    output = obs.text
     for _ in range(20):
         obs = executor(TerminalAction(command="", is_input=True, timeout=900000))
+        output += obs.text
         if obs.exit_code != -1:
             break
-    assert obs.exit_code == 0 and "123456" in obs.text
+    assert obs.exit_code == 0 and "123456" in output
 
 
 def test_close_cancels_wait(executor: TerminalExecutor):
