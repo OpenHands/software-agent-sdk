@@ -867,6 +867,17 @@ class LocalConversation(BaseConversation):
 
         return False
 
+    def _resume_if_stuck(self) -> None:
+        """Give a STUCK conversation a fresh stuck-detection window on resume.
+
+        Caller holds the state lock, before the status is reset to RUNNING.
+        """
+        if (
+            self._stuck_detector is not None
+            and self._state.execution_status == ConversationExecutionStatus.STUCK
+        ):
+            self._stuck_detector.mark_resumed()
+
     @property
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
@@ -2304,6 +2315,7 @@ class LocalConversation(BaseConversation):
         self._cancel_token = CancellationToken()
 
         with self._state:
+            self._resume_if_stuck()
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
@@ -2535,6 +2547,7 @@ class LocalConversation(BaseConversation):
                     updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
                     self._state.agent_state = updated_agent_state
 
+            self._resume_if_stuck()
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
