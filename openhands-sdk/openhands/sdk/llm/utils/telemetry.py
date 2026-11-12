@@ -5,19 +5,28 @@ import time
 import traceback
 import uuid
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 from litellm.cost_calculator import completion_cost as litellm_completion_cost
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.utils import Choices, CostPerToken, ModelResponse, Usage
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    TypeAdapter,
+    model_validator,
+)
 
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanitize_dict
 
 
@@ -150,12 +159,18 @@ class Telemetry(BaseModel):
 
     # --- Config fields ---
     model_name: str = Field(default="unknown", description="Name of the LLM model")
-    log_enabled: bool = Field(
+    completion_logging_enabled: bool = Field(
         default=False,
         description="Enable completion JSON logging to log_dir or the configured "
         "completion-log callback. OpenTelemetry tracing is configured separately "
         "and can export LLM message content while completion logging is "
         "disabled.",
+    )
+    log_enabled: bool = Field(
+        default=False,
+        description="Deprecated alias for completion_logging_enabled. "
+        "Deprecated since v1.63.0 and scheduled for removal in v1.68.0.",
+        deprecated=True,
     )
     log_dir: str | None = Field(
         default=None, description="Directory to write logs if enabled"
@@ -184,6 +199,75 @@ class Telemetry(BaseModel):
         extra="forbid", arbitrary_types_allowed=True
     )
 
+    @staticmethod
+    def _normalize_log_enabled_alias(data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if "log_enabled" in normalized:
+            old_value = TypeAdapter(bool).validate_python(normalized["log_enabled"])
+            if "completion_logging_enabled" in normalized:
+                new_value = TypeAdapter(bool).validate_python(
+                    normalized["completion_logging_enabled"]
+                )
+                if old_value != new_value:
+                    raise ValueError(
+                        "Conflicting values for log_enabled (deprecated) and "
+                        "completion_logging_enabled: pass only "
+                        "completion_logging_enabled."
+                    )
+            else:
+                normalized["completion_logging_enabled"] = old_value
+            warn_deprecated(
+                "Telemetry(log_enabled=...)",
+                deprecated_in="1.63.0",
+                removed_in="1.68.0",
+                details="Use completion_logging_enabled instead.",
+                stacklevel=4,
+            )
+        if "completion_logging_enabled" in normalized:
+            normalized["log_enabled"] = normalized["completion_logging_enabled"]
+        return normalized
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_log_enabled_alias(cls, data: Any) -> Any:
+        return cls._normalize_log_enabled_alias(data)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("log_enabled", "completion_logging_enabled"):
+            if name == "log_enabled":
+                warn_deprecated(
+                    "Telemetry.log_enabled assignment",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use completion_logging_enabled instead.",
+                    stacklevel=3,
+                )
+            super().__setattr__("completion_logging_enabled", value)
+            super().__setattr__("log_enabled", value)
+            return
+        super().__setattr__(name, value)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        normalized = (
+            self._normalize_log_enabled_alias(dict(update))
+            if update is not None
+            else None
+        )
+        copied = super().model_copy(update=normalized, deep=deep)
+        # Each copy owns its request span, even while the original is active.
+        copied._span = None
+        copied._span_cm = None
+        copied._req_ctx = {}
+        copied._req_start = 0.0
+        return copied
+
     # ---------- Lifecycle ----------
     def set_log_completions_callback(
         self, callback: Callable[[str, str], None] | None
@@ -210,7 +294,7 @@ class Telemetry(BaseModel):
         self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
         # Span lifecycle and content annotation are controlled by whether an OTel
         # exporter is configured (see openhands.sdk.observability), independently
-        # of log_enabled.
+        # of completion_logging_enabled.
         self._open_span()
         self._annotate_span_messages("input", lambda: _request_messages(self._req_ctx))
 
@@ -245,7 +329,7 @@ class Telemetry(BaseModel):
             )
 
         # 4) optional logging
-        if self.log_enabled:
+        if self.completion_logging_enabled:
             self.log_llm_call(resp, cost, raw_resp=raw_resp)
 
         # 5) authoritative cost + cache buckets onto the span, before it closes
@@ -268,7 +352,7 @@ class Telemetry(BaseModel):
         self._last_latency = time.time() - (self._req_start or time.time())
         self._close_span(_err)
 
-        if not self.log_enabled:
+        if not self.completion_logging_enabled:
             return
         if not self.log_dir and not self._log_completions_callback:
             return

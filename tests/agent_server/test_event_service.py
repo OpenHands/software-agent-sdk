@@ -3908,7 +3908,7 @@ def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
     callbacks = []
-    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
+    llm = MagicMock(log_completions_to_file=True, usage_id="test-usage", model="gpt-4o")
     llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
 
     object.__setattr__(
@@ -3924,6 +3924,20 @@ def test_llm_log_callback_swallows_emit_failures(
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()
     assert "Failed to emit LLM completion log event" in caplog.text
+
+
+@pytest.mark.parametrize("option", ["log_completions", "log_completions_to_file"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_llm_log_streaming_accepts_both_logging_names(event_service, option, enabled):
+    llm = LLM.model_validate(
+        {"model": "openai/gpt-4o-mini", "usage_id": "test-usage", option: enabled}
+    )
+    with patch.object(type(llm.telemetry), "set_log_completions_callback") as register:
+        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+    if enabled:
+        register.assert_called_once()
+    else:
+        register.assert_not_called()
 
 
 def _make_stored(tmp_path: Path) -> StoredConversation:

@@ -1130,7 +1130,7 @@ class EventService:
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
         for llm in agent.get_all_llms():
-            if not llm.log_completions:
+            if not llm.log_completions_to_file:
                 continue
 
             # Capture variables for closure

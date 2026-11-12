@@ -6,9 +6,9 @@ and annotated with request/response message content on
 ``gen_ai.input.messages`` and ``gen_ai.output.messages``. Enabling tracing is
 a deliberate choice to export conversation content to the configured OTLP
 backend, and configuring that backend is a separate step from
-``LLM.log_completions`` / ``Telemetry.log_enabled``, which controls completion
-JSON logging through a folder or callback. Additional tool instrumentation controls its
-own recorded inputs and outputs.
+``LLM.log_completions_to_file`` / ``Telemetry.completion_logging_enabled``, which
+controls completion JSON logging through a folder or callback. Additional tool
+instrumentation controls its own recorded inputs and outputs.
 """
 
 from __future__ import annotations
