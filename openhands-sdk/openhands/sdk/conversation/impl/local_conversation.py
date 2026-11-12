@@ -62,7 +62,7 @@ from openhands.sdk.event.reaction import (
 )
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm import LLM, Message, RouterLLM, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
@@ -1922,6 +1922,35 @@ class LocalConversation(BaseConversation):
                 "conversations; use switch_acp_model instead."
             )
 
+    def _replace_agent_llm(self, new_llm: LLM) -> None:
+        # Tool-triggered switches may run on a worker while the run loop holds
+        # the state lock awaiting that tool; re-acquiring would deadlock (#3485).
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
+        with lock:
+            update: dict[str, object] = {"llm": new_llm}
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
+            self.agent = self.agent.model_copy(update=update)
+            self._state.agent = self.agent
+            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+
+    def switch_routed_llm(self, llm_key: str) -> None:
+        """Switch a RouterLLM-backed conversation to a manual route."""
+        self._reject_llm_switch_on_acp()
+        if not isinstance(self.agent.llm, RouterLLM):
+            raise ValueError("Current agent LLM is not a RouterLLM.")
+        self._replace_agent_llm(self.agent.llm.switch_llm(llm_key))
+
+    def resume_auto_llm_routing(self) -> None:
+        """Return a RouterLLM-backed conversation to automatic routing."""
+        self._reject_llm_switch_on_acp()
+        if not isinstance(self.agent.llm, RouterLLM):
+            raise ValueError("Current agent LLM is not a RouterLLM.")
+        self._replace_agent_llm(self.agent.llm.resume_auto_routing())
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -1951,26 +1980,7 @@ class LocalConversation(BaseConversation):
             if registered is not None:
                 self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
-        # A switch_llm tool runs on a worker thread while run()/arun() holds the
-        # state lock across the agent step on another thread, blocked awaiting
-        # this very tool. Re-acquiring _state here would deadlock, so skip it:
-        # the run loop is parked and no other mutator can run, so the swap is
-        # safe without the lock (#3485). Only skip when the lock is held by a
-        # different thread (the run loop); when the caller already owns it (a
-        # sync step, or the switch endpoint reentering on the event-loop thread)
-        # acquire normally — FIFOLock is reentrant for the owning thread.
-        skip_lock = self._step_holds_state_lock and not self._state.owned()
-        lock = contextlib.nullcontext() if skip_lock else self._state
-        with lock:
-            update: dict[str, object] = {"llm": new_llm}
-            update["condenser"] = self._condenser_for_switched_llm(
-                self.agent.llm,
-                new_llm,
-            )
-            self.agent = self.agent.model_copy(update=update)
-            self._state.agent = self.agent
-            # Invalidate the cached ask-agent LLM so it re-clones.
-            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+        self._replace_agent_llm(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.

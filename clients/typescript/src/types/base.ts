@@ -87,6 +87,13 @@ export interface Success {
   message?: string;
 }
 
+export interface ModelRouterStatus {
+  enabled: boolean;
+  routing_mode?: 'auto' | 'manual' | null;
+  selected_llm_key?: string | null;
+  available_llms: string[];
+}
+
 export interface EventPage {
   items: Event[];
   next_page_id?: string;

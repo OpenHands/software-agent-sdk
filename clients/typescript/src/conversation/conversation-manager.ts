@@ -31,7 +31,13 @@ import {
   CreateACPConversationRequest,
   UpdateConversationRequest,
 } from '../models/conversation';
-import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from '../types/base';
+import {
+  AgentBase,
+  ConversationExecutionStatus,
+  ConversationID,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
 
 export class ACPConversationNamespace {
   constructor(private readonly manager: ConversationManager) {}
@@ -373,6 +379,32 @@ export class ConversationManager {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_profile`, {
       profile_name: profileName,
     });
+  }
+
+  /**
+   * Return model-router state for a conversation.
+   */
+  async getModelRouter(conversationId: ConversationID): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Switch a RouterLLM-backed conversation to a manual route.
+   */
+  async switchModelRouter(conversationId: ConversationID, llmKey: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/switch`, {
+      llm_key: llmKey,
+    });
+  }
+
+  /**
+   * Return a RouterLLM-backed conversation to automatic routing.
+   */
+  async resumeAutoModelRouting(conversationId: ConversationID): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/auto`, {});
   }
 
   /**

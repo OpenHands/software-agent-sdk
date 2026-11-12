@@ -19,6 +19,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.router import MultimodalRouter
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
@@ -907,3 +908,63 @@ def test_switch_llm_identical_config_reuses_registered_llm(empty_profile_store):
 
     assert conv.agent.llm is registered
     assert conv.llm_registry.get("x") is registered
+
+
+def _make_router() -> MultimodalRouter:
+    return MultimodalRouter(
+        llms_for_routing={
+            MultimodalRouter.PRIMARY_MODEL_KEY: _make_llm("primary-model", "primary"),
+            MultimodalRouter.SECONDARY_MODEL_KEY: _make_llm(
+                "secondary-model", "secondary"
+            ),
+        }
+    )
+
+
+def test_switch_routed_llm_updates_agent_and_state(tmp_path):
+    router = _make_router()
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+
+    conv.switch_routed_llm(MultimodalRouter.PRIMARY_MODEL_KEY)
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert conv.agent.llm.routing_mode == "manual"
+    assert conv.agent.llm.selected_llm_key == MultimodalRouter.PRIMARY_MODEL_KEY
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_resume_auto_llm_routing_updates_agent_and_state(tmp_path):
+    router = _make_router().switch_llm(MultimodalRouter.PRIMARY_MODEL_KEY)
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+
+    conv.resume_auto_llm_routing()
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert conv.agent.llm.routing_mode == "auto"
+    assert conv.agent.llm.selected_llm_key is None
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_switch_routed_llm_survives_state_roundtrip(tmp_path):
+    router = _make_router()
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+    conv.switch_routed_llm(MultimodalRouter.SECONDARY_MODEL_KEY)
+
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state.model_dump_json())
+    )
+
+    assert isinstance(reloaded.agent.llm, MultimodalRouter)
+    assert reloaded.agent.llm.routing_mode == "manual"
+    assert reloaded.agent.llm.selected_llm_key == MultimodalRouter.SECONDARY_MODEL_KEY
+    assert set(reloaded.agent.llm.available_llms()) == {"primary", "secondary"}
+
+
+def test_switch_routed_llm_rejects_non_router(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "plain"), tools=[]),
+        workspace=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="not a RouterLLM"):
+        conv.switch_routed_llm("anything")
