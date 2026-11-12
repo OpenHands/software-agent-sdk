@@ -1406,15 +1406,36 @@ class ConversationService:
             else None
         )
         if stored is not None:
-            request = request.model_copy(
-                update={
-                    "secrets": {
-                        name: value
-                        for name, value in request.secrets.items()
-                        if self._profile_allows_secret(stored, name)
-                    }
-                }
+            if existing_event_service is not None and existing_event_service.is_open():
+                current_profile = (
+                    existing_event_service.get_conversation().state.conversation_profile
+                )
+            else:
+                persisted_state = await asyncio.to_thread(
+                    self._load_persisted_state_sync, conversation_id
+                )
+                current_profile = (
+                    persisted_state.conversation_profile
+                    if persisted_state is not None
+                    else None
+                )
+            allowed_refs = (
+                current_profile.secret_refs
+                if current_profile is not None
+                else stored.launched_agent_profile.secret_refs
+                if stored.launched_agent_profile is not None
+                else None
             )
+            if allowed_refs is not None:
+                request = request.model_copy(
+                    update={
+                        "secrets": {
+                            name: value
+                            for name, value in request.secrets.items()
+                            if name in allowed_refs
+                        }
+                    }
+                )
         if existing_event_service is not None and existing_event_service.is_open():
             # ``is_open()`` above guarantees a live conversation, so the
             # public getter never raises here.

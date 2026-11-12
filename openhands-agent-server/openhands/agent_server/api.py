@@ -808,10 +808,18 @@ def _add_exception_handlers(api: FastAPI) -> None:
             request.url.path,
             len(exc.errors()),
         )
-        return JSONResponse(
-            status_code=422,
-            content={"detail": _sanitize_validation_errors(exc.errors())},
-        )
+        if (
+            request.method == "PATCH"
+            and "/conversations/" in request.url.path
+            and request.url.path.endswith("/agent")
+        ):
+            detail = [
+                {"loc": list(error["loc"]), "type": error["type"], "msg": error["msg"]}
+                for error in exc.errors()
+            ]
+        else:
+            detail = _sanitize_validation_errors(exc.errors())
+        return JSONResponse(status_code=422, content={"detail": detail})
 
     @api.exception_handler(Exception)
     async def _unhandled_exception_handler(

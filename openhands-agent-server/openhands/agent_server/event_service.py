@@ -14,6 +14,10 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.conversation_agent_patch import (
+    StepInProgress,
+    apply_conversation_agent_patch,
+)
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLease,
@@ -25,7 +29,10 @@ from openhands.agent_server.models import (
     EventPage,
     EventSortOrder,
     StoredConversation,
+    UpdateConversationAgentRequest,
+    UpdateConversationAgentResponse,
 )
+from openhands.agent_server.persistence.models import _contains_secret_value
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
@@ -291,6 +298,7 @@ class EventService:
     # Background task for a /goal loop that is running inside this conversation.
     _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
+    _agent_patch_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     # Monotonic clock of the last activity, used for idle eviction.
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
     # Monotonic clock of the last throttled streaming heartbeat.
@@ -1429,6 +1437,16 @@ class EventService:
                     binding,
                 )
         self._conversation._state.set_write_guard(self._write_guard)
+        launch_profile = self.stored.launched_agent_profile
+        if (
+            not base_state_exists
+            and launch_profile is not None
+            and launch_profile.profile_snapshot is not None
+        ):
+            with conversation.state:
+                conversation.state.conversation_profile = (
+                    launch_profile.profile_snapshot
+                )
 
         # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL plus
         # OH_LLM_API_KEY_REFRESH_BASE_URLS); see #5189.
@@ -2210,22 +2228,54 @@ class EventService:
                     self._run_task = None
             await self._publish_state_update()
 
-    async def update_secrets(self, secrets: dict[str, SecretValue]):
-        """Update secrets in the conversation."""
-        if not self._conversation:
+    async def update_agent_profile(
+        self, request: UpdateConversationAgentRequest
+    ) -> UpdateConversationAgentResponse:
+        """Apply one conversation-only edit at the next available step boundary."""
+        if self._conversation is None or self._closing:
             raise ValueError("inactive_service")
-        profile = self.stored.launched_agent_profile
-        if profile is not None:
-            secrets = {
-                name: value
-                for name, value in secrets.items()
-                if profile.allows_secret(name)
-            }
-        if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
-            secrets = dict(secrets)
-            secrets.pop(CODEX_AUTH_SECRET_NAME, None)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
+        if self.cipher is None and (
+            request.resources.secrets or _contains_secret_value(request.resources)
+        ):
+            raise ValueError("Secret-bearing updates require a persistence cipher")
+        async with self._agent_patch_lock:
+            while True:
+                if self._closing:
+                    raise ValueError("inactive_service")
+                try:
+                    return await asyncio.to_thread(
+                        apply_conversation_agent_patch, self._conversation, request
+                    )
+                except StepInProgress:
+                    await asyncio.sleep(0.05)
+
+    async def update_secrets(self, secrets: dict[str, SecretValue]):
+        """Update secrets in the conversation under the current profile scope."""
+        conversation = self._conversation
+        if conversation is None:
+            raise ValueError("inactive_service")
+        launch_profile = self.stored.launched_agent_profile
+        bound = set(self.credential_bindings)
+
+        def _update() -> None:
+            with conversation.state:
+                current_profile = conversation.state.conversation_profile
+                refs = (
+                    current_profile.secret_refs
+                    if current_profile is not None
+                    else launch_profile.secret_refs
+                    if launch_profile is not None
+                    else None
+                )
+                authorized = {
+                    name: value
+                    for name, value in secrets.items()
+                    if (refs is None or name in refs) and name not in bound
+                }
+                if authorized:
+                    conversation.update_secrets(authorized)
+
+        await asyncio.to_thread(_update)
 
     async def set_confirmation_policy(self, policy: ConfirmationPolicyBase):
         """Set the confirmation policy for the conversation."""

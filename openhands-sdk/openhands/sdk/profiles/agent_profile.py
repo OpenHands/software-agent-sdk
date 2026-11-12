@@ -422,6 +422,13 @@ class LaunchedAgentProfile(BaseModel):
             "null means the profile's own `llm_profile_ref` was used."
         ),
     )
+    profile_snapshot: OpenHandsAgentProfile | ACPAgentProfile | None = Field(
+        default=None,
+        description=(
+            "Secret-free launch configuration for conversation-scoped edits. "
+            "None for conversations created before this field was introduced."
+        ),
+    )
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs

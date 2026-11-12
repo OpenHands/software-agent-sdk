@@ -32,7 +32,8 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import drop_mcp_servers_without_endpoint
+from openhands.sdk.mcp.config import MCPServer, drop_mcp_servers_without_endpoint
+from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -144,6 +145,9 @@ class ConversationState(OpenHandsModel):
             "LLM changes, etc."
         ),
     )
+    conversation_profile: OpenHandsAgentProfile | ACPAgentProfile | None = None
+    conversation_profile_revision: int = Field(default=0, ge=0)
+    conversation_mcp_servers: dict[str, MCPServer] = Field(default_factory=dict)
     workspace: BaseWorkspace = Field(
         ...,
         description=(
@@ -749,7 +753,15 @@ class ConversationState(OpenHandsModel):
             if (
                 callback is not None
                 and old is not _sentinel
-                and name not in ("leaf_event_id", "head_is_empty")
+                and name
+                not in (
+                    "leaf_event_id",
+                    "head_is_empty",
+                    "conversation_profile",
+                    "conversation_profile_revision",
+                    "conversation_mcp_servers",
+                    "secret_registry",
+                )
             ):
                 try:
                     # Import here to avoid circular imports
