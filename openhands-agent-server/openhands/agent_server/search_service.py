@@ -8,11 +8,28 @@ on the next sync.
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 import threading
 from pathlib import Path
+from uuid import UUID
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.search_index import SearchIndex, backfill
+
+
+logger = logging.getLogger(__name__)
+
+
+def _canonical_conversation_id(conv_id: str) -> str:
+    """Return the dashed UUID form of an indexed conversation id.
+
+    Backfill keys conversations by their on-disk ``UUID.hex`` directory
+    name, but the API exposes conversation ids as dashed UUIDs everywhere
+    else (``ConversationInfo.id``); clients use hits' ids to open
+    conversations, so search hits must carry the dashed form.
+    """
+    return str(UUID(conv_id)) if len(conv_id) == 32 else conv_id
 
 
 class ContentSearchService:
@@ -28,7 +45,22 @@ class ContentSearchService:
     def _ensure_index(self) -> SearchIndex:
         with self._lock:
             if self._index is None:
-                self._index = SearchIndex(self._index_path)
+                try:
+                    self._index = SearchIndex(self._index_path)
+                except sqlite3.DatabaseError:
+                    # The index is a disposable derived artifact; a corrupt
+                    # file (crash mid-write, disk trouble, old schema)
+                    # rebuilds rather than 500ing every search forever.
+                    logger.warning(
+                        "Corrupt search index at %s; rebuilding", self._index_path
+                    )
+                    self._index_path.unlink(missing_ok=True)
+                    # WAL companions can hold the same corruption.
+                    for suffix in ("-wal", "-shm"):
+                        self._index_path.with_name(
+                            self._index_path.name + suffix
+                        ).unlink(missing_ok=True)
+                    self._index = SearchIndex(self._index_path)
             return self._index
 
     def sync(self) -> dict:
@@ -37,11 +69,16 @@ class ContentSearchService:
             return backfill(index, self._config.conversations_path, incremental=True)
 
     def remove_conversation(self, conv_id: str) -> None:
-        """Drop a conversation from the index (no-op when never indexed)."""
+        """Drop a conversation from the index (no-op when never indexed).
+
+        ``conv_id`` is the API's dashed conversation id; on disk, backfill
+        indexes conversations under their undashed ``UUID.hex`` directory
+        names, so the dashes are stripped before lookup.
+        """
         if self._index is None:
             return
         with self._lock:
-            self._index.remove_conversation(conv_id)
+            self._index.remove_conversation(conv_id.replace("-", ""))
 
     def search(self, query: str, limit: int = 50) -> tuple[list[dict], bool]:
         """Return ``(hits, capped)``; ``capped`` is True only when results were
@@ -55,7 +92,7 @@ class ContentSearchService:
             capped = len(hits) > limit
         return [
             {
-                "conversation_id": h.conversation_id,
+                "conversation_id": _canonical_conversation_id(h.conversation_id),
                 "title": h.title,
                 "event_id": h.event_id,
                 "source": h.source,

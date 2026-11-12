@@ -154,10 +154,9 @@ def test_rename_reindexes_title(tmp_path, monkeypatch: pytest.MonkeyPatch):
             assert resp.status_code == 201, resp.text
             conv_id = resp.json()["id"]
             # On-disk conversation dirs use the undashed hex form of the id.
-            meta_dir = (
-                Path(env["app"].state.config.conversations_path)
-                / conv_id.replace("-", "")
-            )
+            meta_dir = Path(
+                env["app"].state.config.conversations_path
+            ) / conv_id.replace("-", "")
 
             # The real conversation has no title until set, and no events
             # beyond launch. Give it a baseline title that can be renamed.

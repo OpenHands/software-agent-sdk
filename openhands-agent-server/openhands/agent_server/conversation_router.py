@@ -239,7 +239,7 @@ async def search_conversation_content(
     if service is None:
         # Unreachable when mounted correctly; kept as a hard stop.
         raise HTTPException(status_code=404, detail="Not Found")
-    hits, capped = service.search(query, limit)
+    hits, capped = await asyncio.to_thread(service.search, query, limit)
     return ContentSearchResponse(
         results=[ContentSearchHit(**h) for h in hits],
         total=len(hits),

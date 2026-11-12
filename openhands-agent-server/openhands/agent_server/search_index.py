@@ -58,11 +58,9 @@ def _levenshtein(a: str, b: str, cap: int = 2) -> int:
     """Damerau-Levenshtein distance, capped; returns cap+1 past the cap.
 
     Adjacent transpositions count as one edit ("wobmat" for "wombat").
+    Callers compare only words within ``cap`` edits of the token length, so
+    no separate length-difference shortcut is needed.
     """
-    if a == b:
-        return 0
-    if abs(len(a) - len(b)) > cap:
-        return cap + 1
     prev2: list[int] | None = None
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
@@ -154,7 +152,6 @@ class SearchIndex:
     CREATE TABLE IF NOT EXISTS conversations (
         conv_id TEXT PRIMARY KEY,
         title TEXT,
-        last_event_ts TEXT,
         dir_mtime REAL
     );
 
@@ -187,9 +184,10 @@ class SearchIndex:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        # Shared across threads (request-thread pruning, event-loop sync):
-        # every access is serialized by ContentSearchService's lock, so the
-        # single connection stays safe.
+        # check_same_thread=False: the async handler hops threads via
+        # asyncio.to_thread on every call; all access stays serialized
+        # by ContentSearchService's lock, so the single connection is
+        # safe to share.
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         # Fuzzy vocabulary, loaded lazily and cached until the next write:
         # a sorted term list plus terms bucketed by length for typo scans.
@@ -199,6 +197,10 @@ class SearchIndex:
         self._rebuild_if_old_tokenizer()
         self._conn.executescript(self._SCHEMA)
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL + NORMAL: durable across crashes (WAL replays on open) without
+        # an fsync per commit — the index is disposable and rebuilt from the
+        # conversation files, so the faster setting is the right trade.
+        self._conn.execute("PRAGMA synchronous=NORMAL")
 
     def _rebuild_if_old_tokenizer(self) -> None:
         """Drop pre-fuzzy indexes so the next backfill rebuilds them.
@@ -397,14 +399,6 @@ class SearchIndex:
             "VALUES(?,?,?)",
             (rowid, mask_secrets(text), conv_id),
         )
-
-        ts = event.get("timestamp")
-        if ts:
-            self._conn.execute(
-                "UPDATE conversations SET last_event_ts=? WHERE conv_id=? AND "
-                "(last_event_ts IS NULL OR last_event_ts<?)",
-                (ts, conv_id, ts),
-            )
         self._conn.commit()
         self._vocab_cache = None  # new words may have entered the vocabulary
         return True
@@ -442,11 +436,16 @@ class SearchIndex:
                 # The token's prefix would match every word sharing its
                 # stem ("huing" -> "hu*" grabs "hub"); match only real
                 # candidates, or the stemmed word itself when the token
-                # is a known word.
+                # is a known word. Candidates are exact-quoted for the
+                # same reason: prefixing a candidate whose stem is also
+                # truncated ("doings" -> candidate "doing" -> "do*")
+                # would drag in unrelated words ("door").
                 if self._vocab_contains(token):
-                    group = [_quote_exact(token)] + [_quote(w) for w in candidates]
+                    group = [_quote_exact(token)] + [
+                        _quote_exact(w) for w in candidates
+                    ]
                 elif candidates:
-                    group = [_quote(w) for w in candidates]
+                    group = [_quote_exact(w) for w in candidates]
                 else:
                     return ""
             else:
@@ -498,7 +497,9 @@ class SearchIndex:
         the stem is exactly what the MATCH pipeline would produce.
         """
         if self._stem_probe is None:
-            conn = sqlite3.connect(":memory:")
+            # check_same_thread=False: lazily created in whichever worker
+            # thread stems first, then reused from other to_thread workers.
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
             conn.executescript(
                 """
                 CREATE VIRTUAL TABLE stem_probe_fts USING fts5(

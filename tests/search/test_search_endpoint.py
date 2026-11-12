@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from conftest import write_conversation
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -12,6 +11,7 @@ from openhands.agent_server.config import Config, TelemetrySpec
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.search_service import ContentSearchService
+from tests.search.conftest import write_conversation
 
 
 @pytest.fixture
@@ -110,16 +110,15 @@ def test_remote_deployment_hides_content_search(remote_client):
     )
     _assert_fallthrough_parity(resp, unknown)
     # And no OpenAPI schema entry may advertise it.
-    assert "/api/conversations/search-content" not in remote_client.app.openapi()[
-        "paths"
-    ]
+    assert (
+        "/api/conversations/search-content" not in remote_client.app.openapi()["paths"]
+    )
 
 
 def test_remote_schema_has_no_search_entry(remote_client):
     """The OpenAPI schema must not advertise the endpoint on hosted deployments."""
     assert (
-        "/api/conversations/search-content"
-        not in remote_client.app.openapi()["paths"]
+        "/api/conversations/search-content" not in remote_client.app.openapi()["paths"]
     )
     assert not hasattr(remote_client.app.state, "content_search_service")
 
@@ -273,7 +272,7 @@ def test_delete_conversation_prunes_search_index(conv_root, tmp_path, monkeypatc
     # Every search re-syncs from disk, so the stub must actually remove the
     # directory — like the real service — or backfill would re-index it.
     def _delete(conv_id):
-        shutil.rmtree(conv_root / str(conv_id), ignore_errors=True)
+        shutil.rmtree(conv_root / conv_id.hex, ignore_errors=True)
         return True
 
     stub_service.delete_conversation = AsyncMock(side_effect=_delete)
