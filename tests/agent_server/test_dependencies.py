@@ -6,12 +6,14 @@ Tests the check_session_api_key dependency with multiple session API keys suppor
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import check_session_api_key
 
 
 def _make_app(session_api_keys: list[str]) -> FastAPI:
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.config = Config(session_api_keys=session_api_keys)
 
     @app.get("/test", dependencies=[Depends(check_session_api_key)])

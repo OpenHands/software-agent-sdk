@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Match
 
-from openhands.agent_server.api import create_app
+from openhands.agent_server.api import add_domain_error_handler, create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime import routers
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
@@ -114,6 +114,7 @@ def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch)
         secret_key=SecretStr("outer-key"),
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = DockerConversationRegistry(config)
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
@@ -157,6 +158,7 @@ def test_worktree_start_forwards_only_mounted_host_paths(
         secret_key=SecretStr("outer-key"),
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     registry = DockerConversationRegistry(config)
     app.state.conversation_registry = registry
     app.state.conversation_service = AsyncMock()
@@ -213,6 +215,7 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
         stopped.append(conversation_id)
 
     app = FastAPI()
+    add_domain_error_handler(app)
     registry = DockerConversationRegistry(config)
     registry.stop = stop
     app.state.conversation_registry = registry
@@ -265,6 +268,7 @@ def test_runtime_release_prunes_cache_but_keeps_conversation_state(
     )
 
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
@@ -300,6 +304,7 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
     (docker_dir / "meta.json").write_text("{}")
 
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
@@ -335,6 +340,7 @@ def test_docker_event_history_reads_persistence_without_starting_a_container(
         search_events=AsyncMock(return_value={"items": [], "next_page_id": None})
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.state.conversation_service = SimpleNamespace(
         get_persisted_event_service=AsyncMock(return_value=event_service),
@@ -373,6 +379,7 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
     registry.stop = AsyncMock()
 
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
@@ -443,6 +450,7 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
     registry.stop = AsyncMock()
 
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
@@ -541,6 +549,7 @@ def test_failed_delete_keeps_docker_ownership_until_state_is_removed(
 
     monkeypatch.setattr(routers, "safe_rmtree", fail_conversation_delete)
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
@@ -699,6 +708,7 @@ def _docker_start_app(
     )
     registry = DockerConversationRegistry(config)
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = registry
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
@@ -868,6 +878,7 @@ def test_reactions_follow_the_host_switch_before_reaching_the_runtime(
 
     get_settings_store(config).update(apply)
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_registry = DockerConversationRegistry(config)
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")

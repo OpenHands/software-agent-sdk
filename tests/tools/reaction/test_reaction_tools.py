@@ -245,6 +245,9 @@ def test_user_reacts_to_the_agents_latest_message(conversation):
     assert removal.removed and removal.target_event_id == event.target_event_id
     saved = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
     assert [e.id for e in saved] == [event.id, removal.id]
+    # The caller gets each reaction as stored, parent included.
+    assert [e.parent_id for e in saved] == [event.parent_id, removal.parent_id]
+    assert event.parent_id is not None and removal.parent_id == event.id
 
 
 def test_user_cannot_use_an_unknown_emoji(conversation):
@@ -337,6 +340,7 @@ def test_a_reaction_during_a_pending_tool_call_waits_for_its_result(conversation
     # The call waits (a confirmation, a pause); the user reacts meanwhile.
     conversation._on_event(call)
     held = conversation.react("heart")
+    assert held.parent_id is None  # held back: not in the tree yet
     conversation.react("heart", removed=True)
     assert kinds(conversation.state.events)[-1] == "ActionEvent"
 

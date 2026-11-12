@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server import plugins_service
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.plugins_service import (
     MarketplacePluginInfo,
@@ -278,6 +279,7 @@ class TestPluginsMarketplaceRoute:
             lambda: sample,
         )
         app = FastAPI()
+        add_domain_error_handler(app)
         app.include_router(plugins_router)
         client = TestClient(app)
 

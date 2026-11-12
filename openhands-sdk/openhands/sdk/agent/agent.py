@@ -664,7 +664,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
     @staticmethod
     def _mark_conversation_finished(state: ConversationState) -> None:
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "agent finished")
 
     def _execute_actions(
         self,
@@ -772,7 +772,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED, "user message blocked by hook"
+                )
                 return
         elif state.blocked_messages:
             logger.debug(
@@ -822,7 +824,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                         llm_message=_non_multimodal_image_message(self.llm.model),
                     )
                 )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED,
+                    "model cannot read the attached images",
+                )
                 return
 
         logger.debug(
@@ -983,7 +988,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED, "user message blocked by hook"
+                )
                 return
         elif state.blocked_messages:
             logger.debug(
@@ -1030,7 +1037,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                         llm_message=_non_multimodal_image_message(self.llm.model),
                     )
                 )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED,
+                    "model cannot read the attached images",
+                )
                 return
 
         logger.debug(
@@ -1238,8 +1248,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state: ConversationState, risks: list[risk.SecurityRisk]
     ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
-            state.execution_status = (
-                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            state.transition(
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+                "action needs user confirmation",
             )
             return True
 
