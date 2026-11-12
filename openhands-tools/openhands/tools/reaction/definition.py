@@ -86,7 +86,7 @@ Put an emoji reaction on a message; by default the user's latest one.
 The user sees it on their message right away, while you keep working, so a
 reaction is the smallest sign that you got a message and what you make of it.
 
-Use the reaction that fits:
+Use the reaction that fits. Examples:
 - +1 when the user corrects you, changes the plan or adds to it while you
   are working ("wait, actually...", "also...", "use X instead"): react +1
   first, then carry on with the change. No need to stop and reply. Also +1 a
@@ -101,10 +101,12 @@ Use the reaction that fits:
   is out, good news.
 - heart when the user thanks you or shares something kind.
 
+These are only examples, you make your judgment when your user can benefit
+from a more interactive and non-intrusive conversation as reactions make it.
+
 A reaction never replaces an answer: a question still gets a reply. React
-when it tells the user something, not on every message, and whenever the
-user asks you to. A reaction stays on the message. Reacting does not end
-your turn."""
+when it tells the user something, not on every message. A reaction stays
+on the message. Reacting does not end your turn."""
 
 _UNREACT_DESCRIPTION = """\
 Take an emoji reaction you added off a message; by default the user's
