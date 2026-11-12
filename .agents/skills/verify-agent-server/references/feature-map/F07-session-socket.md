@@ -701,7 +701,7 @@ Preconditions:
 
 ## Gotchas
 
-- `F07.reject-non-user` reads the `error` frame at a fixed index after `sync` and the snapshot. While #6745 lasts, the `error` can overtake `sync` when the server is slow to subscribe (seen once under load), and the bullet then fails on `frames.4.frame.type`; `F07.sync-first-during-run` reproduces that order deterministically.
+- `F07.reject-non-user`, `F07.error-frame` and `F07.auth-frame-ignored` read the `error` frames at fixed indexes after `sync` and the snapshot. While #6745 lasts, an `error` can overtake `sync` when the server is slow to subscribe (seen under load, for `F07.auth-frame-ignored` as `frames.3.frame.type` `error`), and the bullet then fails on its first index check; rerun it alone with `--only`. `F07.sync-first-during-run` reproduces that order deterministically.
 - Neither the SDK nor the TypeScript client uses this socket yet, so a
   regression here breaks no shipped consumer's tests; only these recipes and
   `tests/agent_server/test_session_socket.py` notice.

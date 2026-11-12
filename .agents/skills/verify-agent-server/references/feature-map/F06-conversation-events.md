@@ -52,7 +52,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.ws-replay-since`: `resend_mode=since` with `after_timestamp` replays exactly the events at or after that timestamp; without `after_timestamp` it replays nothing.
 - `F06.ws-bad-frame`: an invalid inbound frame returns a `ServerErrorEvent` (`ValidationError`, `AssertionError`, `JSONDecodeError` for text that is not JSON), appends nothing and leaves the socket open; a redundant auth frame is ignored.
 - `F06.ws-send`: a user message frame sent on the socket is persisted and runs the agent to `finished`, streaming the run on the same socket.
-- `F06.restart-persist`: event ids, order and count survive a server restart, the socket replays the same log, and new messages append after it.
+- `F06.restart-persist`: a socket open during a server restart is closed with 1012; event ids, order and count survive the restart, the socket replays the same log, and new messages append after it.
 - `F06.send-run-limit`: with every run slot taken, `POST .../events` with `run: true` returns 429 `Message saved...` and the message is persisted; a socket send gets a `ConversationRunLimitExceeded` `ServerErrorEvent`.
 - `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run.
 
@@ -595,7 +595,11 @@ Preconditions:
   ```sh
   BEFORE=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
   COUNT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  control-agent-server ws start "/sockets/events/$CID" --name f06-restart --duration 120
+  control-agent-server ws read f06-restart --kinds ConversationStateUpdateEvent --contains '"key": "full_state"' \
+    --expect-open --wait 10
   control-agent-server restart
+  control-agent-server ws stop f06-restart --expect-close 1012 --save F06.restart-persist/socket
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$COUNT" --save F06.restart-persist/count
   AFTER=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
   test "$BEFORE" = "$AFTER"
@@ -608,8 +612,12 @@ Preconditions:
     --check items.1.llm_message.content.0.text eq QA_F06_AFTER_RESTART
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . gt "$COUNT"
   ```
-  The first read after the restart rehydrates the conversation; ids, order
-  and count are unchanged, the socket replays the same log, and the new
+  A socket open across the restart is closed with 1012 (service restart, a
+  code clients reconnect after) and an empty reason: uvicorn closes every
+  upgraded socket that way when it starts shutting down, before the app's
+  lifespan shutdown would send its own 1012 `Server shutting down`. The
+  first read after the restart
+  rehydrates the conversation; ids, order and count are unchanged, the socket replays the same log, and the new
   message lands after it.
 - **Run capacity full (`F06.send-run-limit`).** It restarts the run with one
   run slot and holds that slot with a scripted provider that hangs (a real
@@ -783,7 +791,8 @@ Preconditions:
   fatal.
 - Deleting a conversation closes its open sockets with 4004
   (`F06.ws-delete-close`), and a new connection gets 4004 too; shutting the
-  server down closes them with 1012. A sandbox pause leaves them attached
+  server down closes them with 1012 and an empty reason, sent by uvicorn
+  before the app's own shutdown close (`F06.restart-persist`). A sandbox pause leaves them attached
   (`F12.sandbox-pause-websocket`). A peer that stopped reading delays the
   DELETE by at most 5 s.
 - `StreamingDeltaEvent` frames reach this socket only when the agent's LLM

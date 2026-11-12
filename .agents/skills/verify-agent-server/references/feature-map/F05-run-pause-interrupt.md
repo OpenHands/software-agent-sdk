@@ -46,7 +46,7 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
 - `F05.interrupt-tool-call`: interrupt while a tool call runs returns at once: `paused`, an `InterruptEvent`, an `AgentErrorEvent` for the unfinished call (same `tool_call_id`) and no observation; the resumed run sends that error to the model as the tool result and finishes.
 - `F05.run-capacity`: with `max_concurrent_runs` 1, `POST /run` on a second conversation returns 429 while the first holds the slot, leaves it `idle`, and succeeds once the first is interrupted.
 - `F05.stuck-detected`: with `stuck_detection` on (the default), a run whose model repeats the same tool call ends `stuck` after four identical action/observation pairs (four model calls), with no `ConversationErrorEvent`; GET, `status=stuck` search and count and the events socket say `stuck`.
-- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call. The SDK reports the same behavior as a known failure ([#6648](https://github.com/OpenHands/software-agent-sdk/issues/6648), `S01.stuck-recover`): if that is fixed, this bullet changes with it.
+- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200 and resumes it with a fresh stuck-detection window: the model is called again, and a model that keeps looping ends `stuck` again after four more identical action/observation pairs (as the SDK does, `S01.stuck-recover`).
 - `F05.stuck-new-input`: a new user message moves a `stuck` conversation to `idle`, and `POST /run` runs it again to `finished`.
 - `F05.max-iterations-stop`: a conversation created with `max_iterations: 6` and `stuck_detection: false` whose model never finishes makes exactly six model calls (past the stuck threshold) and ends `error` with exactly one `ConversationErrorEvent` `code: MaxIterationsReached` naming the limit, on REST and the events socket, never `stuck`.
 - `F05.max-iterations-resume`: `POST /run` after `MaxIterationsReached` is accepted and gets a fresh budget of six model calls (a second `MaxIterationsReached`), and once the model calls `finish` the next run ends `finished`.
@@ -66,7 +66,7 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
   `{"detail": "credential_binding_activation_required", "retryable": true}`
   when a required credential binding is missing (credential family); 400 while
   the server shuts down. `/run` also resumes `paused` and `error`
-  conversations (a `stuck` one only after new input) and approves actions
+  conversations (a `stuck` one with a fresh stuck-detection window) and approves actions
   waiting for confirmation.
 - REST: `POST /api/conversations/{conversation_id}/pause` and
   `POST /api/conversations/{conversation_id}/interrupt` (no body), 200
@@ -588,13 +588,16 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server ws read f05-l-rerun --contains '"key": "execution_status", "value": "running"'
   control-agent-server ws stop f05-l-rerun --contains '"key": "execution_status", "value": "stuck"' --save F05.stuck-rerun/frames
   control-agent-server api GET "/api/conversations/$L" --check execution_status eq stuck
-  control-agent-server api GET "/api/conversations/$L/events/count" --query kind=$ACTION_KIND --check . eq 4
-  control-agent-server sink read --name qa-f05-loop --expect-min 4 --expect-max 4
+  control-agent-server api GET "/api/conversations/$L/events/count" --query kind=$ACTION_KIND --check . eq 8
+  control-agent-server api GET "/api/conversations/$L/events/count" --query kind=$OBSERVATION_KIND --check . eq 8
+  control-agent-server sink read --name qa-f05-loop --expect-min 8 --expect-max 8
   ```
-  `/run` is accepted and the run ends at once (its closing `full_state`
-  frame): the socket shows `running` then `stuck`, and there is no new action
-  and no fifth model request. The stuck detector looks only at events since
-  the last user message, so `/run` alone re-detects the same loop.
+  `/run` is accepted and the run resumes: the stuck detector counts only the
+  events after the resume (as it does after a new user message), so the
+  four earlier pairs do not re-trigger it. The stub keeps looping, so after
+  four more model calls, actions and observations (eight of each in all)
+  the run ends `stuck` again (its closing `full_state` frame): the socket
+  shows `running` then `stuck`.
 - **New input un-sticks it (`F05.stuck-new-input`).** The provider now
   answers with a `finish` call.
   ```sh
@@ -604,7 +607,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api POST "/api/conversations/$L/run" --expect 200 --check success eq true
   control-agent-server conversation wait "$L" --until finished --timeout 60
   control-agent-server api GET "/api/conversations/$L/agent_final_response" --check response eq QA_F05_UNSTUCK --save F05.stuck-new-input/final
-  control-agent-server sink read --name qa-f05-loop --expect-min 5 --expect-max 5
+  control-agent-server sink read --name qa-f05-loop --expect-min 9 --expect-max 9
   ```
   The message resets `stuck` to `idle`, and the next run makes one model call
   and ends `finished` with the stub's `finish` message.
@@ -822,11 +825,12 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   after every pause and interrupt. Counting them (`--expect-min`) is how the
   recipes prove a run ended when no status changes (`F05.run-finished-noop`,
   `F05.pause-tool-step`).
-- `stuck` is not an error: no `ConversationErrorEvent`, and `/run` on a
-  `stuck` conversation re-runs the detector over the events since the last
-  user message, so it returns to `stuck` at once without a model call. Only
-  new input (or a conversation created with `stuck_detection: false`) lets
-  the loop continue (`F05.stuck-rerun`, `F05.stuck-new-input`).
+- `stuck` is not an error: no `ConversationErrorEvent`. `/run` on a
+  `stuck` conversation resumes it with a fresh detection window (only events
+  after the resume count), so a model that keeps repeating itself makes four
+  more calls and ends `stuck` again; new input also resets the window
+  (`F05.stuck-rerun`, `F05.stuck-new-input`). A conversation created with
+  `stuck_detection: false` never ends `stuck`.
 - `max_iterations` counts agent steps per run, not per conversation: every
   `/run` starts from zero (`F05.max-iterations-resume`). A step that ends
   with `finish` on the last allowed iteration stays `finished`.
