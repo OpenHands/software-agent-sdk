@@ -41,7 +41,6 @@ class MCPToolGateway:
         self._idle = threading.Condition(self._lock)
         self._active_calls = 0
         self._clients: dict[str, MCPClient] = {}
-        self._servers: dict[str, MCPServer] = {}
         self._tools: dict[str, MCPToolDefinition] = {}
         self._selected = (
             frozenset(selected_tools) if selected_tools is not None else None
@@ -93,7 +92,6 @@ class MCPToolGateway:
                     continue
                 with self._lock:
                     self._clients[name] = client
-                    self._servers[name] = enabled[name]
                     self._tools.update(
                         {f"{name}.{tool.name}": tool for tool in client.tools}
                     )
@@ -101,69 +99,36 @@ class MCPToolGateway:
             self.close()
             raise
 
-    def replace_servers(
-        self, config: Mapping[str, MCPServer], provider: MCPToolProvider
+    def add_server(
+        self, name: str, server: MCPServer, provider: MCPToolProvider
     ) -> None:
-        """Apply a server configuration without rebuilding unchanged sessions."""
+        """Connect one new server without touching existing sessions."""
         if not provider_supports_on_tools_reconciled(provider):
             raise ValueError("MCP gateway requires tool-list reconciliation support")
-        incoming = enabled_mcp_servers(dict(config))
         with self._lock:
-            if self._closed:
-                raise RuntimeError("MCP gateway is closed")
-            if self._active_calls:
-                raise RuntimeError("Cannot update MCP servers during a gateway call")
-            to_start = {
-                name: server
-                for name, server in incoming.items()
-                if self._servers.get(name) != server or name not in self._clients
-            }
+            if self._closed or self._active_calls:
+                raise RuntimeError("MCP gateway is unavailable for new connections")
+            if name in self._clients:
+                raise ValueError(f"MCP server already exists: {name}")
 
-        staged: dict[str, MCPClient] = {}
+        client = provider.create_tools(
+            {name: server},
+            _GATEWAY_STARTUP_TIMEOUT,
+            on_tools_reconciled=lambda client, tools: self._reconcile(
+                name, client, tools
+            ),
+        )
         try:
-            for name, server in to_start.items():
-                staged[name] = provider.create_tools(
-                    {name: server},
-                    _GATEWAY_STARTUP_TIMEOUT,
-                    on_tools_reconciled=lambda client, tools, name=name: (
-                        self._reconcile(name, client, tools)
-                    ),
-                )
             with self._lock:
-                if self._closed or self._active_calls:
-                    raise RuntimeError("MCP gateway changed during server update")
-                removed = {
-                    name: client
-                    for name, client in self._clients.items()
-                    if name not in incoming or name in staged
-                }
-                retained = {
-                    name: client
-                    for name, client in self._clients.items()
-                    if name not in removed
-                }
-                clients = {**retained, **staged}
-                tools = {
-                    f"{name}.{tool.name}": tool
-                    for name, client in clients.items()
-                    for tool in client.tools
-                }
-                self._clients = clients
-                self._servers = {name: incoming[name] for name in clients}
-                self._tools = tools
+                if self._closed or self._active_calls or name in self._clients:
+                    raise RuntimeError("MCP gateway changed during server addition")
+                tools = {f"{name}.{tool.name}": tool for tool in client.tools}
+                self._clients[name] = client
+                self._tools.update(tools)
                 self._version += 1
         except BaseException:
-            for client in staged.values():
-                try:
-                    client.sync_close()
-                except Exception:
-                    logger.warning("MCP gateway failed to close staged connection")
+            client.sync_close()
             raise
-        for client in removed.values():
-            try:
-                client.sync_close()
-            except Exception:
-                logger.warning("MCP gateway failed to close replaced connection")
 
     def _reconcile(
         self, name: str, client: MCPClient, tools: Sequence[MCPToolDefinition]
@@ -271,7 +236,6 @@ class MCPToolGateway:
                 self._idle.wait()
             clients = list(self._clients.values())
             self._clients.clear()
-            self._servers.clear()
             self._tools.clear()
         for client in clients:
             client.sync_close()

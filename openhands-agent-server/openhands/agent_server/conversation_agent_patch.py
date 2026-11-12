@@ -11,7 +11,7 @@ from openhands.sdk.profiles.conversation_patch import apply_conversation_profile
 
 
 class StepInProgress(RuntimeError):
-    """The current step must finish before resources can be replaced."""
+    """The current step must finish before resources can be updated."""
 
 
 def apply_conversation_agent_patch(
@@ -27,18 +27,35 @@ def apply_conversation_agent_patch(
         ):
             raise ValueError("This conversation has no editable OpenHands profile")
         updated_profile = apply_conversation_profile_diff(profile, request.profile_diff)
+        existing = conversation.agent.mcp_config
+        duplicate = request.resources.mcp_servers.keys() & (
+            existing.keys() | state.conversation_mcp_servers.keys()
+        )
+        if duplicate:
+            raise ValueError(f"MCP server already exists: {sorted(duplicate)}")
         private_servers = {
             **state.conversation_mcp_servers,
             **request.resources.mcp_servers,
         }
-        available = {**conversation.agent.mcp_config, **private_servers}
+        available = {**existing, **private_servers}
         refs = updated_profile.mcp_server_refs
         missing = sorted(set(refs or ()) - available.keys())
         if missing:
             raise ValueError(f"Unknown MCP server references: {missing}")
+        if "mcp_server_refs" in request.profile_diff and refs is not None:
+            removed = existing.keys() - set(refs)
+            if removed:
+                raise ValueError(
+                    f"MCP profile edits cannot remove connections: {sorted(removed)}"
+                )
         selected = (
             available if refs is None else {name: available[name] for name in refs}
         )
+        additions = {
+            name: server for name, server in selected.items() if name not in existing
+        }
+        if len(additions) > 1:
+            raise ValueError("Add only one MCP server per profile edit")
         secrets = request.resources.secrets
         denied = sorted(
             name
@@ -69,8 +86,8 @@ def apply_conversation_agent_patch(
         if registry_changed:
             state.secret_registry = secret_registry
         try:
-            if selected != conversation.agent.mcp_config:
-                conversation.update_mcp_config(selected)
+            if additions:
+                conversation.add_mcp_servers(additions)
         except BaseException:
             if registry_changed:
                 state.secret_registry = previous_registry

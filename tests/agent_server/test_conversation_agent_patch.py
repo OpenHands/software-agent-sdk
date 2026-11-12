@@ -157,6 +157,48 @@ def test_patch_adds_mcp_connection_to_gateway_without_changing_prompt(conversati
         resumed.close()
 
 
+def test_profile_addition_never_removes_existing_connection(conversation):
+    server = MCPServer(
+        command=sys.executable,
+        args=["-m", "tests.sdk.mcp.stdio_test_server"],
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+    conversation._ensure_agent_ready()
+    first = UpdateConversationAgentRequest.model_validate(
+        {
+            "profile_diff": {"mcp_server_refs": ["docs"]},
+            "resources": {"mcp_servers": {"docs": server}},
+        }
+    )
+    apply_conversation_agent_patch(conversation, first)
+    client = conversation.mcp_gateway.clients["docs"]
+    second = UpdateConversationAgentRequest.model_validate(
+        {
+            "profile_diff": {"mcp_server_refs": ["docs", "other"]},
+            "resources": {"mcp_servers": {"other": server}},
+        }
+    )
+    result = apply_conversation_agent_patch(conversation, second)
+    assert result.conversation_profile.mcp_server_refs == ["docs", "other"]
+    assert conversation.mcp_gateway.clients["docs"] is client
+    assert not client._closed
+    assert {
+        tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
+    } == {"docs.fetch", "other.fetch"}
+
+    for request in (
+        UpdateConversationAgentRequest(profile_diff={"mcp_server_refs": ["other"]}),
+        UpdateConversationAgentRequest.model_validate(
+            {"resources": {"mcp_servers": {"docs": {"command": "echo"}}}}
+        ),
+    ):
+        with pytest.raises(ValueError, match="remove|already exists"):
+            apply_conversation_agent_patch(conversation, request)
+    assert conversation.state.conversation_profile_revision == 2
+    assert conversation.mcp_gateway.clients["docs"] is client
+    assert not client._closed
+
+
 def test_patch_rejects_prompt_and_identity_changes_without_mutation(conversation):
     for diff in (
         {"persona": "new system prompt"},

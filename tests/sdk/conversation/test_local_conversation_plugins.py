@@ -1089,8 +1089,9 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    @pytest.mark.parametrize("existing", [False, True])
     def test_load_plugin_adds_live_mcp_server_to_gateway(
-        self, tmp_path: Path, mock_llm
+        self, tmp_path: Path, mock_llm, existing: bool
     ):
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
@@ -1114,6 +1115,17 @@ class TestLocalConversationPlugins:
                 llm=mock_llm,
                 tools=[],
                 include_default_tools=[],
+                mcp_config=(
+                    {
+                        "existing": MCPServer(
+                            command=sys.executable,
+                            args=["-m", "tests.sdk.mcp.stdio_test_server"],
+                            cwd=str(Path(__file__).resolve().parents[3]),
+                        )
+                    }
+                    if existing
+                    else {}
+                ),
                 agent_context=AgentContext(
                     registered_marketplaces=[
                         MarketplaceRegistration(
@@ -1127,15 +1139,28 @@ class TestLocalConversationPlugins:
         )
         try:
             conversation._ensure_agent_ready()
-            assert "list_mcp_tools" not in conversation.agent.tools_map
+            previous_client = (
+                conversation.mcp_gateway.clients["existing"] if existing else None
+            )
+            if not existing:
+                assert "list_mcp_tools" not in conversation.agent.tools_map
             conversation.load_plugin("mcp-plugin")
             assert {"list_mcp_tools", "call_mcp_tool"} <= set(
                 conversation.agent.tools_map
             )
-            assert [
+            assert {
                 tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
-            ] == ["docs.fetch"]
+            } == ({"existing.fetch", "docs.fetch"} if existing else {"docs.fetch"})
             assert "docs" in conversation.agent.mcp_config
+            docs_client = conversation.mcp_gateway.clients["docs"]
+            with pytest.raises(ValueError, match="already exists"):
+                conversation.load_plugin("mcp-plugin")
+            assert conversation.mcp_gateway.clients["docs"] is docs_client
+            assert not docs_client._closed
+            if existing:
+                assert previous_client is not None
+                assert conversation.mcp_gateway.clients["existing"] is previous_client
+                assert not previous_client._closed
         finally:
             conversation.close()
 

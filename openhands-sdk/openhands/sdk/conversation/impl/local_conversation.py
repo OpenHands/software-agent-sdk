@@ -1771,28 +1771,31 @@ class LocalConversation(BaseConversation):
         )
 
         get_secret = self._state.secret_registry.get_secret_value
+        gateway_mode = getattr(self.agent, "mcp_gateway", False)
         runtime_plugin_mcp: dict[str, MCPServer] = {}
         if plugin.mcp_config:
             runtime_plugin_mcp = expand_mcp_servers(plugin.mcp_config, get_secret)
+            if gateway_mode:
+                duplicates = runtime_plugin_mcp.keys() & self.agent.mcp_config.keys()
+                if duplicates:
+                    raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
         if merged_mcp:
             merged_mcp = expand_mcp_servers(merged_mcp, get_secret)
-        if (
-            self._agent_ready
-            and getattr(self.agent, "mcp_gateway", False)
-            and runtime_plugin_mcp
-        ):
-            self.update_mcp_config(merged_mcp)
+        if self._agent_ready and gateway_mode:
+            if runtime_plugin_mcp:
+                self.add_mcp_servers(runtime_plugin_mcp)
+            merged_mcp = dict(self.agent.mcp_config)
         runtime_mcp_tools = (
             self._runtime_mcp_tools(
                 runtime_plugin_mcp,
                 on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
                 on_tools_reconciled=self._on_mcp_tools_reconciled,
             )
-            if self._agent_ready and not getattr(self.agent, "mcp_gateway", False)
+            if self._agent_ready and not gateway_mode
             else []
         )
 
@@ -3272,54 +3275,53 @@ class LocalConversation(BaseConversation):
         else:
             self.pause()
 
-    def update_mcp_config(self, mcp_config: Mapping[str, MCPServer]) -> None:
-        """Replace MCP servers at a step boundary using gateway-owned sessions."""
+    def add_mcp_servers(self, servers: Mapping[str, MCPServer]) -> None:
+        """Add MCP connections without changing any existing server or session."""
         if not self.agent.supports_openhands_mcp:
-            raise ValueError("Runtime MCP updates require an OpenHands agent")
+            raise ValueError("Runtime MCP additions require an OpenHands agent")
         if self._step_in_progress:
-            raise RuntimeError("Cannot update MCP servers during an agent step")
+            raise RuntimeError("Cannot add MCP servers during an agent step")
 
         config = expand_mcp_servers(
-            coerce_mcp_config(dict(mcp_config)),
+            coerce_mcp_config(dict(servers)),
             self._state.secret_registry.get_secret_value,
         )
         with self._state:
             if self._step_in_progress:
-                raise RuntimeError("Cannot update MCP servers during an agent step")
-            if config == self.agent.mcp_config:
-                return
-            if not self._agent_ready:
-                updated = self.agent.model_copy(update={"mcp_config": config})
-                self.agent = self._state.agent = updated
-                return
-            if not getattr(self.agent, "mcp_gateway", False):
-                raise ValueError("Runtime MCP updates require the MCP gateway")
-
-            gateway = self._mcp_gateway
-            if gateway is None:
-                gateway = MCPToolGateway(
-                    self._state.mcp_gateway_selected_tools,
-                    filter_tools_regex=self.agent.filter_tools_regex,
+                raise RuntimeError("Cannot add MCP servers during an agent step")
+            duplicates = config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            if self._agent_ready and not getattr(self.agent, "mcp_gateway", False):
+                raise ValueError("Runtime MCP additions require the MCP gateway")
+            for name, server in config.items():
+                if self._agent_ready and server.enabled:
+                    gateway = self._mcp_gateway
+                    if gateway is None:
+                        gateway = MCPToolGateway(
+                            self._state.mcp_gateway_selected_tools,
+                            filter_tools_regex=self.agent.filter_tools_regex,
+                        )
+                        try:
+                            gateway.add_server(name, server, self._mcp_tool_provider)
+                            self._state._mcp_gateway = gateway
+                            self.agent.add_runtime_tools(
+                                [
+                                    *ListMCPToolsTool.create(self._state),
+                                    *CallMCPToolTool.create(self._state),
+                                ]
+                            )
+                        except BaseException:
+                            gateway.close()
+                            self._state._mcp_gateway = None
+                            raise
+                        self._mcp_gateway = gateway
+                    else:
+                        gateway.add_server(name, server, self._mcp_tool_provider)
+                updated = self.agent.model_copy(
+                    update={"mcp_config": {**self.agent.mcp_config, name: server}}
                 )
-                try:
-                    gateway.replace_servers(config, self._mcp_tool_provider)
-                    self._state._mcp_gateway = gateway
-                    self.agent.add_runtime_tools(
-                        [
-                            *ListMCPToolsTool.create(self._state),
-                            *CallMCPToolTool.create(self._state),
-                        ]
-                    )
-                except BaseException:
-                    gateway.close()
-                    self._state._mcp_gateway = None
-                    raise
-                self._mcp_gateway = gateway
-            else:
-                gateway.replace_servers(config, self._mcp_tool_provider)
-
-            updated = self.agent.model_copy(update={"mcp_config": config})
-            self.agent = self._state.agent = updated
+                self.agent = self._state.agent = updated
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.
