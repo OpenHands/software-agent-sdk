@@ -15,7 +15,10 @@ from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 
 from openhands.agent_server.bash_router import bash_router
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
+    get_conversation_registry,
     get_conversation_service,
     get_event_service,
     get_vscode_service,
@@ -31,11 +34,13 @@ from openhands.agent_server.vscode_service import VSCodeService
 
 
 async def bind_local_conversation_runtime(
-    runtime_conversation_id: UUID, request: Request
+    runtime_conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> None:
-    conversation_service = get_conversation_service(request)
     event_service = await get_event_service(
-        runtime_conversation_id, request, conversation_service
+        runtime_conversation_id, conversation_service, registry
     )
     if event_service is None:
         raise HTTPException(404, "Conversation not found")

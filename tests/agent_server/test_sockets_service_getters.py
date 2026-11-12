@@ -18,11 +18,16 @@ from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
+    get_config,
     get_conversation_service,
     get_server_bash_event_service,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.server_context import ServerContext, build_server_context
+from openhands.agent_server.server_context import (
+    ServerContext,
+    build_server_context,
+    get_server_context,
+)
 
 
 def _context(
@@ -63,22 +68,25 @@ def bash_service():
 
 
 def test_get_conversation_service_returns_the_context_service(conv_service):
-    ws = _make_ws(_context(conversation_service=conv_service))
-    assert get_conversation_service(ws) is conv_service
+    context = _context(conversation_service=conv_service)
+    ws = _make_ws(context)
+    assert get_conversation_service(ws, context) is conv_service
 
 
 def test_get_conversation_service_refuses_a_socket_without_a_started_service():
     """A dormant context has no service, and nothing stands in for it."""
-    ws = _make_ws(_context())
+    context = _context()
+    ws = _make_ws(context)
     with pytest.raises(WebSocketException) as excinfo:
-        get_conversation_service(ws)
+        get_conversation_service(ws, context)
     assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
 
 
 def test_get_conversation_service_answers_503_to_a_request_without_a_service():
-    request = _make_ws(_context(), scope_type="http")
+    context = _context()
+    request = _make_ws(context, scope_type="http")
     with pytest.raises(HTTPException) as excinfo:
-        get_conversation_service(request)
+        get_conversation_service(request, context)
     assert excinfo.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
@@ -86,21 +94,24 @@ def test_get_conversation_service_answers_503_to_a_request_without_a_service():
 
 
 def test_get_bash_event_service_returns_the_context_service(bash_service):
-    ws = _make_ws(_context(bash_event_service=bash_service))
-    assert get_server_bash_event_service(ws) is bash_service
+    context = _context(bash_event_service=bash_service)
+    ws = _make_ws(context)
+    assert get_server_bash_event_service(ws, context) is bash_service
 
 
 def test_get_bash_event_service_refuses_a_socket_without_a_started_service():
-    ws = _make_ws(_context())
+    context = _context()
+    ws = _make_ws(context)
     with pytest.raises(WebSocketException) as excinfo:
-        get_server_bash_event_service(ws)
+        get_server_bash_event_service(ws, context)
     assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
 
 
 def test_get_bash_event_service_answers_503_to_a_request_without_a_service():
-    request = _make_ws(_context(), scope_type="http")
+    context = _context()
+    request = _make_ws(context, scope_type="http")
     with pytest.raises(HTTPException) as excinfo:
-        get_server_bash_event_service(request)
+        get_server_bash_event_service(request, context)
     assert excinfo.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
@@ -109,7 +120,7 @@ def test_an_app_without_a_context_is_a_programming_error():
     ws = MagicMock()
     ws.app.state = SimpleNamespace()
     with pytest.raises(RuntimeError, match="no ServerContext"):
-        get_conversation_service(ws)
+        get_server_context(ws)
 
 
 # -- End-to-end: WebSocket handlers use the context's services --
@@ -127,7 +138,8 @@ async def test_events_socket_uses_the_context_conversation_service():
     per_app_conv_svc = MagicMock(spec=ConversationService)
     per_app_conv_svc.get_event_service = AsyncMock(return_value=mock_event_svc)
 
-    ws = _make_ws(_context(conversation_service=per_app_conv_svc))
+    context = _context(conversation_service=per_app_conv_svc)
+    ws = _make_ws(context)
     ws.accept = AsyncMock()
     ws.receive_text = AsyncMock()
     ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
@@ -135,7 +147,13 @@ async def test_events_socket_uses_the_context_conversation_service():
     ws.close = AsyncMock()
     ws.headers = {}
 
-    await events_socket(uuid4(), ws, session_api_key=None)
+    await events_socket(
+        uuid4(),
+        ws,
+        session_api_key=None,
+        config=get_config(context),
+        conv_service=get_conversation_service(ws, context),
+    )
 
     per_app_conv_svc.get_event_service.assert_called_once()
     mock_event_svc.subscribe_to_events.assert_called_once()
@@ -151,7 +169,8 @@ async def test_bash_events_socket_uses_the_context_bash_event_service():
     per_app_bash_svc.subscribe_to_events = AsyncMock(return_value=uuid4())
     per_app_bash_svc.unsubscribe_from_events = AsyncMock(return_value=True)
 
-    ws = _make_ws(_context(bash_event_service=per_app_bash_svc))
+    context = _context(bash_event_service=per_app_bash_svc)
+    ws = _make_ws(context)
     ws.accept = AsyncMock()
     ws.receive_text = AsyncMock()
     ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
@@ -159,7 +178,12 @@ async def test_bash_events_socket_uses_the_context_bash_event_service():
     ws.close = AsyncMock()
     ws.headers = {}
 
-    await bash_events_socket(ws, session_api_key=None)
+    await bash_events_socket(
+        ws,
+        session_api_key=None,
+        config=get_config(context),
+        bash_service=get_server_bash_event_service(ws, context),
+    )
 
     per_app_bash_svc.subscribe_to_events.assert_called_once()
     per_app_bash_svc.unsubscribe_from_events.assert_called_once()
@@ -175,7 +199,8 @@ async def test_events_socket_preserves_diagnostics_without_extra_stack(
     event_service.unsubscribe_from_events = AsyncMock()
     service = MagicMock(spec=ConversationService)
     service.get_event_service = AsyncMock(return_value=event_service)
-    ws = _make_ws(_context(conversation_service=service))
+    context = _context(conversation_service=service)
+    ws = _make_ws(context)
     ws.headers = {}
     ws.accept = AsyncMock()
     ws.receive_json = AsyncMock(
@@ -185,7 +210,9 @@ async def test_events_socket_preserves_diagnostics_without_extra_stack(
     ws.close = AsyncMock()
     caplog.set_level("DEBUG", logger=sockets_mod.__name__)
 
-    await sockets_mod.events_socket(uuid4(), ws)
+    await sockets_mod.events_socket(
+        uuid4(), ws, config=context.config, conv_service=service
+    )
 
     payload = ws.send_json.call_args.args[0]
     assert payload["code"] == "ValueError"

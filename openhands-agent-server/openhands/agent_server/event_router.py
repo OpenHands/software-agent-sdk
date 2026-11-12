@@ -16,11 +16,12 @@ from fastapi import (
     Query,
     status,
 )
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
+    get_conversation_registry,
     get_conversation_service,
     get_event_service,
 )
@@ -241,12 +242,12 @@ async def send_message(
 
 async def _gateway_context(
     conversation_id: UUID,
-    http_request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> tuple[EventService, float]:
     deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
     event_service = await get_event_service(
-        conversation_id, http_request, conversation_service
+        conversation_id, conversation_service, registry
     )
     return event_service, deadline
 

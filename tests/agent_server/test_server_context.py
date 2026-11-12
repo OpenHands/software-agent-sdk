@@ -24,6 +24,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from starlette.requests import HTTPConnection
 
 import openhands.agent_server
 from openhands.agent_server import init_router as init_router_module
@@ -34,6 +35,7 @@ from openhands.agent_server.init_router import InitRequest, InitService
 from openhands.agent_server.server_context import (
     ServerContext,
     build_server_context,
+    get_server_context,
     install_server_context,
     server_context_of,
 )
@@ -302,6 +304,38 @@ def test_the_lifespan_adds_services_to_the_context_it_was_created_with(
         assert running.bash_event_service.bash_events_dir == tmp_path / "bash"
 
 
+def test_a_request_takes_everything_from_one_context(tmp_path: Path) -> None:
+    """The auth check, the config and the store of a request share a context.
+
+    ``GET /api/settings`` depends on the session-key check (router level), the
+    config and the settings store. They all resolve from one context lookup,
+    so a context swapped while the request runs cannot give it a mix.
+    """
+    app = create_app(
+        Config(
+            session_api_keys=[SESSION_KEY],
+            conversations_path=tmp_path / "conversations",
+            bash_events_dir=tmp_path / "bash",
+            enable_vscode=False,
+            preload_tools=False,
+        )
+    )
+    lookups: list[ServerContext] = []
+
+    def counting_lookup(connection: HTTPConnection) -> ServerContext:
+        lookups.append(server_context_of(connection.app))
+        return lookups[-1]
+
+    app.dependency_overrides[get_server_context] = counting_lookup
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/settings", headers={"X-Session-API-Key": SESSION_KEY}
+        )
+
+    assert response.status_code == 200
+    assert len(lookups) == 1
+
+
 def test_an_app_without_a_context_says_so() -> None:
     with pytest.raises(RuntimeError, match="no ServerContext"):
         server_context_of(FastAPI())
@@ -322,6 +356,19 @@ _CONTEXT_STATE = frozenset(
     }
 )
 _CONTEXT_MODULE = "server_context.py"
+# Fetching the whole context by hand. A route declares what it needs instead
+# (``Depends(get_settings_store)``), so only code that builds or swaps the
+# context, or runs outside a route, may do this.
+_CONTEXT_LOOKUPS = frozenset({"get_server_context", "server_context_of"})
+_CONTEXT_LOOKUP_MODULES = frozenset(
+    {
+        _CONTEXT_MODULE,
+        "api.py",  # builds the app, its lifespan and its middleware stack
+        "init_router.py",  # swaps the context in POST /api/init
+        "docker_runtime/hybrid.py",  # ASGI middleware
+        "canvas_extensions_router.py",  # a manager that outlives /api/init
+    }
+)
 _PACKAGE_DIR = Path(openhands.agent_server.__file__).parent
 
 
@@ -341,6 +388,8 @@ def context_violations(source: str, filename: str) -> list[str]:
             if node.attr in _CONTEXT_STATE and _is_app_state(node.value):
                 found.append(f"{filename}:{node.lineno}: reads .state.{node.attr}")
         elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _CONTEXT_LOOKUPS:
+                found.append(f"{filename}:{node.lineno}: calls {node.func.id}()")
             # getattr/setattr/hasattr(<x>.state, "config", ...)
             if (
                 isinstance(node.func, ast.Name)
@@ -366,6 +415,8 @@ def context_violations(source: str, filename: str) -> list[str]:
         "registry = scope['app'].state.conversation_registry",
         "context = api.state.server_context",
         "config = getattr(request.app.state, 'config', None)",
+        "stores = get_server_context(request).stores",
+        "config = server_context_of(request.app).config",
         "def get_default_config():\n    return load_config()",
         "async def get_default_conversation_service():\n    ...",
     ],
@@ -377,8 +428,8 @@ def test_the_guard_recognises_a_way_around_the_context(source: str) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        "config = get_config(request)",
-        "stores = get_server_context(request).stores",
+        "async def route(config: Config = Depends(get_config)): ...",
+        "def provider(context: ServerContext = Depends(get_server_context)): ...",
         "manager = request.app.state.canvas_extension_backend_manager",
         "event_service = getattr(request.state, 'runtime_event_service', None)",
         "status = conversation.state.execution_status",
@@ -395,9 +446,10 @@ def test_only_the_server_context_module_touches_context_state() -> None:
     A reader of ``app.state.config`` (or of a service kept there) sees whatever
     was assigned last, which during ``POST /api/init`` can be half of the old
     setup and half of the new one; a ``get_default_*`` function builds a second
-    copy from the environment. Take the config, a store or a service from the
-    request's ``ServerContext`` (``openhands.agent_server.dependencies``), or
-    have it passed in by the code that built the context.
+    copy from the environment. A route declares the config, store or service it
+    needs with ``Depends`` (``openhands.agent_server.dependencies``) rather than
+    fetching the context; other code has it passed in by whoever built the
+    context.
     """
     violations: list[str] = []
     modules = sorted(_PACKAGE_DIR.rglob("*.py"))
@@ -408,6 +460,8 @@ def test_only_the_server_context_module_touches_context_state() -> None:
         if relative == _CONTEXT_MODULE:
             # The one place the context itself is kept and read.
             found = [v for v in found if not v.endswith(".state.server_context")]
+        if relative in _CONTEXT_LOOKUP_MODULES:
+            found = [v for v in found if ": calls " not in v]
         violations.extend(found)
 
     assert violations == [], "\n".join(violations)
@@ -416,7 +470,9 @@ def test_only_the_server_context_module_touches_context_state() -> None:
 def test_the_context_module_keeps_the_context_on_app_state() -> None:
     """The guard's exception is real: that module is where the context lives."""
     source = (_PACKAGE_DIR / _CONTEXT_MODULE).read_text()
-    kept = context_violations(source, _CONTEXT_MODULE)
+    kept = [
+        v for v in context_violations(source, _CONTEXT_MODULE) if ": calls " not in v
+    ]
     assert kept and all(v.endswith(".state.server_context") for v in kept)
 
 

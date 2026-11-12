@@ -8,9 +8,10 @@ delegate agents from the top-level agent and ``agent_profiles``.
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.launch import configured_browser_available
 from openhands.sdk.context.condenser import CondenserBase
@@ -124,7 +125,7 @@ class SubAgentsResponse(BaseModel):
 
 @sub_agents_router.post("", response_model=SubAgentsResponse)
 def get_sub_agents(
-    request: SubAgentsRequest, http_request: Request
+    request: SubAgentsRequest, config: Config = Depends(get_config)
 ) -> SubAgentsResponse:
     """List file-based and built-in sub-agents for the workspace.
 
@@ -137,7 +138,6 @@ def get_sub_agents(
         include_project=request.load_project,
         include_user=request.load_user,
     )
-    config = get_config(http_request)
     builtins = (
         discover_builtin_agents(
             enable_browser=configured_browser_available(config) is not False

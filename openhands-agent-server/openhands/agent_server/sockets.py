@@ -22,13 +22,17 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     Query,
     WebSocket,
     WebSocketDisconnect,
 )
 from starlette.websockets import WebSocketState
 
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
 )
 from openhands.agent_server.dependencies import (
@@ -90,6 +94,7 @@ _FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
 async def _accept_authenticated_websocket(
     websocket: WebSocket,
     session_api_key: str | None,
+    config: Config,
 ) -> bool:
     """Authenticate and accept the socket, or close with an auth error.
 
@@ -102,7 +107,6 @@ async def _accept_authenticated_websocket(
     The WebSocket is always *accepted* before first-message auth is attempted
     because raw WebSocket requires ``accept()`` before any frames can be read.
     """
-    config = get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
 
     # No auth configured — accept unconditionally.
@@ -214,6 +218,8 @@ async def events_socket(
             deprecated=True,
         ),
     ] = False,
+    config: Config = Depends(get_config),
+    conv_service: ConversationService = Depends(get_conversation_service),
 ):
     """WebSocket endpoint for conversation events.
 
@@ -234,11 +240,10 @@ async def events_socket(
             backward compatibility - if True and resend_mode is None, behaves
             as resend_mode='all'.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    conv_service = get_conversation_service(websocket)
     try:
         event_service = await conv_service.get_event_service(conversation_id)
     except CredentialBindingActivationRequired:
@@ -364,6 +369,8 @@ async def bash_events_socket(
             deprecated=True,
         ),
     ] = False,
+    config: Config = Depends(get_config),
+    bash_service: BashEventService = Depends(get_server_bash_event_service),
 ):
     """WebSocket endpoint for bash events.
 
@@ -375,10 +382,9 @@ async def bash_events_socket(
             - None: Don't resend, just subscribe to new events
         resend_all: DEPRECATED. Use resend_mode='all' instead.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
-    bash_service = get_server_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
     try:
         subscriber_id = await bash_service.subscribe_to_events(

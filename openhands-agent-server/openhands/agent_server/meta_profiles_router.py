@@ -8,11 +8,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import AfterValidator, BaseModel
 
-from openhands.agent_server.dependencies import get_stores
-from openhands.agent_server.persistence import PersistedSettings
+from openhands.agent_server.dependencies import get_settings_store
+from openhands.agent_server.persistence import FileSettingsStore, PersistedSettings
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.llm.meta_profile_store import (
     MetaProfile,
@@ -112,9 +112,8 @@ def _store_errors() -> Iterator[None]:
 
 
 def _set_active_meta_profile_if_matches(
-    request: Request, old_name: str, new_name: str | None
+    settings_store: FileSettingsStore, old_name: str, new_name: str | None
 ) -> bool:
-    settings_store = get_stores(request).settings
     settings = settings_store.load() or PersistedSettings()
     if settings.active_meta_profile != old_name:
         return False
@@ -138,9 +137,10 @@ def _set_active_meta_profile_if_matches(
 
 
 @meta_profiles_router.get("", response_model=MetaProfileListResponse)
-def list_meta_profiles(request: Request) -> MetaProfileListResponse:
+def list_meta_profiles(
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
-    settings_store = get_stores(request).settings
     settings = settings_store.load() or PersistedSettings()
 
     store = _get_meta_profile_store()
@@ -204,7 +204,8 @@ def save_meta_profile(
 
 @meta_profiles_router.delete("/{name}", response_model=MetaProfileMutationResponse)
 def delete_meta_profile(
-    request: Request, name: MetaProfileName
+    name: MetaProfileName,
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> MetaProfileMutationResponse:
     """Delete a meta-profile (idempotent).
 
@@ -214,7 +215,7 @@ def delete_meta_profile(
     store = _get_meta_profile_store()
     with _store_errors():
         store.delete(name)
-    if _set_active_meta_profile_if_matches(request, name, None):
+    if _set_active_meta_profile_if_matches(settings_store, name, None):
         logger.info(f"Cleared active_meta_profile for deleted meta-profile '{name}'")
     logger.info(f"Deleted meta-profile '{name}'")
     return MetaProfileMutationResponse(
@@ -226,7 +227,8 @@ def delete_meta_profile(
     "/{name}/activate", response_model=ActivateMetaProfileResponse
 )
 def activate_meta_profile(
-    request: Request, name: MetaProfileName
+    name: MetaProfileName,
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ActivateMetaProfileResponse:
     """Activate a meta-profile by recording it as ``active_meta_profile``.
 
@@ -248,7 +250,6 @@ def activate_meta_profile(
             detail=f"Meta-profile '{name}' not found",
         )
 
-    settings_store = get_stores(request).settings
     applied = False
 
     def apply_active(settings: PersistedSettings) -> PersistedSettings:

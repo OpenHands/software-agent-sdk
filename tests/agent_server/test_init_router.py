@@ -479,7 +479,7 @@ class TestEndToEndOverLifespan:
         init_state: InitState,
     ) -> None:
         async def accept_app_backend_http(
-            _request: Request, _extension_name: str, _path: str
+            _request: Request, _extension_name: str, _path: str, _config: Config
         ) -> Response:
             return Response(status_code=200)
 

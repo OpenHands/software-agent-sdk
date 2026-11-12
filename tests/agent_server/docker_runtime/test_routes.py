@@ -595,18 +595,14 @@ async def test_delete_blocks_runtime_restart_while_container_stops(tmp_path):
         await allow_stop.wait()
 
     registry.stop = stop
-    request = Request(
-        {
-            "type": "http",
-            "method": "DELETE",
-            "path": f"/api/conversations/{conversation_id}",
-            "query_string": b"",
-            "headers": [],
-            "app": _app_with(registry, AsyncMock()),
-        }
-    )
 
-    deletion = asyncio.create_task(delete_conversation(conversation_id, request))
+    deletion = asyncio.create_task(
+        delete_conversation(
+            conversation_id,
+            conversation_registry=registry,
+            conversation_service=AsyncMock(),
+        )
+    )
     await stop_started.wait()
     with pytest.raises(RuntimeError, match="Conversation is being deleted"):
         await registry.get_or_create(conversation_id)
@@ -690,7 +686,13 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
         },
         receive,
     )
-    await proxy_conversation(conversation_id, "secrets", request)
+    await proxy_conversation(
+        conversation_id,
+        "secrets",
+        request,
+        conversation_registry=registry,
+        conversation_service=service,
+    )
 
     forwarded = UpdateSecretsRequest.model_validate_json(captured["body"])
     assert set(forwarded.secrets) == {"ALLOWED"}

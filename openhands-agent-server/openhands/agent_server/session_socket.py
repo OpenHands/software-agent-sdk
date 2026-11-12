@@ -15,13 +15,15 @@ from dataclasses import dataclass, field
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
 )
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import get_config, get_conversation_service
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
@@ -366,13 +368,14 @@ async def session_socket(
             )
         ),
     ] = None,
+    config: Config = Depends(get_config),
+    conv_service: ConversationService = Depends(get_conversation_service),
 ):
     """Session socket: durable events in an envelope, on one ordered channel."""
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
     logger.info("session_socket_connected: %s after_seq=%s", conversation_id, after_seq)
-    conv_service = get_conversation_service(websocket)
     try:
         event_service = await conv_service.get_event_service(conversation_id)
     except CredentialBindingActivationRequired:

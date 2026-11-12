@@ -4,14 +4,20 @@ Tests the complete authentication flow through the FastAPI application.
 """
 
 import json
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import _find_http_exception, create_app
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_server_bash_event_service,
+)
 from openhands.agent_server.openai.router import _parse_observability_overrides
 
 
@@ -284,6 +290,10 @@ def test_api_websocket_authentication():
     """Test that WebSocket connections also respect authentication."""
     config = Config(session_api_keys=["test-key"])
     app = create_app(config)
+    bash_service = MagicMock(spec=BashEventService)
+    bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    app.dependency_overrides[get_server_bash_event_service] = lambda: bash_service
     client = TestClient(app)
 
     # Without authentication -> should fail
@@ -331,6 +341,10 @@ def test_api_websocket_no_auth_required():
     """Test that WebSocket connections work when auth is disabled."""
     config = Config(session_api_keys=[])
     app = create_app(config)
+    bash_service = MagicMock(spec=BashEventService)
+    bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    app.dependency_overrides[get_server_bash_event_service] = lambda: bash_service
     client = TestClient(app)
 
     with client.websocket_connect("/sockets/bash-events"):

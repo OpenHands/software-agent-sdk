@@ -44,10 +44,10 @@ from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.persistence import ServerStores, reencrypt_stale_stores
 from openhands.agent_server.server_context import (
     ServerContext,
-    get_server_context,
     install_server_context,
     server_context_of,
 )
@@ -432,14 +432,13 @@ def get_init_service(request: Request) -> InitService:
 
 
 def check_init_api_key(
-    request: Request,
+    config: Config = Depends(get_config),
     init_api_key: str | None = Depends(_INIT_API_KEY_HEADER),
 ) -> None:
     """Auth gate for /api/init. Uses the dormant server's ``secret_key`` as the
     bootstrap credential — the orchestrator already holds it because it is
     required for encryption. The key is replaced when /api/init delivers the
     per-user runtime config."""
-    config = get_server_context(request).config
     if config.secret_key is None:
         if config.secret_key_was_blank:
             # A blank key was configured but no usable key remains → fail

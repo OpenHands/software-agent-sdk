@@ -9,12 +9,12 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.credential_binding import LocalVersionedCredentialBinding
-from openhands.agent_server.dependencies import get_config, get_stores
+from openhands.agent_server.dependencies import get_config, get_secrets_store
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.acp_model_discovery import discover_acp_models
@@ -147,7 +147,10 @@ def _codex_bindings(
 
 @acp_router.post("/models", response_model=ACPModelDiscovery)
 async def discover_models(
-    body: ACPModelDiscoveryRequest, request: Request
+    body: ACPModelDiscoveryRequest,
+    request: Request,
+    config: Config = Depends(get_config),
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> ACPModelDiscovery:
     """Start the ACP server in a throwaway session and report its models.
 
@@ -155,7 +158,6 @@ async def discover_models(
     given credentials; a launch or authentication failure comes back in
     ``error`` rather than as an HTTP error.
     """
-    config: Config = get_config(request)
     if config.conversation_runtime == "docker":
         raise HTTPException(
             status.HTTP_501_NOT_IMPLEMENTED,
@@ -169,7 +171,7 @@ async def discover_models(
 
     secrets = await asyncio.to_thread(_resolve_secrets, body.secrets)
     bindings = await asyncio.to_thread(
-        _codex_bindings, settings, get_stores(request).secrets, secrets
+        _codex_bindings, settings, secrets_store, secrets
     )
     key = _cache_key(settings, command, secrets)
 

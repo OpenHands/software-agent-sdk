@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
 from openhands.agent_server.persistence import FileSecretsStore
@@ -106,8 +107,10 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
 
 
 @router.post("/prepare-for-sandbox-pause", include_in_schema=False)
-async def prepare_for_sandbox_pause(request: Request) -> Response:
-    await get_conversation_service(request).prepare_for_sandbox_pause()
+async def prepare_for_sandbox_pause(
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    await conversation_service.prepare_for_sandbox_pause()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -119,7 +122,7 @@ async def activate_credential_binding(
     conversation_id: UUID,
     secret_name: str,
     activation: CredentialBindingActivation,
-    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
     if not supports_file_credential_binding(secret_name):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -129,7 +132,7 @@ async def activate_credential_binding(
     )
     try:
         await _probe_binding(binding)
-        await get_conversation_service(request).activate_credential_binding(
+        await conversation_service.activate_credential_binding(
             conversation_id,
             secret_name,
             binding,

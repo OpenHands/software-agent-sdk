@@ -16,10 +16,10 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     HTTPException,
     Query,
-    Request,
     UploadFile,
     status,
 )
@@ -31,6 +31,7 @@ from openhands.agent_server._secret_redaction import (
     redacted_json_bytes,
     should_redact,
 )
+from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.models import FileUploadResult, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
@@ -941,10 +942,9 @@ async def search_subdirs(
 )
 async def download_trajectory(
     conversation_id: UUID,
-    request: Request,
+    config: Config = Depends(get_config),
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
-    config = get_config(request)
     temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 

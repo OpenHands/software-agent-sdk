@@ -11,7 +11,6 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
-    Request,
     Response,
     status,
 )
@@ -21,6 +20,7 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     store_errors,
 )
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
     InvalidParentConversation,
@@ -30,7 +30,7 @@ from openhands.agent_server.dependencies import (
     get_cipher,
     get_conversation_registry,
     get_conversation_service,
-    get_stores,
+    get_llm_profile_store,
 )
 from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_http_exception
@@ -64,6 +64,7 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilityTags,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
@@ -72,6 +73,7 @@ from openhands.sdk.marketplace.registry import (
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
+from openhands.sdk.utils.cipher import Cipher
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -148,9 +150,8 @@ START_CONVERSATION_EXAMPLES = [
 
 
 def _with_runtime_info(
-    request: Request, conversation: ConversationInfo
+    registry: ConversationRegistry, conversation: ConversationInfo
 ) -> ConversationInfo:
-    registry = get_conversation_registry(request)
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation.id)}
     )
@@ -159,7 +160,6 @@ def _with_runtime_info(
 @conversation_catalog_router.get("/search", include_in_schema=False)
 @conversation_router.get("/search")
 async def search_conversations(
-    request: Request,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
@@ -178,6 +178,7 @@ async def search_conversations(
     ] = ConversationSortOrder.CREATED_AT_DESC,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationPage:
     """Search / List conversations"""
     page = await conversation_service.search_conversations(
@@ -196,7 +197,7 @@ async def search_conversations(
             }
         )
     page = page.model_copy(
-        update={"items": [_with_runtime_info(request, item) for item in page.items]}
+        update={"items": [_with_runtime_info(registry, item) for item in page.items]}
     )
     return page
 
@@ -220,9 +221,9 @@ async def count_conversations(
 )
 async def get_conversation(
     conversation_id: UUID,
-    request: Request,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationInfo:
     """Given an id, get a conversation"""
     conversation = await conversation_service.get_conversation(conversation_id)
@@ -230,30 +231,30 @@ async def get_conversation(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
-    return _with_runtime_info(request, conversation)
+    return _with_runtime_info(registry, conversation)
 
 
 @conversation_router.get("/{conversation_id}/runtime")
 async def get_local_conversation_runtime(
     conversation_id: UUID,
-    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationRuntimeInfo:
     """Inspect the always-available in-process runtime."""
     if await conversation_service.get_conversation(conversation_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return get_conversation_registry(request).runtime_info(conversation_id)
+    return registry.runtime_info(conversation_id)
 
 
 @conversation_router.post("/{conversation_id}/runtime/reprovision")
 async def reprovision_local_conversation_runtime(
     conversation_id: UUID,
-    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationRuntimeInfo:
     """Return local runtime state; local mode has no infrastructure to provision."""
     return await get_local_conversation_runtime(
-        conversation_id, request, conversation_service
+        conversation_id, conversation_service, registry
     )
 
 
@@ -280,16 +281,16 @@ async def get_conversation_agent_final_response(
 
 @conversation_router.get("")
 async def batch_get_conversations(
-    request: Request,
     ids: Annotated[list[UUID], Query(max_length=99)],
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> list[ConversationInfo | None]:
     """Get a batch of up to 99 conversations given their ids, returning null
     for any missing item"""
     conversations = await conversation_service.batch_get_conversations(ids)
     conversations = [
-        _with_runtime_info(request, conversation) if conversation is not None else None
+        _with_runtime_info(registry, conversation) if conversation is not None else None
         for conversation in conversations
     ]
     if not include_skills:
@@ -623,10 +624,11 @@ async def switch_conversation_profile(
     },
 )
 async def switch_conversation_llm(
-    request: Request,
     conversation_id: UUID,
     llm: LLM = Body(..., embed=True),  # noqa: B008
     conversation_service: ConversationService = Depends(get_conversation_service),
+    cipher: Cipher | None = Depends(get_cipher),
+    llm_profile_store: LLMProfileStore = Depends(get_llm_profile_store),
 ) -> Success:
     """Swap the conversation's LLM to a caller-supplied object.
 
@@ -640,7 +642,6 @@ async def switch_conversation_llm(
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     conversation = event_service.get_conversation()
-    cipher = get_cipher(request)
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
     # Resolve a referenced provider connection before installing the LLM, so a
@@ -650,9 +651,7 @@ async def switch_conversation_llm(
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
     with store_errors():
-        llm = get_stores(request).llm_profiles.resolve_provider_connection(
-            llm, cipher=cipher
-        )
+        llm = llm_profile_store.resolve_provider_connection(llm, cipher=cipher)
     try:
         conversation.switch_llm(llm)
     except ValueError as e:

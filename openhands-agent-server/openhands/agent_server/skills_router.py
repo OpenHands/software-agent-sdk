@@ -6,9 +6,10 @@ Business logic is delegated to skills_service.py.
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
@@ -276,7 +277,9 @@ def _merge_registered_marketplaces(
 
 
 @skills_router.post("", response_model=SkillsResponse)
-def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
+def get_skills(
+    request: SkillsRequest, config: Config = Depends(get_config)
+) -> SkillsResponse:
     """Load and merge skills from all configured sources.
 
     Skills are loaded from multiple sources and merged with the following
@@ -305,7 +308,7 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
     if request.org_configs:
         org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
 
-    server_registrations = get_config(http_request).registered_marketplaces
+    server_registrations = config.registered_marketplaces
     registered_marketplaces = _merge_registered_marketplaces(
         server_registrations,
         request.registered_marketplaces,

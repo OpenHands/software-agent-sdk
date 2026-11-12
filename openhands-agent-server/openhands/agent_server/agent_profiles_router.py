@@ -15,17 +15,28 @@ dangling refs — those appear in the body).
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import BaseModel, ConfigDict, Field, PlainValidator, ValidationError
 
 from openhands.agent_server._secrets_exposure import store_errors
-from openhands.agent_server.dependencies import get_cipher, get_config, get_stores
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import (
+    get_agent_profile_store,
+    get_cipher,
+    get_config,
+    get_settings_store,
+    get_stores,
+)
 from openhands.agent_server.launch import (
     can_probe_tools,
     server_launch_stores,
     target_launch_runtime,
 )
-from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.persistence import (
+    FileSettingsStore,
+    PersistedSettings,
+    ServerStores,
+)
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
 from openhands.sdk.launch import preview_launch
 from openhands.sdk.llm import LLM
@@ -327,18 +338,20 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
 
 
 @agent_profiles_router.get("", response_model=AgentProfileListResponse)
-def list_agent_profiles(request: Request) -> AgentProfileListResponse:
+def list_agent_profiles(
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> AgentProfileListResponse:
     """List all stored agent profiles and the active pointer.
 
     Some profile is always active: with no valid pointer, ``default`` is
     activated, and seeded from the current ``agent_settings`` when absent.
     """
-    stores = get_stores(request)
     settings_store = stores.settings
     settings = settings_store.load() or PersistedSettings()
 
     store = stores.agent_profiles
-    _ensure_active_profile(stores, get_cipher(request))
+    _ensure_active_profile(stores, cipher)
     settings = settings_store.load() or settings
 
     with store_errors():
@@ -352,7 +365,8 @@ def list_agent_profiles(request: Request) -> AgentProfileListResponse:
 
 @agent_profiles_router.get("/{name}", response_model=AgentProfileDetailResponse)
 def get_agent_profile(
-    request: Request, name: ProfileName
+    name: ProfileName,
+    store: AgentProfileStore = Depends(get_agent_profile_store),
 ) -> AgentProfileDetailResponse:
     """Get a stored profile.
 
@@ -360,7 +374,6 @@ def get_agent_profile(
     expose — unlike the LLM ``/api/profiles`` router, this endpoint has no
     ``X-Expose-Secrets`` behavior.
     """
-    store = get_stores(request).agent_profiles
     try:
         with store_errors():
             profile = store.load(name)
@@ -403,7 +416,9 @@ def _validate_profile_payload(
     status_code=status.HTTP_201_CREATED,
 )
 def save_agent_profile(
-    request: Request, name: ProfileName, body: dict[str, Any]
+    name: ProfileName,
+    body: dict[str, Any],
+    store: AgentProfileStore = Depends(get_agent_profile_store),
 ) -> AgentProfileMutationResponse:
     """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
 
@@ -414,7 +429,6 @@ def save_agent_profile(
     """
     profile = _validate_profile_payload({**body, "name": name})
 
-    store = get_stores(request).agent_profiles
     # The id is server-managed (the active pointer is keyed on it): overwrite
     # keeps the namesake's id and bumps revision; create mints a fresh id,
     # ignoring any client-supplied one. ``save_profile_preserving_identity``
@@ -442,7 +456,9 @@ def save_agent_profile(
 
 @agent_profiles_router.delete("/{name}", response_model=AgentProfileMutationResponse)
 def delete_agent_profile(
-    request: Request, name: ProfileName
+    name: ProfileName,
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> AgentProfileMutationResponse:
     """Delete a stored profile (idempotent).
 
@@ -452,7 +468,6 @@ def delete_agent_profile(
     reset to default OpenHands agent settings so stale ACP configuration does
     not outlive the profile it came from; server-wide settings are carried over.
     """
-    stores = get_stores(request)
     store = stores.agent_profiles
     deleted_id = _summary_id_for_name(store, name)
 
@@ -481,7 +496,7 @@ def delete_agent_profile(
 
             settings_store.update(clear_pointer_and_reset_settings)
             logger.info(f"Cleared active pointer for deleted profile '{name}'")
-            _ensure_active_profile(stores, get_cipher(request))
+            _ensure_active_profile(stores, cipher)
 
     logger.info(f"Deleted agent profile '{name}'")
     return AgentProfileMutationResponse(
@@ -493,7 +508,9 @@ def delete_agent_profile(
     "/{name}/rename", response_model=AgentProfileMutationResponse
 )
 def rename_agent_profile(
-    request: Request, name: ProfileName, body: RenameAgentProfileRequest
+    name: ProfileName,
+    body: RenameAgentProfileRequest,
+    store: AgentProfileStore = Depends(get_agent_profile_store),
 ) -> AgentProfileMutationResponse:
     """Rename a stored profile atomically.
 
@@ -501,7 +518,6 @@ def rename_agent_profile(
     survives the rename untouched. Returns 404 if the source is missing, 409 if
     ``new_name`` is taken.
     """
-    store = get_stores(request).agent_profiles
     try:
         with store_errors():
             store.rename(name, body.new_name)
@@ -528,7 +544,9 @@ def rename_agent_profile(
     "/{profile_id}/activate", response_model=ActivateAgentProfileResponse
 )
 def activate_agent_profile(
-    request: Request, profile_id: ProfileId
+    profile_id: ProfileId,
+    store: AgentProfileStore = Depends(get_agent_profile_store),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ActivateAgentProfileResponse:
     """Activate a profile by its stable ``id`` — pointer only.
 
@@ -536,7 +554,6 @@ def activate_agent_profile(
     ``/activate``, this does **not** write ``agent_settings`` (the
     creation-time-only contract). Returns 404 if no stored profile has that id.
     """
-    store = get_stores(request).agent_profiles
     with store_errors():
         known_ids = {
             str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
@@ -546,8 +563,6 @@ def activate_agent_profile(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent profile with id '{profile_id}' not found",
         )
-
-    settings_store = get_stores(request).settings
 
     def set_pointer(settings: PersistedSettings) -> PersistedSettings:
         settings.active_agent_profile_id = profile_id
@@ -579,9 +594,11 @@ def activate_agent_profile(
     response_model=AgentProfileDiagnostics,
 )
 async def materialize_agent_profile(
-    request: Request,
     name: ProfileName,
     body: MaterializeAgentProfileRequest | None = None,
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> AgentProfileDiagnostics:
     """Preview the launch of a profile; return a diagnostics report.
 
@@ -595,7 +612,7 @@ async def materialize_agent_profile(
     if body is not None and body.profile is not None:
         profile = _validate_profile_payload({**body.profile, "name": name})
     else:
-        store = get_stores(request).agent_profiles
+        store = stores.agent_profiles
         try:
             with store_errors():
                 # Off the event loop: the store lock wait blocks (up to 30 s).
@@ -606,9 +623,6 @@ async def materialize_agent_profile(
                 detail=f"Agent profile '{name}' not found",
             )
 
-    config = get_config(request)
-    stores = get_stores(request)
-    cipher = get_cipher(request)
     settings = stores.settings.load() or PersistedSettings()
     context = settings.agent_settings.agent_context
     return await asyncio.to_thread(

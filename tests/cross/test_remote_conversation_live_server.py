@@ -28,7 +28,7 @@ from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
-from openhands.agent_server.config import load_config
+from openhands.agent_server.config import Config, load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.event_store import EventLog
@@ -148,7 +148,7 @@ def test_deferred_websocket_initialization_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     async def accept_app_backend_websocket(
-        websocket: WebSocket, _extension_name: str, _path: str
+        websocket: WebSocket, _extension_name: str, _path: str, _config: Config
     ) -> None:
         await websocket.accept()
         await websocket.close()

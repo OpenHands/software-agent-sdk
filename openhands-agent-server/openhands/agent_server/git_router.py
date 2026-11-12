@@ -6,14 +6,15 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query
 
-from openhands.agent_server.dependencies import get_stores
+from openhands.agent_server.dependencies import get_secrets_store
 from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
     UnsupportedGitProviderError,
     search_provider_repositories,
 )
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
@@ -135,7 +136,6 @@ async def _get_commit_file_diff(path: str, commit: str) -> GitDiff:
 
 @git_router.get("/repositories/search", response_model=GitProviderRepositoryPage)
 async def git_repositories_search(
-    request: Request,
     provider: Annotated[GitProvider, Query(description="Git provider to search")],
     query: Annotated[
         str | None, Query(description="Optional repository name filter")
@@ -146,11 +146,12 @@ async def git_repositories_search(
     page_id: Annotated[
         str | None, Query(description="Provider-specific page cursor")
     ] = None,
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> GitProviderRepositoryPage:
     """List repositories accessible to a configured git provider token."""
     try:
         return await search_provider_repositories(
-            get_stores(request).secrets,
+            secrets_store,
             provider,
             query=query,
             limit=limit,

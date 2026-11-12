@@ -1,4 +1,5 @@
 import json
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.docker_runtime.hybrid import (
     HybridConversationRegistry,
     RuntimeDispatchMiddleware,
@@ -174,6 +176,7 @@ def test_start_existing_docker_conversation_as_local_is_rejected(config):
     registry = server_context_of(app).conversation_registry
     assert isinstance(registry, HybridConversationRegistry)
     registry.provisioning.create(docker_id)
+    app.dependency_overrides[get_conversation_service] = lambda: AsyncMock()
     response = TestClient(app).post(
         "/api/conversations",
         json={"conversation_id": str(docker_id), "conversation_runtime": "local"},

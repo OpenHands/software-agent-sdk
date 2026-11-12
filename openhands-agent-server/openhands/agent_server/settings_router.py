@@ -2,7 +2,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import ValidationError
 
 from openhands.agent_server._secrets_exposure import (
@@ -12,21 +12,32 @@ from openhands.agent_server._secrets_exposure import (
     store_errors,
     translate_missing_cipher,
 )
-from openhands.agent_server.dependencies import get_cipher, get_config, get_stores
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import (
+    get_agent_profile_store,
+    get_config,
+    get_secrets_store,
+    get_settings_store,
+    get_stores,
+)
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
+    FileSecretsStore,
+    FileSettingsStore,
     PersistedSettings,
     ServerStores,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import (
     MetaProfileStore,
     default_meta_profile_dir,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.settings import (
     ConversationSettings,
     SecretCreateRequest,
@@ -38,6 +49,7 @@ from openhands.sdk.settings import (
     export_agent_settings_schema,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     SecretDecryptionError,
     is_redacted_secret,
@@ -116,7 +128,11 @@ def _validate_secret_name(name: str) -> None:
 
 
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
-async def get_settings(request: Request) -> SettingsResponse:
+async def get_settings(
+    request: Request,
+    config: Config = Depends(get_config),
+    store: FileSettingsStore = Depends(get_settings_store),
+) -> SettingsResponse:
     """Get current settings.
 
     Returns the persisted settings including agent configuration,
@@ -148,8 +164,6 @@ async def get_settings(request: Request) -> SettingsResponse:
         values.
     """
     expose_mode = parse_expose_secrets_header(request)
-    config = get_config(request)
-    store = get_stores(request).settings
     settings = store.load() or PersistedSettings()
 
     # Audit log all settings access for security visibility
@@ -184,7 +198,10 @@ async def get_settings(request: Request) -> SettingsResponse:
 
 @settings_router.patch(SETTINGS_PATH, response_model=SettingsResponse)
 def update_settings(
-    request: Request, payload: SettingsUpdateRequest
+    request: Request,
+    payload: SettingsUpdateRequest,
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
 ) -> SettingsResponse:
     """Update settings with partial changes.
 
@@ -244,9 +261,11 @@ def update_settings(
             ),
         )
 
-    _require_pointer_targets(get_stores(request), update_data)
+    _require_pointer_targets(stores, update_data)
     return _apply_settings_update(
         request,
+        config,
+        stores,
         cast(SettingsUpdatePayload, update_data),
     )
 
@@ -280,7 +299,9 @@ def _require_pointer_targets(stores: ServerStores, update_data: dict) -> None:
 
 
 def _load_active_profile_llm(
-    request: Request, update_data: SettingsUpdatePayload
+    cipher: Cipher | None,
+    profile_store: LLMProfileStore,
+    update_data: SettingsUpdatePayload,
 ) -> LLM | None:
     """Load the named profile's LLM unless the caller already gave one."""
     profile_name = update_data.get("active_profile")
@@ -289,8 +310,6 @@ def _load_active_profile_llm(
     if not profile_name or explicit_llm_diff:
         return None
 
-    cipher = get_cipher(request)
-    profile_store = get_stores(request).llm_profiles
     # ``load`` resolves any referenced provider connection (read-at-use); a
     # dangling reference raises ProviderConnectionNotFound, which
     # store_errors() maps to 422. A key the cipher cannot decrypt is refused
@@ -333,10 +352,14 @@ def _with_profile_llm(
 
 def _apply_settings_update(
     request: Request,
+    config: Config,
+    stores: ServerStores,
     update_data: SettingsUpdatePayload,
     before_update: Callable[[PersistedSettings], None] | None = None,
 ) -> SettingsResponse:
-    profile_llm = _load_active_profile_llm(request, update_data)
+    profile_llm = _load_active_profile_llm(
+        config.cipher, stores.llm_profiles, update_data
+    )
     applied_update = update_data
 
     # Apply updates atomically with file locking
@@ -349,8 +372,7 @@ def _apply_settings_update(
         settings.update(applied_update, context=context)
         return settings
 
-    config = get_config(request)
-    store = get_stores(request).settings
+    store = stores.settings
     client_host = request.client.host if request.client else "unknown"
     try:
         settings = store.update(apply_update)
@@ -439,6 +461,8 @@ async def create_mcp_server(
     request: Request,
     settings_key: str,
     server: MCPServer,
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
 ) -> SettingsResponse:
     """Create one named MCP server without replacing an existing map entry."""
     server_data = server.model_dump(
@@ -453,6 +477,8 @@ async def create_mcp_server(
     )
     return _apply_settings_update(
         request,
+        config,
+        stores,
         update_data,
         lambda settings: _require_mcp_server_absent(settings, settings_key),
     )
@@ -463,6 +489,8 @@ async def patch_mcp_server(
     request: Request,
     settings_key: str,
     patch: MCPServerPatch,
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
 ) -> SettingsResponse:
     """Sparsely update one existing named MCP server."""
     patch_data = patch.model_dump(
@@ -476,13 +504,20 @@ async def patch_mcp_server(
     )
     return _apply_settings_update(
         request,
+        config,
+        stores,
         update_data,
         lambda settings: _require_mcp_server_present(settings, settings_key),
     )
 
 
 @settings_router.delete(MCP_SERVER_PATH, response_model=SettingsResponse)
-async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResponse:
+async def delete_mcp_server(
+    request: Request,
+    settings_key: str,
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+) -> SettingsResponse:
     """Delete one existing named MCP server without altering sibling entries."""
     update_data = cast(
         SettingsUpdatePayload,
@@ -490,6 +525,8 @@ async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResp
     )
     return _apply_settings_update(
         request,
+        config,
+        stores,
         update_data,
         lambda settings: _require_mcp_server_present(settings, settings_key),
     )
@@ -500,15 +537,16 @@ async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResp
 
 @settings_router.get(SECRETS_PATH, response_model=SecretsListResponse)
 def list_secrets(
-    request: Request, agent_profile_id: str | None = None
+    request: Request,
+    agent_profile_id: str | None = None,
+    store: FileSecretsStore = Depends(get_secrets_store),
+    profile_store: AgentProfileStore = Depends(get_agent_profile_store),
 ) -> SecretsListResponse:
     """List available secret names, optionally scoped by an agent profile."""
-    store = get_stores(request).secrets
     secrets = store.load()
 
     allowed_names: set[str] | None = None
     if agent_profile_id is not None:
-        profile_store = get_stores(request).agent_profiles
         # store_errors() answers an unloadable profile (400) and a busy store
         # (503) the way the agent-profile routes do.
         with store_errors():
@@ -539,7 +577,11 @@ def list_secrets(
 
 
 @settings_router.get(SECRET_VALUE_PATH)
-async def get_secret_value(request: Request, name: str) -> Response:
+async def get_secret_value(
+    request: Request,
+    name: str,
+    store: FileSecretsStore = Depends(get_secrets_store),
+) -> Response:
     """Get a single secret value by name.
 
     Returns the raw secret value as plain text. This endpoint is designed
@@ -550,7 +592,6 @@ async def get_secret_value(request: Request, name: str) -> Response:
     """
     _validate_secret_name(name)
 
-    store = get_stores(request).secrets
     value = store.get_secret(name)
 
     client_host = request.client.host if request.client else "unknown"
@@ -572,7 +613,9 @@ async def get_secret_value(request: Request, name: str) -> Response:
 
 @settings_router.put(SECRETS_PATH, response_model=SecretItemResponse)
 async def create_secret(
-    request: Request, secret: SecretCreateRequest
+    request: Request,
+    secret: SecretCreateRequest,
+    store: FileSecretsStore = Depends(get_secrets_store),
 ) -> SecretItemResponse:
     """Create or update a custom secret (upsert).
 
@@ -587,8 +630,6 @@ async def create_secret(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Secret value must not be empty or redacted",
         )
-
-    store = get_stores(request).secrets
 
     try:
         store.set_secret(
@@ -623,7 +664,11 @@ async def create_secret(
 
 
 @settings_router.delete(SECRET_VALUE_PATH)
-async def delete_secret(request: Request, name: str) -> dict[str, bool]:
+async def delete_secret(
+    request: Request,
+    name: str,
+    store: FileSecretsStore = Depends(get_secrets_store),
+) -> dict[str, bool]:
     """Delete a custom secret by name.
 
     Raises:
@@ -631,8 +676,6 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
         500 if file is corrupted.
     """
     _validate_secret_name(name)
-
-    store = get_stores(request).secrets
 
     client_host = request.client.host if request.client else "unknown"
     try:

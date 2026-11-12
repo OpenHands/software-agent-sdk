@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -26,14 +26,23 @@ from pydantic import (
 )
 
 from openhands.agent_server._secrets_exposure import store_errors
-from openhands.agent_server.dependencies import get_cipher, get_stores
-from openhands.agent_server.persistence import ProviderConnection, ServerStores
+from openhands.agent_server.dependencies import (
+    get_cipher,
+    get_provider_connections_store,
+    get_stores,
+)
+from openhands.agent_server.persistence import (
+    ProviderConnection,
+    ProviderConnectionStore,
+    ServerStores,
+)
 from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionLimitExceeded,
     ProviderConnectionNotFound,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
@@ -161,10 +170,9 @@ def _raise_if_connection_is_referenced(
 
 @provider_connections_router.get("", response_model=list[ProviderConnectionResponse])
 def list_provider_connections(
-    request: Request,
+    store: ProviderConnectionStore = Depends(get_provider_connections_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> list[ProviderConnectionResponse]:
-    cipher = get_cipher(request)
-    store = get_stores(request).provider_connections
     with store_errors():
         connections = store.list(cipher=cipher)
     return [_to_response(c) for c in connections]
@@ -174,10 +182,10 @@ def list_provider_connections(
     "", response_model=ProviderConnectionResponse, status_code=status.HTTP_201_CREATED
 )
 def create_provider_connection(
-    request: Request, body: ProviderConnectionCreateRequest
+    body: ProviderConnectionCreateRequest,
+    store: ProviderConnectionStore = Depends(get_provider_connections_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProviderConnectionResponse:
-    cipher = get_cipher(request)
-    store = get_stores(request).provider_connections
     now = _now()
     connection = ProviderConnection(
         id=uuid.uuid4().hex,
@@ -206,7 +214,10 @@ def create_provider_connection(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
 def update_provider_connection(
-    request: Request, connection_id: str, body: ProviderConnectionUpdateRequest
+    connection_id: str,
+    body: ProviderConnectionUpdateRequest,
+    store: ProviderConnectionStore = Depends(get_provider_connections_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProviderConnectionResponse:
     fields = body.model_fields_set
     if not fields:
@@ -215,8 +226,6 @@ def update_provider_connection(
             detail="Provide at least one provider connection field to update",
         )
 
-    cipher = get_cipher(request)
-    store = get_stores(request).provider_connections
     with store_errors():
         connection = store.get(connection_id, cipher=cipher)
     if connection is None:
@@ -263,10 +272,10 @@ def update_provider_connection(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
 def delete_provider_connection(
-    request: Request, connection_id: str
+    connection_id: str,
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProviderConnectionResponse:
-    cipher = get_cipher(request)
-    stores = get_stores(request)
     store = stores.provider_connections
     with store_errors():
         connection = store.get(connection_id, cipher=cipher)
