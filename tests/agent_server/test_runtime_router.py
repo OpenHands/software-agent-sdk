@@ -7,11 +7,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-import openhands.agent_server.vscode_service as vscode_service_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import get_vscode_service
 from openhands.agent_server.runtime_router import create_runtime_router
 from openhands.agent_server.server_context import server_context_of
 from openhands.agent_server.vscode_service import VSCodeService
@@ -172,14 +172,23 @@ async def test_conversation_close_stops_runtime_terminal(runtime_client, tmp_pat
 async def test_scoped_vscode_defaults_to_conversation_workspace(
     runtime_client, tmp_path, monkeypatch
 ):
-    client, _ = runtime_client
+    client, app = runtime_client
     root = tmp_path / "workspace"
     cid = await _create(client, root)
     service = VSCodeService(port=18765)
-    monkeypatch.setattr(vscode_service_module, "_vscode_service", service)
+    app.dependency_overrides[get_vscode_service] = lambda: service
     response = await client.get(f"/api/conversations/{cid}/vscode/url")
     assert response.status_code == 200, response.text
     assert response.json()["url"] == service.get_vscode_url(workspace_dir=str(root))
+
+
+@pytest.mark.asyncio
+async def test_scoped_vscode_reports_a_disabled_editor(runtime_client, tmp_path):
+    client, app = runtime_client
+    cid = await _create(client, tmp_path / "workspace")
+    app.dependency_overrides[get_vscode_service] = lambda: None
+    response = await client.get(f"/api/conversations/{cid}/vscode/url")
+    assert response.status_code == 503, response.text
 
 
 def test_runtime_routes_are_registered_with_dispatch_adapter():

@@ -297,31 +297,20 @@ class VSCodeService:
         raise RuntimeError("code-server exited or timed out before startup")
 
 
-# Global VSCode service instance
-_vscode_service: VSCodeService | None = None
-
-
-def get_vscode_service(config: Config) -> VSCodeService | None:
-    """Get the global VSCode service instance, creating it from ``config``.
-
-    The service outlives a server (re)initialisation, so ``config`` only
-    decides how it is created the first time.
+def create_vscode_service(config: Config) -> VSCodeService | None:
+    """Build the VSCode service ``config`` asks for, without starting it.
 
     Returns:
         VSCode service instance if enabled, None if disabled
     """
-    global _vscode_service
-    if _vscode_service is None:
-        if not config.enable_vscode:
-            logger.info("VSCode is disabled in configuration")
-            return None
-        else:
-            connection_token = None
-            if config.session_api_keys:
-                connection_token = config.session_api_keys[0]
-            _vscode_service = VSCodeService(
-                port=config.vscode_port,
-                connection_token=connection_token,
-                server_base_path=config.vscode_base_path,
-            )
-    return _vscode_service
+    if not config.enable_vscode:
+        logger.info("VSCode is disabled in configuration")
+        return None
+    connection_token = None
+    if config.session_api_keys:
+        connection_token = config.session_api_keys[0]
+    return VSCodeService(
+        port=config.vscode_port,
+        connection_token=connection_token,
+        server_base_path=config.vscode_base_path,
+    )

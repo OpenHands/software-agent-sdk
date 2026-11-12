@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -45,9 +46,9 @@ from openhands.agent_server.conversation_registry import (
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.persistence import ServerStores, reencrypt_stale_stores
 from openhands.agent_server.server_context import (
-    ServerContext,
     get_server_context,
     install_server_context,
+    server_context_of,
 )
 from openhands.agent_server.server_details_router import mark_initialization_complete
 from openhands.agent_server.telemetry import (
@@ -55,7 +56,6 @@ from openhands.agent_server.telemetry import (
     emit_server_started,
     shutdown_telemetry_sink,
 )
-from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability import maybe_init_laminar
 
@@ -275,6 +275,7 @@ class InitService:
             self._state = "initializing"
             self._error = None
         try:
+            dormant = server_context_of(self._app)
             new_config = _build_initialized_config(self._base_config, req)
             if req.env:
                 # Setting env vars before services boot lets things like
@@ -328,7 +329,7 @@ class InitService:
                 # VSCode's token is the first session key, as on a normal boot.
                 # A dormant server that booted without one gave VSCode a random
                 # token, so switch it to the key delivered here.
-                vscode_service = get_vscode_service(new_config)
+                vscode_service = dormant.vscode_service
                 if vscode_service is not None and new_config.session_api_keys:
                     await vscode_service.set_connection_token(
                         new_config.session_api_keys[0]
@@ -339,7 +340,8 @@ class InitService:
                 # services, and none of the dormant ones.
                 install_server_context(
                     self._app,
-                    ServerContext(
+                    replace(
+                        dormant,
                         config=new_config,
                         stores=stores,
                         conversation_registry=conversation_registry,

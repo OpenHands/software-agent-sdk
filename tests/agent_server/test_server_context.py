@@ -27,19 +27,18 @@ from openhands.agent_server import init_router as init_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.server_context import ServerContext, server_context_of
+from openhands.agent_server.server_context import (
+    ServerContext,
+    install_server_context,
+    server_context_of,
+)
+from openhands.agent_server.vscode_service import VSCodeService
 from openhands.sdk.utils.cipher import Cipher
 
 
 BOOT_KEY = "boot-secret-key"
 USER_KEY = "user-secret-key"
 SESSION_KEY = "user-session-key"
-
-
-@pytest.fixture(autouse=True)
-def _fresh_vscode_service(monkeypatch: pytest.MonkeyPatch) -> None:
-    """/api/init touches the VSCode service singleton; give each test its own."""
-    monkeypatch.setattr("openhands.agent_server.vscode_service._vscode_service", None)
 
 
 @pytest.fixture
@@ -56,6 +55,17 @@ def dormant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestCli
     )
     with TestClient(create_app(config)) as client:
         yield client
+
+
+class _RefusingVSCode(VSCodeService):
+    """An editor whose token switch fails: the last step of /api/init, after the
+    new stores, registry and services are all up."""
+
+    refuses = True
+
+    async def set_connection_token(self, connection_token: str) -> None:
+        if self.refuses:
+            raise RuntimeError("vscode refused the token")
 
 
 def _app(client: TestClient) -> FastAPI:
@@ -135,6 +145,10 @@ def test_a_failed_init_leaves_the_dormant_context_in_place(
     dormant: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = _app(dormant)
+    vscode = _RefusingVSCode()
+    install_server_context(
+        app, dataclasses.replace(server_context_of(app), vscode_service=vscode)
+    )
     before = server_context_of(app)
     started: list[ConversationService] = []
     real_get_instance = ConversationService.get_instance
@@ -144,16 +158,8 @@ def test_a_failed_init_leaves_the_dormant_context_in_place(
         started.append(service)
         return service
 
-    class _FailingVSCode:
-        async def set_connection_token(self, _token: str) -> None:
-            raise RuntimeError("vscode refused the token")
-
     monkeypatch.setattr(
         init_router_module.ConversationService, "get_instance", recording_get_instance
-    )
-    # Fails after the new stores, registry and services are all up.
-    monkeypatch.setattr(
-        init_router_module, "get_vscode_service", lambda _config: _FailingVSCode()
     )
 
     failed = _init(dormant, tmp_path)
@@ -170,7 +176,7 @@ def test_a_failed_init_leaves_the_dormant_context_in_place(
     # The dormant key still guards /api/init, so the orchestrator can retry.
     assert dormant.post("/api/init", json={}).status_code == 401
 
-    monkeypatch.setattr(init_router_module, "get_vscode_service", lambda _config: None)
+    vscode.refuses = False
     assert _init(dormant, tmp_path).status_code == 200
     retried = server_context_of(app)
     assert retried is not before
@@ -220,6 +226,7 @@ _CONTEXT_STATE = frozenset(
         "conversation_service",
         "bash_event_service",
         "conversation_registry",
+        "vscode_service",
     }
 )
 _CONTEXT_MODULE = "server_context.py"

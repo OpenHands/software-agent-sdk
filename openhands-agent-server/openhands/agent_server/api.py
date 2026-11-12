@@ -117,10 +117,9 @@ from openhands.agent_server.telemetry.models import (
     RequestFailedProperties,
 )
 from openhands.agent_server.telemetry.sanitizer import normalize_exception
-from openhands.agent_server.tool_preload_service import get_tool_preload_service
+from openhands.agent_server.tool_preload_service import ToolPreloadService
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
-from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
@@ -342,8 +341,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         seal_tool_catalog()
 
-        vscode_service = get_vscode_service(config)
-        tool_preload_service = get_tool_preload_service(config)
+        vscode_service = context.vscode_service
+        tool_preload_service = ToolPreloadService() if config.preload_tools else None
 
         # Define async functions for starting each service
         async def start_vscode_service():

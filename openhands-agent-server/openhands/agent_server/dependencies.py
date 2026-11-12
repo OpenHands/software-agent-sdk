@@ -13,6 +13,7 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.server_context import get_server_context
+from openhands.agent_server.vscode_service import VSCodeService
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -50,6 +51,11 @@ def get_stores(connection: HTTPConnection) -> ServerStores:
 
 def get_conversation_registry(connection: HTTPConnection) -> ConversationRegistry:
     return get_server_context(connection).conversation_registry
+
+
+def get_vscode_service(connection: HTTPConnection) -> VSCodeService | None:
+    """This server's VSCode service (``None`` when VSCode is disabled)."""
+    return get_server_context(connection).vscode_service
 
 
 def _unavailable(connection: HTTPConnection, detail: str) -> Exception:

@@ -27,6 +27,10 @@ from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
 from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.vscode_service import (
+    VSCodeService,
+    create_vscode_service,
+)
 
 
 # The services import modules that read the context, so they are named here
@@ -48,6 +52,10 @@ class ServerContext:
     for as long as a deferred-init server is dormant."""
     bash_event_service: BashEventService | None = None
     """``None`` under the same conditions as ``conversation_service``."""
+    vscode_service: VSCodeService | None = None
+    """``None`` when VSCode is disabled. The editor belongs to the app rather
+    than to one initialisation: ``POST /api/init`` keeps it and only switches
+    its token."""
 
 
 def build_server_context(config: Config) -> ServerContext:
@@ -57,6 +65,7 @@ def build_server_context(config: Config) -> ServerContext:
         config=config,
         stores=stores,
         conversation_registry=create_conversation_registry(config, stores),
+        vscode_service=create_vscode_service(config),
     )
 
 

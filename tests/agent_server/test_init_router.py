@@ -9,10 +9,10 @@ import io
 import os
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -54,16 +54,13 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-@pytest.fixture(autouse=True)
-def _fresh_vscode_service(monkeypatch):
-    """/api/init updates the VSCode service singleton; give each test its own."""
-    monkeypatch.setattr("openhands.agent_server.vscode_service._vscode_service", None)
-
-
-def _dormant_app(config: Config) -> FastAPI:
+def _dormant_app(
+    config: Config, vscode_service: VSCodeService | None = None
+) -> FastAPI:
     """A bare app holding the dormant server context, as ``create_app`` leaves it."""
     app = FastAPI()
-    install_server_context(app, build_server_context(config))
+    context = replace(build_server_context(config), vscode_service=vscode_service)
+    install_server_context(app, context)
     return app
 
 
@@ -340,17 +337,13 @@ class TestInitServiceTransitions:
     ):
         """VSCode booted with a random token; init switches it to the first
         session key, which a server that booted with the key would use."""
-        vscode = SimpleNamespace(set_connection_token=AsyncMock())
-        monkeypatch.setattr(
-            "openhands.agent_server.init_router.get_vscode_service",
-            lambda _config: vscode,
-        )
+        vscode = MagicMock(spec=VSCodeService)
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = _dormant_app(base)
+        app = _dormant_app(base, vscode_service=vscode)
         svc = InitService(app, base_config=base)
 
         await svc.initialize(
@@ -370,17 +363,13 @@ class TestInitServiceTransitions:
         self, tmp_path, monkeypatch
     ):
         """With no session key to switch to, VSCode keeps its boot token."""
-        vscode = SimpleNamespace(set_connection_token=AsyncMock())
-        monkeypatch.setattr(
-            "openhands.agent_server.init_router.get_vscode_service",
-            lambda _config: vscode,
-        )
+        vscode = MagicMock(spec=VSCodeService)
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
-        app = _dormant_app(base)
+        app = _dormant_app(base, vscode_service=vscode)
         svc = InitService(app, base_config=base)
 
         await svc.initialize(
