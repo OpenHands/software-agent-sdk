@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 import httpx
 import mcp.types
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -44,6 +44,7 @@ from openhands.agent_server.mcp_oauth_store import (
     InMemoryMCPOAuthTokenStore,
 )
 from openhands.agent_server.persistence import get_secrets_store
+from openhands.sdk.errors import Conflict, Invalid, NotFound
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.client import MCPClient
@@ -870,7 +871,7 @@ def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
         _sweep_oauth_probe_jobs_locked()
         job = _oauth_probe_jobs.get(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="MCP OAuth job not found")
+        raise NotFound("MCP OAuth job not found")
     return job
 
 
@@ -885,10 +886,7 @@ async def start_mcp_oauth(
 ) -> MCPOAuthStartResponse:
     """Start OAuth for a candidate MCP server and return the authorization URL."""
     if request.resolved_server.oauth_auth is None:
-        raise HTTPException(
-            status_code=400,
-            detail="MCP OAuth start requires auth.strategy='oauth2'",
-        )
+        raise Invalid("MCP OAuth start requires auth.strategy='oauth2'")
 
     job = _MCPOAuthProbeJob(request=request, cipher=get_cipher(http_request))
     _register_oauth_job(job)
@@ -949,30 +947,26 @@ def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
     try:
         parsed = urlparse(callback_url)
     except ValueError:  # e.g. an unclosed IPv6 bracket
-        raise HTTPException(
-            status_code=400, detail="Invalid OAuth callback URL"
-        ) from None
+        raise Invalid("Invalid OAuth callback URL") from None
     if parsed.scheme != "http" or parsed.hostname not in {
         "localhost",
         "127.0.0.1",
         "::1",
     }:
-        raise HTTPException(status_code=400, detail="Invalid OAuth callback URL")
+        raise Invalid("Invalid OAuth callback URL")
 
     with job.lock:
         expected = job.callback_url
     if expected is None:
-        raise HTTPException(status_code=409, detail="OAuth callback is not ready")
+        raise Conflict("OAuth callback is not ready")
 
     expected_parsed = urlparse(expected)
     try:
         port = parsed.port
     except ValueError:  # out of range or not a number
-        raise HTTPException(
-            status_code=400, detail="Unexpected OAuth callback URL"
-        ) from None
+        raise Invalid("Unexpected OAuth callback URL") from None
     if port != expected_parsed.port or parsed.path != expected_parsed.path:
-        raise HTTPException(status_code=400, detail="Unexpected OAuth callback URL")
+        raise Invalid("Unexpected OAuth callback URL")
 
 
 @mcp_router.post(
@@ -997,9 +991,7 @@ async def submit_mcp_oauth_callback(
         # The probe may have finished while we were forwarding.
         if job.done.is_set():
             return job.to_status_response()
-        raise HTTPException(
-            status_code=409, detail="OAuth callback server is not listening"
-        ) from exc
+        raise Conflict("OAuth callback server is not listening") from exc
     if response.status_code >= 400:
         return MCPOAuthStatusResponse(
             ok=False,

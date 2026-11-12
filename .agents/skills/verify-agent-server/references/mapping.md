@@ -50,9 +50,10 @@ each candidate. Sources, roughly in order of yield:
    `openhands-sdk/openhands/sdk/workspace/remote/`), the TypeScript client
    (`clients/typescript/src`), and `examples/02_remote_agent_server/`. A
    consumer method is an entry point: list it in the family.
-6. **Errors and edge states**: `HTTPException` details, status codes in the
-   handlers, `deprecated=True` routes and their removal versions. These are the
-   states a happy path never shows.
+6. **Errors and edge states**: the domain errors routes raise
+   (`openhands.sdk.errors`, statuses from `agent_server/errors.py`),
+   `deprecated=True` routes and their removal versions. These are the states a
+   happy path never shows.
 7. **Existing tests** (`tests/agent_server/`, `tests/cross/`) are references for
    request shapes and expected behavior, not proof.
 

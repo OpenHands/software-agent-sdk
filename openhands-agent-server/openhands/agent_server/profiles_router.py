@@ -3,7 +3,7 @@
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi import APIRouter, Path, Request, status
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.agent_server._secrets_exposure import (
@@ -13,7 +13,6 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     parse_expose_secrets_header,
     profile_key_mismatch,
-    store_errors,
     translate_missing_cipher,
 )
 from openhands.agent_server.persistence import (
@@ -23,6 +22,7 @@ from openhands.agent_server.persistence import (
     get_provider_connections_store,
     get_settings_store,
 )
+from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMError,
@@ -124,10 +124,9 @@ def _profile_api_key_set(request: Request, llm: LLM) -> bool:
     cipher = get_cipher(request)
     # The provider store read can raise on a corrupted file; map it instead of
     # letting it surface as an unhandled 500 on GET /profiles/{name}.
-    with store_errors():
-        connection = get_provider_connections_store(config).get(
-            connection_id, cipher=cipher
-        )
+    connection = get_provider_connections_store(config).get(
+        connection_id, cipher=cipher
+    )
     return connection is not None and connection.api_key_value() is not None
 
 
@@ -167,8 +166,7 @@ def list_profiles(request: Request) -> ProfileListResponse:
     settings = settings_store.load() or PersistedSettings()
 
     store = get_llm_profile_store()
-    with store_errors():
-        summaries = store.list_summaries()
+    summaries = store.list_summaries()
 
     return ProfileListResponse(
         profiles=[ProfileInfo(**s) for s in summaries],
@@ -191,17 +189,13 @@ def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
 
     store = get_llm_profile_store()
     try:
-        with store_errors():
-            # Runtime reads need current provider credentials. Editor reads
-            # retain the stored reference, including dangling references.
-            llm = store.load(
-                name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
-            )
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{name}' not found",
+        # Runtime reads need current provider credentials. Editor reads
+        # retain the stored reference, including dangling references.
+        llm = store.load(
+            name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
         )
+    except FileNotFoundError:
+        raise NotFound(f"Profile '{name}' not found")
 
     if expose_mode:
         context = build_expose_context(expose_mode, cipher)
@@ -241,23 +235,19 @@ def save_profile(
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
     store = get_llm_profile_store()
     try:
-        with store_errors():
-            store.save(
-                name,
-                llm,
-                include_secrets=body.include_secrets,
-                cipher=cipher,
-                max_profiles=MAX_PROFILES,
-            )
+        store.save(
+            name,
+            llm,
+            include_secrets=body.include_secrets,
+            cipher=cipher,
+            max_profiles=MAX_PROFILES,
+        )
     except SecretDecryptionError as e:
         raise profile_key_mismatch(name, e)
     except ProfileLimitExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Profile limit reached ({MAX_PROFILES}). "
-                "Delete a profile before saving a new one."
-            ),
+        raise Conflict(
+            f"Profile limit reached ({MAX_PROFILES}). "
+            "Delete a profile before saving a new one."
         )
 
     logger.info(f"Saved profile '{name}' (include_secrets={body.include_secrets})")
@@ -351,8 +341,7 @@ async def validate_profile(
     # Check a draft linked to a provider connection with the connection's
     # credentials, as activation and ``switch_llm`` run it. No-op without
     # ``provider_connection_id``; a dangling link is a 422 naming it.
-    with store_errors():
-        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+    llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
 
     messages = [
         Message(
@@ -433,10 +422,9 @@ def delete_profile(request: Request, name: ProfileName) -> ProfileMutationRespon
     store = get_llm_profile_store()
     agent_store = get_agent_profile_store()
     try:
-        with store_errors():
-            delete_llm_profile(agent_store, store, name)
+        delete_llm_profile(agent_store, store, name)
     except ProfileReferenced as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise Conflict(str(e))
     if _set_active_profile_if_matches(request, name, None):
         logger.info(f"Cleared active_profile for deleted profile '{name}'")
     logger.info(f"Deleted profile '{name}'")
@@ -461,18 +449,11 @@ def rename_profile(
     store = get_llm_profile_store()
     agent_store = get_agent_profile_store()
     try:
-        with store_errors():
-            rename_llm_profile(agent_store, store, name, body.new_name)
+        rename_llm_profile(agent_store, store, name, body.new_name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{name}' not found",
-        )
+        raise NotFound(f"Profile '{name}' not found")
     except FileExistsError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Profile '{body.new_name}' already exists",
-        )
+        raise Conflict(f"Profile '{body.new_name}' already exists")
 
     if name != body.new_name and _set_active_profile_if_matches(
         request, name, body.new_name
@@ -520,18 +501,13 @@ def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResp
     # api_key / base_url; ``provider_connection_id`` is retained so a later
     # rotation re-resolves on the next activation or launch.
     profile_store = get_llm_profile_store()
-    # A dangling provider_connection_id raises ProviderConnectionNotFound, which
-    # store_errors() maps to 422.
+    # A dangling provider_connection_id raises ProviderConnectionNotFound (422).
     try:
-        with store_errors():
-            llm = profile_store.load(name, cipher=cipher, strict=True)
+        llm = profile_store.load(name, cipher=cipher, strict=True)
     except SecretDecryptionError as e:
         raise profile_key_mismatch(name, e)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{name}' not found",
-        )
+        raise NotFound(f"Profile '{name}' not found")
 
     settings_store = get_settings_store(config)
     llm_applied = False
@@ -550,16 +526,13 @@ def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResp
         settings_store.update(apply_profile)
     except (OSError, PermissionError):
         logger.error("Failed to activate profile - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to activate profile")
+        raise OperationFailed("Failed to activate profile")
     except RuntimeError as e:
         logger.error(f"Failed to activate profile: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Settings file is corrupted or encrypted with a different key: "
-                "restore that key as OH_SECRET_KEY or add it to "
-                "OH_PREVIOUS_SECRET_KEYS"
-            ),
+        raise Conflict(
+            "Settings file is corrupted or encrypted with a different key: "
+            "restore that key as OH_SECRET_KEY or add it to "
+            "OH_PREVIOUS_SECRET_KEYS"
         )
 
     logger.info(f"Activated profile '{name}'")

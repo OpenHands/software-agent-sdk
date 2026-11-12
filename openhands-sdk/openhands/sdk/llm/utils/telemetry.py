@@ -289,6 +289,15 @@ class Telemetry(BaseModel):
         """
         self._stats_update_callback = callback
 
+    def notify_stats_update(self) -> None:
+        """Tell the stats-update callback, if any, that the metrics changed."""
+        if self._stats_update_callback is None:
+            return
+        try:
+            self._stats_update_callback()
+        except Exception:
+            logger.exception("Stats update callback failed", exc_info=True)
+
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
@@ -312,13 +321,15 @@ class Telemetry(BaseModel):
         # 1) latency
         self._last_latency = time.time() - (self._req_start or time.time())
         response_id = resp.id
-        self.metrics.add_response_latency(self._last_latency, response_id)
+        self.metrics.add_response_latency(
+            self._last_latency, response_id, model_name=self.model_name
+        )
 
         # 2) cost
         cost = self._compute_cost(resp, provider_info=provider_info)
         # A confirmed zero charge is different from unavailable pricing.
         if cost is not None:
-            self.metrics.add_cost(cost)
+            self.metrics.add_cost(cost, model_name=self.model_name)
 
         # 3) tokens - normalize the provider's usage shape exactly once
         usage = normalize_usage(_response_usage(resp))
@@ -338,11 +349,7 @@ class Telemetry(BaseModel):
         self._close_span()
 
         # 6) notify about stats update
-        if self._stats_update_callback is not None:
-            try:
-                self._stats_update_callback()
-            except Exception:
-                logger.exception("Stats update callback failed", exc_info=True)
+        self.notify_stats_update()
 
         return self.metrics.deep_copy()
 
@@ -405,6 +412,7 @@ class Telemetry(BaseModel):
             reasoning_tokens=usage.reasoning_tokens,
             context_window=context_window,
             response_id=response_id,
+            model_name=self.model_name,
         )
 
     # ---------- Observability span ----------
