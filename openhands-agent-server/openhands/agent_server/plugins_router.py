@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.catalog import PublicCatalogResponse
 from openhands.agent_server.plugins_service import (
     MarketplacePluginInfo,
     PluginSkillSummary,
@@ -34,7 +35,7 @@ from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.plugin import InstalledPluginInfo, Plugin, PluginFetchError
 from openhands.sdk.plugin.strict_fetch import PluginSourceError
 from openhands.sdk.secret import SecretSource
-from openhands.sdk.skills.skill import public_plugin_catalog_enabled
+from openhands.sdk.skills.skill import public_catalog_enabled
 
 
 type JSONValue = (
@@ -225,14 +226,10 @@ class UpdatePluginResponse(BaseModel):
     plugin: InstalledPluginResponse
 
 
-class MarketplaceCatalogResponse(BaseModel):
+class MarketplaceCatalogResponse(PublicCatalogResponse):
     """Response containing the plugins marketplace catalog."""
 
     plugins: list[MarketplacePluginInfo]
-    disabled: bool = Field(
-        default=False,
-        description="True when instance policy disables the default public catalog",
-    )
 
 
 def _installed_response(info: InstalledPluginInfo) -> InstalledPluginResponse:
@@ -470,5 +467,5 @@ def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     """
     return MarketplaceCatalogResponse(
         plugins=service_get_plugins_marketplace_catalog(),
-        disabled=not public_plugin_catalog_enabled(),
+        disabled=not public_catalog_enabled(),
     )

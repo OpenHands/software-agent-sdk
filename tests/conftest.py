@@ -16,7 +16,7 @@ from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
 from openhands.sdk.skills.skill import (
-    PUBLIC_PLUGIN_CATALOG_ENABLED_ENV,
+    PUBLIC_CATALOG_ENABLED_ENV,
     PUBLIC_SKILLS_ENABLED_ENV,
     PUBLIC_SKILLS_PATH_ENV,
     _invalidate_public_skills_cache,
@@ -166,7 +166,7 @@ def public_repo(tmp_path, monkeypatch):
         )
     monkeypatch.setenv(PUBLIC_SKILLS_PATH_ENV, str(tmp_path / "public"))
     monkeypatch.delenv(PUBLIC_SKILLS_ENABLED_ENV, raising=False)
-    monkeypatch.delenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(PUBLIC_CATALOG_ENABLED_ENV, raising=False)
     _invalidate_public_skills_cache()
     yield tmp_path / "public"
     _invalidate_public_skills_cache()

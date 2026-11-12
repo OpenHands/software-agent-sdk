@@ -48,7 +48,7 @@ from openhands.sdk.skills.skill import (
     PUBLIC_SKILLS_REPO,
     _invalidate_public_skills_cache,
     load_skills_from_dir,
-    public_plugin_catalog_enabled,
+    public_catalog_enabled,
 )
 from openhands.sdk.skills.utils import (
     get_skills_cache_dir,
@@ -712,7 +712,7 @@ def service_get_marketplace_catalog(
     """
     global _catalog_cache
 
-    if not public_plugin_catalog_enabled():
+    if not public_catalog_enabled():
         return []
 
     now = monotonic()

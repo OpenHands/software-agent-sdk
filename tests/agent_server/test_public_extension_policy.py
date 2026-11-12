@@ -12,10 +12,10 @@ from openhands.agent_server.skills_service import load_all_skills
 from openhands.sdk import AgentContext
 from openhands.sdk.marketplace import MarketplaceRegistration
 from openhands.sdk.skills.skill import (
-    PUBLIC_PLUGIN_CATALOG_ENABLED_ENV,
+    PUBLIC_CATALOG_ENABLED_ENV,
     PUBLIC_SKILLS_ENABLED_ENV,
     load_public_skills,
-    public_plugin_catalog_enabled,
+    public_catalog_enabled,
     public_skills_enabled,
 )
 from tests.sdk.conversation.test_local_conversation_plugins import (
@@ -70,13 +70,13 @@ def _client() -> TestClient:
     ],
 )
 def test_switch_values(monkeypatch, value, expected):
-    for env in (PUBLIC_SKILLS_ENABLED_ENV, PUBLIC_PLUGIN_CATALOG_ENABLED_ENV):
+    for env in (PUBLIC_SKILLS_ENABLED_ENV, PUBLIC_CATALOG_ENABLED_ENV):
         if value is None:
             monkeypatch.delenv(env, raising=False)
         else:
             monkeypatch.setenv(env, value)
     assert public_skills_enabled() is expected
-    assert public_plugin_catalog_enabled() is expected
+    assert public_catalog_enabled() is expected
 
 
 def test_unrecognised_value_is_logged(monkeypatch):
@@ -170,7 +170,7 @@ class TestPublicCatalogSwitch:
         monkeypatch.setattr(plugins_service, "_plugin_catalog_cache", None)
 
     def test_disabled_never_fetches_cold(self, monkeypatch):
-        monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, "false")
+        monkeypatch.setenv(PUBLIC_CATALOG_ENABLED_ENV, "false")
         with (
             patch.object(plugins_service, "_fetch_plugin_catalog_entries") as plugins,
             patch.object(skills_service, "_fetch_catalog_entries") as skills,
@@ -194,7 +194,7 @@ class TestPublicCatalogSwitch:
         monkeypatch.setattr(
             skills_service, "_catalog_cache", (float("inf"), [("s", None, "x")])
         )
-        monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, "false")
+        monkeypatch.setenv(PUBLIC_CATALOG_ENABLED_ENV, "false")
         assert plugins_service.service_get_plugins_marketplace_catalog() == []
         assert skills_service.service_get_marketplace_catalog() == []
 
@@ -206,13 +206,13 @@ class TestPublicCatalogSwitch:
         ],
     )
     def test_routes_report_disabled_state(self, monkeypatch, path, key):
-        monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, "false")
+        monkeypatch.setenv(PUBLIC_CATALOG_ENABLED_ENV, "false")
         body = _client().get(path).json()
         assert body == {key: [], "disabled": True}
 
     def test_sync_refused_when_both_disabled(self, monkeypatch):
         monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, "false")
-        monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, "false")
+        monkeypatch.setenv(PUBLIC_CATALOG_ENABLED_ENV, "false")
         with patch(
             "openhands.agent_server.skills_router.sync_public_skills",
             return_value=(True, "ok"),
@@ -231,7 +231,7 @@ class TestPublicCatalogSwitch:
         self, monkeypatch, skills_env, catalog_env
     ):
         monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, skills_env)
-        monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, catalog_env)
+        monkeypatch.setenv(PUBLIC_CATALOG_ENABLED_ENV, catalog_env)
         with patch(
             "openhands.agent_server.skills_router.sync_public_skills",
             return_value=(True, "ok"),

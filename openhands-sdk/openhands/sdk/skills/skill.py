@@ -1181,7 +1181,7 @@ PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
 # They gate only automatic loading/fetching from that repository; skills a
 # client sends or a persisted conversation already holds are not filtered.
 PUBLIC_SKILLS_ENABLED_ENV = "OH_PUBLIC_SKILLS_ENABLED"
-PUBLIC_PLUGIN_CATALOG_ENABLED_ENV = "OH_PUBLIC_PLUGIN_CATALOG_ENABLED"
+PUBLIC_CATALOG_ENABLED_ENV = "OH_PUBLIC_CATALOG_ENABLED"
 _BOOL_ADAPTER = TypeAdapter(bool)
 
 
@@ -1202,9 +1202,9 @@ def public_skills_enabled() -> bool:
     return _env_flag_enabled(PUBLIC_SKILLS_ENABLED_ENV)
 
 
-def public_plugin_catalog_enabled() -> bool:
+def public_catalog_enabled() -> bool:
     """Whether the default public plugin and skills catalogs may be fetched."""
-    return _env_flag_enabled(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV)
+    return _env_flag_enabled(PUBLIC_CATALOG_ENABLED_ENV)
 
 
 # Process-level cache for load_public_skills. Conversation creation re-validates

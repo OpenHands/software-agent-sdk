@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.catalog import PublicCatalogResponse
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
     MarketplaceSkillInfo,
@@ -35,7 +36,7 @@ from openhands.sdk.skills import (
 )
 from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
-    public_plugin_catalog_enabled,
+    public_catalog_enabled,
     public_skills_enabled,
 )
 from openhands.sdk.skills.utils import SKILL_NAME_PATTERN
@@ -266,14 +267,10 @@ class UpdateSkillResponse(BaseModel):
     skill: InstalledSkillResponse
 
 
-class MarketplaceCatalogResponse(BaseModel):
+class MarketplaceCatalogResponse(PublicCatalogResponse):
     """Response containing the marketplace catalog."""
 
     skills: list[MarketplaceSkillInfo]
-    disabled: bool = Field(
-        default=False,
-        description="True when instance policy disables the default public catalog",
-    )
 
 
 def _merge_registered_marketplaces(
@@ -375,7 +372,7 @@ def sync_skills() -> SyncResponse:
     Returns:
         SyncResponse indicating success or failure.
     """
-    if not (public_skills_enabled() or public_plugin_catalog_enabled()):
+    if not (public_skills_enabled() or public_catalog_enabled()):
         return SyncResponse(
             status="error",
             message="Public extensions are disabled by instance policy",
@@ -617,5 +614,5 @@ def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     """
     return MarketplaceCatalogResponse(
         skills=service_get_marketplace_catalog(),
-        disabled=not public_plugin_catalog_enabled(),
+        disabled=not public_catalog_enabled(),
     )
