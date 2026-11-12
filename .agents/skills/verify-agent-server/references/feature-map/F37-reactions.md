@@ -356,3 +356,7 @@ Preconditions:
   abandoned branch cannot be reacted to.
 - A client older than this event kind cannot parse a conversation's events
   once it holds a reaction, as with any new event kind.
+- Agent Canvas does not call the reaction or experimental-feature routes yet
+  and pins a release without them; its Features page and reaction chips are
+  [OpenHands/OpenHands#19505](https://github.com/OpenHands/OpenHands/issues/19505)
+  (PR [#19503](https://github.com/OpenHands/OpenHands/pull/19503)).

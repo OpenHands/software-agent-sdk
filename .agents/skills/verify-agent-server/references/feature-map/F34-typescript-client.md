@@ -1542,3 +1542,10 @@ Preconditions:
   changes. The raw `/openapi.json` of a running server is not the public
   contract (it includes `/v1` and internal schemas), so regenerating from it
   shows thousands of unrelated changes.
+- Agent Canvas pins `@openhands/typescript-client` 1.62.0, which sends every id
+  in one lookup, so a conversation with more than 99 children still gets a 422
+  there until its pin moves to a release with the batched lookup
+  (`F34.manager-batch-over-limit`). The release bot moves the agent-server and
+  client pins together after each SDK release, as
+  [OpenHands/OpenHands#19658](https://github.com/OpenHands/OpenHands/pull/19658)
+  did for 1.62.0.
