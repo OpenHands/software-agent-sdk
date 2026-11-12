@@ -481,13 +481,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "Off by default to avoid large catalogs consuming context."
         ),
     )
-    mcp_gateway_initial_tools: list[str] | None = Field(
-        default=None,
-        description=(
-            "Initially selected namespaced MCP tools; None exposes all. "
-            "Use LocalConversation.select_mcp_tools to change selection later."
-        ),
-    )
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
         default_factory=ParallelToolExecutor
     )

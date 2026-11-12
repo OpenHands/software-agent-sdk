@@ -1675,25 +1675,24 @@ class LocalConversation(BaseConversation):
         self.agent._on_mcp_tools_reconciled(client, tools)
 
     def _prepare_mcp_gateway(self) -> None:
-        if not self.agent.supports_openhands_tools or not getattr(
-            self.agent, "mcp_gateway", False
-        ):
+        from openhands.sdk.agent.agent import Agent
+
+        if not isinstance(self.agent, Agent) or not self.agent.mcp_gateway:
             return
-        selected = self._state.mcp_gateway_selected_tools
-        if not self._state.events and selected is None:
-            selected = getattr(self.agent, "mcp_gateway_initial_tools", None)
-            self._state.mcp_gateway_selected_tools = selected
         gateway = MCPToolGateway(
-            selected, filter_tools_regex=self.agent.filter_tools_regex
+            self._state.mcp_gateway_selected_tools,
+            filter_tools_regex=self.agent.filter_tools_regex,
         )
         if self.agent.mcp_config:
             gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
         self._mcp_gateway = self._state._mcp_gateway = gateway
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+        from openhands.sdk.agent.agent import Agent
+
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
-        if getattr(self.agent, "mcp_gateway", False):
+        if isinstance(self.agent, Agent) and self.agent.mcp_gateway:
             return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,

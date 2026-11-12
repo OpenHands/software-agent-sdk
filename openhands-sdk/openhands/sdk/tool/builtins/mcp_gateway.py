@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 
@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from openhands.sdk.mcp.gateway import MCPToolGateway
 
 
+type JSONValue = (
+    str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+)
+
+
 class MCPGatewayObservation(Observation):
     """Observation from either stable MCP gateway tool."""
 
@@ -35,7 +40,7 @@ class ListMCPToolsAction(Action):
 
 class CallMCPToolAction(Action):
     name: str = Field(description="Namespaced tool name returned by list_mcp_tools.")
-    arguments: dict[str, Any] = Field(
+    arguments: dict[str, JSONValue] = Field(
         description="Arguments matching its input_schema."
     )
     revision: str = Field(description="Catalog revision returned by list_mcp_tools.")
@@ -82,6 +87,8 @@ class ListMCPToolsTool(ToolDefinition[ListMCPToolsAction, MCPGatewayObservation]
         cls,
         conv_state: ConversationState | None = None,
     ) -> Sequence[Self]:
+        from openhands.sdk.agent.agent import Agent
+
         if conv_state is None or conv_state._mcp_gateway is None:
             raise ValueError("ListMCPToolsTool requires an active MCP gateway")
         gateway = conv_state._mcp_gateway
@@ -96,7 +103,10 @@ class ListMCPToolsTool(ToolDefinition[ListMCPToolsAction, MCPGatewayObservation]
             executor=ListMCPToolsExecutor(gateway),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        if getattr(conv_state.agent, "mcp_gateway_startup_catalog", False):
+        if (
+            isinstance(conv_state.agent, Agent)
+            and conv_state.agent.mcp_gateway_startup_catalog
+        ):
             tool = tool.model_copy(
                 update={
                     "prompt_guidance": (
