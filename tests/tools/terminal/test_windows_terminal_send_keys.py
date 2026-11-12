@@ -96,3 +96,19 @@ def test_enter_false_appends_no_newline(command: str) -> None:
     sent = _sent_text(command, enter=False)
 
     assert not sent.endswith("\n")
+
+
+@pytest.mark.parametrize("command", MULTILINE_COMMANDS + SINGLE_LINE_COMMANDS)
+def test_metadata_suffix_starts_on_its_own_line(command: str) -> None:
+    """A trailing "# comment" must not comment out the metadata suffix.
+
+    Joined with "; " the suffix became part of the commented line, so no exit
+    code or metadata was ever printed and the session hung on the next call.
+    """
+    sent = _sent_text(command)
+    user_text = command.rstrip()
+    remainder = sent[len(user_text) :]
+
+    assert sent.startswith(user_text)
+    assert "$oh1 = $?" not in user_text
+    assert remainder.lstrip("\r\n").startswith("$oh1 = $?")

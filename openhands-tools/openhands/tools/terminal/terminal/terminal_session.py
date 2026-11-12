@@ -93,6 +93,13 @@ def _remove_echoed_line(command_output: str, command: str) -> str:
     )
 
 
+# The metadata suffix as PowerShell echoes it back. Matching the whole shape, not
+# just the `$oh1 = $?` prefix, keeps a command's own output that contains it.
+_PS1_SUFFIX_ECHO_RE = re.compile(
+    r"\$oh1 = \$\?;[^\r\n]*\$oh2 = \$LASTEXITCODE[^\r\n]*Write-Host [^\r\n]*"
+)
+
+
 def _remove_powershell_echo(command_output: str, command: str) -> str:
     command_output = command_output.lstrip()
     command = command.lstrip()
@@ -100,6 +107,13 @@ def _remove_powershell_echo(command_output: str, command: str) -> str:
     if command and command in first_line:
         _, separator, rest = command_output.partition("\n")
         command_output = rest if separator else ""
+    # PowerShell echoes the suffix line back; it is input, not output. Only a line
+    # carrying the whole generated suffix goes, so a command's own output survives.
+    command_output = "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if not _PS1_SUFFIX_ECHO_RE.search(line)
+    )
     return re.sub(r"(?:\r?\n)?PS [^\r\n]*>\s*$", "", command_output).lstrip()
 
 

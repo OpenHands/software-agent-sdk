@@ -239,7 +239,10 @@ class WindowsTerminal(TerminalInterface):
         stripped_text = text.rstrip()
         if stripped_text:
             self._command_running_event.set()
-            command = f"{stripped_text}; {self._metadata_suffix()}"
+            # The suffix goes on its own line: joined with "; " a trailing
+            # "# comment" in the user's text would comment it out, so no exit
+            # code or metadata would ever be printed.
+            command = f"{stripped_text}\n{self._metadata_suffix()}"
         else:
             command = text
 
