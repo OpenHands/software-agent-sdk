@@ -926,6 +926,28 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Same role, same sessions: the shallow copy shares ``_session``
             # already, and stays with the conversation the original is in.
             copied._registry_session = self._registered_session()
+            logging_changed = update is not None and (
+                "log_completions_to_file" in update
+                or "log_completions_folder" in update
+            )
+            if logging_changed and copied._registered_session() is None:
+                # Not part of a conversation: ``session_for`` won't run
+                # ``LLMSession.follow`` to resync these settings before the
+                # next call, so give the copy its own ``Telemetry`` now.
+                # ``Telemetry.model_copy`` shares ``metrics`` and any
+                # attached callbacks with the original by reference.
+                copied._session = LLMSession._wrapping(
+                    self.session.telemetry.model_copy(
+                        update={
+                            "completion_logging_enabled": (
+                                copied.log_completions_to_file
+                            ),
+                            "log_dir": copied.log_completions_folder
+                            if copied.log_completions_to_file
+                            else None,
+                        }
+                    )
+                )
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
