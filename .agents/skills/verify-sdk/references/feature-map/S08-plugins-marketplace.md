@@ -196,7 +196,7 @@ The programs build every plugin, marketplace and git repository inside the run (
     --check uninstall eq true --check uninstall_again eq false --check dir_removed eq true \
     --check listed_end eq '["localplug"]' --check get_missing eq null
   ```
-- **Resuming after an ambient plugin is disabled (`S08.ambient-plugins`).** An installed Claude Code plugin `resplug` (a skill, a command and a `.mcp.json` server) loads into a persisted conversation on its first message. The plugin is then disabled, the same `conversation_id` is reopened in a new `Conversation` and sent a message; then it is enabled and reopened again.
+- **Resuming after an ambient plugin is disabled (`S08.ambient-plugins`).** An installed Claude Code plugin `resplug` (a skill, a command and a `.mcp.json` server) loads into a persisted conversation on its first message. The plugin is then disabled, the same `conversation_id` is reopened with its persisted agent (`LocalConversation(agent=None, conversation_id=...)`) and sent a message; then it is enabled and reopened again.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S08/store --arg resume \
