@@ -103,7 +103,7 @@ Preconditions:
     --check ask_prompt_tokens_delta eq 100 \
     --check ask_cost_delta eq 0.05 --check ask_warnings len-eq 0 --check ask_seconds lt 1.5
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): the fork's cost is lost and every `ask_agent` call stalls. The client bridge (`_OpenHandsACPBridge.session_update`) routes every update for the fork session to the fork branch, which keeps only message chunks and `return`s before the `UsageUpdate` branch. As a result:
+  Known failure (reproduced 2026-11-12, [#6646](https://github.com/OpenHands/software-agent-sdk/issues/6646)): the fork's cost is lost and every `ask_agent` call stalls. The client bridge (`_OpenHandsACPBridge.session_update`) routes every update for the fork session to the fork branch, which keeps only message chunks and `return`s before the `UsageUpdate` branch. As a result:
   - `ask_agent` waits the full `ACP_USAGE_UPDATE_TIMEOUT` and logs `UsageUpdate not received within 2.0s for fork session ...`.
   - It records no cost: `ask_cost_delta` is 0.0, `ask_seconds` is 2.01, and `ask_warnings` holds that line.
   - Token usage from the prompt response is still recorded.
@@ -158,7 +158,7 @@ Preconditions:
     --check cases.hang.prompts_sent eq 1 --check cases.hang.cancel_sent eq 1 --check cases.hang.status eq error \
     --check cases.hang.seconds lt 5
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
+  Known failure (reproduced 2026-11-12, [#6645](https://github.com/OpenHands/software-agent-sdk/issues/6645)): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
 - **Cancel a running turn (`S21.cancel-pause`).** `arun()` runs as a task. The server starts a long tool call and waits, and the program cancels the task. Then it runs another turn.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -280,7 +280,7 @@ Preconditions:
     --check probes.claude-code.current_in_models eq true --check probes.codex.current_in_models eq true \
     --check probes.gemini-cli.current_in_models eq true --check probes.pi.current_in_models eq true
   ```
-  Here all six providers passed in about 155 s on a cold npm cache: claude-agent-acp 0.63.0, codex-acp 1.10.0, gemini-cli 0.46.0, Kimi Code CLI 0.38.0, OpenCode 1.18.23 and pi-acp 0.0.33.
+  Here all six providers passed in about 90 s: claude-agent-acp 0.99.1, codex-acp 2.2.2, gemini-cli 0.46.0, Kimi Code CLI 0.38.0, OpenCode 1.18.23 and pi-acp 0.0.33 (the versions the install catalog pins).
 - **Example 40 with Claude Code (`S21.live-turn`, `S21.step`, `S21.ask-agent`, `S21.usage-cost`), blocked: needs `ANTHROPIC_API_KEY` (optionally `ANTHROPIC_BASE_URL` for a LiteLLM proxy), plus `npx` and network for the image URL.** Run it from the repo root. The agent lists the `openhands-sdk/openhands/sdk/agent/` files, describes the python.org image and answers the `ask_agent` question. The example prints `EXAMPLE_COST` twice, then `Done!`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

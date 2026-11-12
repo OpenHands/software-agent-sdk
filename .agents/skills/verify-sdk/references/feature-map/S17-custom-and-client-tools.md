@@ -17,8 +17,9 @@ Examples: `examples/01_standalone_sdk/02_custom_tools.py`, `examples/01_standalo
 - `S17.auto-naming`: `ToolDefinition.name` is derived from the class name (`FileEditorTool` to `file_editor`) unless the class sets `name`. Unit: `tests/cross/test_automatic_naming.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py` (`BashAndGrepToolSet.name`). Real-LLM: none.
 - `S17.auto-registration`: importing a built-in tool module (or `openhands.tools`) registers its tools, after which specs resolve. Unit: `tests/cross/test_automatic_registration.py`, `tests/tools/test_init.py`. Example: none. Real-LLM: none.
 - `S17.tool-spec`: `Tool(name, params)` copies its `params` (later changes to the caller's dict do not reach it), round-trips through JSON, and rejects an empty name; it is not frozen (attributes can be reassigned). Unit: `tests/sdk/tool/test_tool.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py`. Real-LLM: none.
-- `S17.agent-tool-init`: the agent turns its specs into tools at conversation start, adds the built-in `finish` (and `think` only when `include_default_tools` opts into it; it is no longer a default since #6159), rejects duplicate tool names, and does not let a runtime tool replace an existing one; a custom tool may replace `finish`. Unit: `tests/sdk/agent/test_agent_tool_init.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py`. Real-LLM: none.
+- `S17.agent-tool-init`: the agent turns its specs into tools at conversation start, adds the built-in `finish` (and `think` only when `include_default_tools` opts into it), rejects duplicate tool names, and does not let a runtime tool replace an existing one; a custom tool may replace `finish`. Unit: `tests/sdk/agent/test_agent_tool_init.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py`. Real-LLM: none.
 - `S17.llm-schemas`: `to_openai_tool()`, `to_responses_tool()` (with `strict` and parameters) and `to_mcp_tool()` render the action schema without the internal `kind` field, keep required fields and annotations, and expand nested and circular `$ref`s without recursion errors. Unit: `tests/sdk/tool/test_mcp_schema.py`, `tests/sdk/tool/test_to_responses_tool.py`, `tests/sdk/tool/test_tool_definition.py` (`test_to_mcp_tool_*`, `test_mcp_tool_schema_required_fields`). Example: none. Real-LLM: none.
+- `S17.schema-constraints`: the tool schema sent to the model keeps the JSON Schema constraints the `Action` model declares: a field's `pattern`, a one-value `Literal` (`const`), and `additionalProperties: false` from `extra="forbid"`. Unit: **none (untested)**. Example: none. Real-LLM: none.
 - `S17.injected-fields`: a `security_risk` parameter is added to tools that are not read-only (optional, ahead of content parameters, gated by the security setting) and a `summary` parameter is always added, while an MCP tool's own description is kept. Unit: `tests/sdk/tool/test_tool_definition.py` (`test_security_risk_only_added_for_non_readonly_tools`, `test_security_risk_is_optional_field_in_schema`, `test_security_risk_precedes_content_params_in_schema`), `tests/sdk/tool/test_to_responses_tool_security.py`, `tests/sdk/tool/test_to_responses_tool_summary.py`. Example: none. Real-LLM: none.
 - `S17.schema-serialization`: `Action`/`Observation` subclasses are frozen and serialize as a discriminated union by `kind`, including nested polymorphic fields; tool definitions are immutable and `set_executor` returns a copy. Unit: `tests/sdk/tool/test_tool_serialization.py`, `tests/sdk/tool/test_schema_immutability.py`, `tests/sdk/tool/test_tool_immutability.py`. Example: none. Real-LLM: none.
 - `S17.py-type`: `py_type()` maps JSON-schema types (string, integer, number, boolean, object, arrays, nullable unions) to Python types for dynamically built actions. Unit: `tests/sdk/tool/test_py_type.py`. Example: none. Real-LLM: none.
@@ -154,7 +155,17 @@ Preconditions:
     --check no_executor_call contains "has no executor" --check no_executor_as_executable contains "has no executor" \
     --check wrong_observation_type contains "instance of WordCountObservation"
   ```
-  `security_risk` goes only to the tool that is not read-only, ahead of `summary` and the tool's own fields. The `Section` outline refers to itself; it is sent expanded one level, with no `$ref`. An executor that returns another observation class fails with a `ValidationError` that names the expected class (`Input should be a valid dictionary or instance of WordCountObservation`, `wrong_observation_type`; the bare `AttributeError ... 'pop'` was fixed by #5798).
+  `security_risk` goes only to the tool that is not read-only, ahead of `summary` and the tool's own fields. The `Section` outline refers to itself; it is sent expanded one level, with no `$ref`. An executor that returns another observation class fails with a `ValidationError` that names the expected class (`Input should be a valid dictionary or instance of WordCountObservation`, `wrong_observation_type`).
+- **Constraints the `Action` declares (`S17.schema-constraints`).** `IssueRefundAction` has `order_id: str = Field(pattern=r"^ORD-[0-9]{6}$")`, `currency: Literal["USD"]` and `model_config = ConfigDict(extra="forbid")`; the program renders its tool with `to_openai_tool()` and `to_responses_tool()` and compares them with pydantic's own schema.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S17/schema_constraints \
+    --check pydantic.order_id_pattern eq '^ORD-[0-9]{6}$' --check pydantic.additional_properties eq false \
+    --check openai.order_id_pattern eq '^ORD-[0-9]{6}$' --check openai.currency_const eq USD \
+    --check openai.additional_properties eq false \
+    --check responses.order_id_pattern eq '^ORD-[0-9]{6}$' --check responses.additional_properties eq false
+  ```
+  Expected: the parameters the model gets keep `pattern`, the `const` (or a one-value `enum`) and `additionalProperties: false`. Known failure (reproduced 2026-11-12, [#6766](https://github.com/OpenHands/software-agent-sdk/issues/6766)): pydantic's schema has all three, but both rendered tools send `order_id` as `{"type": "string", "description": ...}`, `currency` as a plain string and no `additionalProperties`: `_process_schema_node` in `openhands/sdk/tool/schema.py` keeps only `type`, `description`, `properties`, `required`, `items`, `enum` and the first `anyOf` branch.
 - **Validating a dumped action twice (`S17.schema-serialization`).** The program validates `action.model_dump(mode="json")` back into an `Action` and then validates the same dict again.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -162,7 +173,7 @@ Preconditions:
     --check action_round_trip_type eq AddNoteAction \
     --check validate_keeps_input_kind eq true --check validate_same_dict_again eq "no error"
   ```
-  Expected: validation reads the caller's dict without changing it. Fixed: a known failure on 2026-10-13 (the validator popped `kind` from the caller's dict, so a second validation failed); it passes since #5770, re-verified 2026-11-03.
+  Expected: validation reads the caller's dict without changing it.
 - **Built-in tools and duplicates at agent start (`S17.agent-tool-init`).** Agents with `word_count` and default, narrowed, empty and unknown `include_default_tools`; a duplicate spec; a custom tool named `finish` with only `ThinkTool` built in; and a runtime tool that would replace it.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -236,5 +247,5 @@ Preconditions:
 - A client tool whose name matches a built-in the agent attaches (for example `finish`) is rejected when the conversation starts the agent, by the duplicate-name check (`ValueError: Duplicate tool names found: {'finish'}`), not by `ClientToolRegistrationError`; that error is for names already in the tool registry (such as `terminal` once imported) and for duplicates within one `client_tools` list.
 - A client tool argument named `kind` is stored as `mcp_arg_kind`, and `event.action.model_dump()` adds `kind: "ClientAction_<name>"`. A callback that forwards `model_dump()` (as example 53's does) sends the client renamed and extra keys; forward `json.loads(event.tool_call.arguments)` to pass on exactly what the model sent.
 - Client tool arguments are not checked against the spec's `enum`: a value outside it is dispatched like any other, so the client must validate.
-- An executor that returns the wrong observation class fails with a `ValidationError` that names the expected type (since #5798; before, a bare `AttributeError ... 'pop'`).
+- An executor that returns the wrong observation class fails with a `ValidationError` that names the expected type.
 - `Action.model_validate(d)` (and every discriminated model's validation) removes `kind` from the dict `d` it is given; copy the dict first if you need it again.
