@@ -54,6 +54,7 @@ from openhands.sdk.event import (
     SecurityAnalysisEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
@@ -330,6 +331,57 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_recovery_provenance_served_over_http_and_websocket(server_env):
+    recovery = AgentErrorEvent(
+        error="Interrupted execution",
+        tool_name="terminal",
+        tool_call_id="interrupted_call",
+        recovery_reason="server_restart",
+        classification=ErrorClassification(kind=FailureKind.INTERNAL, retryable=False),
+    )
+    received: list[Event] = []
+    delivered = threading.Event()
+
+    def on_event(event: Event) -> None:
+        if event.id == recovery.id:
+            received.append(event)
+            delivered.set()
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    conversation: RemoteConversation = Conversation(
+        agent=agent, workspace=workspace, callbacks=[on_event], visualizer=None
+    )
+    try:
+        event_service = server_env["conversation_service"]._event_services[
+            conversation.id
+        ]
+        event_service.get_conversation()._on_event(recovery)
+        assert delivered.wait(5)
+        websocket_event = received[0]
+        assert isinstance(websocket_event, AgentErrorEvent)
+        assert websocket_event.recovery_reason == "server_restart"
+
+        event_path = f"/api/conversations/{conversation.id}/events"
+        with httpx.Client(base_url=server_env["host"]) as client:
+            single = client.get(f"{event_path}/{recovery.id}")
+            single.raise_for_status()
+            search = client.get(
+                f"{event_path}/search", params={"kind": "AgentErrorEvent"}
+            )
+            search.raise_for_status()
+
+        assert single.json()["recovery_reason"] == "server_restart"
+        assert [Event.model_validate(item) for item in search.json()["items"]] == [
+            websocket_event
+        ]
+        assert Event.model_validate(single.json()) == websocket_event
+    finally:
+        conversation.close()
 
 
 def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
