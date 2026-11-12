@@ -593,3 +593,64 @@ async def test_a_frame_that_arrives_with_the_close_is_still_saved():
     await writer.aclose()
 
     assert [m.content[0].text for m in saved] == ["last words"]  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_an_error_for_a_frame_sent_while_a_step_runs_comes_after_sync(
+    monkeypatch,
+):
+    """Frames are read before subscribing, yet ``sync`` is still sent first.
+
+    An invalid frame sent while the step holds the lock is rejected at once;
+    its error must follow ``sync`` and the replay, not jump ahead of them.
+    """
+    from openhands.agent_server import session_socket as module
+
+    class _Service(_LockedEventService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rejected = asyncio.Event()
+
+        async def send_message(self, message: Message, run: bool) -> None:
+            if message.role != "user":
+                self.rejected.set()
+                raise AssertionError("Only user messages are allowed")
+            await super().send_message(message, run)
+
+    service = _Service()
+    service.events.add(_msg("before"))
+    assistant = Message(role="assistant", content=[TextContent(text="x")])
+    ws = _ClientSocket([assistant.model_dump(mode="json")])
+
+    async def accept(websocket, key):
+        return True
+
+    monkeypatch.setattr(module, "_accept_authenticated_websocket", accept)
+    monkeypatch.setattr(
+        module,
+        "_get_conversation_service",
+        lambda websocket: type(
+            "S", (), {"get_event_service": AsyncMock(return_value=service)}
+        )(),
+    )
+
+    task = asyncio.ensure_future(
+        module.session_socket(uuid4(), ws, after_seq=-1)  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(service.rejected.wait(), timeout=5)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert ws.frames() == []
+
+    service.step_done.set()
+    for _ in range(500):
+        if len(ws.sent) >= 3:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    frames = ws.frames()
+    assert [f["type"] for f in frames] == ["sync", "durable", "error"]
+    assert frames[2]["code"] == "AssertionError"
