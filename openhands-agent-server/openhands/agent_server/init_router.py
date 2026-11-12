@@ -101,9 +101,13 @@ class InitRequest(BaseModel):
     secret_key: SecretStr | None = Field(
         default=None,
         description=(
-            "Symmetric secret used to encrypt persisted secrets. If not "
-            "provided, falls back to the first session_api_key (matching the "
-            "default Config behavior)."
+            "Symmetric secret used to encrypt persisted secrets (e.g. the LLM "
+            "API key). It must stay the same for the whole life of a "
+            "conversation's persisted data, so orchestrators that rotate "
+            "session_api_keys (pause/resume) should always supply it. If not "
+            "provided, the dormant server keeps the secret_key it booted with "
+            "(OH_SECRET_KEY, else SESSION_API_KEY); the first session_api_key "
+            "is only used when the dormant server booted without any."
         ),
     )
     previous_secret_keys: list[SecretStr] | None = Field(
@@ -200,10 +204,21 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
     # A blank secret_key is treated as unset, like a blank OH_SECRET_KEY.
     if req.secret_key is not None and req.secret_key.get_secret_value().strip():
         updates["secret_key"] = req.secret_key
-    elif req.session_api_keys and base.secret_key is None:
-        # Match the Config default: fall back to first session key when no
-        # secret_key was provided.
-        updates["secret_key"] = SecretStr(req.session_api_keys[0])
+    elif req.session_api_keys:
+        if base.secret_key is None:
+            # Match the Config default: fall back to first session key when no
+            # secret_key was provided.
+            updates["secret_key"] = SecretStr(req.session_api_keys[0])
+        else:
+            # The boot-time secret_key silently stays the cipher key. In a warm
+            # pool it is a per-pod throwaway, so persisted secrets would only
+            # decrypt on a pod booted with that same key.
+            logger.warning(
+                "deferred_init: /api/init supplied session_api_keys without "
+                "secret_key; persisted secrets will be encrypted with the "
+                "boot-time secret_key and may be undecryptable after a "
+                "pause/resume onto a different pod"
+            )
     if req.previous_secret_keys is not None:
         updates["previous_secret_keys"] = req.previous_secret_keys
     if req.conversations_path is not None:

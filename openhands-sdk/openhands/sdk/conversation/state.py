@@ -38,12 +38,39 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import (
+    FERNET_TOKEN_PREFIX,
+    Cipher,
+    SecretDecryptionError,
+)
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
 logger = get_logger(__name__)
+
+
+def _raise_if_llm_api_key_undecryptable(
+    persisted: dict[str, Any], state: "ConversationState"
+) -> None:
+    """Fail resume when the persisted LLM api_key was lost to a cipher mismatch.
+
+    ``Cipher.decrypt`` turns an undecryptable value into ``None``, which later
+    surfaces as a misleading "invalid API key" error from the LLM provider.
+    When the persisted agent is the only source of LLM credentials, there is no
+    way to proceed, so surface the real cause.
+    """
+    raw_api_key = ((persisted.get("agent") or {}).get("llm") or {}).get("api_key")
+    if (
+        isinstance(raw_api_key, str)
+        and raw_api_key.startswith(FERNET_TOKEN_PREFIX)
+        and state.agent.llm.api_key is None
+    ):
+        raise SecretDecryptionError(
+            f"Cannot resume conversation {state.id}: the persisted LLM api_key "
+            "could not be decrypted with the configured cipher. The conversation "
+            "was likely saved under a different OH_SECRET_KEY (secret_key)."
+        )
 
 
 class ConversationExecutionStatus(str, Enum):
@@ -639,7 +666,8 @@ class ConversationState(OpenHandsModel):
         if base_text:
             # Use cipher context for decrypting secrets if provided
             context = {"cipher": cipher} if cipher else None
-            state = cls.model_validate(json.loads(base_text), context=context)
+            persisted = json.loads(base_text)
+            state = cls.model_validate(persisted, context=context)
 
             # Restore the conversation with the same id
             if state.id != id:
@@ -647,6 +675,9 @@ class ConversationState(OpenHandsModel):
                     f"Conversation ID mismatch: provided {id}, "
                     f"but persisted state has {state.id}"
                 )
+
+            if agent is None and cipher is not None:
+                _raise_if_llm_api_key_undecryptable(persisted, state)
 
             # Attach event log early so we can read history for tool verification
             state._fs = file_store
