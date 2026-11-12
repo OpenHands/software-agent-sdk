@@ -6,9 +6,10 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
+from fastapi import APIRouter, Path as PathParam, Query, Request
 
 from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.errors import error_for_status, error_responses
 from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
     MissingGitProviderTokenError,
@@ -17,6 +18,7 @@ from openhands.agent_server.git_provider_service import (
     search_provider_repositories,
 )
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.sdk.errors import Conflict, Invalid, RateLimited, Unprocessable
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_commits import (
@@ -60,7 +62,7 @@ _SHA_PATTERN = r"^[0-9a-fA-F]{4,64}$"
 def _repo_path(path: str) -> Path:
     """Reject an empty path, which Path() would turn into the server's own cwd."""
     if not path:
-        raise HTTPException(status_code=400, detail="'path' must not be empty")
+        raise Invalid("'path' must not be empty")
     return Path(path)
 
 
@@ -160,9 +162,9 @@ async def git_repositories_search(
             page_id=page_id,
         )
     except UnsupportedGitProviderError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise Invalid(str(e)) from e
     except GitProviderAPIError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+        raise error_for_status(e.status_code, str(e)) from e
 
 
 # One path segment of a GitHub owner or repository name. "." and ".." also
@@ -176,16 +178,14 @@ MISSING_PROVIDER_TOKEN_CODE = "missing_provider_token"
 @git_router.get(
     "/repositories/{owner}/{repo}/pull-requests/{number}",
     response_model=GitPullRequestStatus,
-    responses={
-        409: {
-            "description": (
-                "No token is configured for the provider. The detail is "
-                f'{{"code": "{MISSING_PROVIDER_TOKEN_CODE}", "message": ...}}, '
-                "so a client can hide the status instead of showing an error."
-            )
-        },
-        429: {"description": "The provider's rate limit was reached."},
-    },
+    responses=error_responses(
+        {
+            Conflict: "No token is configured for the provider. The detail is "
+            f'{{"code": "{MISSING_PROVIDER_TOKEN_CODE}", "message": ...}}, '
+            "so a client can hide the status instead of showing an error.",
+            RateLimited: "The provider's rate limit was reached.",
+        }
+    ),
 )
 async def git_pull_request_status(
     request: Request,
@@ -198,25 +198,17 @@ async def git_pull_request_status(
 ) -> GitPullRequestStatus:
     """Read a pull request's state and the combined CI result of its head commit."""
     if owner in _DOT_SEGMENTS or repo in _DOT_SEGMENTS:
-        raise HTTPException(
-            status_code=422, detail="'owner' and 'repo' must not be '.' or '..'"
-        )
+        raise Unprocessable("'owner' and 'repo' must not be '.' or '..'")
     try:
         return await get_provider_pull_request(
             get_config(request), provider, owner, repo, number
         )
     except UnsupportedGitProviderError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise Invalid(str(e)) from e
     except MissingGitProviderTokenError as e:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": MISSING_PROVIDER_TOKEN_CODE, "message": str(e)},
-        ) from e
+        raise Conflict({"code": MISSING_PROVIDER_TOKEN_CODE, "message": str(e)}) from e
     except GitProviderAPIError as e:
-        headers = {"Retry-After": e.retry_after} if e.retry_after else None
-        raise HTTPException(
-            status_code=e.status_code, detail=str(e), headers=headers
-        ) from e
+        raise error_for_status(e.status_code, str(e), retry_after=e.retry_after) from e
 
 
 @git_router.get("/changes")
@@ -233,7 +225,7 @@ async def git_changes_query(
         # Any remaining GitError subclass (e.g. GitCommandError) surfaces as
         # 400 so the client can show an actionable error instead of an
         # opaque 500.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))
 
 
 @git_router.get("/diff")
@@ -247,9 +239,7 @@ async def git_diff_query(
 ) -> GitDiff:
     """Get git diff using query parameter (preferred method)."""
     if ref is not None and commit is not None:
-        raise HTTPException(
-            status_code=400, detail="'ref' and 'commit' are mutually exclusive"
-        )
+        raise Invalid("'ref' and 'commit' are mutually exclusive")
     try:
         if commit is not None:
             return await _get_commit_file_diff(path, commit)
@@ -259,7 +249,7 @@ async def git_diff_query(
         # empty diff). Any remaining GitError subclass (e.g. GitCommandError,
         # GitPathError) surfaces as 400 so the client can show an actionable
         # error instead of an opaque 500.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))
 
 
 @git_router.get("/commits")
@@ -274,7 +264,7 @@ async def git_commits_query(
     except GitError as e:
         # GitRepositoryError is already handled in the helper (returns an
         # empty page). Any remaining GitError subclass surfaces as 400.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))
 
 
 @git_router.get("/commits/{sha}/changes")
@@ -289,4 +279,4 @@ async def git_commit_changes_query(
     except GitError as e:
         # GitRepositoryError is already handled in the helper (returns []).
         # An unknown/unresolvable sha raises GitCommandError -> 400.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))

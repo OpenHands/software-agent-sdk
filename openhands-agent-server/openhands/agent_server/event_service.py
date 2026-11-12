@@ -77,6 +77,7 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import RateLimited
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
@@ -114,7 +115,7 @@ SendMessageRunOutcome = Literal["started", "queued", "not_run"]
 """What ``EventService.send_message(run=True)`` did about running."""
 
 
-class ConversationRunLimitExceeded(RuntimeError):
+class ConversationRunLimitExceeded(RateLimited, RuntimeError):
     """The server has no capacity to start another conversation run."""
 
 
@@ -875,7 +876,7 @@ class EventService:
                 held == ConversationExecutionStatus.STUCK
                 and state.execution_status != held
             ):
-                state.execution_status = held
+                state.transition(held, "a guarded message keeps stuck")
 
     def _get_execution_status_sync(self) -> ConversationExecutionStatus:
         if not self._conversation:
@@ -902,7 +903,9 @@ class EventService:
             return
         with self._conversation._state as state:
             if state.execution_status != ConversationExecutionStatus.ERROR:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "run failed outside the run loop"
+                )
 
     def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
@@ -1284,32 +1287,30 @@ class EventService:
                 partial(_log_emit_failure, type(event).__name__),
             )
 
-    def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
-        """Configure LLM log callbacks to stream logs via events."""
-        for llm in agent.get_all_llms():
-            if not llm.log_completions:
-                continue
+    def _setup_llm_log_streaming(self, conversation: LocalConversation) -> None:
+        """Configure LLM log callbacks to stream logs via events.
 
-            # Capture variables for closure
-            usage_id = llm.usage_id
-            model_name = llm.model
+        Set on the conversation's registry, so it covers every LLM session of
+        the conversation, including those opened by a later ``switch_llm`` /
+        ``switch_profile``. Only LLMs with ``log_completions`` on produce logs.
+        """
 
-            def log_callback(
-                filename: str, log_data: str, uid=usage_id, model=model_name
-            ) -> None:
-                """Callback to emit LLM completion logs as events."""
-                try:
-                    event = LLMCompletionLogEvent(
-                        filename=filename,
-                        log_data=log_data,
-                        model_name=model,
-                        usage_id=uid,
-                    )
-                    self._emit_event_from_thread(event)
-                except Exception:
-                    logger.exception("Failed to emit LLM completion log event")
+        def log_callback(
+            filename: str, log_data: str, usage_id: str, model_name: str
+        ) -> None:
+            """Callback to emit LLM completion logs as events."""
+            try:
+                event = LLMCompletionLogEvent(
+                    filename=filename,
+                    log_data=log_data,
+                    model_name=model_name,
+                    usage_id=usage_id,
+                )
+                self._emit_event_from_thread(event)
+            except Exception:
+                logger.exception("Failed to emit LLM completion log event")
 
-            llm.telemetry.set_log_completions_callback(log_callback)
+        conversation.llm_registry.set_log_completions_callback(log_callback)
 
     def _setup_acp_activity_heartbeat(self, agent: AgentBase) -> None:
         """Wire ACP activity heartbeat to the idle timer.
@@ -1361,8 +1362,12 @@ class EventService:
 
         return callback
 
-    def _setup_stats_streaming(self, agent: AgentBase) -> None:
-        """Configure stats update callbacks to stream stats changes via events."""
+    def _setup_stats_streaming(self, conversation: LocalConversation) -> None:
+        """Configure stats update callbacks to stream stats changes via events.
+
+        Set on the conversation's registry, so it keeps firing for the LLM a
+        later ``switch_llm`` / ``switch_profile`` installs.
+        """
 
         def stats_callback() -> None:
             """Callback to emit stats updates.
@@ -1390,8 +1395,7 @@ class EventService:
             )
             self._emit_event_from_thread(event)
 
-        for llm in agent.get_all_llms():
-            llm.telemetry.set_stats_update_callback(stats_callback)
+        conversation.llm_registry.set_stats_update_callback(stats_callback)
 
     @staticmethod
     def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
@@ -1595,10 +1599,10 @@ class EventService:
         )
 
         # Setup LLM log streaming for remote execution
-        self._setup_llm_log_streaming(self._conversation.agent)
+        self._setup_llm_log_streaming(self._conversation)
 
         # Setup stats streaming for remote execution
-        self._setup_stats_streaming(self._conversation.agent)
+        self._setup_stats_streaming(self._conversation)
 
         # Wire ACP activity heartbeat so ACP tool calls (which run inside
         # the subprocess and never hit HTTP endpoints) still reset the
@@ -1616,10 +1620,11 @@ class EventService:
             # purpose, not crashed, and the run is paused like one stopped
             # between steps.
             shut_down = self.paused_by_shutdown
-            state.execution_status = (
+            state.transition(
                 ConversationExecutionStatus.PAUSED
                 if shut_down
-                else ConversationExecutionStatus.ERROR
+                else ConversationExecutionStatus.ERROR,
+                "stale running status on load",
             )
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
@@ -1661,6 +1666,7 @@ class EventService:
                         classification=ErrorClassification(
                             kind=FailureKind.INTERNAL, retryable=False
                         ),
+                        recovery_reason="server_restart",
                     )
                     self._conversation._on_event(error_event)
 
@@ -2509,6 +2515,10 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_effort, effort)
+
+    async def close_connections(self, code: int, reason: str) -> None:
+        """Close the client sockets subscribed to this conversation."""
+        await self._pub_sub.close_connections(code, reason)
 
     async def close(self):
         if self.bash_event_service is not None:

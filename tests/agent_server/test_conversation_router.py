@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
@@ -47,6 +48,7 @@ from openhands.sdk.workspace import LocalWorkspace
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
     # switch_llm reads request.app.state.config to get the optional cipher;
     # populate it with a no-cipher config so unrelated tests don't 503.

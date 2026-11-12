@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
@@ -21,6 +21,14 @@ from openhands.sdk.credential import (
     CredentialSyncError,
     HttpVersionedCredentialBinding,
     ResolvedCredential,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    NotSupported,
+    Unprocessable,
+    UpstreamFailed,
 )
 
 
@@ -121,7 +129,7 @@ async def activate_credential_binding(
     request: Request,
 ) -> Response:
     if not supports_file_credential_binding(secret_name):
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     binding = HttpVersionedCredentialBinding(
         activation.url,
         activation.headers,
@@ -134,36 +142,20 @@ async def activate_credential_binding(
             binding,
         )
     except CredentialBindingActivationTooLate as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Credential binding activation arrived after ACP initialization",
+        raise Conflict(
+            "Credential binding activation arrived after ACP initialization"
         ) from exc
     except CredentialConflict as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Credential binding source changed",
-        ) from exc
+        raise Conflict("Credential binding source changed") from exc
     except CredentialAuthorizationRejected as exc:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Credential binding authorization was rejected",
-        ) from exc
+        raise Forbidden("Credential binding authorization was rejected") from exc
     except CredentialBindingUnsupported as exc:
-        raise HTTPException(
-            status.HTTP_501_NOT_IMPLEMENTED,
-            "Credential binding source is unsupported",
-        ) from exc
+        raise NotSupported("Credential binding source is unsupported") from exc
     except (
         CredentialInvalidResponse,
         CredentialNeedsReauthentication,
     ) as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Credential binding source is invalid",
-        ) from exc
+        raise Unprocessable("Credential binding source is invalid") from exc
     except CredentialBindingError as exc:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            "Credential binding source is unavailable",
-        ) from exc
+        raise UpstreamFailed("Credential binding source is unavailable") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

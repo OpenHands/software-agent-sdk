@@ -123,6 +123,7 @@ from openhands.sdk.credential import (
     CredentialBindingError,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import Conflict
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -143,10 +144,18 @@ if TYPE_CHECKING:
 
 
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
+# Close codes for the sockets of a conversation the server tears down. A
+# sandbox pause closes none: a reconnect would load the conversation again
+# before the sandbox freezes.
+CONVERSATION_DELETED_WS_CLOSE = (4004, "Conversation deleted")
+SERVER_SHUTDOWN_WS_CLOSE = (1012, "Server shutting down")
 
 
-class CredentialBindingActivationRequired(RuntimeError):
-    pass
+class CredentialBindingActivationRequired(Conflict, RuntimeError):
+    """A runtime credential binding must be activated first; retry after it."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail, extra={"retryable": True})
 
 
 def _build_worktree_guidance(
@@ -1062,6 +1071,7 @@ class ConversationService:
             conversation_info = await asyncio.to_thread(
                 _compose_conversation_info_sync, event_service.stored, state, children
             )
+            # status-write: index mirror
             record.execution_status = conversation_info.execution_status
             return conversation_info
 
@@ -1096,6 +1106,7 @@ class ConversationService:
         record.state_signature = signature
         record.stored_signature = stored_signature
         record.cached_info = conversation_info
+        # status-write: index mirror
         record.execution_status = conversation_info.execution_status
         return conversation_info
 
@@ -1146,6 +1157,7 @@ class ConversationService:
             if event_service is not None and event_service.is_open():
                 # Authoritative: we own it, so disk can only be staler.
                 state = await event_service.get_state()
+                # status-write: index mirror
                 record.execution_status = state.execution_status
                 # Autosave will invalidate any signature and cached info we hold.
                 record.state_signature = None
@@ -1175,6 +1187,7 @@ class ConversationService:
                 # Went live while we were reading disk; memory wins.
                 continue
             if status is not None:
+                # status-write: index mirror
                 record.execution_status = status
             # A persisted change (or a move to an unreadable state) invalidates
             # any cached ConversationInfo derived from the previous snapshot.
@@ -2084,6 +2097,7 @@ class ConversationService:
                 conversation_info = _compose_webhook_conversation_info(
                     event_service.stored, state
                 )
+                # status-write: webhook payload
                 conversation_info.execution_status = (
                     ConversationExecutionStatus.DELETING
                 )
@@ -2092,6 +2106,10 @@ class ConversationService:
                 logger.warning(
                     f"Failed to notify webhooks for conversation {conversation_id}: {e}"
                 )
+
+            # Tell open sockets the conversation is gone: 4004 is final for
+            # clients, so they stop instead of reconnecting to a 4004.
+            await event_service.close_connections(*CONVERSATION_DELETED_WS_CLOSE)
 
             # Close the event service
             try:
@@ -3090,6 +3108,14 @@ class ConversationService:
             if event_services is None:
                 return
             services = tuple(event_services.items())
+            # "Service restart": clients reconnect once the server is back.
+            await asyncio.gather(
+                *[
+                    event_service.close_connections(*SERVER_SHUTDOWN_WS_CLOSE)
+                    for _, event_service in services
+                ],
+                return_exceptions=True,
+            )
             results = await asyncio.gather(
                 *[
                     event_service.__aexit__(exc_type, exc_value, traceback)

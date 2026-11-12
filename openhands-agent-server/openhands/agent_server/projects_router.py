@@ -25,7 +25,6 @@ from fastapi import (
     Depends,
     File,
     Form,
-    HTTPException,
     Query,
     Request,
     Response,
@@ -84,6 +83,14 @@ from openhands.sdk.conversation.types import (
     TURN_TAG_KEY,
     ConversationTags,
 )
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    OperationFailed,
+    TooLarge,
+    Unprocessable,
+)
 from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -103,7 +110,7 @@ async def _require_projects(request: Request) -> None:
     the projects on disk are kept and come back when it is turned on again.
     """
     if not await feature_enabled_now("projects", get_config(request)):
-        raise HTTPException(status_code=404, detail="Projects are turned off")
+        raise NotFound("Projects are turned off")
 
 
 projects_router = APIRouter(
@@ -346,16 +353,13 @@ async def _load(store: FileProjectsStore) -> PersistedProjects:
         persisted = await asyncio.to_thread(store.load)
     except OSError:
         logger.error("Projects read failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to read projects")
+        raise OperationFailed("Failed to read projects")
     if persisted is None:
         # ``load()`` returns None both for a missing file and for one it cannot
         # parse. Answering an empty list for the second would hide the user's
         # data, so report it instead.
         if store.exists():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Projects file is corrupted",
-            )
+            raise Conflict("Projects file is corrupted")
         persisted = PersistedProjects()
     return persisted
 
@@ -366,20 +370,17 @@ async def _update(
 ) -> PersistedProjects:
     """Apply ``apply`` under the file lock, off the event loop.
 
-    ``apply`` may raise ``HTTPException`` to refuse the change; nothing is
+    ``apply`` may raise a domain error to refuse the change; nothing is
     written then.
     """
     try:
         return await asyncio.to_thread(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Projects update blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Projects file is corrupted",
-        )
+        raise Conflict("Projects file is corrupted")
     except OSError:
         logger.error("Projects update failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to save projects")
+        raise OperationFailed("Failed to save projects")
 
 
 def _without(current: PersistedProjects, project_id: UUID) -> PersistedProjects:
@@ -397,7 +398,7 @@ def _find(persisted: PersistedProjects, project_id: UUID) -> ProjectItem:
     for project in persisted.projects:
         if project.id == project_id:
             return project
-    raise HTTPException(status_code=404, detail="Project not found")
+    raise NotFound("Project not found")
 
 
 def _check_not_coordinating_elsewhere(
@@ -408,17 +409,14 @@ def _check_not_coordinating_elsewhere(
             project.id != project_id
             and project.coordinator_conversation_id == conversation_id
         ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Conversation is the coordinator of another project",
-            )
+            raise Conflict("Conversation is the coordinator of another project")
 
 
 async def _require_conversation(
     service: ConversationService, conversation_id: UUID
 ) -> None:
     if await service.get_event_service(conversation_id) is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise NotFound("Conversation not found")
 
 
 async def _join(
@@ -446,7 +444,7 @@ async def _join_or_undo(
         raise
     if not joined:
         await _update(store, undo)
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise NotFound("Conversation not found")
 
 
 def _replace_project(
@@ -535,10 +533,7 @@ async def create_project(
 ) -> ProjectItem:
     """Create a project, with an existing or a new coordinator conversation, or none."""
     if payload.coordinator is not None and payload.coordinator_conversation_id:
-        raise HTTPException(
-            status_code=422,
-            detail="Pass coordinator or coordinator_conversation_id, not both",
-        )
+        raise Unprocessable("Pass coordinator or coordinator_conversation_id, not both")
     if (
         payload.coordinator is not None
         and payload.coordinator.agent_profile_id is not None
@@ -598,7 +593,7 @@ async def _start_new_coordinator(
         )
     except ValueError as exc:
         await _update(store, lambda current: _without(current, project.id))
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise Unprocessable(str(exc)) from exc
     except BaseException:
         await _update(store, lambda current: _without(current, project.id))
         raise
@@ -624,9 +619,7 @@ async def _require_agent_profile(profile_id: UUID) -> None:
         return get_agent_profile_store().name_for_id(profile_id) is not None
 
     if not await asyncio.to_thread(exists):
-        raise HTTPException(
-            status_code=404, detail=f"Agent profile {profile_id} not found"
-        )
+        raise NotFound(f"Agent profile {profile_id} not found")
 
 
 @projects_router.get(
@@ -689,7 +682,7 @@ async def update_project(
     await _update(store, apply)
     if updated is None:
         # Deleted between the read above and the locked write.
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise NotFound("Project not found")
     if coordinator_id is not None:
         saved = updated
 
@@ -735,7 +728,7 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
 
     await _update(_store(request), apply)
     if not removed:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise NotFound("Project not found")
     await asyncio.to_thread(_artifacts(request).delete_project, project_id)
     return DeleteResponse()
 
@@ -801,7 +794,7 @@ async def add_project_conversation(
     _find(persisted, project_id)
     _check_not_coordinating_elsewhere(persisted, project_id, conversation_id)
     if not await _join(service, project_id, conversation_id):
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise NotFound("Conversation not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -826,10 +819,7 @@ async def remove_project_conversation(
     """
     project = _find(await _load(_store(request)), project_id)
     if project.coordinator_conversation_id == conversation_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conversation is the project's coordinator",
-        )
+        raise Conflict("Conversation is the project's coordinator")
     try:
         tags = await service.set_conversation_tag(
             conversation_id, PROJECT_TAG, None, expected=project_id.hex
@@ -837,7 +827,7 @@ async def remove_project_conversation(
     except ValueError:
         tags = None
     if tags is None:
-        raise HTTPException(status_code=404, detail="Conversation not in project")
+        raise NotFound("Conversation not in project")
     return DeleteResponse()
 
 
@@ -864,14 +854,14 @@ async def _set_member_resolved(
     _find(await _load(_store(request)), project_id)
     info = await service.get_conversation(conversation_id)
     if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
-        raise HTTPException(status_code=404, detail="Conversation not in project")
+        raise NotFound("Conversation not in project")
     if resolved and by == "agent":
         # The agent is inside its own tool call: answer at once (see
         # ConversationService.resolve_for_agent).
         service.resolve_for_agent(conversation_id)
         return Response(status_code=status.HTTP_202_ACCEPTED)
     if await service.set_resolved(conversation_id, resolved, by=by) is None:
-        raise HTTPException(status_code=404, detail="Conversation not in project")
+        raise NotFound("Conversation not in project")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1000,7 +990,7 @@ async def read_project_conversation(
         event_service is None
         or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
     ):
-        raise HTTPException(status_code=404, detail="Conversation not in project")
+        raise NotFound("Conversation not in project")
     conversation = event_service.get_conversation()
     # Event log reads are safe without the state lock: events are append-only.
     events = await asyncio.to_thread(conversation.state.active_branch)
@@ -1041,12 +1031,9 @@ def _artifacts(request: Request) -> ProjectArtifactStore:
 
 def _artifact_name(name: str) -> str:
     if not valid_artifact_name(name):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Invalid artifact name: use a flat file name of letters, "
-                "digits, spaces and ._()+-, not starting with a dot"
-            ),
+        raise Invalid(
+            "Invalid artifact name: use a flat file name of letters, "
+            "digits, spaces and ._()+-, not starting with a dot"
         )
     return name
 
@@ -1070,15 +1057,9 @@ async def _save_artifact(
             conversation_id=conversation_id,
         )
     except ArtifactTooLarge:
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes",
-        )
+        raise TooLarge(f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes")
     except ArtifactNameTaken as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Artifact {str(e)!r} differs from this name only in case",
-        )
+        raise Conflict(f"Artifact {str(e)!r} differs from this name only in case")
 
 
 @projects_router.get(
@@ -1116,10 +1097,7 @@ async def upload_project_artifact(
     # Starlette has already spooled the body; still refuse an oversized one
     # before copying it again.
     if (file.size or 0) > MAX_ARTIFACT_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes",
-        )
+        raise TooLarge(f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes")
     artifact_name = _artifact_name(name or Path(file.filename or "").name)
     return await _save_artifact(
         _artifacts(request), project_id, artifact_name, file.file, source="user"
@@ -1153,12 +1131,12 @@ async def save_conversation_artifact(
         event_service is None
         or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
     ):
-        raise HTTPException(status_code=404, detail="Conversation not in project")
+        raise NotFound("Conversation not in project")
     working_dir = Path(event_service.stored.workspace.working_dir)
     try:
         stream = await asyncio.to_thread(open_workspace_file, working_dir, payload.path)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise Invalid(str(e))
     with stream:
         artifact_name = _artifact_name(payload.name or Path(payload.path).name)
         return await _save_artifact(
@@ -1201,7 +1179,7 @@ async def download_project_artifact(
         _artifacts(request).get, project_id, _artifact_name(name)
     )
     if found is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+        raise NotFound("Artifact not found")
     artifact, path = found
     return FileResponse(
         path=path,
@@ -1224,7 +1202,7 @@ async def delete_project_artifact(
     if not await asyncio.to_thread(
         _artifacts(request).delete, project_id, _artifact_name(name)
     ):
-        raise HTTPException(status_code=404, detail="Artifact not found")
+        raise NotFound("Artifact not found")
     return DeleteResponse()
 
 
@@ -1255,23 +1233,19 @@ def _memory(request: Request) -> ProjectMemoryStore:
 
 def _memory_name(name: str) -> str:
     if not valid_memory_name(name):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Memory files are {MEMORY_INDEX} or lowercase names of "
-                "letters, digits and ._- ending in .md"
-            ),
+        raise Invalid(
+            f"Memory files are {MEMORY_INDEX} or lowercase names of "
+            "letters, digits and ._- ending in .md"
         )
     return name
 
 
-def _memory_conflict(exc: MemoryConflict) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
+def _memory_conflict(exc: MemoryConflict) -> Conflict:
+    return Conflict(
+        {
             "message": "The memory file changed since that revision",
             "current": exc.current.model_dump(mode="json") if exc.current else None,
-        },
+        }
     )
 
 
@@ -1304,7 +1278,7 @@ async def read_project_memory(
         _memory(request).get, project_id, _memory_name(name)
     )
     if found is None:
-        raise HTTPException(status_code=404, detail="Memory file not found")
+        raise NotFound("Memory file not found")
     return found
 
 
@@ -1333,9 +1307,7 @@ async def write_project_memory(
     except MemoryConflict as exc:
         raise _memory_conflict(exc)
     except MemoryTooLarge as exc:
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
-        )
+        raise TooLarge(str(exc))
 
 
 @projects_router.delete(
@@ -1361,5 +1333,5 @@ async def delete_project_memory(
     except MemoryConflict as exc:
         raise _memory_conflict(exc)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Memory file not found")
+        raise NotFound("Memory file not found")
     return DeleteResponse()

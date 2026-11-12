@@ -12,9 +12,7 @@ from uuid import UUID
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Query,
-    status,
 )
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -26,6 +24,7 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_event_service,
 )
+from openhands.agent_server.errors import error_responses
 from openhands.agent_server.event_service import EventService, admission_refusal
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
@@ -49,6 +48,14 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     HELD_FOR_PERSON_STATUSES,
     conversation_sender,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    RateLimited,
+    Unprocessable,
+    UpstreamTimeout,
 )
 from openhands.sdk.event import Event, ReactionEvent
 
@@ -100,7 +107,7 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
 
 
 @event_read_router.get(
-    "/search", responses={404: {"description": "Conversation not found"}}
+    "/search", responses=error_responses({NotFound: "Conversation not found"})
 )
 async def search_conversation_events(
     page_id: Annotated[
@@ -174,7 +181,7 @@ async def search_conversation_events(
 
 
 @event_read_router.get(
-    "/count", responses={404: {"description": "Conversation not found"}}
+    "/count", responses=error_responses({NotFound: "Conversation not found"})
 )
 async def count_conversation_events(
     kind: Annotated[
@@ -220,7 +227,7 @@ async def count_conversation_events(
 
 
 @event_read_router.get(
-    "/{event_id}", responses={404: {"description": "Item not found"}}
+    "/{event_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def get_conversation_event(
     event_id: str,
@@ -229,7 +236,7 @@ async def get_conversation_event(
     """Get a local event given an id"""
     event = await event_service.get_event(event_id)
     if event is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return event
 
 
@@ -247,18 +254,18 @@ async def batch_get_conversation_events(
 @event_write_router.post(
     "",
     response_model_exclude_none=True,
-    responses={
-        409: {
-            "description": (
+    # 422 also answers when the sender conversation cannot send this message;
+    # declaring it here would replace FastAPI's validation error schema in
+    # the published contract.
+    responses=error_responses(
+        {
+            Conflict: (
                 "With refuse_pending_confirmation: the conversation is waiting "
                 "for confirmation; nothing was saved"
-            )
-        },
-        # 422 also answers when the sender conversation cannot send this
-        # message; declaring it here would replace FastAPI's validation
-        # error schema in the published contract.
-        429: {"description": "Message saved but server run capacity is full"},
-    },
+            ),
+            RateLimited: "Message saved but server run capacity is full",
+        }
+    ),
 )
 async def send_message(
     conversation_id: UUID,
@@ -299,9 +306,7 @@ async def send_message(
                 event_service.stored.tags,
             )
         except SenderError as e:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
-            )
+            raise Unprocessable(str(e))
         content.insert(0, TextContent(text=header))
         sender = conversation_sender(request.sender_conversation_id)
     message = Message(role=request.role, content=content)
@@ -320,10 +325,7 @@ async def send_message(
         previous_status = state.execution_status
         refusal = admission_refusal(state, from_user=False)
         if refusal in HELD_FOR_PERSON_STATUSES:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=_HELD_DETAIL[refusal],
-            )
+            raise Conflict(_HELD_DETAIL[refusal])
     outcome: MessageRunOutcome | None
     try:
         outcome = await event_service.send_message(
@@ -378,7 +380,7 @@ async def run_gateway_message(
             timeout=deadline - time.monotonic(),
         )
     except TimeoutError as exc:
-        raise HTTPException(504, "Agent run timed out") from exc
+        raise UpstreamTimeout("Agent run timed out") from exc
     try:
         return await _run_gateway_message(request, event_service, deadline)
     finally:
@@ -395,14 +397,14 @@ async def _run_gateway_message(
                 timeout=max(0, deadline - time.monotonic())
             )
         except TimeoutError as exc:
-            raise HTTPException(504, "Agent run timed out") from exc
+            raise UpstreamTimeout("Agent run timed out") from exc
     state_before = await event_service.get_state()
     min_event_count = len(state_before.events) + 1
     usage_before = state_before.stats.get_combined_metrics().accumulated_token_usage
     run_slot = await event_service.reserve_run_slot()
     try:
         if time.monotonic() >= deadline:
-            raise HTTPException(504, "Agent run timed out")
+            raise UpstreamTimeout("Agent run timed out")
         await event_service.send_message(
             request.create_message(), run=True, run_slot=run_slot
         )
@@ -412,11 +414,11 @@ async def _run_gateway_message(
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise HTTPException(504, "Agent run timed out")
+            raise UpstreamTimeout("Agent run timed out")
         try:
             run_status = await event_service.wait_for_run_completion(timeout=remaining)
         except TimeoutError as exc:
-            raise HTTPException(504, "Agent run timed out") from exc
+            raise UpstreamTimeout("Agent run timed out") from exc
         state = await event_service.get_state()
         if len(state.events) > min_event_count and (
             run_status.is_terminal()
@@ -440,10 +442,12 @@ async def _run_gateway_message(
 
 @event_write_router.post(
     "/respond_to_confirmation",
-    responses={
-        404: {"description": "Item not found"},
-        429: {"description": "Server conversation run capacity is full"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "Item not found",
+            RateLimited: "Server conversation run capacity is full",
+        }
+    ),
 )
 async def respond_to_confirmation(
     request: ConfirmationResponseRequest,
@@ -466,24 +470,20 @@ async def require_reactions_enabled(config: Config) -> None:
             lambda: get_settings_store(config).load() or PersistedSettings()
         )
     except (PermissionError, OSError):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot read the settings file to check the feature flag",
-        )
+        raise Conflict("Cannot read the settings file to check the feature flag")
     if not is_enabled(settings.experimental_features, "conversation_reactions"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conversation reactions are turned off",
-        )
+        raise Conflict("Conversation reactions are turned off")
 
 
 @reaction_router.post(
     "",
-    responses={
-        400: {"description": "There is no such message to react to"},
-        404: {"description": "Item not found"},
-        409: {"description": "Conversation reactions are turned off"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "There is no such message to react to",
+            NotFound: "Item not found",
+            Conflict: "Conversation reactions are turned off",
+        }
+    ),
 )
 async def react_to_message(
     request: ReactionRequest,
@@ -511,7 +511,7 @@ async def react_to_message(
     except ValueError as exc:
         if str(exc) == "inactive_service":
             raise
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        raise Invalid(str(exc))
 
 
 event_router = APIRouter()

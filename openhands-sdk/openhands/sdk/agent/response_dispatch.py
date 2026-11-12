@@ -278,7 +278,9 @@ class ResponseDispatchMixin:
         )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
         logger.debug("LLM produced a message response - awaits user input")
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(
+            ConversationExecutionStatus.FINISHED, "agent replied with a message"
+        )
 
     def _handle_no_content_response(
         self,

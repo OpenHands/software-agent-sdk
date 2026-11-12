@@ -54,6 +54,7 @@ from openhands.sdk.event import (
     SecurityAnalysisEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
@@ -332,6 +333,57 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_recovery_provenance_served_over_http_and_websocket(server_env):
+    recovery = AgentErrorEvent(
+        error="Interrupted execution",
+        tool_name="terminal",
+        tool_call_id="interrupted_call",
+        recovery_reason="server_restart",
+        classification=ErrorClassification(kind=FailureKind.INTERNAL, retryable=False),
+    )
+    received: list[Event] = []
+    delivered = threading.Event()
+
+    def on_event(event: Event) -> None:
+        if event.id == recovery.id:
+            received.append(event)
+            delivered.set()
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    conversation: RemoteConversation = Conversation(
+        agent=agent, workspace=workspace, callbacks=[on_event], visualizer=None
+    )
+    try:
+        event_service = server_env["conversation_service"]._event_services[
+            conversation.id
+        ]
+        event_service.get_conversation()._on_event(recovery)
+        assert delivered.wait(5)
+        websocket_event = received[0]
+        assert isinstance(websocket_event, AgentErrorEvent)
+        assert websocket_event.recovery_reason == "server_restart"
+
+        event_path = f"/api/conversations/{conversation.id}/events"
+        with httpx.Client(base_url=server_env["host"]) as client:
+            single = client.get(f"{event_path}/{recovery.id}")
+            single.raise_for_status()
+            search = client.get(
+                f"{event_path}/search", params={"kind": "AgentErrorEvent"}
+            )
+            search.raise_for_status()
+
+        assert single.json()["recovery_reason"] == "server_restart"
+        assert [Event.model_validate(item) for item in search.json()["items"]] == [
+            websocket_event
+        ]
+        assert Event.model_validate(single.json()) == websocket_event
+    finally:
+        conversation.close()
+
+
 def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "_default_config", None)
     monkeypatch.setattr(service_module, "_conversation_service", None)
@@ -411,6 +463,69 @@ def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     assert response.status_code == 204
     assert conversation_id not in server_env["conversation_service"]._event_services
     assert conversation_id in server_env["conversation_service"]._conversation_records
+
+
+def _start_idle_conversation(client: httpx.Client) -> str:
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": "/tmp/workspace/project"},
+    }
+    start = client.post("/api/conversations", json=payload, timeout=10.0)
+    start.raise_for_status()
+    return start.json()["id"]
+
+
+def _assert_closed_by_server(websocket) -> int:
+    """Read until the server's close frame; fail if the socket stays open."""
+    with pytest.raises(ConnectionClosed) as closed:
+        while True:
+            websocket.recv(timeout=10)
+    assert closed.value.rcvd is not None, "socket closed without a server frame"
+    return closed.value.rcvd.code
+
+
+@pytest.mark.parametrize("socket_kind", ["events", "session"])
+def test_delete_closes_open_conversation_sockets(server_env, socket_kind):
+    """Deleting a conversation closes the sockets attached to it (#5635)."""
+    ws_host = server_env["host"].replace("http://", "ws://")
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        with connect(f"{ws_host}/sockets/{socket_kind}/{conversation_id}") as ws:
+            ws.recv(timeout=10)  # subscribed: snapshot (events) or sync (session)
+
+            response = client.delete(f"/api/conversations/{conversation_id}")
+            assert response.status_code == 200
+
+            code = _assert_closed_by_server(ws)
+        assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
+
+    assert code == 4004  # final for clients: no reconnect
+    with connect(f"{ws_host}/sockets/{socket_kind}/{conversation_id}") as ws:
+        assert _assert_closed_by_server(ws) == 4004
+
+
+@pytest.mark.parametrize("socket_kind", ["events", "session"])
+def test_sandbox_pause_leaves_open_sockets_attached(server_env, socket_kind):
+    """A pause does not close sockets: today's clients reconnect on any close,
+    and the reconnect would load the conversation again before the freeze."""
+    ws_host = server_env["host"].replace("http://", "ws://")
+    service = server_env["conversation_service"]
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        with connect(f"{ws_host}/sockets/{socket_kind}/{conversation_id}") as before:
+            before.recv(timeout=10)
+
+            response = client.post(
+                "/api/conversations/prepare-for-sandbox-pause", timeout=10.0
+            )
+            assert response.status_code == 204
+
+            # Leftover initial frames may still arrive; a close would raise.
+            with pytest.raises(TimeoutError):
+                while True:
+                    before.recv(timeout=2)
+            assert UUID(conversation_id) not in service._event_services
 
 
 @pytest.fixture
