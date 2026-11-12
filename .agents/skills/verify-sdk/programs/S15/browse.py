@@ -10,8 +10,8 @@ is loaded, so each turn swaps in the next scripted model with
 `conversation.switch_llm`, built from what the previous turn showed. The
 agent follows the flow the browser guidance prescribes (get_state after
 each interaction, then get_content) and also reads the content right after
-the click, the way a model that skips get_state does. Reports each named step and what is
-left running after `conversation.close()`.
+the click, the way a model that skips get_state does. Reports each named
+step and what is left running after `conversation.close()`.
 """
 
 import json
