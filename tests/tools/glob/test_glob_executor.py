@@ -454,3 +454,40 @@ def test_python_fallback_expands_brace_patterns(tmp_path):
 )
 def test_expand_braces(pattern, expected):
     assert _expand_braces(pattern) == expected
+
+
+def test_non_ascii_path_is_not_lost_when_decoding_ripgrep_output(monkeypatch, tmp_path):
+    """One non-ASCII path must not turn every match into "No files found".
+
+    rg emits UTF-8. When subprocess decodes it with the host code page (cp936,
+    cp932, cp1251, ...) the reader thread raises, communicate() returns
+    stdout=None and the executor reports an empty result for every match.
+    """
+    plain = tmp_path / "plain.py"
+    chinese = tmp_path / "中文模块.py"
+    stdout = f"{plain}\n{chinese}\n"
+
+    def fake_run(*args, **kwargs):
+        # CPython behaviour: a decode failure in the reader thread leaves stdout
+        # as None while the exit code still reports success.
+        decoded_as_utf8 = kwargs.get("text") and kwargs.get("encoding") == "utf-8"
+        return CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=stdout if decoded_as_utf8 else None,
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "openhands.tools.glob.impl._check_ripgrep_available", lambda: True
+    )
+    monkeypatch.setattr("openhands.tools.glob.impl.subprocess.run", fake_run)
+    executor = GlobExecutor(working_dir=str(tmp_path))
+
+    observation = executor(GlobAction(pattern="**/*.py"))
+
+    assert observation.is_error is False
+    assert {Path(path).name for path in observation.files} == {
+        "plain.py",
+        "中文模块.py",
+    }
