@@ -463,7 +463,7 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
 
 
 class ReactionRequest(BaseModel):
-    """Payload to add or remove the person's emoji reaction on a message."""
+    """Payload to add or remove the user's emoji reaction on a message."""
 
     emoji: ReactionEmoji = Field(description="The emoji, as a shortcode.")
     target_event_id: EventID | None = Field(

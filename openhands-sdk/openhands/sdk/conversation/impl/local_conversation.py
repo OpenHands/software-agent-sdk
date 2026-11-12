@@ -483,7 +483,7 @@ class LocalConversation(BaseConversation):
                 # Stop-hook feedback is emitted with source="environment".
                 self._state.last_user_message_id = e.id
 
-        # The person's reactions that arrived while tool calls were waiting
+        # The user's reactions that arrived while tool calls were waiting
         # for their results. They join the log once every call is answered:
         # nothing may sit between a tool call and its result. In memory only.
         self._pending_reactions: list[ReactionEvent] = []
@@ -2140,7 +2140,7 @@ class LocalConversation(BaseConversation):
         *,
         removed: bool = False,
     ) -> ReactionEvent:
-        """Record the person's emoji reaction on a message, or remove it.
+        """Record the user's emoji reaction on a message, or remove it.
 
         Without ``target_event_id`` it reacts to the agent's latest message.
         The agent reacts through the ``react``/``unreact`` tools instead.

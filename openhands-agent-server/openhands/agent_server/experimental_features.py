@@ -15,7 +15,7 @@ conversations started after it; a route that checks the switch follows it at
 once. Child conversations reuse their parent's agent and tools.
 
 A Docker runtime's server has its own, empty settings: the host passes it the
-person's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
+user's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
 ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 

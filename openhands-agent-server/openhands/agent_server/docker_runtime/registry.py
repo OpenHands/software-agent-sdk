@@ -620,7 +620,7 @@ class DockerConversationRegistry(ConversationRegistry):
             await service.refresh_persisted_conversation(conversation_id)
 
     def _experimental_features(self) -> dict[str, bool]:
-        """The person's experimental-feature switches, for a new container."""
+        """The user's experimental-feature switches, for a new container."""
         try:
             settings = get_settings_store(self.config).load()
         except (PermissionError, OSError):

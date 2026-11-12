@@ -2357,7 +2357,7 @@ class EventService:
         *,
         removed: bool = False,
     ) -> ReactionEvent:
-        """Record the person's reaction on a message; it does not run the agent.
+        """Record the user's reaction on a message; it does not run the agent.
 
         Raises:
             ValueError: The emoji is not allowed or there is no such message.

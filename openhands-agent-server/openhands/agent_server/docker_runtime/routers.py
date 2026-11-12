@@ -431,7 +431,7 @@ async def proxy_conversation(
     registry = get_registry(request)
     if tail == "reactions" and request.method == "POST":
         # The runtime's server has no settings of its own to check: the
-        # person's switch lives here and follows the switch at once.
+        # user's switch lives here and follows the switch at once.
         await require_reactions_enabled(registry.config)
     container = await _container(registry, conversation_id)
     upstream_path = _upstream_path(
