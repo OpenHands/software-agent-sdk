@@ -7,8 +7,9 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_router import (
@@ -18,7 +19,7 @@ from openhands.agent_server.event_router import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.openai import service as gateway
-from openhands.agent_server.openai.service import OpenAIAgentRunResult
+from openhands.agent_server.openai.service import GatewayConflict, OpenAIAgentRunResult
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -90,6 +91,7 @@ async def test_direct_event_cannot_change_gateway_reply_and_usage(
         return event_service
 
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.config = Config()
     conversation_service = cast(
         ConversationService, SimpleNamespace(get_event_service=get_event_service)
@@ -222,10 +224,9 @@ async def test_local_gateway_rejects_active_direct_run_before_saving() -> None:
     direct_run = asyncio.create_task(asyncio.Event().wait())
     fake._run_task = direct_run
     fake.release_gateway_tail.set()
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(GatewayConflict) as exc:
         await run_gateway()
-    assert exc.value.status_code == 409
-    assert exc.value.headers == {"x-should-retry": "true"}
+    assert exc.value.retry_safe is True
     assert fake.sent == []
 
     direct_run.cancel()

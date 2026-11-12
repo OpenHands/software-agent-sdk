@@ -97,9 +97,10 @@ Preconditions:
   control-sdk program S15/browser_setup --arg config --timeout 300 \
     --check steps.allowed.is_error eq false --check steps.content.text contains "INJECTED MARKER" \
     --check steps.blocked_state.text contains about:blank \
-    --check steps.blocked_domain.text not-contains "Navigated to: https://example.com/"
+    --check steps.blocked_domain.text not-contains "Navigated to: https://example.com/" \
+    --check steps.blocked_domain.is_error eq true --check steps.blocked_domain.text contains "blocked by security policy"
   ```
-  Expected: the page outside `allowed_domains` is not opened, and the observation says so. Known failure (reproduced 2026-10-13, not yet filed): the browser does stay on `about:blank`, and browser-use logs that the navigation was blocked by security policy, but `browser_navigate` returns "Navigated to: https://example.com/" with `is_error` false. The agent is told it reached a page it never reached.
+  Expected: the page outside `allowed_domains` is not opened, and the observation is an error that says the navigation was blocked by the security policy (#6641).
 - **A hung page: timeouts, reset and recovery (`S15.session-recovery`, `S15.action-routing`, `S15.cleanup`).** With `action_timeout_seconds` 12, the agent opens a page whose script never yields, then makes three more calls. The third call triggers the session reset. Then it opens a normal page and reads its state. The program counts this run's Chromium processes after `conversation.close()`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
