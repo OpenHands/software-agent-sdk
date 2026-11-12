@@ -1,5 +1,6 @@
 """PTY-based terminal backend implementation (replaces pipe-based subprocess)."""
 
+import errno
 import os
 import platform
 import re
@@ -8,6 +9,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Mapping
 
@@ -103,6 +105,7 @@ class SubprocessTerminal(TerminalInterface):
         self.output_lock = threading.Lock()
         self.reader_thread = None
         self._current_command_running = False
+        self._reader_finished = threading.Event()
         self.shell_path = shell_path
         self._env = normalize_terminal_env(env)
 
@@ -194,16 +197,33 @@ class SubprocessTerminal(TerminalInterface):
         self._initialized: bool = True
 
         # Configure bash: disable history expansion, set up PS1/PS2 prompts
+        marker = f"__OH_READY_{uuid.uuid4().hex}__"
         init_cmd = (
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+            f"export PS2=\"\"; printf '%s%s\\n' '{marker[:16]}' '{marker[16:]}'"
         ).encode("utf-8", "ignore")
-
-        self._write_pty(init_cmd + ENTER)
-        time.sleep(1.0)  # Wait for command to take effect
-
-        self.clear_screen()
+        try:
+            self._write_pty(init_cmd + ENTER)
+            ready = re.compile(
+                re.escape(marker) + r"[\s\S]*" + re.escape(CMD_OUTPUT_PS1_END)
+            )
+            if not self._wait_for_output(ready, timeout=10):
+                raise RuntimeError("Timed out waiting for subprocess shell readiness")
+            self.clear_screen()
+        except BaseException:
+            self.close()
+            raise
 
         logger.debug("PTY terminal initialized with work dir: %s", self.work_dir)
+
+    @property
+    def closed(self) -> bool:
+        # Keep _closed reserved for completed resource cleanup.
+        return (
+            self._closed
+            or self._reader_finished.is_set()
+            or (self.process is not None and self.process.poll() is not None)
+        )
 
     def close(self) -> None:
         """Clean up the PTY terminal."""
@@ -266,13 +286,11 @@ class SubprocessTerminal(TerminalInterface):
 
         try:
             while True:
-                # Exit early if process died
-                if self.process and self.process.poll() is not None:
-                    break
-
                 # Use select to avoid busy spin
                 r, _, _ = select.select([fd], [], [], 0.1)
                 if not r:
+                    if self.process and self.process.poll() is not None:
+                        break
                     continue
 
                 try:
@@ -284,14 +302,18 @@ class SubprocessTerminal(TerminalInterface):
                     with self.output_lock:
                         # Store one line per buffer item to make deque truncation work
                         self._add_text_to_buffer(text)
-                except OSError:
-                    # Would-block or FD closed
-                    continue
+                except OSError as error:
+                    if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR):
+                        continue
+                    # Linux reports PTY slave closure as EIO rather than empty bytes.
+                    break
                 except Exception as e:
                     logger.debug(f"Error reading PTY output: {e}")
                     break
         except Exception as e:
             logger.error(f"PTY reader thread error: {e}", exc_info=True)
+        finally:
+            self._reader_finished.set()
 
     def _add_text_to_buffer(self, text: str) -> None:
         """Add text to buffer, ensuring one line per buffer item."""
@@ -317,9 +339,11 @@ class SubprocessTerminal(TerminalInterface):
 
     def _wait_for_output(self, pattern: str | re.Pattern, timeout: float = 5.0) -> bool:
         """Wait until the output buffer contains pattern (regex or literal)."""
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         is_regex = hasattr(pattern, "search")
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
+            if self.closed:
+                return False
             # quick yield to reader thread
             if self._pty_master_fd is not None:
                 select.select([], [], [], 0.02)
@@ -460,6 +484,13 @@ class SubprocessTerminal(TerminalInterface):
         if not self._initialized:
             raise RuntimeError("PTY terminal is not initialized")
 
+        if (
+            self.process is not None
+            and self.process.poll() is not None
+            and self.reader_thread is not None
+        ):
+            self.reader_thread.join(timeout=0.2)
+
         # Give the reader thread a moment to capture any pending output
         # This is especially important after sending a command
         time.sleep(0.01)
@@ -476,27 +507,13 @@ class SubprocessTerminal(TerminalInterface):
         if not self._initialized:
             return
 
-        need_prompt_nudge = False
         with self.output_lock:
-            if not self.output_buffer:
-                need_prompt_nudge = True
-            else:
-                data = "".join(self.output_buffer)
-                start_idx = data.rfind(CMD_OUTPUT_PS1_BEGIN)
-                end_idx = data.rfind(CMD_OUTPUT_PS1_END)
-                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                    tail = data[start_idx:]
-                    self.output_buffer.clear()
-                    self.output_buffer.append(tail)
-                else:
-                    self.output_buffer.clear()
-                    need_prompt_nudge = True
-
-        if need_prompt_nudge:
-            try:
-                self._write_pty(ENTER)  # ask bash to render a prompt, no screen clear
-            except Exception:
-                pass
+            data = "".join(self.output_buffer)
+            start_idx = data.rfind(CMD_OUTPUT_PS1_BEGIN)
+            end_idx = data.rfind(CMD_OUTPUT_PS1_END)
+            self.output_buffer.clear()
+            if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                self.output_buffer.append(data[start_idx:])
 
     def interrupt(self) -> bool:
         """Send SIGINT to the PTY process group (fallback to signal-based interrupt)."""
