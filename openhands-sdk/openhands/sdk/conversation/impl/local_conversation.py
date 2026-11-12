@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -46,12 +47,19 @@ from openhands.sdk.event import (
     EventID,
     InterruptEvent,
     MessageEvent,
+    ObservationBaseEvent,
     ObservationEvent,
     PauseEvent,
+    ReactionEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.reaction import (
+    check_reaction_emoji,
+    find_reaction_target,
+    reaction_target_text,
+)
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -475,6 +483,25 @@ class LocalConversation(BaseConversation):
                 # Stop-hook feedback is emitted with source="environment".
                 self._state.last_user_message_id = e.id
 
+        # The user's reactions that arrived while tool calls were waiting
+        # for their results. They join the log once every call is answered:
+        # nothing may sit between a tool call and its result. In memory only.
+        self._pending_reactions: list[ReactionEvent] = []
+
+        def _flush_pending_reactions(e):
+            if not self._pending_reactions or not isinstance(e, ObservationBaseEvent):
+                return
+            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+                return
+            pending, self._pending_reactions = self._pending_reactions, []
+            for reaction in pending:
+                # Restamped: the log's order is also its timestamp order.
+                self._on_event(
+                    reaction.model_copy(
+                        update={"timestamp": datetime.now().isoformat()}
+                    )
+                )
+
         callback_list = list(callbacks) if callbacks else []
         # _default_callback (persist) runs before the caller-supplied callbacks
         # (e.g. a PubSub publish), so no subscriber is told about an event that
@@ -483,7 +510,11 @@ class LocalConversation(BaseConversation):
         # list never run. The visualizer is prepended below and so still renders
         # ahead of persist — that is local terminal output, not an announcement
         # a client can act on.
-        composed_list = [_default_callback] + callback_list + [_track_last_user_message]
+        composed_list = (
+            [_default_callback]
+            + callback_list
+            + [_track_last_user_message, _flush_pending_reactions]
+        )
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -2102,6 +2133,45 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    def react(
+        self,
+        emoji: str,
+        target_event_id: EventID | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the user's emoji reaction on a message, or remove it.
+
+        Without ``target_event_id`` it reacts to the agent's latest message.
+        The agent reacts through the ``react``/``unreact`` tools instead.
+        A reaction does not wake the agent; it sees it on its next turn, with
+        the end of the message's text. While tool calls wait for their results
+        (a pending confirmation, a pause) the reaction is held back, and joins
+        the events once every call is answered.
+
+        Raises:
+            ValueError: The emoji is not allowed, or there is no such message.
+        """
+        checked = check_reaction_emoji(emoji)
+        with self._state:
+            target = find_reaction_target(
+                self._state.active_branch(), target_event_id, source="user"
+            )
+            ending, clipped = reaction_target_text(target)
+            event = ReactionEvent(
+                source="user",
+                target_event_id=target.id,
+                emoji=checked,
+                removed=removed,
+                target_text_ending=ending,
+                target_text_clipped=clipped,
+            )
+            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+                self._pending_reactions.append(event)
+            else:
+                self._on_event(event)
+        return event
+
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
         with self._state:
@@ -3355,6 +3425,8 @@ class LocalConversation(BaseConversation):
                         action_id=event.id,
                     )
                     rerun_log.append(obs_event)
+                    for follow_up in observation.follow_up_events():
+                        rerun_log.append(follow_up)
             except Exception as e:
                 logger.error(
                     f"Action {action_count} ({tool_name}) failed during rerun: {e}"
