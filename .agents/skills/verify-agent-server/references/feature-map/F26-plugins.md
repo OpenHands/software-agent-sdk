@@ -716,9 +716,9 @@ Preconditions:
   `ambient_plugin_mcp_servers` (with the skills in `ambient_plugin_skills`;
   neither field is in the REST view); after the plugin is disabled and the
   conversation resumes, `agent.mcp_config` no longer has it and both records
-  hold only what is still enabled. A plain `GET` before the first resumed
-  message still shows the old agent: the drop happens when the conversation
-  loads its plugins. That plugin is uninstalled at the end.
+  hold only what is still enabled. The drop happens when the conversation
+  loads its plugins on the first resumed message, which is why the recipe
+  sends one before it reads the agent. That plugin is uninstalled at the end.
   Read from source and not driven here: explicit replacement agents start with no inherited ownership, and legacy
   conversations without a record retain unidentifiable contributions rather
   than deleting caller content by name. The command is sent here for the

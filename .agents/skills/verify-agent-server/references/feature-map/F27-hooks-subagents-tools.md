@@ -783,10 +783,11 @@ Preconditions:
   The model request offers `qa_f27_strict` (the first read). Expected: its
   `parameters` keep the model's constraints (`"pattern":
   "^QAORD-[0-9]{6}$"` on `order_id`, `const`/one-value `enum` on
-  `currency`, top-level `additionalProperties: false`), or the SDK says it
-  removed them. Today `Schema.to_mcp_schema()` keeps only `type`,
-  `description`, `properties`, `required`, `items` and `enum`, so the
-  pattern never reaches the provider (#6766). The agent still validates a
+  `currency`, top-level `additionalProperties: false`). The marked check
+  reads the pattern; when it passes, look for the other two in the saved
+  request before the marker goes. Today `Schema.to_mcp_schema()` keeps only
+  `type`, `description`, `properties`, `required`, `items` and `enum`, so
+  none of the three reaches the provider (#6766). The agent still validates a
   call against the `Action` model locally.
 - **Startup imports (`F27.import-modules`).** `--import-modules` is a
   server argument passed by the owned shell-and-attach workflow: the bullet

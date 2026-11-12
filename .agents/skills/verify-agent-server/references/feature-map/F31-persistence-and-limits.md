@@ -218,7 +218,7 @@ Preconditions:
   `error` and appended one `AgentErrorEvent` for the open `tool_call_id`
   ("A restart occurred while this tool was in progress ..."), with no
   observation. The error says where it came from: `recovery_reason:
-  "server_restart"` (absent, `null`, on errors not synthesized by recovery)
+  "server_restart"` (`null` on errors not synthesized by recovery)
   and `classification` `{"kind": "internal", "retryable": false}`. The resumed model request carries that error as the tool
   result, and `T` finishes.
 - **State survives restarts (`F31.state-survives-restarts`).** One

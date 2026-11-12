@@ -1005,8 +1005,9 @@ Preconditions:
   ```
   REST answers 99 ids (all unknown, all `null`) and refuses a 100th with
   `422` (`too_long`). Each client method resolves 152 entries in input
-  order, `CID` first, `SCID` last and `null` for every unknown id, from
-  two requests (99 + 53 ids).
+  order, `CID` first, `SCID` last and `null` for every unknown id (the client
+  sends at most 99 ids per request, read from source, which the REST limit
+  above makes necessary).
 - **Update result (`F34.manager-update-result`).** `PATCH
   /api/conversations/{id}` answers `Success` (`{"success": true}`, also in
   the client's generated contract), so `ConversationManager.updateConversation`
