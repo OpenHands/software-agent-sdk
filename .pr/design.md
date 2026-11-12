@@ -36,6 +36,19 @@ Verified live: `create_app()` with flag off → `search-content` routes: **NONE*
 - Portered fuzzy match on tokens (FTS5 porter stemmer), with a raw prefix pass first so exact-word hits aren't missed when stemming eats a short token
 - `limit` (default 50, hard cap), `capped: true` in response when truncated
 - Returns per-hit: conversation id, title, matched snippet with markers, event timestamp
+- Conversation ids in hits and deletion are the dashed UUID form used by the rest of the API; the index internally keys rows by the hex directory names and the service layer normalizes at the boundary
+
+### Concurrency & durability
+
+- Search route is `async def` and offloads SQLite work with `asyncio.to_thread` — no database calls on the event loop
+- Both SQLite connections (index + stem probe) open with `check_same_thread=False`; every access is serialized by the service lock, so thread-hopping via `to_thread` is safe
+- WAL journal with `synchronous=NORMAL` for fast writes without losing durability on clean shutdown
+- Corrupt index file (crash mid-write) → the service rebuilds the index from scratch instead of erroring every search
+
+### Fuzzy-match safeguards
+
+- Stem-truncated tokens exact-quote their fuzzy candidates — prefix-quoting dragged in unrelated words (`doings` → candidate `doing` → stem `do` matched `door`)
+- Prefix expansion per token is capped; above the vocabulary size limit the engine degrades to prefix-only matching instead of scanning unbounded vocab
 
 ### Zero impact when disabled
 
@@ -52,7 +65,7 @@ Verified live: `create_app()` with flag off → `search-content` routes: **NONE*
 
 ## Testing
 
-- Backend: 40 tests (index unit, endpoint via `TestClient`, delete-prunes-index, gating)
+- Backend: 60 tests (index unit, service unit, endpoint via `TestClient`, live-server cross tests, delete-prunes-index, gating), 100% line coverage on `search_index.py` and `search_service.py`
 - Frontend: 10 tests (hook: cloud-gating/debounce/whitespace/error/reset/mapping; results component: error/loading/empty)
 - Full suites run at both forks: all failures proven pre-existing by stash-compare at base commit
 
@@ -60,7 +73,7 @@ Verified live: `create_app()` with flag off → `search-content` routes: **NONE*
 
 | Repo | Anchor issue | Notes |
 |---|---|---|
-| software-agent-sdk | #6627 | SDK PR gate requires same-repo ready-for-dev issue; #6627 is the open local-search-territory issue (`enhancement` + `ready-for-dev`) |
+| software-agent-sdk | #6767 | SDK PR gate requires same-repo ready-for-dev issue; #6767 is the content-search issue (do **not** link #6627 — that is the tag-filter issue, a different feature) |
 | OpenHands/OpenHands | #19378 | Canvas gate requires same-repo issue; #19378 (`enhancement` + `ready-for-dev`) covers within-conversation find — our PR closes the "search unavailable" gap for local users |
 
 Both PRs open as **drafts** with `HUMAN:` first line + `AGENT:` AI disclosure, per the repos' PR-description validator.
