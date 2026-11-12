@@ -136,10 +136,16 @@ export class ConversationClient {
   async getConversations<TConversation = ConversationInfo>(
     conversationIds: string[]
   ): Promise<Array<TConversation | null>> {
-    const response = await this.client.get<Array<TConversation | null>>('/api/conversations', {
-      params: { ids: conversationIds },
-    });
-    return response.data;
+    const conversations: Array<TConversation | null> = [];
+    // The Agent Server validates a maximum of 99 IDs per request.
+    const batchSize = 99;
+    for (let offset = 0; offset < conversationIds.length; offset += batchSize) {
+      const response = await this.client.get<Array<TConversation | null>>('/api/conversations', {
+        params: { ids: conversationIds.slice(offset, offset + batchSize) },
+      });
+      conversations.push(...response.data);
+    }
+    return conversations;
   }
 
   async getConversation<TConversation = ConversationInfo>(
