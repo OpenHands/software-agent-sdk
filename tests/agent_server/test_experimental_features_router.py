@@ -247,7 +247,7 @@ def test_host_switches_are_read_only_inside_a_runtime(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_runtime_takes_its_tools_from_the_host_switches(tmp_path, monkeypatch):
     # The runtime container's own settings are empty (flag off); the host
-    # passes the person's switches in the environment.
+    # passes the user's switches in the environment.
     monkeypatch.setenv(
         RUNTIME_EXPERIMENTAL_FEATURES_ENV, json.dumps({"conversation_reactions": True})
     )

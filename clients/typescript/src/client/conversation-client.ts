@@ -212,7 +212,7 @@ export class ConversationClient {
   }
 
   /**
-   * Put the person's emoji reaction on a message, or take it off with
+   * Put the user's emoji reaction on a message, or take it off with
    * `removed: true`. Without `targetEventId` it goes on the agent's latest
    * message. Does not run the agent. The server answers 409 while the
    * `conversation_reactions` feature is off.

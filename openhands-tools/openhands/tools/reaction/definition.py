@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 _MESSAGE_ID = Field(
     default=None,
     description=(
-        "Id of the message to react to. Leave it out to use the person's "
+        "Id of the message to react to. Leave it out to use the user's "
         "latest message, which is almost always the one you mean."
     ),
 )
@@ -82,12 +82,12 @@ class ReactionObservation(Observation):
 
 
 _REACT_DESCRIPTION = """\
-Put an emoji reaction on a message; by default the person's latest one.
-The person sees it on their message right away, while you keep working, so a
+Put an emoji reaction on a message; by default the user's latest one.
+The user sees it on their message right away, while you keep working, so a
 reaction is the smallest sign that you got a message and what you make of it.
 
 Use the reaction that fits:
-- +1 when the person corrects you, changes the plan or adds to it while you
+- +1 when the user corrects you, changes the plan or adds to it while you
   are working ("wait, actually...", "also...", "use X instead"): react +1
   first, then carry on with the change. No need to stop and reply. Also +1 a
   note or go-ahead that needs no reply.
@@ -97,19 +97,19 @@ Use the reaction that fits:
   nothing more to say about it.
 - thinking_face when a message raises something you need to look into
   before you can agree with it.
-- tada when something the person cares about lands: a fix works, a release
+- tada when something the user cares about lands: a fix works, a release
   is out, good news.
-- heart when the person thanks you or shares something kind.
+- heart when the user thanks you or shares something kind.
 
 A reaction never replaces an answer: a question still gets a reply. React
-when it tells the person something, not on every message, and whenever the
-person asks you to. A reaction stays on the message. Reacting does not end
+when it tells the user something, not on every message, and whenever the
+user asks you to. A reaction stays on the message. Reacting does not end
 your turn."""
 
 _UNREACT_DESCRIPTION = """\
-Take an emoji reaction you added off a message; by default the person's
+Take an emoji reaction you added off a message; by default the user's
 latest one. Do this only when it no longer fits (for example eyes on work you
-decided not to do) or when the person asks: a reaction is meant to stay."""
+decided not to do) or when the user asks: a reaction is meant to stay."""
 
 
 def _annotations() -> ToolAnnotations:

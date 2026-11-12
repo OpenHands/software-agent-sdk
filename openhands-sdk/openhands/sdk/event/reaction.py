@@ -30,7 +30,7 @@ _GLYPHS: Final[dict[str, str]] = {
 
 
 REACTION_TEXT_ENDING_MAX: Final[int] = 500
-"""How much of the end of a reacted message a person's reaction keeps."""
+"""How much of the end of a reacted message a user's reaction keeps."""
 
 CLIPPED_MESSAGE_START: Final[str] = (
     "<clipped message start, if you need it find the message with the ending below>"
@@ -40,15 +40,15 @@ CLIPPED_MESSAGE_START: Final[str] = (
 class ReactionEvent(LLMConvertibleEvent):
     """An emoji reaction added to, or removed from, a message.
 
-    The agent reacts with the ``react``/``unreact`` tools, and a person
+    The agent reacts with the ``react``/``unreact`` tools, and a user
     through ``POST /api/conversations/{id}/reactions``. Clients fold these
     events into each message's current set of reactions: the latest event for
     a (message, emoji, source) wins.
 
-    The agent sees the person's reactions on its next turn, as one line naming
+    The agent sees the user's reactions on its next turn, as one line naming
     the emoji and the end of the message (``target_text_ending``); a reaction
     does not start a run. Its own reactions stay out of what it sees
-    (``View`` skips them): its ``react`` call is already there. A person's
+    (``View`` skips them): its ``react`` call is already there. A user's
     reaction that arrives while tool calls wait for their results (for example
     during a confirmation) is held back and becomes an event once those calls
     are answered, so it never sits between a call and its result.
@@ -69,7 +69,7 @@ class ReactionEvent(LLMConvertibleEvent):
         default=None,
         description=(
             "The end of the reacted message's text, at most "
-            f"{REACTION_TEXT_ENDING_MAX} characters, saved with the person's "
+            f"{REACTION_TEXT_ENDING_MAX} characters, saved with the user's "
             "reaction so the agent can tell which message it is about."
         ),
     )
@@ -80,13 +80,13 @@ class ReactionEvent(LLMConvertibleEvent):
 
     @field_validator("source")
     @classmethod
-    def _agent_or_person(cls, source: SourceType) -> SourceType:
+    def _agent_or_user(cls, source: SourceType) -> SourceType:
         if source not in ("agent", "user"):
             raise ValueError("A reaction comes from the agent or the user.")
         return source
 
     def to_llm_message(self) -> Message:
-        who = "The person" if self.source == "user" else "You"
+        who = "The user" if self.source == "user" else "You"
         which = "a message." if self.target_text_ending is None else "this message:"
         if self.removed:
             line = f"[{who} took back the {self.glyph} reaction on {which}]"
@@ -157,8 +157,8 @@ def find_reaction_target(
     ``events`` is the conversation's active branch (``state.active_branch()``),
     so a message on a branch the conversation navigated away from is never a
     target. Without ``target_event_id``, the latest message from the other
-    side: the latest user message for the agent (the person's, or a
-    coordinator's), and for the person the agent's latest message or
+    side: the latest user message for the agent (the user's, or a
+    coordinator's), and for the user the agent's latest message or
     ``finish``.
 
     Raises:

@@ -84,7 +84,7 @@ async def _reactions(service, cid: UUID) -> list[ReactionEvent]:
 
 
 @pytest.mark.asyncio
-async def test_person_reacts_and_unreacts(client, service, tmp_path):
+async def test_user_reacts_and_unreacts(client, service, tmp_path):
     cid, answer = await _conversation_with_answer(service, tmp_path)
 
     added = await client.post(

@@ -365,7 +365,7 @@ reaction_router = APIRouter(
 
 
 async def require_reactions_enabled(config: Config) -> None:
-    """Refuse with 409 unless the person has conversation reactions on."""
+    """Refuse with 409 unless the user has conversation reactions on."""
     try:
         settings = await asyncio.to_thread(
             lambda: get_settings_store(config).load() or PersistedSettings()
@@ -395,7 +395,7 @@ async def react_to_message(
     http_request: Request,
     event_service: EventService = Depends(get_event_service),
 ) -> ReactionEvent:
-    """Add or remove the person's emoji reaction on a message.
+    """Add or remove the user's emoji reaction on a message.
 
     The reaction is saved as a `ReactionEvent` and streamed like other events;
     it does not run the agent. While tool calls wait for their results (a
@@ -405,7 +405,7 @@ async def react_to_message(
     unlike the agent's tools, which a conversation gets when it starts, this
     check follows the switch at once.
     """
-    # A Docker runtime's server finds the person's switch on the host, which
+    # A Docker runtime's server finds the user's switch on the host, which
     # checks it before forwarding the request.
     if host_experimental_features() is None:
         await require_reactions_enabled(get_config(http_request))

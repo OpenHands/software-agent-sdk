@@ -124,7 +124,7 @@ def test_reaction_round_trips_as_an_event():
     assert (loaded.emoji, loaded.removed, loaded.source) == ("+1", False, "agent")
 
 
-def test_only_the_agent_and_the_person_react():
+def test_only_the_agent_and_the_user_react():
     with pytest.raises(ValueError, match="agent or the user"):
         ReactionEvent(source="environment", target_event_id="m1", emoji="eyes")
 
@@ -230,10 +230,10 @@ def test_agent_records_the_reaction_after_the_observation(conversation):
     assert "Reacted :eyes:" in observation.to_llm_message().content[0].text  # type: ignore[union-attr]
 
 
-# LocalConversation.react, the person's side
+# LocalConversation.react, the user's side
 
 
-def test_person_reacts_to_the_agents_latest_message(conversation):
+def test_user_reacts_to_the_agents_latest_message(conversation):
     with pytest.raises(ValueError, match="no agent message"):
         conversation.react("+1")
 
@@ -247,7 +247,7 @@ def test_person_reacts_to_the_agents_latest_message(conversation):
     assert [e.id for e in saved] == [event.id, removal.id]
 
 
-def test_person_cannot_use_an_unknown_emoji(conversation):
+def test_user_cannot_use_an_unknown_emoji(conversation):
     with pytest.raises(ValueError, match="Unknown emoji"):
         conversation.react("rocket")
 
@@ -306,7 +306,7 @@ def _texts(messages: list[dict]) -> list[str]:
     return texts
 
 
-def test_the_agent_sees_the_persons_reaction_on_its_next_turn(conversation):
+def test_the_agent_sees_the_users_reaction_on_its_next_turn(conversation):
     question = "Shall I delete the generated fixtures?"
     conversation.state.append_event(_message("agent", question))
     status = conversation.state.execution_status
@@ -316,7 +316,7 @@ def test_the_agent_sees_the_persons_reaction_on_its_next_turn(conversation):
     # Reacting saves the event and starts nothing.
     assert conversation.state.execution_status == status
     texts = _texts(_messages_on_next_step(conversation))
-    assert f"[The person reacted 👍 to this message:]\n{question}" in texts
+    assert f"[The user reacted 👍 to this message:]\n{question}" in texts
 
 
 def test_a_reaction_during_a_pending_tool_call_waits_for_its_result(conversation):
@@ -334,7 +334,7 @@ def test_a_reaction_during_a_pending_tool_call_waits_for_its_result(conversation
     def kinds(events) -> list[str]:
         return [type(e).__name__ for e in events]
 
-    # The call waits (a confirmation, a pause); the person reacts meanwhile.
+    # The call waits (a confirmation, a pause); the user reacts meanwhile.
     conversation._on_event(call)
     held = conversation.react("heart")
     conversation.react("heart", removed=True)
@@ -375,7 +375,7 @@ def test_a_long_message_is_clipped_to_its_ending(conversation):
     (content,) = event.to_llm_message().content
     assert isinstance(content, TextContent)
     assert content.text == (
-        "[The person reacted 👍 to this message:]\n"
+        "[The user reacted 👍 to this message:]\n"
         f"{CLIPPED_MESSAGE_START}\n{long_answer[-REACTION_TEXT_ENDING_MAX:]}"
     )
 
@@ -390,10 +390,10 @@ def test_removal_and_older_reactions_read_as_one_line():
     older = ReactionEvent(target_event_id="m1", emoji="tada")
 
     assert removal.to_llm_message().content[0].text == (  # type: ignore[union-attr]
-        "[The person took back the ❤️ reaction on this message:]\nDone."
+        "[The user took back the ❤️ reaction on this message:]\nDone."
     )
     assert older.to_llm_message().content[0].text == (  # type: ignore[union-attr]
-        "[The person reacted 🎉 to a message.]"
+        "[The user reacted 🎉 to a message.]"
     )
 
 

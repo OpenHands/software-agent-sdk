@@ -1,6 +1,6 @@
 """Emoji reactions for agents.
 
-``react`` puts an emoji on a message (by default the person's latest one) and
+``react`` puts an emoji on a message (by default the user's latest one) and
 ``unreact`` takes it off. A reaction is a small visible sign that the agent saw
 a message, for when the work comes before the answer. It is recorded as a
 :class:`~openhands.sdk.event.ReactionEvent`, which clients show on the message

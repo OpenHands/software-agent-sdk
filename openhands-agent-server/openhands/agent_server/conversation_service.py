@@ -1587,7 +1587,7 @@ class ConversationService:
         # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
         stored_context = settings.agent_settings.agent_context
         load_memory = bool(stored_context and stored_context.load_memory)
-        # In a Docker runtime the person's switches live on the host.
+        # In a Docker runtime the user's switches live on the host.
         host_features = host_experimental_features()
         experimental_features = (
             settings.experimental_features if host_features is None else host_features
