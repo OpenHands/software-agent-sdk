@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 import traceback
@@ -11,15 +12,27 @@ from typing import Any, ClassVar
 from litellm.cost_calculator import completion_cost as litellm_completion_cost
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.utils import CostPerToken, ModelResponse, Usage
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanitize_dict
 
 
 logger = get_logger(__name__)
+
+
+def _reported_cost(value: object) -> float | None:
+    """Accept finite nonnegative charges, including numeric HTTP header strings."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        cost = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return cost if math.isfinite(cost) and cost >= 0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,7 +201,7 @@ class Telemetry(BaseModel):
 
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
-        self._req_ctx = telemetry_ctx or {}
+        self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
         self._open_span()
 
     def on_response(
@@ -209,9 +222,8 @@ class Telemetry(BaseModel):
 
         # 2) cost
         cost = self._compute_cost(resp, provider_info=provider_info)
-        # Intentionally skip logging zero-cost (0.0) responses; only record
-        # positive cost
-        if cost:
+        # A confirmed zero charge is different from unavailable pricing.
+        if cost is not None:
             self.metrics.add_cost(cost)
 
         # 3) tokens - normalize the provider's usage shape exactly once
@@ -260,10 +272,12 @@ class Telemetry(BaseModel):
             data = self._req_ctx.copy()
             data["error"] = {
                 "type": type(_err).__name__,
-                "message": str(_err),
-                "repr": repr(_err),
-                "traceback": "".join(
-                    traceback.format_exception(type(_err), _err, _err.__traceback__)
+                "message": redact_text_secrets(str(_err)),
+                "repr": redact_text_secrets(repr(_err)),
+                "traceback": redact_text_secrets(
+                    "".join(
+                        traceback.format_exception(type(_err), _err, _err.__traceback__)
+                    )
                 ),
             }
             data["timestamp"] = time.time()
@@ -321,7 +335,7 @@ class Telemetry(BaseModel):
         if span is None:
             return
         try:
-            if cost:
+            if cost is not None:
                 # Authoritative: _compute_cost prefers the proxy's
                 # x-litellm-response-cost header, which is already cache-aware
                 # and priced by the real backend rather than by a name lookup.
@@ -357,7 +371,7 @@ class Telemetry(BaseModel):
         resp: ModelResponse | ResponsesAPIResponse,
         provider_info: LLMProvider | None = None,
     ) -> float | None:
-        """Try provider header → litellm direct. Return None on failure."""
+        """Try provider header, reported usage, then pricing; None is unavailable."""
         extra_kwargs = {}
         if (
             self.input_cost_per_token is not None
@@ -372,13 +386,35 @@ class Telemetry(BaseModel):
 
         try:
             hidden = resp._hidden_params or {}
-            cost = hidden.get("additional_headers", {}).get(
-                "llm_provider-x-litellm-response-cost"
-            )
-            if cost is not None:
-                return float(cost)
+            headers = hidden.get("additional_headers", {})
+            header_name = "llm_provider-x-litellm-response-cost"
+            if header_name in headers:
+                cost = _reported_cost(headers[header_name])
+                if cost is not None:
+                    return cost
+                logger.debug(
+                    "Failed to get cost from LiteLLM headers: "
+                    "invalid response cost value"
+                )
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
+
+        # Final usage can contain a charge for an alias absent from the static
+        # price map. Select one total, never add header and usage copies. Explicit
+        # token rates remain an intentional pricing override when no header exists.
+        if "custom_cost_per_token" not in extra_kwargs:
+            usage = _response_usage(resp)
+            # Read the typed field directly, without serializing all token details.
+            # LiteLLM deletes absent optional Usage attributes after construction.
+            try:
+                cost = _reported_cost(usage.cost) if usage is not None else None
+            except AttributeError:
+                cost = None
+            # Zero usage can be a gateway's unavailable-price placeholder. Keep
+            # existing static pricing in that case; explicit zero headers above
+            # remain authoritative. This fallback repairs positive charges only.
+            if cost is not None and cost > 0:
+                return cost
 
         if provider_info is None:
             call_kwargs = litellm_call_kwargs(self.model_name, None)
@@ -466,9 +502,32 @@ class Telemetry(BaseModel):
             warnings.warn(f"Telemetry logging failed: {e}")
 
 
+def _redact_request_credentials(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Return ``ctx`` with its logged request credentials copied and redacted.
+
+    The logged ``kwargs`` share their header dicts with the live call, and some
+    LiteLLM providers write ``Authorization`` into them in place. Copying here,
+    before the call, keeps such mutations and caller-supplied credential
+    options and headers out of completion logs.
+    """
+    kwargs = ctx.get("kwargs")
+    if not isinstance(kwargs, dict):
+        return ctx
+    logged_kwargs = {}
+    for key, value in kwargs.items():
+        if isinstance(value, (str, SecretStr)) and is_secret_key(key):
+            logged_kwargs[key] = sanitize_dict({key: value})[key]
+        else:
+            logged_kwargs[key] = sanitize_dict(value)
+    return {**ctx, "kwargs": logged_kwargs}
+
+
 def _safe_json(obj: Any) -> Any:
     # Centralized serializer for telemetry logs.
     # Prefer robust serialization for Pydantic models first to avoid cycles.
+    if isinstance(obj, SecretStr):
+        return str(obj)
+
     # Typed LiteLLM responses
     if isinstance(obj, ModelResponse) or isinstance(obj, ResponsesAPIResponse):
         return obj.model_dump(mode="json", exclude_none=True)

@@ -69,6 +69,7 @@ export {
   isConversationErrorEvent,
   isCondensationEvent,
   isHookExecutionEvent,
+  isReactionEvent,
 } from './events/types';
 export type {
   EventID,
@@ -98,6 +99,8 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  ReactionEmoji,
+  ReactionEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
@@ -190,6 +193,7 @@ export type {
   FileOperationResult,
   FileDownloadResult,
   GitChange,
+  GitChangeStatus,
   GitDiff,
   ExecuteBashRequest,
   BashEventBase,
@@ -221,7 +225,14 @@ export type {
 
 // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
-export type { ACPModelOption, ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type {
+  ACPEffortOption,
+  ACPModelDiscovery,
+  ACPModelDiscoveryError,
+  ACPModelDiscoveryRequest,
+  ACPModelInfo,
+} from './models/acp-model-discovery';
 
 // Agent profile types (mirrors openhands-sdk agent_profile.py + resolver.py)
 export type {

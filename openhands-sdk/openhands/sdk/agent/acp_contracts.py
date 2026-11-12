@@ -17,12 +17,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 
 
 _MODEL_CONFIG_OPTION_ID = "model"
+_THOUGHT_LEVEL_CATEGORY = "thought_level"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,13 @@ class ACPConfigOptionOptionsProtocol(Protocol):
 
 
 @runtime_checkable
+class ACPConfigOptionCategoryProtocol(Protocol):
+    """Protocol for an option carrying its semantic category."""
+
+    category: str | None
+
+
+@runtime_checkable
 class ACPRootModelProtocol(Protocol):
     """Protocol for Pydantic RootModel-wrapped options (agent-client-protocol 0.8.x)."""
 
@@ -134,6 +142,27 @@ class ACPSessionModelsResponseProtocol(Protocol):
     models: Any | None
 
 
+class ACPLegacyModelInfo(BaseModel):
+    """One entry of the UNSTABLE ``models`` block, as servers send it."""
+
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
+    model_id: str = Field(alias="modelId")
+    name: str | None = None
+    description: str | None = None
+
+
+class ACPLegacySessionModels(BaseModel):
+    """The UNSTABLE ``models`` block, which the ACP 0.12 schema no longer models."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    current_model_id: str | None = Field(default=None, alias="currentModelId")
+    available_models: list[ACPLegacyModelInfo] = Field(
+        default_factory=list, alias="availableModels"
+    )
+
+
 @runtime_checkable
 class ACPLegacyModelSwitchConnection(Protocol):
     """Protocol for connections supporting the legacy set_session_model RPC."""
@@ -156,6 +185,7 @@ class ACPConfigSelectOption:
     type: str
     current_value: str | None = None
     options: list[Any] = field(default_factory=list)
+    category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,57 +197,100 @@ class ACPSessionModelState:
     via_config_option: bool
 
 
-def extract_model_config_option(response: Any) -> ACPConfigSelectOption | None:
-    """Extract the model select option from a session response at the boundary.
+def _normalize_select_option(raw: Any) -> ACPConfigSelectOption | None:
+    opt = raw.root if isinstance(raw, ACPRootModelProtocol) else raw
+    if isinstance(opt, Mapping):
+        opt_id, opt_type = opt.get("id"), opt.get("type")
+        val, opts, category = (
+            opt.get("current_value"),
+            opt.get("options"),
+            opt.get("category"),
+        )
+    elif isinstance(opt, ACPConfigOptionBasicProtocol):
+        opt_id, opt_type = opt.id, opt.type
+        val = (
+            opt.current_value if isinstance(opt, ACPConfigOptionValueProtocol) else None
+        )
+        opts = opt.options if isinstance(opt, ACPConfigOptionOptionsProtocol) else []
+        category = (
+            opt.category if isinstance(opt, ACPConfigOptionCategoryProtocol) else None
+        )
+    else:
+        return None
+    if opt_type != "select" or not isinstance(opt_id, str):
+        return None
+    return ACPConfigSelectOption(
+        id=opt_id,
+        type=str(opt_type),
+        current_value=val if isinstance(val, str) else None,
+        options=list(opts) if isinstance(opts, (list, tuple)) else [],
+        category=category if isinstance(category, str) else None,
+    )
 
-    Normalizes across agent-client-protocol 0.8.x (RootModel wrapped) and 0.10.x+
-    (direct union members), as well as dictionary payloads.
+
+def extract_select_options(response: Any) -> list[ACPConfigSelectOption] | None:
+    """Normalize the select config options on a session response.
+
+    ``None`` when the response carries no ``config_options`` list at all, as
+    opposed to ``[]`` for a response that lists none. Normalizes across
+    agent-client-protocol 0.8.x (RootModel wrapped) and 0.10.x+ (direct union
+    members), as well as dictionary payloads.
     """
     if response is None:
         return None
-
-    raw_options: list[Any] | None = None
+    raw_options: Any = None
     if isinstance(response, ACPSessionConfigOptionsResponseProtocol):
         raw_options = response.config_options
     elif isinstance(response, Mapping):
         raw_options = response.get("config_options")
-
-    if not raw_options:
+    if not isinstance(raw_options, (list, tuple)):
         return None
+    return [
+        opt for raw in raw_options if (opt := _normalize_select_option(raw)) is not None
+    ]
 
-    for raw in raw_options:
-        opt = raw.root if isinstance(raw, ACPRootModelProtocol) else raw
-        if isinstance(opt, Mapping):
-            opt_type = opt.get("type")
-            opt_id = opt.get("id")
-            if opt_type == "select" and opt_id == _MODEL_CONFIG_OPTION_ID:
-                val = opt.get("current_value")
-                opts = opt.get("options")
-                return ACPConfigSelectOption(
-                    id=str(opt_id),
-                    type=str(opt_type),
-                    current_value=val if isinstance(val, str) else None,
-                    options=list(opts) if isinstance(opts, (list, tuple)) else [],
-                )
-        elif isinstance(opt, ACPConfigOptionBasicProtocol):
-            if opt.type == "select" and opt.id == _MODEL_CONFIG_OPTION_ID:
-                val = (
-                    opt.current_value
-                    if isinstance(opt, ACPConfigOptionValueProtocol)
-                    else None
-                )
-                opts = (
-                    opt.options
-                    if isinstance(opt, ACPConfigOptionOptionsProtocol)
-                    else []
-                )
-                return ACPConfigSelectOption(
-                    id=str(opt.id),
-                    type=str(opt.type),
-                    current_value=val if isinstance(val, str) else None,
-                    options=list(opts) if isinstance(opts, (list, tuple)) else [],
-                )
+
+def extract_model_config_option(response: Any) -> ACPConfigSelectOption | None:
+    """Extract the model select option from a session response at the boundary."""
+    for opt in extract_select_options(response) or []:
+        if opt.id == _MODEL_CONFIG_OPTION_ID:
+            return opt
     return None
+
+
+@dataclass(frozen=True)
+class ACPSessionEffortState:
+    """Reasoning-effort state off a session response.
+
+    ``config_id`` is ``None`` when the session lists config options but none for
+    effort, i.e. the current model offers no effort setting.
+    """
+
+    config_id: str | None
+    current: str | None = None
+    available: list[ACPEffortOption] = field(default_factory=list)
+
+
+def extract_session_effort(response: Any) -> ACPSessionEffortState | None:
+    """Extract the ``thought_level`` select (reasoning effort) off a response.
+
+    ``None`` when the response carries no config options, so the caller can tell
+    "unknown" apart from "this model offers no effort".
+    """
+    options = extract_select_options(response)
+    if options is None:
+        return None
+    for opt in options:
+        if opt.category == _THOUGHT_LEVEL_CATEGORY:
+            available = [
+                ACPEffortOption(value=info.model_id, name=info.name)
+                for o in opt.options
+                if (info := ACPModelInfo.from_protocol(o, id_attr="value")).model_id
+            ]
+            return ACPSessionEffortState(
+                config_id=opt.id, current=opt.current_value, available=available
+            )
+    return ACPSessionEffortState(config_id=None)
 
 
 def extract_session_models(

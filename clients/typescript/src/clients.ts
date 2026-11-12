@@ -1,3 +1,4 @@
+export { ACPClient } from './client/acp-client';
 export { AgentProfilesClient } from './client/agent-profiles-client';
 export {
   ConversationEventStream,
@@ -45,6 +46,7 @@ export {
   isAgentServerVersionError,
 } from './client/agent-server-compatibility';
 
+export type { ACPClientOptions } from './client/acp-client';
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
 export type { CanvasExtensionsClientOptions } from './client/canvas-extensions-client';
@@ -69,6 +71,7 @@ export type {
 } from './client/agent-profiles-client';
 export type { MetaProfilesClientOptions } from './client/meta-profiles-client';
 export type {
+  ExperimentalFeature,
   SettingsClientOptions,
   ExposeSecretsMode,
   LLMProfileSummary,
@@ -97,6 +100,7 @@ export type {
   AgentServerCanvasBackendLogsResponse,
   AgentServerCanvasBackendPrepareResponse,
   AgentServerCanvasBackendRevisionRequest,
+  AgentServerCanvasBackendSecretGrantRequest,
   AgentServerCanvasBackendStartResponse,
   AgentServerCanvasBackendStatus,
   AgentServerCanvasBackendStatusResponse,

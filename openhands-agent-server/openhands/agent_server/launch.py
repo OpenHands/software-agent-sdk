@@ -25,7 +25,10 @@ from openhands.agent_server.persistence import (
     get_agent_profile_store,
     get_llm_profile_store,
 )
-from openhands.agent_server.skills_service import discover_profile_skills
+from openhands.agent_server.skills_service import (
+    discover_profile_skills,
+    discover_public_skill_names,
+)
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
@@ -62,11 +65,14 @@ def server_launch_stores(
     settings: PersistedSettings, cipher: Cipher | None
 ) -> LaunchStores:
     llm_store = get_llm_profile_store()
+    verification = getattr(settings.agent_settings, "verification", None)
     return LaunchStores(
         llm_profiles=llm_store,
         llm_profile_names=lambda: [n.removesuffix(".json") for n in llm_store.list()],
         mcp_config=settings.agent_settings.mcp_config,
         skills=discover_profile_skills,
+        public_skill_names=discover_public_skill_names,
+        critic_api_key=verification.critic_api_key if verification else None,
         agent_profiles=get_agent_profile_store(),
         meta_profiles=MetaProfileStore(base_dir=default_meta_profile_dir()),
         cipher=cipher,
@@ -135,8 +141,12 @@ def launch_source(
 ) -> LaunchSource:
     """Turn the request's agent source into a launch source (blocking)."""
     context = _decryption_context(request, cipher)
+    additions = request.agent_launch_additions
+    llm_profile_ref = additions.llm_profile_ref if additions else None
     if request.agent_profile_id is not None:
-        return resolve(request.agent_profile_id, stores())
+        return resolve(
+            request.agent_profile_id, stores(), llm_profile_ref=llm_profile_ref
+        )
     agent: AgentBase | None = request.agent
     if agent is not None:
         if context is None:
@@ -247,6 +257,10 @@ def forward_to_runtime(
     payload[field] = model.model_copy(
         update=_forwarded_context(model.agent_context, load_memory=load_memory)
     ).model_dump(mode="json", context={"cipher": cipher})
+    additions = dict(payload.get("agent_launch_additions") or {})
+    # Already applied by resolve; without a profile source it is invalid.
+    additions.pop("llm_profile_ref", None)
+    payload["agent_launch_additions"] = additions or None
     return payload
 
 

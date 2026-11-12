@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Mapping
-from typing import Any, Literal, overload
+from typing import Any, Final, Literal, overload
 
 from pydantic import SecretStr, ValidationInfo
 
@@ -19,6 +19,29 @@ _logger = logging.getLogger(__name__)
 
 class MissingCipherError(ValueError):
     """Raised by ``serialize_secret`` when encryption is requested without a cipher."""
+
+
+# Validation-context flag: when true, ``validate_secret`` raises
+# ``SecretDecryptionError`` for a Fernet token the cipher cannot decrypt,
+# instead of returning ``None``. Read-modify-write paths set it so a write
+# under a changed key cannot persist ``null`` over the stored ciphertext.
+STRICT_DECRYPT_CONTEXT_KEY: Final[str] = "strict_decrypt"
+
+
+# Operator guidance for a stored value no configured key can decrypt.
+UNDECRYPTABLE_SECRET_HINT: Final[str] = (
+    "It was saved under a key that is neither OH_SECRET_KEY nor in "
+    "OH_PREVIOUS_SECRET_KEYS: restore that key as OH_SECRET_KEY, or add it to "
+    "OH_PREVIOUS_SECRET_KEYS to rotate to the current key."
+)
+
+
+class SecretDecryptionError(Exception):
+    """A stored secret cannot be decrypted with the current cipher.
+
+    Deliberately not a ``ValueError``: Pydantic lets it propagate as is
+    instead of wrapping it in a ``ValidationError`` that echoes the token.
+    """
 
 
 def resolve_expose_mode(context: Mapping[str, Any] | None) -> ResolvedExposeMode:
@@ -76,7 +99,9 @@ def serialize_secret(v: SecretStr | None, info):
             )
         raw = v.get_secret_value()
         if raw.startswith(FERNET_TOKEN_PREFIX) and cipher.try_decrypt_str(raw):
-            return raw
+            # Already a token: keep it, re-encrypted under the current key
+            # when only a previous key can read it.
+            return cipher.rotate(raw) or raw
         return cipher.encrypt(v)
 
     return v
@@ -91,7 +116,8 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     - Plain strings are converted to SecretStr
     - If a cipher is provided in context and the value is a Fernet token,
       attempts to decrypt the value
-    - If Fernet decryption fails, the cipher returns None and a warning is logged
+    - If Fernet decryption fails, the cipher returns None and a warning is logged;
+      with ``strict_decrypt`` in the context it raises SecretDecryptionError
     - Non-token strings pass through as plaintext for legacy settings and PATCHes
     - This gracefully handles conversations encrypted with different keys or were redacted
     """  # noqa: E501
@@ -117,7 +143,13 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
         and secret_value.startswith(FERNET_TOKEN_PREFIX)
     ):
         cipher: Cipher = info.context.get("cipher")
-        return cipher.decrypt(secret_value)
+        decrypted = cipher.decrypt(secret_value)
+        if decrypted is None and info.context.get(STRICT_DECRYPT_CONTEXT_KEY):
+            raise SecretDecryptionError(
+                "A stored secret cannot be decrypted with any configured key. "
+                + UNDECRYPTABLE_SECRET_HINT
+            )
+        return decrypted
 
     # Always return SecretStr
     if isinstance(v, SecretStr):
@@ -199,9 +231,21 @@ def validate_secret_dict(
     """
     if not isinstance(value, dict):
         return value
-    cipher: Cipher | None = info.context.get("cipher") if info.context else None
+    context = info.context or {}
+    cipher: Cipher | None = context.get("cipher")
     if cipher is None:
         return value
+    if context.get(STRICT_DECRYPT_CONTEXT_KEY):
+        for v in value.values():
+            if (
+                isinstance(v, str)
+                and v.startswith(FERNET_TOKEN_PREFIX)
+                and cipher.try_decrypt_str(v) is None
+            ):
+                raise SecretDecryptionError(
+                    f"A stored {description} value cannot be decrypted with any "
+                    "configured key. " + UNDECRYPTABLE_SECRET_HINT
+                )
     return {
         k: decrypt_str_with_cipher_or_keep(cipher, v, description=description)
         for k, v in value.items()

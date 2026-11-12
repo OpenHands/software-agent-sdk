@@ -3,6 +3,7 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import { ConversationClient } from '../client/conversation-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { FileClient } from '../client/file-client';
 import { HooksClient } from '../client/hooks-client';
@@ -62,6 +63,7 @@ export class ACPConversationNamespace {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
     } = {}
@@ -162,10 +164,9 @@ export class ConversationManager {
   async getConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ConversationInfo | null>> {
-    const response = await this.client.get<Array<ConversationInfo | null>>('/api/conversations', {
-      params: { ids: conversationIds },
-    });
-    return response.data;
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
+    );
   }
 
   /**
@@ -207,6 +208,7 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
@@ -220,12 +222,16 @@ export class ConversationManager {
 
     const conversation = new RemoteConversation(agent, workspace, {
       maxIterations: options.maxIterations,
+      maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
     });
 
     await conversation.start({
       initialMessage: options.initialMessage,
+      maxIterations: options.maxIterations,
+      maxBudgetPerRun: options.maxBudgetPerRun,
+      stuckDetection: options.stuckDetection,
       userId: options.userId,
     });
 
@@ -289,13 +295,9 @@ export class ConversationManager {
   async getACPConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ACPConversationInfo | null>> {
-    const response = await this.client.get<Array<ACPConversationInfo | null>>(
-      '/api/conversations',
-      {
-        params: { ids: conversationIds },
-      }
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
     );
-    return response.data;
   }
 
   /**
@@ -336,6 +338,7 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
@@ -353,6 +356,7 @@ export class ConversationManager {
       agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
+      max_budget_per_run: options.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
       user_id: options.userId ?? null,
@@ -379,17 +383,16 @@ export class ConversationManager {
   }
 
   /**
-   * Update conversation metadata (e.g. title)
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
    */
   async updateConversation(
     conversationId: ConversationID,
     update: UpdateConversationRequest
   ): Promise<ConversationInfo> {
-    const response = await this.client.patch<ConversationInfo>(
-      `/api/conversations/${conversationId}`,
-      update
-    );
-    return response.data;
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation(conversationId);
   }
 
   /**

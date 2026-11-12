@@ -26,6 +26,13 @@ class MCPComplexAction(Action):
     string_list: list[str] = Field(default_factory=list, description="List of strings")
 
 
+class CustomAliasedAction(Action):
+    mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {
+        "extra_field": {"type": "string"}
+    }
+    mcp_schema_alias_required: ClassVar[set[str]] = {"extra_field"}
+
+
 class MCPSchemaTestObservation(Observation):
     """Test observation class for MCP schema testing."""
 
@@ -442,6 +449,75 @@ def test_boolean_schema_nodes_are_normalized(node, expected):
     json.dumps(result)
 
 
+def test_tuple_form_items_does_not_raise():
+    node = {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "items": [{"type": "string"}, {"type": "integer"}],
+            }
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    assert result["properties"]["pair"]["type"] == "array"
+
+
+def test_nullable_type_list_keeps_nested_structure():
+    node = {
+        "type": "object",
+        "properties": {
+            "filter": {
+                "type": ["object", "null"],
+                "properties": {"field": {"type": "string"}},
+                "required": ["field"],
+            },
+            "tags": {"type": ["array", "null"], "items": {"type": "string"}},
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    assert result["properties"]["filter"]["properties"] == {"field": {"type": "string"}}
+    assert result["properties"]["filter"]["required"] == ["field"]
+    assert result["properties"]["tags"]["items"] == {"type": "string"}
+
+
+def test_multiple_non_null_types_are_kept():
+    """Only a single non-null type collapses; a real union keeps both members.
+
+    ``["string", "array"]`` is the common "a string or a list of strings" shape;
+    collapsing it to ``"array"`` would tell the model a plain string is invalid.
+    """
+    node = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": ["string", "array"],
+                "items": {"type": "string"},
+            },
+            "payload": {
+                "type": ["object", "array"],
+                "properties": {"field": {"type": "string"}},
+                "items": {"type": "string"},
+            },
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    value = result["properties"]["value"]
+    assert value["type"] == ["string", "array"]
+    assert value["items"] == {"type": "string"}
+
+    payload = result["properties"]["payload"]
+    assert payload["type"] == ["object", "array"]
+    assert payload["properties"] == {"field": {"type": "string"}}
+    assert payload["items"] == {"type": "string"}
+
+
 def test_anyof_with_false_does_not_clobber_concrete_type():
     """A ``false`` member in ``anyOf`` must not become the representative type.
 
@@ -499,13 +575,6 @@ def test_schema_mcp_aliases_use_declared_class_apis():
     assert issubclass(model, Schema)
     assert model.mcp_schema_alias_specs == {}
     assert model.mcp_schema_alias_required == set()
-
-    # Dynamic model with alias specs
-    class CustomAliasedAction(Action):
-        mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {
-            "extra_field": {"type": "string"}
-        }
-        mcp_schema_alias_required: ClassVar[set[str]] = {"extra_field"}
 
     exported = CustomAliasedAction.to_mcp_schema()
     assert "extra_field" in exported.get("properties", {})

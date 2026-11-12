@@ -8,136 +8,83 @@ import pytest
 
 from openhands.sdk.git.cached_repo import (
     GitHelper,
-    _checkout_ref,
-    _clone_repository,
     _update_repository,
+    try_cached_clone_or_update,
 )
 from openhands.sdk.git.exceptions import GitCommandError
 
 
-# -- _clone_repository ---------------------------------------------------------
+@pytest.fixture
+def update_git():
+    git = create_autospec(GitHelper, instance=True)
+    git.get_requested_branch.return_value = None
+    return git
 
 
-def test_clone_calls_git_helper(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    dest = tmp_path / "repo"
-
-    _clone_repository("https://github.com/owner/repo.git", dest, None, mock_git)
-
-    mock_git.clone.assert_called_once_with(
-        "https://github.com/owner/repo.git", dest, depth=1, branch=None
-    )
-
-
-def test_clone_with_ref(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    dest = tmp_path / "repo"
-
-    _clone_repository("https://github.com/owner/repo.git", dest, "v1.0.0", mock_git)
-
-    mock_git.clone.assert_called_once_with(
-        "https://github.com/owner/repo.git", dest, depth=1, branch="v1.0.0"
-    )
-
-
-def test_clone_with_full_sha_uses_full_clone_and_checkout(tmp_path: Path):
-    """Full 40-char commit SHAs must use a full clone (no --depth) then checkout.
-
-    git clone --branch does not accept raw commit SHAs, so we fall back to a
-    regular (non-shallow) clone followed by an explicit checkout of the SHA.
-    """
-    mock_git = create_autospec(GitHelper)
-    dest = tmp_path / "repo"
-    sha = "a" * 40
-
-    _clone_repository("https://github.com/owner/repo.git", dest, sha, mock_git)
-
-    mock_git.clone.assert_called_once_with(
-        "https://github.com/owner/repo.git", dest, depth=None, branch=None
-    )
-    mock_git.checkout.assert_called_once_with(dest, sha)
-
-
-def test_clone_removes_existing_directory(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
+def test_clone_replaces_invalid_cache(tmp_path: Path):
+    mock_git = create_autospec(GitHelper, instance=True)
     dest = tmp_path / "repo"
     dest.mkdir()
-    (dest / "some_file.txt").write_text("test")
+    marker = dest / "some_file.txt"
+    marker.write_text("test")
 
-    _clone_repository("https://github.com/owner/repo.git", dest, None, mock_git)
+    def clone(url, path, **kwargs):
+        path.mkdir()
+        (path / ".git").mkdir()
 
-    mock_git.clone.assert_called_once()
+    mock_git.clone.side_effect = clone
+
+    result = try_cached_clone_or_update(
+        "https://github.com/owner/repo.git",
+        dest,
+        git_helper=mock_git,
+    )
+
+    assert result == dest
+    assert not marker.exists()
+    assert (dest / ".git").is_dir()
 
 
 # -- _update_repository --------------------------------------------------------
 
 
-def test_update_fetches_and_resets(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
+def test_update_fetches_and_resets(tmp_path: Path, update_git):
+    mock_git = update_git
     mock_git.get_current_branch.return_value = "main"
+    mock_git.needs_explicit_branch_fetch.return_value = False
 
-    _update_repository(tmp_path, None, mock_git)
+    _update_repository(tmp_path, mock_git)
 
     mock_git.fetch.assert_called_once_with(tmp_path)
     mock_git.get_current_branch.assert_called_once_with(tmp_path)
     mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
 
 
-def test_update_with_pinned_ref_skips_fetch(tmp_path: Path):
-    """Tag/commit locally present: optimistic checkout succeeds → no fetch."""
-    mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = None  # detached HEAD
-
-    _update_repository(tmp_path, "v1.0.0", mock_git)
-
-    mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
-    mock_git.fetch.assert_not_called()
-
-
-def test_update_fetches_for_branch_ref(tmp_path: Path):
-    """Branch refs always fetch even when the local checkout succeeds."""
-    mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = "main"  # on a branch, not detached
-
-    _update_repository(tmp_path, "main", mock_git)
-
-    mock_git.fetch.assert_called_once_with(tmp_path)
-
-
-def test_update_fetches_when_ref_not_present_locally(tmp_path: Path):
-    """If the optimistic checkout fails, fall through to a full fetch."""
-    mock_git = create_autospec(GitHelper)
-    mock_git.checkout.side_effect = [
-        GitCommandError("ref not found", command=["git", "checkout"], exit_code=1),
-        None,  # second checkout (inside _try_checkout_and_reset) succeeds
-    ]
-    mock_git.get_current_branch.return_value = None  # detached HEAD after fetch
-
-    _update_repository(tmp_path, "v2.0.0", mock_git)
-
-    mock_git.fetch.assert_called_once_with(tmp_path)
-
-
-def test_update_detached_head_recovers_to_default_branch(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
+def test_update_detached_head_recovers_to_default_branch(tmp_path: Path, update_git):
+    mock_git = update_git
     mock_git.get_current_branch.return_value = None
     mock_git.get_default_branch.return_value = "main"
+    mock_git.resolve_local_requested_ref.return_value = "a" * 40
 
-    _update_repository(tmp_path, None, mock_git)
+    _update_repository(tmp_path, mock_git)
 
     mock_git.fetch.assert_called_once()
     mock_git.get_current_branch.assert_called_once()
     mock_git.get_default_branch.assert_called_once_with(tmp_path)
-    mock_git.checkout.assert_called_once_with(tmp_path, "main")
-    mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
+    mock_git.resolve_local_requested_ref.assert_called_once_with(
+        tmp_path, "refs/remotes/origin/main"
+    )
+    mock_git.checkout_detached.assert_called_once_with(tmp_path, "a" * 40)
 
 
-def test_update_detached_head_no_default_branch_logs_warning(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
+def test_update_detached_head_no_default_branch_logs_warning(
+    tmp_path: Path, update_git
+):
+    mock_git = update_git
     mock_git.get_current_branch.return_value = None
     mock_git.get_default_branch.return_value = None
 
-    _update_repository(tmp_path, None, mock_git)
+    _update_repository(tmp_path, mock_git)
 
     mock_git.fetch.assert_called_once()
     mock_git.get_default_branch.assert_called_once()
@@ -145,72 +92,29 @@ def test_update_detached_head_no_default_branch_logs_warning(tmp_path: Path):
     mock_git.reset_hard.assert_not_called()
 
 
-def test_update_continues_on_fetch_error(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
+def test_update_continues_on_fetch_error(tmp_path: Path, update_git):
+    mock_git = update_git
     mock_git.fetch.side_effect = GitCommandError(
         "Network error", command=["git", "fetch"], exit_code=1
     )
 
-    _update_repository(tmp_path, None, mock_git)
+    _update_repository(tmp_path, mock_git)
 
     mock_git.fetch.assert_called_once()
     mock_git.get_current_branch.assert_not_called()
 
 
-def test_update_continues_on_checkout_error(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    mock_git.checkout.side_effect = GitCommandError(
-        "Invalid ref", command=["git", "checkout"], exit_code=1
+def test_update_strict_raises_on_fetch_error(tmp_path: Path, update_git):
+    """strict=True surfaces a failed fetch instead of keeping the stale cache."""
+    mock_git = update_git
+    mock_git.get_current_branch.return_value = "main"
+    mock_git.fetch.side_effect = GitCommandError(
+        "offline", command=["git", "fetch"], exit_code=128
     )
 
-    _update_repository(tmp_path, "nonexistent", mock_git)
-
-
-# -- _checkout_ref -------------------------------------------------------------
-
-
-def test_checkout_branch_resets_to_origin(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = "main"
-
-    _checkout_ref(tmp_path, "main", mock_git)
-
-    mock_git.checkout.assert_called_once_with(tmp_path, "main")
-    mock_git.get_current_branch.assert_called_once_with(tmp_path)
-    mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
-
-
-def test_checkout_tag_skips_reset(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = None
-
-    _checkout_ref(tmp_path, "v1.0.0", mock_git)
-
-    mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
-    mock_git.reset_hard.assert_not_called()
-
-
-def test_checkout_commit_skips_reset(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = None
-
-    _checkout_ref(tmp_path, "abc123", mock_git)
-
-    mock_git.checkout.assert_called_once_with(tmp_path, "abc123")
-    mock_git.reset_hard.assert_not_called()
-
-
-def test_checkout_branch_handles_reset_error(tmp_path: Path):
-    mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = "main"
-    mock_git.reset_hard.side_effect = GitCommandError(
-        "Reset failed", command=["git", "reset"], exit_code=1
-    )
-
-    _checkout_ref(tmp_path, "main", mock_git)
-
-    mock_git.checkout.assert_called_once()
-    mock_git.reset_hard.assert_called_once()
+    _update_repository(tmp_path, mock_git)  # lenient: keeps the cache
+    with pytest.raises(GitCommandError):
+        _update_repository(tmp_path, mock_git, strict=True)
 
 
 # -- GitHelper error handling --------------------------------------------------
