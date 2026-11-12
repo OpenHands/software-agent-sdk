@@ -13,6 +13,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import psutil
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,6 +23,7 @@ from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.canvas_extensions.backend import (
     BackendSecretGrantRequest,
     CanvasExtensionBackendManager,
+    _process_start_time,
     _Runtime,
 )
 from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
@@ -93,6 +95,8 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
         "artifacts": {
             "linux-amd64": {"path": archive.name, "sha256": checksum},
             "linux-arm64": {"path": archive.name, "sha256": checksum},
+            "darwin-amd64": {"path": archive.name, "sha256": checksum},
+            "darwin-arm64": {"path": archive.name, "sha256": checksum},
         },
         "argv": [
             "{artifact_dir}/server.py",
@@ -127,7 +131,7 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
 
 requires_linux_backend = pytest.mark.skipif(
     CanvasExtensionBackendManager.current_platform() is None,
-    reason="backend artifact fixture only supports Linux amd64/arm64",
+    reason="backend artifact fixture requires a supported Unix platform",
 )
 
 
@@ -136,7 +140,7 @@ requires_linux_backend = pytest.mark.skipif(
     CanvasExtensionBackendManager.current_platform() is not None,
     reason="backend artifacts are supported on this platform",
 )
-async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
+async def test_backend_is_unsupported_on_other_platform(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
     installed_dir = tmp_path / "installed"
     install_canvas_extension(str(source), installed_dir=installed_dir)
@@ -793,11 +797,9 @@ asyncio.run(main())
 
 def _alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    # A zombie child of this test process is dead too.
-    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
 
 
 @requires_linux_backend
@@ -835,10 +837,7 @@ async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path)
         "/bin/sleep", "300", start_new_session=True
     )
     forged = state_dir / "run" / f"{bystander.pid}.json"
-    stat = Path(f"/proc/{bystander.pid}/stat").read_text()
-    record.update(
-        pgid=bystander.pid, start_time=int(stat.rsplit(")", 1)[1].split()[19])
-    )
+    record.update(pgid=bystander.pid, start_time=_process_start_time(bystander.pid))
     forged.write_text(json.dumps(record))
 
     manager = CanvasExtensionBackendManager(installed_dir, state_dir)

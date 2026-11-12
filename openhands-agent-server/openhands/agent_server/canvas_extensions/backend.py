@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final, Literal
 from urllib.parse import urljoin, urlsplit
 
+import psutil
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.canvas_extensions.installed import (
@@ -114,6 +115,11 @@ class _RunRecord(BaseModel):
 
 def _process_start_time(pid: int) -> int | None:
     """Return a process's start time in clock ticks since boot (Linux)."""
+    if platform.system() == "Darwin":
+        try:
+            return int(psutil.Process(pid).create_time() * 1_000_000)
+        except psutil.Error:
+            return None
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
@@ -189,9 +195,15 @@ class CanvasExtensionBackendManager:
 
     @staticmethod
     def current_platform() -> BackendPlatform | None:
-        if platform.system() != "Linux":
-            return None
+        system = platform.system()
         machine = platform.machine().lower()
+        if system == "Darwin":
+            if machine in {"x86_64", "amd64"}:
+                return "darwin-amd64"
+            if machine in {"aarch64", "arm64"}:
+                return "darwin-arm64"
+        if system != "Linux":
+            return None
         if machine in {"x86_64", "amd64"}:
             return "linux-amd64"
         if machine in {"aarch64", "arm64"}:
@@ -438,7 +450,8 @@ class CanvasExtensionBackendManager:
         for path in sorted(destination.rglob("*"), reverse=True):
             if path.is_dir():
                 path.chmod(0o555)
-        destination.chmod(0o555)
+        # macOS requires write permission on a directory when renaming it.
+        destination.chmod(0o755)
 
     async def prepare(self, name: str, revision: str) -> BackendStatus:
         async with self._lock(name):
@@ -501,6 +514,7 @@ class CanvasExtensionBackendManager:
                         ) from exc
                     try:
                         os.replace(temporary, artifact_dir)
+                        artifact_dir.chmod(0o555)
                     except OSError:
                         if not artifact_dir.is_dir():
                             raise
@@ -973,14 +987,11 @@ class CanvasExtensionBackendManager:
         if _process_start_time(record.pgid) != record.start_time:
             return False
         try:
-            cmdline = Path(f"/proc/{record.pgid}/cmdline").read_bytes()
-        except OSError:
+            arguments = psutil.Process(record.pgid).cmdline()
+        except psutil.Error:
             return False
         prefix = f"{(self.artifacts_dir / record.name).resolve()}/"
-        return any(
-            argument.decode(errors="replace").startswith(prefix)
-            for argument in cmdline.split(b"\0")
-        )
+        return any(argument.startswith(prefix) for argument in arguments)
 
     async def reap_orphans(self) -> None:
         """Stop backends left running by a server that died without teardown.

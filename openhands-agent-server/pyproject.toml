@@ -14,6 +14,7 @@ dependencies = [
   "openhands-tools",
   "openai>=2.33.0,<3",
   "pydantic>=2.13.5",
+  "psutil>=7.2.2",
   "sqlalchemy>=2.1.6",
   "uvicorn>=0.54.0",
   "websockets>=12",
