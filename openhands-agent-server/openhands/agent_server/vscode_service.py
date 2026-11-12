@@ -210,7 +210,8 @@ class VSCodeService:
         if self.process is None:
             return
         await self.process.wait()
-        while not await self._is_port_available():
+        # Nothing signals that node released the port; polling is the only way.
+        while not await self._is_port_available():  # noqa: ASYNC110
             await asyncio.sleep(0.1)
 
     def _proxy_script_path(self) -> Path:

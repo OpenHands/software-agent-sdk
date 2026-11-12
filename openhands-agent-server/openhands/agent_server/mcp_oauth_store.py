@@ -8,7 +8,6 @@ the same encryption/redaction path as other settings secrets.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import threading
 from collections.abc import Mapping, Sequence
@@ -18,7 +17,11 @@ from typing import Any, NamedTuple, SupportsFloat
 import httpx
 
 from openhands.agent_server.config import Config, WebhookSpec
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_settings_store,
+    run_store,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
@@ -166,13 +169,13 @@ class MCPSettingsOAuthTokenStore:
     async def get(
         self, key: str, *, collection: str | None = None
     ) -> dict[str, Any] | None:
-        value, _ = await asyncio.to_thread(self._get_entry_sync, key, collection)
+        value, _ = await run_store(self._get_entry_sync, key, collection)
         return value
 
     async def ttl(
         self, key: str, *, collection: str | None = None
     ) -> tuple[dict[str, Any] | None, float | None]:
-        return await asyncio.to_thread(self._get_entry_sync, key, collection)
+        return await run_store(self._get_entry_sync, key, collection)
 
     def _put_sync(
         self,
@@ -284,7 +287,7 @@ class MCPSettingsOAuthTokenStore:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        await asyncio.to_thread(
+        await run_store(
             self._put_sync,
             key,
             value,
@@ -334,7 +337,7 @@ class MCPSettingsOAuthTokenStore:
         return deleted
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
-        return await asyncio.to_thread(self._delete_sync, key, collection)
+        return await run_store(self._delete_sync, key, collection)
 
     async def get_many(
         self, keys: Sequence[str], *, collection: str | None = None

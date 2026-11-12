@@ -40,7 +40,11 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateSecretsRequest,
 )
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_settings_store,
+    run_store,
+)
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -129,6 +133,32 @@ docker_conversation_router = APIRouter(
 )
 
 
+def _worktree_git_paths(workspace_path: Path) -> dict[str, Path]:
+    """The repository and git common dir a worktree start records, if any."""
+    try:
+        validate_git_repository(workspace_path)
+        repo_root = Path(
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                workspace_path,
+            )
+        ).resolve()
+        git_common_dir = Path(
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--git-common-dir"],
+                workspace_path,
+            )
+        )
+    except (GitCommandError, GitRepositoryError):
+        return {}
+    if not git_common_dir.is_absolute():
+        git_common_dir = workspace_path / git_common_dir
+    return {
+        "worktree_repository_path": repo_root,
+        "worktree_git_common_dir_path": git_common_dir.resolve(),
+    }
+
+
 @docker_conversation_router.post("")
 async def start_conversation(
     request: Request,
@@ -194,33 +224,14 @@ async def start_docker_conversation(
         payload, launched, options, worktree = await _prepare_forward(
             body, registry, existing=existing
         )
-        identity = registry.provisioning.create(conversation_id, host_workspace)
+        identity = await run_store(
+            registry.provisioning.create, conversation_id, host_workspace
+        )
         updates: dict[str, Any] = {}
         if worktree:
-            try:
-                validate_git_repository(identity.workspace_path)
-                repo_root = Path(
-                    run_git_command(
-                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
-                        identity.workspace_path,
-                    )
-                ).resolve()
-                git_common_dir = Path(
-                    run_git_command(
-                        ["git", "--no-pager", "rev-parse", "--git-common-dir"],
-                        identity.workspace_path,
-                    )
-                )
-                if not git_common_dir.is_absolute():
-                    git_common_dir = identity.workspace_path / git_common_dir
-                git_common_dir = git_common_dir.resolve()
-            except (GitCommandError, GitRepositoryError):
-                pass
-            else:
-                updates.update(
-                    worktree_repository_path=repo_root,
-                    worktree_git_common_dir_path=git_common_dir,
-                )
+            updates.update(
+                await asyncio.to_thread(_worktree_git_paths, identity.workspace_path)
+            )
         if launched is not None and identity.launched_agent_profile is None:
             updates["launched_agent_profile"] = launched
         # Fixed once the container accepted the conversation; until then a
@@ -229,7 +240,7 @@ async def start_docker_conversation(
             updates["container"] = options
         if updates:
             identity = identity.model_copy(update=updates)
-            registry.provisioning.save(identity)
+            await run_store(registry.provisioning.save, identity)
         container = await registry.get_or_create(conversation_id)
         release = registry.acquire_lease(conversation_id)
         forwarded = await asyncio.to_thread(payload, identity.cipher)
@@ -290,7 +301,7 @@ async def _prepare_forward(
         context={"cipher": config.cipher} if body.get("secrets_encrypted") else None,
     )
     try:
-        settings = await asyncio.to_thread(get_settings_store(config).load)
+        settings = await run_store(get_settings_store(config).load)
     except (OSError, PermissionError):
         settings = None
     settings = settings or PersistedSettings()
@@ -335,7 +346,7 @@ async def runtime_credentials(conversation_id: UUID, request: Request) -> JSONRe
     registry = get_registry(request)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
         raise HTTPException(404, "Conversation not found")
-    identity = registry.provisioning.load(conversation_id)
+    identity = await run_store(registry.provisioning.load, conversation_id)
     return JSONResponse({"session_api_key": identity.api_key.get_secret_value()})
 
 
@@ -390,9 +401,10 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
             logger.exception(
                 "Could not clean up conversation worktree %s", conversation_id
             )
-        await asyncio.to_thread(
-            safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
+        runtime_dir = await run_store(
+            registry.provisioning.runtime_dir, conversation_id
         )
+        await asyncio.to_thread(safe_rmtree, runtime_dir)
         await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
         registry.archived_marker(conversation_id).unlink(missing_ok=True)
@@ -443,7 +455,8 @@ async def proxy_conversation(
             update = UpdateSecretsRequest.model_validate_json(await request.body())
         except ValueError as exc:
             raise HTTPException(422, "Invalid secrets payload") from exc
-        profile = registry.provisioning.load(conversation_id).launched_agent_profile
+        identity = await run_store(registry.provisioning.load, conversation_id)
+        profile = identity.launched_agent_profile
         secrets = update.secrets
         if profile is not None:
             secrets = {

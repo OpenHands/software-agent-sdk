@@ -22,6 +22,7 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_provider_connections_store,
     get_settings_store,
+    run_store,
 )
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
@@ -352,7 +353,9 @@ async def validate_profile(
     # credentials, as activation and ``switch_llm`` run it. No-op without
     # ``provider_connection_id``; a dangling link is a 422 naming it.
     with store_errors():
-        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+        llm = await run_store(
+            get_llm_profile_store().resolve_provider_connection, llm, cipher=cipher
+        )
 
     messages = [
         Message(

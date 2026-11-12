@@ -39,7 +39,11 @@ from openhands.agent_server.models import (
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_settings_store,
+    run_store,
+)
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import Event, ReactionEvent
@@ -367,8 +371,8 @@ reaction_router = APIRouter(
 async def require_reactions_enabled(config: Config) -> None:
     """Refuse with 409 unless the user has conversation reactions on."""
     try:
-        settings = await asyncio.to_thread(
-            lambda: get_settings_store(config).load() or PersistedSettings()
+        settings = (
+            await run_store(get_settings_store(config).load) or PersistedSettings()
         )
     except (PermissionError, OSError):
         raise HTTPException(

@@ -6,6 +6,7 @@ in the SDK to enable sharing between SDK clients and agent-server.
 See: openhands.sdk.settings.api_models
 """
 
+from openhands.agent_server.persistence.async_store import run_store
 from openhands.agent_server.persistence.models import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     SECRET_NAME_PATTERN,
@@ -56,6 +57,8 @@ __all__ = [
     "SettingsUpdatePayload",
     "WorkspaceItem",
     "WorkspaceParentItem",
+    # Async access
+    "run_store",
     # Stores
     "FileSecretsStore",
     "FileSettingsStore",

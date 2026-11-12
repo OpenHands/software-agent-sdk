@@ -51,7 +51,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import FileSecretsStore, run_store
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -794,10 +794,7 @@ class ConversationService:
     async def _has_local_codex_credential(self) -> bool:
         if self.secrets_store is None:
             return False
-        value = await asyncio.to_thread(
-            self.secrets_store.get_secret,
-            CODEX_AUTH_SECRET_NAME,
-        )
+        value = await run_store(self.secrets_store.get_secret, CODEX_AUTH_SECRET_NAME)
         return value is not None
 
     async def _resolve_credential_bindings(
@@ -1575,9 +1572,7 @@ class ConversationService:
         # now that every launch reads it, a bad file mode must not take down
         # request shapes that need nothing from settings.
         try:
-            settings = await asyncio.to_thread(
-                lambda: get_settings_store().load() or PersistedSettings()
-            )
+            settings = await run_store(get_settings_store().load) or PersistedSettings()
         except (PermissionError, OSError):
             logger.warning(
                 "Cannot read settings; starting without the stored agent preferences",
@@ -2763,7 +2758,7 @@ class AutoTitleSubscriber(Subscriber):
         # truncation. This keeps auto-titling non-breaking for consumers who
         # don't configure title_llm_profile.
         conversation = self.service._conversation
-        title_llm = self._load_title_llm()
+        title_llm = await run_store(self._load_title_llm)
         if title_llm is None:
             title_llm = conversation.agent.llm if conversation else None
 
