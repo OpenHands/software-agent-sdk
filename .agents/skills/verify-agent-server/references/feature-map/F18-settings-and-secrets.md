@@ -1067,5 +1067,4 @@ Preconditions:
   version bump. A server older than the experimental routes ignores the key
   and drops it on its next save, so restarting on such a release
   (`restart --checkout`), saving any setting there and coming back turns
-  every feature off again (checked live with v1.62.0 and
-  `conversation_reactions`).
+  every feature off again (v1.62.0 is such a release).

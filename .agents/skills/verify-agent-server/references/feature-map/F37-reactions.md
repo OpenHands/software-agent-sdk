@@ -48,13 +48,14 @@ Routes: `POST /api/conversations/{conversation_id}/reactions`
 - `F37.rest-active-branch`: after navigating back before the agent's answer, the abandoned answer is 400 `No message with id ...`, a reaction without a target is 400 `There is no agent message to react to.`, an event that is not a message is 400 `Event ... is not a message.`, and the user's message on the active branch still takes a reaction.
 - `F37.ts-client`: the TypeScript `SettingsClient` lists and switches the flag (an unknown key rejects with a 404 `HttpError`) and `ConversationClient.react` adds and removes a reaction that a GET of the event shows; a reaction with nothing to target rejects with a 400 `HttpError`.
 - `F37.runtime-env`: with `OH_RUNTIME_EXPERIMENTAL_FEATURES='{"conversation_reactions": true}'` and the stored flag off, new conversations get both tools and `POST .../reactions` answers 200; with `{}` new conversations get neither.
+- `F37.rest-response-parent`: the `ReactionEvent` that `POST .../reactions` returns is the event as stored, with the same `parent_id` (the reacted message when it is the active leaf) that search, get-one and the socket show.
 
 ## How to get to it (agent POV)
 
 - REST: `POST /api/conversations/{conversation_id}/reactions` with
   `{"emoji", "target_event_id"?, "removed"?}` returns the `ReactionEvent`
-  (its `parent_id` is filled in only on the stored copy: read it back through
-  search, get-one or the socket). Without `target_event_id` it targets the
+  as stored (a reaction held back while a tool call waits has no `parent_id`
+  until it joins the events). Without `target_event_id` it targets the
   agent's latest message or `finish` action; any message on the active branch,
   the user's own included, can be targeted. It never runs the agent.
 - REST: `GET /api/settings/experimental` and
@@ -216,11 +217,13 @@ Preconditions:
   control-agent-server sink read --name qa-f37-see --contains 'Reacted :eyes:' --expect-min 2
   control-agent-server sink read --name qa-f37-see --contains 'The user reacted' --expect-min 1 --expect-max 1 \
     --save F37.agent-sees-user-reactions/next-request
-  control-agent-server sink read --name qa-f37-see --contains 'to this message:]' --expect-min 1 --expect-max 1
+  control-agent-server sink read --name qa-f37-see --contains 'The user reacted \u2764\ufe0f to this message:]\nQA_F37_ANSWER' \
+    --expect-min 1 --expect-max 1
   control-agent-server sink read --name qa-f37-see --contains 'You reacted' --expect-max 0
   ```
   Only the third request (after the user's reaction) holds the reaction line,
-  with the answer's text after it. The agent's `react` call and its
+  with the answer's text after it (the sink keeps the request as JSON, so the
+  glyph and the line break read as `\u2764\ufe0f` and `\n`). The agent's `react` call and its
   `Reacted :eyes:.` result are in every later request, but its
   `ReactionEvent` never becomes a line of its own.
 - **Targets come from the active branch (`F37.rest-active-branch`).** Move
@@ -310,6 +313,30 @@ Preconditions:
   With the variable set, the server takes its switches from it and leaves
   the route's check to the host; without it, the stored (off) flag applies
   again.
+
+- **The response is the stored event (`F37.rest-response-parent`), known bug #6782.**
+  A reaction on the latest message is stamped with that message as its
+  parent; the POST answer carries the same `parent_id` as the stored copy.
+  Requires: `F37.flag`
+  ```sh
+  control-agent-server api PATCH /api/settings/experimental/conversation_reactions --json '{"enabled": true}' --expect 200
+  PC=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  control-agent-server api POST "/api/conversations/$PC/events" \
+    --json '{"role": "user", "content": [{"type": "text", "text": "QA_F37_PARENT"}], "run": false}' --expect 200
+  PM=$(control-agent-server api GET "/api/conversations/$PC/events/search" --query body=QA_F37_PARENT --field items.0.id)
+  PR=$(control-agent-server api POST "/api/conversations/$PC/reactions" --json "{\"emoji\": \"heart\", \"target_event_id\": \"$PM\"}" \
+    --expect 200 --field id)
+  control-agent-server api GET "/api/conversations/$PC/events/$PR" --check parent_id eq "$PM" --save F37.rest-response-parent/stored
+  control-agent-server api POST "/api/conversations/$PC/reactions" --json "{\"emoji\": \"+1\", \"target_event_id\": \"$PM\"}" \
+    --expect 200 --check parent_id eq "$PR" --save F37.rest-response-parent/post  # bug: status eq 200 && response.body.kind eq ReactionEvent && response.body.parent_id eq null
+  ```
+  The first reaction is read back to show the stored `parent_id`; the second
+  is stamped with the first as its parent (the active leaf), and its POST
+  answer should say so. Known bug
+  [#6782](https://github.com/OpenHands/software-agent-sdk/issues/6782): the
+  answer has `parent_id: null`, because `LocalConversation.react` returns the
+  event before the log's stamped copy (fix:
+  [#6783](https://github.com/OpenHands/software-agent-sdk/pull/6783)).
 
 ## Gotchas
 
