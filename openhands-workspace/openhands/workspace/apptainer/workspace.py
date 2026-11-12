@@ -316,10 +316,12 @@ class ApptainerWorkspace(RemoteWorkspace):
             str(self.host_port),
         ]
 
-        # Start the server process in the background in separate process group
+        # Start the server process in the background in separate process group.
+        # Without a log thread nothing reads a pipe, and a full pipe would block
+        # the server, so its output is discarded instead.
         self._process = subprocess.Popen(
             server_cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.PIPE if self.detach_logs else subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,

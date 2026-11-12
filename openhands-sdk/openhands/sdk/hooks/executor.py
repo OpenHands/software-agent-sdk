@@ -421,7 +421,9 @@ class HookExecutor:
             )
 
         decision_str = str(data.get("decision", "")).lower()
-        reason = str(data.get("reason", ""))
+        # A JSON null reason means the hook gave none; str(None) would turn it
+        # into the literal "None" and show that to the model.
+        reason = None if (raw_reason := data.get("reason")) is None else str(raw_reason)
         if decision_str == "deny":
             return HookResult(
                 success=True,
@@ -552,16 +554,28 @@ class HookExecutor:
                 )
 
         try:
-            # Execute the hook command synchronously
-            result = subprocess.run(
+            # Execute the hook command synchronously, in its own session so a
+            # timeout stops the commands the shell started, not just the shell.
+            with subprocess.Popen(
                 command,
                 shell=True,
                 cwd=self.working_dir,
                 env=hook_env,
-                input=event_json,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=hook.timeout,
+                start_new_session=os.name != "nt",
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(
+                        event_json, timeout=hook.timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    self.async_process_manager._terminate_process(process)
+                    raise
+            result = subprocess.CompletedProcess(
+                command, process.returncode, stdout, stderr
             )
 
             # Parse the result
@@ -590,7 +604,10 @@ class HookExecutor:
 
                         # Parse other fields
                         if "reason" in output_data:
-                            hook_result.reason = str(output_data["reason"])
+                            raw_reason = output_data["reason"]
+                            hook_result.reason = (
+                                None if raw_reason is None else str(raw_reason)
+                            )
                         if "additionalContext" in output_data:
                             hook_result.additional_context = str(
                                 output_data["additionalContext"]

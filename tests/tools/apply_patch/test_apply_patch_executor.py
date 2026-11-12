@@ -299,3 +299,32 @@ def test_invalid_move_to_path_returns_differror(tmp_ws: Path):
     obs = run_exec(tmp_ws, patch)
     assert obs.is_error
     assert "Invalid move path" in obs.text
+
+
+def test_rejected_patch_does_not_apply_earlier_files(tmp_ws: Path):
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: ok.txt\n"
+        "+x\n"
+        "*** Add File: ../escape.txt\n"
+        "+y\n"
+        "*** End Patch"
+    )
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert not (tmp_ws / "ok.txt").exists()
+    assert not (tmp_ws.parent / "escape.txt").exists()
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="text-mode writes emit CRLF natively on Windows"
+)
+def test_update_preserves_crlf_line_endings(tmp_ws: Path):
+    fp = tmp_ws / "crlf.txt"
+    fp.write_bytes(b"a\r\nb\r\n")
+    patch = "*** Begin Patch\n*** Update File: crlf.txt\n@@\n a\n-b\n+B\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert not obs.is_error
+    assert fp.read_bytes() == b"a\r\nB\r\n"
