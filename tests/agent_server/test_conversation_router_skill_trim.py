@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
@@ -155,6 +156,7 @@ class TestRouteIntegration:
         )
 
         app = FastAPI()
+        add_domain_error_handler(app)
         app.include_router(conversation_router, prefix="/api")
         app.state.config = Config(
             static_files_path=None, session_api_keys=[], secret_key=None
@@ -239,6 +241,7 @@ class TestRouteIntegration:
         service = AsyncMock(spec=ConversationService)
         service.batch_get_conversations.return_value = [None]
         app = FastAPI()
+        add_domain_error_handler(app)
         app.include_router(conversation_router, prefix="/api")
         app.state.config = Config(
             static_files_path=None, session_api_keys=[], secret_key=None

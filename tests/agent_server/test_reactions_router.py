@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
@@ -45,6 +46,7 @@ def reactions_on():
 @pytest.fixture
 async def client(service) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.config = Config(
         static_files_path=None, session_api_keys=[], secret_key=None
     )
