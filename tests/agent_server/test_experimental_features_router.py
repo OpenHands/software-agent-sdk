@@ -9,13 +9,22 @@ from fastapi import FastAPI
 
 from openhands.agent_server import experimental_features
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.experimental_features import (
+    RUNTIME_EXPERIMENTAL_FEATURES_ENV,
     ExperimentalFeatureDefinition,
+    experimental_feature_tools,
+    host_experimental_features,
 )
 from openhands.agent_server.experimental_features_router import (
     experimental_features_router,
 )
+from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.sdk import LLM, Agent
+from openhands.sdk.agent import ACPAgent
+from openhands.sdk.launch.finalize import LaunchRuntime, finalize
+from openhands.sdk.workspace import LocalWorkspace
 
 
 QA_FEATURE = ExperimentalFeatureDefinition(
@@ -152,7 +161,109 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 
 
 @pytest.mark.asyncio
-async def test_no_features_are_registered_yet(client):
+async def test_conversation_reactions_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
-    assert response.json() == []
+    assert [(f["key"], f["enabled"]) for f in response.json()] == [
+        ("conversation_reactions", False)
+    ]
+
+
+def test_feature_tools_follow_the_flags():
+    assert experimental_feature_tools({}) == []
+    assert [
+        t.name for t in experimental_feature_tools({"conversation_reactions": True})
+    ] == [
+        "react",
+        "unreact",
+    ]
+
+
+def _runtime() -> LaunchRuntime:
+    return LaunchRuntime(acp_skill_sourcing="native", browser_available=False)
+
+
+def test_finalize_adds_feature_tools_to_openhands_agents_only():
+    tools = experimental_feature_tools({"conversation_reactions": True})
+    agent = Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+    acp = ACPAgent(acp_command=["echo"])
+
+    launched = finalize(agent, _runtime(), experimental_feature_tools=tools)
+    launched_acp = finalize(acp, _runtime(), experimental_feature_tools=tools)
+
+    assert [t.name for t in launched.agent.tools] == ["react", "unreact"]
+    assert launched_acp.agent.tools == acp.tools
+
+
+@pytest.mark.asyncio
+async def test_new_conversations_get_reaction_tools_only_while_on(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def request() -> StartConversationRequest:
+        return StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(workspace)),
+        )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        off, _ = await service.start_conversation(request())
+
+        def turn_on(settings: PersistedSettings) -> PersistedSettings:
+            settings.experimental_features = {"conversation_reactions": True}
+            return settings
+
+        get_settings_store().update(turn_on)
+        on, _ = await service.start_conversation(request())
+
+        tool_names = {}
+        for info in (off, on):
+            event_service = await service.get_event_service(info.id)
+            assert event_service is not None
+            agent = event_service.get_conversation().agent
+            tool_names[info.id] = [t.name for t in agent.tools]
+
+    assert tool_names[off.id] == []
+    assert tool_names[on.id] == ["react", "unreact"]
+
+
+def test_host_switches_are_read_only_inside_a_runtime(monkeypatch):
+    monkeypatch.delenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV, raising=False)
+    assert host_experimental_features() is None
+
+    monkeypatch.setenv(
+        RUNTIME_EXPERIMENTAL_FEATURES_ENV,
+        json.dumps({"conversation_reactions": True, "unknown": True}),
+    )
+    assert host_experimental_features() == {"conversation_reactions": True}
+
+    for broken in ("", "not json", "[1]", '{"conversation_reactions": "yes"}'):
+        monkeypatch.setenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV, broken)
+        assert host_experimental_features() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_takes_its_tools_from_the_host_switches(tmp_path, monkeypatch):
+    # The runtime container's own settings are empty (flag off); the host
+    # passes the user's switches in the environment.
+    monkeypatch.setenv(
+        RUNTIME_EXPERIMENTAL_FEATURES_ENV, json.dumps({"conversation_reactions": True})
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        info, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace)),
+            )
+        )
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        agent = event_service.get_conversation().agent
+
+    assert [t.name for t in agent.tools] == ["react", "unreact"]
