@@ -64,7 +64,6 @@ Preconditions:
     --check steps.back.text eq "Navigated back" --check steps.state_after_back.text contains index.html \
     --check steps.new_tab.text contains "Opened new tab with URL" --check tabs_seen eq 2 \
     --check steps.switch_tab.text contains "Switched to tab" --check steps.close_tab.text contains "Closed tab" \
-    --check tabs_left eq 1 \
     --check storage_has_page_values eq true --check steps.set_storage.text eq "Storage set successfully" \
     --check storage_restored eq true \
     --check steps.missing_element.text contains "Element with index 99999 not found" \
@@ -72,6 +71,13 @@ Preconditions:
     --check chrome_processes_before_close ge 1 --check chrome_processes_after_close eq 0
   ```
   The page sets the cookie `session=abc123` and `localStorage.theme=dark` (`storage_has_page_values`); the restore adds the cookie `restored` and the key `restored_key`.
+- **Closing a tab that is not focused (`S15.tabs`).** A `BrowserToolExecutor` opens `page2.html` in a new tab, switches back to the first tab, closes the new one and lists the tabs at once, five times.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S15/close_tab --timeout 300 \
+    --check setup_ok eq true --check all_closed eq true --check stale_lists eq 0
+  ```
+  Expected: once `browser_close_tab` has answered, `browser_list_tabs` lists only the remaining tab. Known failure (reproduced 2026-11-12, [#6785](https://github.com/OpenHands/software-agent-sdk/issues/6785)): the close answers when Chrome acknowledges `Target.closeTarget`, but browser-use's tab list drops the tab only when `Target.detachedFromTarget` is handled 10–30 ms later, so the immediate list still shows it (`stale_lists` 5 of 5; closing the focused tab usually hides the lag). Fix: [#6786](https://github.com/OpenHands/software-agent-sdk/pull/6786).
 - **No Chromium (`S15.degrade-on-failure`, `S15.chromium-detection`, `S15.prompt-guidance`).** The run's `HOME` has no Playwright cache, `PLAYWRIGHT_BROWSERS_PATH` is unset, and no Chromium is on `PATH` or in the system paths (on a machine with a system Chrome the program exits 3, since it cannot hide that one). A scripted agent with the terminal and the browser tool set still runs its terminal command.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
