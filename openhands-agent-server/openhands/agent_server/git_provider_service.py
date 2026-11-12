@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import get_secrets_store, run_store
 from openhands.sdk.git.models import (
     GitProviderRepository,
     GitProviderRepositoryPage,
@@ -88,7 +88,7 @@ async def search_provider_repositories(
             f"Repository discovery is not supported for provider '{provider.value}'"
         )
 
-    token = _resolve_provider_token(config, provider)
+    token = await run_store(_resolve_provider_token, config, provider)
     if token is None:
         return GitProviderRepositoryPage(
             items=[], next_page_id=None, missing_token=True
@@ -122,7 +122,7 @@ async def get_provider_pull_request(
         raise UnsupportedGitProviderError(
             f"Pull requests are not supported for provider '{provider.value}'"
         )
-    token = _resolve_provider_token(config, provider)
+    token = await run_store(_resolve_provider_token, config, provider)
     if token is None:
         raise MissingGitProviderTokenError(f"No {provider.value} token is configured")
 

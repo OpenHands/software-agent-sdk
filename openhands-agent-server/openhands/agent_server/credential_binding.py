@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import FileSecretsStore, run_store
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
@@ -48,7 +48,7 @@ class LocalVersionedCredentialBinding:
 
     async def load(self) -> ResolvedCredential:
         try:
-            value, version = await asyncio.to_thread(
+            value, version = await run_store(
                 self.store.load_versioned_secret,
                 self.secret_name,
             )
@@ -62,7 +62,7 @@ class LocalVersionedCredentialBinding:
 
     async def replace(self, expected_version: str, value: str) -> str:
         try:
-            return await asyncio.to_thread(
+            return await run_store(
                 self.store.replace_versioned_secret,
                 self.secret_name,
                 expected_version,

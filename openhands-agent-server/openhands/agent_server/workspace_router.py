@@ -12,6 +12,7 @@ Behaves like a plain static file server:
 - Path traversal outside of the workspace is rejected.
 """
 
+import asyncio
 from pathlib import Path
 from uuid import UUID
 
@@ -54,8 +55,8 @@ async def _resolve_workspace_dir(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation workspace is not local; cannot be served",
         )
-    workspace_dir = Path(workspace.working_dir).resolve()
-    if not workspace_dir.is_dir():
+    workspace_dir = await asyncio.to_thread(Path(workspace.working_dir).resolve)
+    if not await asyncio.to_thread(workspace_dir.is_dir):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace directory does not exist",

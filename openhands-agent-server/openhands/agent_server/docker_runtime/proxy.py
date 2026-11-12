@@ -94,7 +94,7 @@ async def proxy_http(
     workspace: ProxyTarget,
     *,
     upstream_path: str,
-    timeout: float | None = None,
+    read_timeout: float | None = None,
     body: bytes | None = None,
     on_close: Callable[[], Any] | None = None,
     reject_redirects: bool = False,
@@ -108,8 +108,8 @@ async def proxy_http(
             agent-server to forward to. Typically the same path the outer
             server received, since the inner agent-server exposes the same
             API surface.
-        timeout: Per-request timeout in seconds. ``None`` (the default) means
-            no read timeout — conversation event streams can be long-lived.
+        read_timeout: Upstream read timeout in seconds. ``None`` (the default)
+            means no read timeout — conversation event streams can be long-lived.
         body: Replacement request body. By default the incoming body is streamed.
         on_close: Awaited or invoked once the streamed response is fully consumed,
             client disconnects, or connection fails. Callers use this to release
@@ -157,7 +157,9 @@ async def proxy_http(
     try:
         client = await stack.enter_async_context(
             httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
+                timeout=httpx.Timeout(
+                    connect=10.0, read=read_timeout, write=30.0, pool=10.0
+                )
             )
         )
         upstream = await stack.enter_async_context(

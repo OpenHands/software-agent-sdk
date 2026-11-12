@@ -1193,7 +1193,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return decorate
 
     async def _anext_with_idle_timeout(
-        self, iterator: AsyncIterator[_T], timeout: float
+        self,
+        iterator: AsyncIterator[_T],
+        timeout: float,  # noqa: ASYNC109 - this function is the cancel scope
     ) -> _T:
         """Await one chunk, converting only this idle timer's own expiry.
 

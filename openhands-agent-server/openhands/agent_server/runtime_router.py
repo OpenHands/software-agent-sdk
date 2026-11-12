@@ -4,6 +4,7 @@ Local processes and VSCode services still share the host; these path
 checks are routing safeguards, not a sandbox for arbitrary shell commands.
 """
 
+import asyncio
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -38,14 +39,11 @@ async def bind_local_conversation_runtime(
     if event_service is None:
         raise HTTPException(404, "Conversation not found")
     request.state.runtime_event_service = event_service
-    workspace_root = Path(
-        event_service.get_conversation().workspace.working_dir
-    ).resolve()
+    workspace_dir = event_service.get_conversation().workspace.working_dir
     for name in ("path", "workspace_dir"):
         requested_path = request.path_params.get(name) or request.query_params.get(name)
-        if requested_path is not None and (
-            not Path(requested_path).is_absolute()
-            or not Path(requested_path).resolve().is_relative_to(workspace_root)
+        if requested_path is not None and not await asyncio.to_thread(
+            _is_inside, Path(requested_path), Path(workspace_dir)
         ):
             raise HTTPException(
                 422, f"{name} must be inside the conversation workspace"
@@ -60,6 +58,11 @@ async def bind_local_conversation_runtime(
             raise HTTPException(
                 422, "Trajectory must belong to the selected conversation"
             )
+
+
+def _is_inside(path: Path, workspace_dir: Path) -> bool:
+    """Whether absolute ``path`` resolves inside ``workspace_dir``."""
+    return path.is_absolute() and path.resolve().is_relative_to(workspace_dir.resolve())
 
 
 class RuntimeRouter(APIRouter):

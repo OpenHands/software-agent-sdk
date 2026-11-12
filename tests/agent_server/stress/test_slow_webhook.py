@@ -185,7 +185,7 @@ async def test_slow_webhook_does_not_unbound_growth(
       (b) the webhook subscriber buffer doesn't accumulate unbounded events.
     """
     # Distinct workspaces per run so any workspace-side state from the
-    # baseline (e.g. .git from `_ensure_workspace_is_git_repo`, scratch
+    # baseline (e.g. .git from `_prepare_workspace_dir`, scratch
     # files) doesn't bleed into the webhook timing.
     workspace_baseline = str(tmp_path / "ws_baseline")
     workspace_webhook = str(tmp_path / "ws_webhook")

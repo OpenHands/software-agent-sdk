@@ -62,3 +62,11 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
+          - id: check-async-store-access
+            name: Keep blocking store I/O off the agent-server event loop
+            entry: uv
+            args: [run, python, scripts/check_async_store_access.py]
+            language: system
+            files: ^openhands-agent-server/.*\.py$
+            pass_filenames: true
+            always_run: false

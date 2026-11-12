@@ -21,6 +21,7 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_secrets_store,
     get_settings_store,
+    run_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
@@ -154,7 +155,7 @@ async def get_settings(request: Request) -> SettingsResponse:
     expose_mode = parse_expose_secrets_header(request)
     config = get_config(request)
     store = get_settings_store(config)
-    settings = store.load() or PersistedSettings()
+    settings = await run_store(store.load) or PersistedSettings()
 
     # Audit log all settings access for security visibility
     # Use WARNING level for plaintext mode to highlight security-sensitive operations
@@ -455,7 +456,8 @@ async def create_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: server_data}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         update_data,
         lambda settings: _require_mcp_server_absent(settings, settings_key),
@@ -478,7 +480,8 @@ async def patch_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: patch_data}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         update_data,
         lambda settings: _require_mcp_server_present(settings, settings_key),
@@ -492,7 +495,8 @@ async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResp
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: None}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         update_data,
         lambda settings: _require_mcp_server_present(settings, settings_key),
@@ -557,7 +561,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
 
     config = get_config(request)
     store = get_secrets_store(config)
-    value = store.get_secret(name)
+    value = await run_store(store.get_secret, name)
 
     client_host = request.client.host if request.client else "unknown"
     if value is None:
@@ -598,7 +602,8 @@ async def create_secret(
     store = get_secrets_store(config)
 
     try:
-        store.set_secret(
+        await run_store(
+            store.set_secret,
             name=secret.name,
             value=value,
             description=secret.description,
@@ -644,7 +649,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
 
     client_host = request.client.host if request.client else "unknown"
     try:
-        deleted = store.delete_secret(name)
+        deleted = await run_store(store.delete_secret, name)
     except RuntimeError as e:
         # Data corruption protection triggered (file exists but unreadable)
         logger.error(f"Secret delete blocked: {e}")

@@ -34,6 +34,7 @@ from openhands.agent_server.persistence import (
     get_agent_profile_store,
     get_llm_profile_store,
     get_settings_store,
+    run_store,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
 from openhands.sdk.launch import preview_launch
@@ -605,7 +606,7 @@ async def materialize_agent_profile(
         try:
             with store_errors():
                 # Off the event loop: the store lock wait blocks (up to 30 s).
-                profile = await asyncio.to_thread(store.load, name)
+                profile = await run_store(store.load, name)
         except FileNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -613,7 +614,7 @@ async def materialize_agent_profile(
             )
 
     config = get_config(request)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = await run_store(get_settings_store(config).load) or PersistedSettings()
     context = settings.agent_settings.agent_context
     return await asyncio.to_thread(
         lambda: preview_launch(

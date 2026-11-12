@@ -8,11 +8,11 @@ unconfigured exporter, or a settings-store read error all resolve to the no-op
 sink. Analytics must never be able to prevent a server from starting.
 """
 
-import asyncio
 from functools import partial
 from typing import Any
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.persistence.async_store import run_store
 from openhands.agent_server.telemetry.factory import (
     DiagnosticEventFactory,
     build_runtime_properties,
@@ -49,7 +49,7 @@ def _read_misc_settings_sync(config: Config) -> dict[str, Any]:
 
 async def _read_decision(config: Config) -> TelemetryDecision:
     """Resolve consent from persisted settings, off the event loop."""
-    misc = await asyncio.to_thread(_read_misc_settings_sync, config)
+    misc = await run_store(_read_misc_settings_sync, config)
     return resolve(misc)
 
 

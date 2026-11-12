@@ -86,7 +86,7 @@ from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
-from openhands.agent_server.persistence import reencrypt_stale_stores
+from openhands.agent_server.persistence import reencrypt_stale_stores, run_store
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
@@ -419,7 +419,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
-        await asyncio.to_thread(reencrypt_stale_stores, config)
+        await run_store(reencrypt_stale_stores, config)
         #
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.

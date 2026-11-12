@@ -47,6 +47,7 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     get_llm_profile_store,
     get_settings_store,
+    run_store,
 )
 from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
@@ -530,7 +531,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models() -> OpenAIModelListResponse:
     try:
-        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
+        profiles = await run_store(get_llm_profile_store().list_summaries)
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -759,7 +760,9 @@ async def run_chat_completion(
             detail="Streaming chat completions are not supported yet",
         )
 
-    start_request = _conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _conversation_request,
         request=request,
         config=config,
         conversation_id=reusable_conversation_id,
@@ -828,7 +831,9 @@ async def run_response(
         )
 
     user_content = _response_user_content(request)
-    start_request = _response_conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _response_conversation_request,
         request=request,
         user_content=user_content,
         config=config,

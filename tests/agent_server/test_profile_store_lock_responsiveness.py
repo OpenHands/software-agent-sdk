@@ -72,6 +72,30 @@ _ALIVE_BUDGET_SECONDS = 2.0
             200,
             id="provider-connections",
         ),
+        pytest.param(
+            ".workspaces.lock",
+            "POST",
+            "/api/workspaces",
+            {"workspaces": [{"id": "/qa-busy", "name": "qa", "path": "/qa-busy"}]},
+            200,
+            id="workspaces",
+        ),
+        pytest.param(
+            ".secrets.lock",
+            "PUT",
+            "/api/settings/secrets",
+            {"name": "QA_BUSY", "value": "qa-value"},
+            200,
+            id="secrets",
+        ),
+        pytest.param(
+            ".settings.lock",
+            "POST",
+            "/api/settings/mcp/qa-busy",
+            {"transport": "http", "url": "https://qa-busy.example/mcp"},
+            201,
+            id="settings-mcp-server",
+        ),
     ],
 )
 async def test_alive_answers_while_store_request_waits_for_lock(
