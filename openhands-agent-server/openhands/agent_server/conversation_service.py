@@ -25,6 +25,10 @@ from openhands.agent_server.event_service import (
     EventService,
     RunSlot,
 )
+from openhands.agent_server.experimental_features import (
+    experimental_feature_tools,
+    host_experimental_features,
+)
 from openhands.agent_server.launch import (
     is_codex_source,
     launch_source,
@@ -98,6 +102,11 @@ if TYPE_CHECKING:
 
 
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
+# Close codes for the sockets of a conversation the server tears down. A
+# sandbox pause closes none: a reconnect would load the conversation again
+# before the sandbox freezes.
+CONVERSATION_DELETED_WS_CLOSE = (4004, "Conversation deleted")
+SERVER_SHUTDOWN_WS_CLOSE = (1012, "Server shutting down")
 
 
 class CredentialBindingActivationRequired(RuntimeError):
@@ -379,7 +388,20 @@ def _compose_conversation_info(
         or agent_state.get("acp_available_models")
         or []
     )
-    # Static provider capability. Unlike the two fields above it has no
+    # Effort: live → persisted hint → the configured ``acp_effort`` before any
+    # session wrote a hint. A stored ``None`` hint means the model offers none.
+    current_effort = getattr(agent, "current_effort", None)
+    if current_effort is None:
+        if "acp_current_effort" in agent_state:
+            current_effort = agent_state["acp_current_effort"]
+        elif not agent_initialized:
+            current_effort = getattr(agent, "acp_effort", None)
+    available_efforts = (
+        getattr(agent, "available_efforts", None)
+        or agent_state.get("acp_available_efforts")
+        or []
+    )
+    # Static provider capability. Unlike the fields above it has no
     # meaningful live-vs-persisted distinction — it's derived from the stable
     # provider identity and written once at session init — so we read the
     # persisted value directly. Defaults False for non-ACP agents and
@@ -399,6 +421,8 @@ def _compose_conversation_info(
         sub_conversation_ids=sub_conversation_ids or [],
         current_model_id=current_model_id,
         available_models=available_models,
+        current_effort=current_effort,
+        available_efforts=available_efforts,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
         tool_module_qualnames=dict(stored.tool_module_qualnames),
@@ -860,6 +884,7 @@ class ConversationService:
             conversation_info = await asyncio.to_thread(
                 _compose_conversation_info_sync, event_service.stored, state, children
             )
+            # status-write: index mirror
             record.execution_status = conversation_info.execution_status
             return conversation_info
 
@@ -894,6 +919,7 @@ class ConversationService:
         record.state_signature = signature
         record.stored_signature = stored_signature
         record.cached_info = conversation_info
+        # status-write: index mirror
         record.execution_status = conversation_info.execution_status
         return conversation_info
 
@@ -944,6 +970,7 @@ class ConversationService:
             if event_service is not None and event_service.is_open():
                 # Authoritative: we own it, so disk can only be staler.
                 state = await event_service.get_state()
+                # status-write: index mirror
                 record.execution_status = state.execution_status
                 # Autosave will invalidate any signature and cached info we hold.
                 record.state_signature = None
@@ -973,6 +1000,7 @@ class ConversationService:
                 # Went live while we were reading disk; memory wins.
                 continue
             if status is not None:
+                # status-write: index mirror
                 record.execution_status = status
             # A persisted change (or a move to an unreadable state) invalidates
             # any cached ConversationInfo derived from the previous snapshot.
@@ -1568,6 +1596,11 @@ class ConversationService:
         # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
         stored_context = settings.agent_settings.agent_context
         load_memory = bool(stored_context and stored_context.load_memory)
+        # In a Docker runtime the user's switches live on the host.
+        host_features = host_experimental_features()
+        experimental_features = (
+            settings.experimental_features if host_features is None else host_features
+        )
 
         source = await asyncio.to_thread(
             launch_source,
@@ -1635,6 +1668,9 @@ class ConversationService:
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
                 client_tools=client_tools,
+                experimental_feature_tools=experimental_feature_tools(
+                    experimental_features
+                ),
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
@@ -1856,6 +1892,7 @@ class ConversationService:
                 conversation_info = _compose_webhook_conversation_info(
                     event_service.stored, state
                 )
+                # status-write: webhook payload
                 conversation_info.execution_status = (
                     ConversationExecutionStatus.DELETING
                 )
@@ -1864,6 +1901,10 @@ class ConversationService:
                 logger.warning(
                     f"Failed to notify webhooks for conversation {conversation_id}: {e}"
                 )
+
+            # Tell open sockets the conversation is gone: 4004 is final for
+            # clients, so they stop instead of reconnecting to a 4004.
+            await event_service.close_connections(*CONVERSATION_DELETED_WS_CLOSE)
 
             # Close the event service
             try:
@@ -2389,6 +2430,14 @@ class ConversationService:
             if event_services is None:
                 return
             services = tuple(event_services.items())
+            # "Service restart": clients reconnect once the server is back.
+            await asyncio.gather(
+                *[
+                    event_service.close_connections(*SERVER_SHUTDOWN_WS_CLOSE)
+                    for _, event_service in services
+                ],
+                return_exceptions=True,
+            )
             results = await asyncio.gather(
                 *[
                     event_service.__aexit__(exc_type, exc_value, traceback)

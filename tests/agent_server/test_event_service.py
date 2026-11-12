@@ -87,6 +87,17 @@ def _sample_agent() -> Agent:
     return Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
 
 
+def _status_tracking_mock() -> MagicMock:
+    """A mocked ConversationState whose transition() sets execution_status."""
+    state = MagicMock()
+
+    def transition(to: ConversationExecutionStatus, reason: str) -> None:
+        state.execution_status = to
+
+    state.transition.side_effect = transition
+    return state
+
+
 @pytest.fixture
 def sample_agent():
     return _sample_agent()
@@ -1544,7 +1555,7 @@ class TestEventServiceSendMessage:
         surfaces the failure instead of a stale IDLE/RUNNING status (issue
         #1024)."""
         conversation = MagicMock()
-        state = MagicMock()
+        state = _status_tracking_mock()
         # Status never advanced past IDLE because the failure happened in
         # _ensure_agent_ready() before the run loop set RUNNING.
         state.execution_status = ConversationExecutionStatus.IDLE
@@ -1594,7 +1605,7 @@ class TestEventServiceSendMessage:
         """A failure that escapes run()/arun()'s own emission must be surfaced
         by the backstop as a ConversationErrorEvent (issue #16686)."""
         conversation = MagicMock()
-        state = MagicMock()
+        state = _status_tracking_mock()
         state.execution_status = ConversationExecutionStatus.IDLE
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
@@ -2445,7 +2456,7 @@ class TestEventServiceStartWithRunningStatus:
             "openhands.agent_server.event_service.LocalConversation"
         ) as MockConversation:
             mock_conv = MagicMock()
-            mock_state = MagicMock()
+            mock_state = _status_tracking_mock()
             mock_agent = MagicMock()
 
             # Create an unmatched action event (action without observation)
@@ -2523,7 +2534,7 @@ class TestEventServiceStartWithRunningStatus:
             "openhands.agent_server.event_service.LocalConversation"
         ) as MockConversation:
             mock_conv = MagicMock()
-            mock_state = MagicMock()
+            mock_state = _status_tracking_mock()
             mock_agent = MagicMock()
 
             # Set up mock state with RUNNING status but no events (no unmatched actions)
@@ -2624,7 +2635,7 @@ class TestEventServiceStartWithRunningStatus:
             "openhands.agent_server.event_service.LocalConversation"
         ) as MockConversation:
             mock_conv = MagicMock()
-            mock_state = MagicMock()
+            mock_state = _status_tracking_mock()
             mock_agent = MagicMock()
 
             unmatched_action = ActionEvent(
