@@ -664,7 +664,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
     @staticmethod
     def _mark_conversation_finished(state: ConversationState) -> None:
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "agent finished")
 
     def _execute_actions(
         self,
@@ -686,8 +686,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
@@ -705,6 +705,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
+        # Each tool masks its observation in a worker thread while arun() holds
+        # the state lock. A lookup made there may call a server on this event
+        # loop that registers secrets on the conversation, which needs that lock
+        # (#6642). Resolve lookups first with the lock released, as astep does
+        # for agent messages, so masking under the lock finds them cached.
+        while True:
+            sources = dict(state.secret_registry.secret_sources)
+            async with conversation._released_state_lock_during_io():
+                await asyncio.to_thread(state.secret_registry.resolve_uncached_values)
+            if sources == state.secret_registry.secret_sources:
+                break
         batch = await _ActionBatch.aprepare(
             action_events,
             state=state,
@@ -717,8 +728,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
@@ -761,7 +772,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED, "user message blocked by hook"
+                )
                 return
         elif state.blocked_messages:
             logger.debug(
@@ -811,7 +824,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                         llm_message=_non_multimodal_image_message(self.llm.model),
                     )
                 )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED,
+                    "model cannot read the attached images",
+                )
                 return
 
         logger.debug(
@@ -972,7 +988,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED, "user message blocked by hook"
+                )
                 return
         elif state.blocked_messages:
             logger.debug(
@@ -1019,7 +1037,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                         llm_message=_non_multimodal_image_message(self.llm.model),
                     )
                 )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED,
+                    "model cannot read the attached images",
+                )
                 return
 
         logger.debug(
@@ -1227,8 +1248,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state: ConversationState, risks: list[risk.SecurityRisk]
     ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
-            state.execution_status = (
-                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            state.transition(
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+                "action needs user confirmation",
             )
             return True
 
@@ -1605,7 +1627,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        return [obs_event]
+        return [obs_event, *observation.follow_up_events()]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType

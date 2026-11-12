@@ -80,6 +80,57 @@ class ConversationExecutionStatus(str, Enum):
         )
 
 
+_Status = ConversationExecutionStatus
+
+# Moves no code path makes: ConversationState.transition() rejects these and
+# accepts every other move. In practice the lifecycle is almost fully
+# connected:
+# - a run can fail, be paused or (re)start from any status;
+# - a step can run under any status (``condense()``, a direct ``agent.step()``,
+#   or the sync loop retrying after ACPAgent reported a timeout as ERROR), so
+#   FINISHED, WAITING_FOR_CONFIRMATION and STUCK can follow ERROR;
+# - a pause can land mid-step (arun() releases the state lock for LLM I/O, ACP
+#   steps run without it), so PAUSED can be followed by the step's outcome;
+# - DELETING is only ever set on the webhook payload, never on the state, so
+#   it gets no special case. ERROR and PAUSED, the targets of the run loop's
+#   exception handlers, stay reachable from every status, so a handler can
+#   never mask the original error.
+_UNREACHED_MOVES: dict[_Status, frozenset[_Status]] = {
+    # Stuck detection runs under the same lock right after the run loop has
+    # stopped on PAUSED or FINISHED.
+    _Status.PAUSED: frozenset({_Status.STUCK}),
+    _Status.FINISHED: frozenset({_Status.STUCK}),
+    # Only send_message() (from FINISHED/STUCK), reject_pending_actions() (from
+    # WAITING_FOR_CONFIRMATION) and the run loop move to IDLE, and the run loop
+    # stops on ERROR.
+    _Status.ERROR: frozenset({_Status.IDLE}),
+}
+
+_ALLOWED_TRANSITIONS: dict[_Status, frozenset[_Status]] = {
+    status: frozenset(_Status) - {status} - _UNREACHED_MOVES.get(status, frozenset())
+    for status in _Status
+}
+
+
+class InvalidExecutionStatusTransitionError(ValueError):
+    """Raised when ``ConversationState.transition`` is asked for a move the
+    status table does not allow."""
+
+    def __init__(
+        self,
+        current: ConversationExecutionStatus,
+        target: ConversationExecutionStatus,
+        reason: str,
+    ) -> None:
+        super().__init__(
+            f"execution_status cannot move from {current.value} to "
+            f"{target.value} ({reason})"
+        )
+        self.current = current
+        self.target = target
+        self.reason = reason
+
+
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====
     id: ConversationID = Field(description="Unique conversation ID")
@@ -715,6 +766,38 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def transition(self, to: ConversationExecutionStatus, reason: str) -> None:
+        """Move ``execution_status`` to ``to``; the only way SDK code changes it.
+
+        The move is checked against the status table, so a status the run
+        loop can never produce (IDLE straight from ERROR, STUCK after FINISHED
+        or PAUSED) fails loudly instead of being persisted. The assignment
+        goes through the autosave hook, so it is persisted and published as a
+        ``ConversationStateUpdateEvent`` like any other field change. Moving to
+        the current status is a no-op.
+
+        Args:
+            to: The status to move to.
+            reason: Short description of why, for the debug log and the error.
+
+        Raises:
+            InvalidExecutionStatusTransitionError: If the table does not allow
+                moving from the current status to ``to``.
+        """
+        current = self.execution_status
+        if to == current:
+            return
+        if to not in _ALLOWED_TRANSITIONS[current]:
+            raise InvalidExecutionStatusTransitionError(current, to, reason)
+        logger.debug(
+            "Conversation %s execution_status %s -> %s: %s",
+            self.id,
+            current.value,
+            to.value,
+            reason,
+        )
+        self.execution_status = to  # status-write: the checked write
 
     def block_action(self, action_id: str, reason: str) -> None:
         """Persistently record a hook-blocked action."""
