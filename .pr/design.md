@@ -34,6 +34,7 @@ Verified live: `create_app()` with flag off → `search-content` routes: **NONE*
 ### Query semantics
 
 - Portered fuzzy match on tokens (FTS5 porter stemmer), with a raw prefix pass first so exact-word hits aren't missed when stemming eats a short token
+- Indexed text: message bodies, thinking blocks inside content, and `reasoning_content` persisted at the event top level (the ActionEvent shape) — all passed through secret masking before insert
 - `limit` (default 50, hard cap), `capped: true` in response when truncated
 - Returns per-hit: conversation id, title, matched snippet with markers, event timestamp
 - Conversation ids in hits and deletion are the dashed UUID form used by the rest of the API; the index internally keys rows by the hex directory names and the service layer normalizes at the boundary

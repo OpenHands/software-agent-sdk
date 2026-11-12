@@ -117,6 +117,23 @@ def conv_root(tmp_path):
             }
         ],
     )
+    # ActionEvents persist reasoning at the top level, not inside llm_message
+    write_conversation(
+        convs,
+        "Wombat burrow notes",
+        [],
+        events=[
+            {
+                "id": str(uuid.uuid4()),
+                "timestamp": "2026-11-01T10:00:00",
+                "source": "agent",
+                "action": "run",
+                "reasoning_content": (
+                    "The wombat dug a spacious burrow beside the creek."
+                ),
+            }
+        ],
+    )
     write_conversation(
         convs,
         "Riverbank notes",

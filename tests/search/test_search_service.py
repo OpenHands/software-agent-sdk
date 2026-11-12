@@ -70,4 +70,4 @@ def test_stats_reports_index_health(conv_root, tmp_path):
     """stats() exposes the underlying index counters once built."""
     svc = _service(conv_root, tmp_path)
     svc.search("garage")  # builds the index
-    assert svc.stats()["conversations"] == 8
+    assert svc.stats()["conversations"] == 9

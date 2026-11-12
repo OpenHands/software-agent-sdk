@@ -112,24 +112,31 @@ def mask_secrets(text: str) -> str:
 
 
 def _extract_text(event: dict) -> str | None:
-    """Return indexable text from a MessageEvent payload, if any."""
-    message = event.get("llm_message")
-    if not isinstance(message, dict):
-        return None
+    """Return indexable text from an event payload, if any.
+
+    MessageEvents carry llm_message.content; ActionEvents persist reasoning
+    at the top level (reasoning_content) rather than inside llm_message.
+    Both shapes are indexed.
+    """
     parts: list[str] = []
-    content = message.get("content")
-    if isinstance(content, str):
-        parts.append(content)
-    elif isinstance(content, list):
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text" and isinstance(block.get("text"), str):
-                parts.append(block["text"])
-            elif block.get("type") == "thinking" and isinstance(
-                block.get("thinking"), str
-            ):
-                parts.append(block["thinking"])
+    reasoning = event.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        parts.append(reasoning)
+    message = event.get("llm_message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif block.get("type") == "thinking" and isinstance(
+                    block.get("thinking"), str
+                ):
+                    parts.append(block["thinking"])
     text = "\n".join(p for p in parts if p.strip())
     return text or None
 

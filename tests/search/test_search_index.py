@@ -16,7 +16,7 @@ def index(tmp_path):
 
 def test_backfill_and_content_search(index, conv_root):
     result = backfill(index, conv_root)
-    assert result["conversations_seen"] == 8
+    assert result["conversations_seen"] == 9
     hits = index.search("garage false alarms")
     assert hits, "expected content match on garage conversation"
     assert {h.title for h in hits} == {"Garage door sensor"}
@@ -79,7 +79,7 @@ def test_remove_conversation(index, conv_root):
     conv_id = index.search("Italy")[0].conversation_id
     index.remove_conversation(conv_id)
     assert index.search("Rome") == []
-    assert index.stats()["conversations"] == 7
+    assert index.stats()["conversations"] == 8
 
 
 def test_reopen_index_preserves_data(tmp_path, conv_root):
@@ -88,7 +88,7 @@ def test_reopen_index_preserves_data(tmp_path, conv_root):
     backfill(first, conv_root)
     first.close()
     second = SearchIndex(db)
-    assert second.stats()["conversations"] == 8
+    assert second.stats()["conversations"] == 9
     assert second.search("Rome"), "index must survive close/reopen"
 
 
@@ -221,6 +221,15 @@ def test_thinking_blocks_are_indexed(index, conv_root):
     backfill(index, conv_root)
     hits = index.search("quokka enclosure")
     assert {h.title for h in hits} == {"Quokka photos"}
+
+
+def test_action_event_reasoning_is_indexed(index, conv_root):
+    """ActionEvents persist reasoning at the event top level
+    (``reasoning_content``), not inside ``llm_message``; that text must be
+    searchable too."""
+    backfill(index, conv_root)
+    hits = index.search("wombat burrow")
+    assert {h.title for h in hits} == {"Wombat burrow notes"}
 
 
 def test_plain_string_content_is_indexed(index, conv_root, tmp_path):
@@ -363,7 +372,7 @@ def test_old_tokenizer_schema_is_rebuilt(tmp_path, conv_root):
     # The tables exist but are empty: dir_mtime was cleared, so the next
     # backfill rescans everything.
     assert upgraded.stats()["conversations"] == 0
-    assert backfill(upgraded, conv_root)["conversations_seen"] == 8
+    assert backfill(upgraded, conv_root)["conversations_seen"] == 9
     # Stemmed query now works on the rebuilt index.
     assert upgraded.search("doors sensors")
     assert upgraded.search("italy rome")
@@ -387,7 +396,7 @@ def test_porter_index_missing_words_twin_is_rebuilt(tmp_path, conv_root):
 
     upgraded = SearchIndex(db)
     assert upgraded.stats()["conversations"] == 0  # cleared for full rebuild
-    assert backfill(upgraded, conv_root)["conversations_seen"] == 8
+    assert backfill(upgraded, conv_root)["conversations_seen"] == 9
     # Typos and substrings need the raw-word vocabulary, which only the
     # rebuild restores.
     assert upgraded.search("rume")  # typo for Rome
@@ -462,4 +471,4 @@ def test_dir_without_meta_json_is_skipped(index, conv_root):
     stray_event = conv_root / "not-a-conversation" / "events" / "event-00000-x.json"
     stray_event.write_text("{}")
     stats = backfill(index, conv_root)
-    assert stats["conversations_seen"] == 8
+    assert stats["conversations_seen"] == 9
