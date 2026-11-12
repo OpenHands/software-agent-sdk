@@ -72,6 +72,7 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import RateLimited
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
@@ -104,7 +105,7 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 logger = get_logger(__name__)
 
 
-class ConversationRunLimitExceeded(RuntimeError):
+class ConversationRunLimitExceeded(RateLimited, RuntimeError):
     """The server has no capacity to start another conversation run."""
 
 

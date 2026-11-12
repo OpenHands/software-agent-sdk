@@ -83,6 +83,7 @@ from openhands.sdk.credential import (
     CredentialBindingError,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import Conflict
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -104,8 +105,11 @@ if TYPE_CHECKING:
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
 
 
-class CredentialBindingActivationRequired(RuntimeError):
-    pass
+class CredentialBindingActivationRequired(Conflict, RuntimeError):
+    """A runtime credential binding must be activated first; retry after it."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail, extra={"retryable": True})
 
 
 def _build_worktree_guidance(
