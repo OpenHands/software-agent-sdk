@@ -1,8 +1,8 @@
 {
   "base_commit": "0a68ab94cb3f447254bdc68ce778048ce517be22",
   "fixed_source_sha256": {
-    "openhands-sdk/openhands/sdk/llm/fallback_strategy.py": "a129313e3ec36fdc2d505a30ab2404e6f4824b2a80cd3f829384c3777f01eee5",
-    "openhands-sdk/openhands/sdk/llm/llm.py": "a9a7de5fa0fa7a549828a325eb1b33944d641468976a5ca9bc5ed72e076cec67",
+    "openhands-sdk/openhands/sdk/llm/fallback_strategy.py": "c7f268068411b524ab403d53326f41ec68ae1f17b6be39f95ef2e7085845c48c",
+    "openhands-sdk/openhands/sdk/llm/llm.py": "a16bc975d4b126839dede49c84e0401f9236a48014e27c7c3ee3aa4639c82c05",
     "openhands-sdk/openhands/sdk/llm/utils/metrics.py": "c8b6977296c1274fdd8f63a2e4556d9be2303469e9b559065048536e8996f93b",
     "openhands-sdk/openhands/sdk/llm/utils/telemetry.py": "bed4636f931f6dd95f3275ac63cca3d77e533e2d4f1648d4d56a864eee5e73b4"
   },
@@ -223,5 +223,5 @@
       "correct": true
     }
   ],
-  "fixed_commit": "90ff071e1f56d887e3bc9ddfb369b6a20516bc09"
+  "fixed_commit": "6bfdc18917a3ec2847029f3b22cf1861bf8b99ec"
 }
