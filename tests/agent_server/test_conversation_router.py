@@ -34,6 +34,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.launch import LaunchRuntime, LaunchStores, finalize
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.router import MultimodalRouter
 from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
@@ -2971,6 +2972,92 @@ def test_switch_conversation_llm_missing_provider_connection_rejects_before_swit
         finally:
             store_module._llm_profile_store = old_store
             client.app.dependency_overrides.clear()
+
+
+# --- model_router endpoint tests ---
+
+
+def _server_test_router() -> MultimodalRouter:
+    return MultimodalRouter(
+        llms_for_routing={
+            MultimodalRouter.PRIMARY_MODEL_KEY: LLM(model="primary-model"),
+            MultimodalRouter.SECONDARY_MODEL_KEY: LLM(model="secondary-model"),
+        },
+        routing_mode="manual",
+        selected_llm_key=MultimodalRouter.SECONDARY_MODEL_KEY,
+    )
+
+
+def test_get_conversation_model_router_status(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/model_router"
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "enabled": True,
+            "routing_mode": "manual",
+            "selected_llm_key": "secondary",
+            "available_llms": ["primary", "secondary"],
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_model_router(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/switch",
+            json={"llm_key": "primary"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        mock_conversation.switch_routed_llm.assert_called_once_with("primary")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_resume_conversation_model_router_auto(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/auto"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        mock_conversation.resume_auto_llm_routing.assert_called_once_with()
+    finally:
+        client.app.dependency_overrides.clear()
 
 
 def _provider_connection(connection_id: str, *, api_key: str, base_url: str | None):

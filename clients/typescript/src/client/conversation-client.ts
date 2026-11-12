@@ -1,6 +1,6 @@
 import { HttpClient, HttpError } from './http-client';
 import { getCachedAgentServerInfo } from './agent-server-compatibility';
-import { ConversationExecutionStatus, LLM, Success } from '../types/base';
+import { ConversationExecutionStatus, LLM, ModelRouterStatus, Success } from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
@@ -439,6 +439,23 @@ export class ConversationClient {
 
   async switchLLM(conversationId: string, llm: LLM): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_llm`, { llm });
+  }
+
+  async getModelRouter(conversationId: string): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  async switchModelRouter(conversationId: string, llmKey: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/switch`, {
+      llm_key: llmKey,
+    });
+  }
+
+  async resumeAutoModelRouting(conversationId: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/auto`, {});
   }
 
   /**
