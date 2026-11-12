@@ -496,6 +496,7 @@ MCPAuthCredential = Annotated[
 ]
 
 MCPTransport = Literal["stdio", "http", "streamable-http", "sse"]
+MCPProtocolMode = Literal["legacy", "auto", "2026-07-28"]
 
 
 class MCPServer(_MCPBaseModel):
@@ -517,6 +518,13 @@ class MCPServer(_MCPBaseModel):
     timeout: float | None = None
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
+    protocol_mode: MCPProtocolMode | None = Field(
+        default=None,
+        description=(
+            "MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; "
+            "set to legacy for servers that require initialize/session semantics."
+        ),
+    )
     headers: dict[str, SecretStr] | None = None
     auth: MCPAuthCredential | None = None
     enabled: bool = Field(
@@ -712,6 +720,9 @@ def _normalize_server_for_fastmcp(
     # leaking through the public ``to_fastmcp_mcp_config`` boundary.
     server.pop("enabled", None)
     auth = server.pop("auth", None)
+    protocol_mode = server.pop("protocol_mode", None)
+    if protocol_mode is not None:
+        server["mode"] = protocol_mode
     raw_headers = server.get("headers")
     headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}
 

@@ -17,7 +17,10 @@ type GeneratedMCPServer = McpServerInputWritable;
 type GeneratedMCPTransport = NonNullable<GeneratedMCPServer['transport']>;
 type GeneratedMCPAuthCredential = NonNullable<GeneratedMCPServer['auth']>;
 
-type MCPDisplayFields = Pick<GeneratedMCPServer, 'description' | 'icon' | 'timeout'>;
+type MCPCommonFields = Pick<
+  GeneratedMCPServer,
+  'description' | 'icon' | 'timeout' | 'protocol_mode'
+>;
 type MCPStdioFields = Pick<GeneratedMCPServer, 'args' | 'env' | 'cwd'>;
 type MCPRemoteFields = Pick<
   GeneratedMCPServer,
@@ -30,14 +33,14 @@ export type MCPAuthCredential = GeneratedMCPAuthCredential;
 export type MCPOAuthAuthentication = McpoAuthAuthenticationInputWritable;
 export type MCPOAuthState = McpoAuthStateInputWritable;
 
-export type StdioMCPServer = MCPDisplayFields &
+export type StdioMCPServer = MCPCommonFields &
   MCPStdioFields & {
     transport: 'stdio';
     command: string;
     url?: never;
   };
 
-export type RemoteMCPServer = MCPDisplayFields &
+export type RemoteMCPServer = MCPCommonFields &
   MCPRemoteFields & {
     transport: RemoteMCPTransport;
     url: string;

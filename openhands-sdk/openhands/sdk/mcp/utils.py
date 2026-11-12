@@ -22,6 +22,7 @@ from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
 from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
+    MCPProtocolMode,
     MCPServer,
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
@@ -253,6 +254,17 @@ def _require_native_mcp_config(
     return dict(mcp_config)
 
 
+def _client_protocol_mode(mcp_config: Mapping[str, MCPServer]) -> MCPProtocolMode:
+    modes: set[MCPProtocolMode] = {
+        mode
+        for server in mcp_config.values()
+        if (mode := server.protocol_mode) is not None
+    }
+    if len(modes) == 1:
+        return next(iter(modes))
+    return "auto"
+
+
 async def log_handler(message: LogMessage):
     """
     Handles incoming logs from the MCP server and forwards them
@@ -438,7 +450,12 @@ def create_mcp_tools(
         client=None,  # type: ignore[arg-type]
         on_tools_changed=on_tools_changed,
     )
-    client = MCPClient(config, log_handler=log_handler, message_handler=handler)
+    client = MCPClient(
+        config,
+        log_handler=log_handler,
+        message_handler=handler,
+        mode=_client_protocol_mode(mcp_config),
+    )
     handler._client = client
     client._tools_reconciled_callback = on_tools_reconciled
 

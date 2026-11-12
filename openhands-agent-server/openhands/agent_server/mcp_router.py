@@ -54,6 +54,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPOAuthStateResponse,
+    MCPProtocolMode,
     MCPServer,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -88,6 +89,7 @@ class _StdioMCPServerSpec(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
+    protocol_mode: MCPProtocolMode | None = None
 
     def to_mcp_server(self) -> MCPServer:
         return MCPServer.model_validate(
@@ -97,6 +99,7 @@ class _StdioMCPServerSpec(BaseModel):
                 "args": self.args,
                 "env": self.env,
                 "cwd": self.cwd,
+                "protocol_mode": self.protocol_mode,
             }
         )
 
@@ -111,6 +114,7 @@ class _RemoteMCPServerSpec(BaseModel):
     timeout: float | None = None
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
+    protocol_mode: MCPProtocolMode | None = None
 
     @model_validator(mode="after")
     def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
@@ -132,6 +136,7 @@ class _RemoteMCPServerSpec(BaseModel):
             "timeout": self.timeout,
             "sse_read_timeout": self.sse_read_timeout,
             "keep_alive": self.keep_alive,
+            "protocol_mode": self.protocol_mode,
         }
         if self.auth is not None:
             data["auth"] = self.auth

@@ -127,6 +127,22 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
     assert body.get("tool_result") is None
 
 
+def test_mcp_test_request_preserves_protocol_mode():
+    request = MCPTestRequest.model_validate(
+        {
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "protocol_mode": "legacy",
+            }
+        }
+    )
+
+    assert request.resolved_server.protocol_mode == "legacy"
+    fastmcp_config = to_fastmcp_mcp_config(request.to_mcp_config())
+    assert fastmcp_config["mcpServers"]["test-server"]["mode"] == "legacy"
+
+
 def test_mcp_test_http_transport_is_accepted(
     client: TestClient, http_mcp_server: MCPTestServer
 ):

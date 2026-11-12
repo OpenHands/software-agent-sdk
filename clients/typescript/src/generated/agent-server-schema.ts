@@ -9072,6 +9072,12 @@ export type McpServer = {
    */
   keep_alive?: boolean | null;
   /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
+  /**
    * Sse Read Timeout
    */
   sse_read_timeout?: number | null;
@@ -9158,6 +9164,12 @@ export type McpServerInput = {
    * Keep Alive
    */
   keep_alive?: boolean | null;
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Sse Read Timeout
    */
@@ -9250,6 +9262,12 @@ export type McpServerOutput = {
    */
   keep_alive?: boolean | null;
   /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
+  /**
    * Sse Read Timeout
    */
   sse_read_timeout?: number | null;
@@ -9338,6 +9356,12 @@ export type McpServerPatch = {
    * Keep Alive
    */
   keep_alive?: boolean | null;
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Sse Read Timeout
    */
@@ -11498,6 +11522,12 @@ export type RemoteMcpServer = {
    */
   keep_alive?: boolean | null;
   /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
+  /**
    * Sse Read Timeout
    */
   sse_read_timeout?: number | null;
@@ -13169,6 +13199,12 @@ export type StdioMcpServer = {
   env?: {
     [key: string]: string;
   };
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Type
    */
@@ -15699,6 +15735,12 @@ export type RemoteMcpServerSpec = {
    */
   keep_alive?: boolean | null;
   /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
+  /**
    * Sse Read Timeout
    */
   sse_read_timeout?: number | null;
@@ -15742,6 +15784,12 @@ export type StdioMcpServerSpec = {
   env?: {
     [key: string]: string;
   };
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Type
    */
@@ -19646,6 +19694,12 @@ export type McpServerInputWritable = {
    */
   keep_alive?: boolean | null;
   /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
+  /**
    * Sse Read Timeout
    */
   sse_read_timeout?: number | null;
@@ -19734,6 +19788,12 @@ export type McpServerPatchWritable = {
    * Keep Alive
    */
   keep_alive?: boolean | null;
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Sse Read Timeout
    */
@@ -20060,6 +20120,12 @@ export type RemoteMcpServerWritable = {
    * Keep Alive
    */
   keep_alive?: boolean | null;
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Sse Read Timeout
    */
@@ -21603,6 +21669,12 @@ export type RemoteMcpServerSpecWritable = {
    * Keep Alive
    */
   keep_alive?: boolean | null;
+  /**
+   * Protocol Mode
+   *
+   * MCP protocol negotiation mode. Defaults to FastMCP auto-negotiation; set to legacy for servers that require initialize/session semantics.
+   */
+  protocol_mode?: 'legacy' | 'auto' | '2026-07-28' | null;
   /**
    * Sse Read Timeout
    */

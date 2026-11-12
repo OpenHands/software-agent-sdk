@@ -129,6 +129,7 @@ class TestStatefulMCPSessionPersistence:
                 "stateful": {
                     "transport": "http",
                     "url": f"http://127.0.0.1:{port}/mcp",
+                    "protocol_mode": "legacy",
                 }
             }
         }
@@ -170,6 +171,7 @@ class TestStatefulMCPSessionPersistence:
                 "stateful": {
                     "transport": "http",
                     "url": f"http://127.0.0.1:{port}/mcp",
+                    "protocol_mode": "legacy",
                 }
             }
         }
@@ -210,6 +212,7 @@ class TestStatefulMCPSessionPersistence:
                 "stateful": {
                     "transport": "http",
                     "url": f"http://127.0.0.1:{port}/mcp",
+                    "protocol_mode": "legacy",
                 }
             }
         }
