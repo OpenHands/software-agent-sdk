@@ -1492,6 +1492,7 @@ class EventService:
                         classification=ErrorClassification(
                             kind=FailureKind.INTERNAL, retryable=False
                         ),
+                        recovery_reason="server_restart",
                     )
                     self._conversation._on_event(error_event)
 
