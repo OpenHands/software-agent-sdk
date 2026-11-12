@@ -95,17 +95,15 @@ def test_model_copy_with_new_name_updates_telemetry(deep: bool):
     copied = llm.model_copy(deep=deep, update={"log_completions_to_file": True})
     assert copied.log_completions_to_file is True
     assert copied.telemetry.completion_logging_enabled is True
-    # A shallow copy's Telemetry starts from (and keeps recording into) the
-    # same Metrics/callback as the original; a deep copy owns an independent
-    # Metrics instance and does not receive the original's callback.
+    # Deep copies own independent metrics; both modes retain the callback.
     if deep:
         assert copied.telemetry.metrics is not llm.telemetry.metrics
     else:
         assert copied.telemetry.metrics is llm.telemetry.metrics
-        copied.telemetry.on_request({})
-        copied.telemetry.on_response(create_mock_litellm_response(content="COPIED_OK"))
-        assert len(callback_calls) == 1
-        assert "COPIED_OK" in callback_calls[0][1]
+    copied.telemetry.on_request({})
+    copied.telemetry.on_response(create_mock_litellm_response(content="COPIED_OK"))
+    assert len(callback_calls) == 1
+    assert "COPIED_OK" in callback_calls[0][1]
     assert llm.telemetry.completion_logging_enabled is False
 
 
