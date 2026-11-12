@@ -85,29 +85,38 @@ def test_old_round_trip_from_persisted_json():
     assert llm.log_completions_to_file is True
 
 
-def test_model_copy_with_new_name_updates_telemetry():
+@pytest.mark.parametrize("deep", [False, True])
+def test_model_copy_with_new_name_updates_telemetry(deep: bool):
     llm = _llm()
     callback_calls: list[tuple[str, str]] = []
     llm.telemetry.set_log_completions_callback(
         lambda filename, data: callback_calls.append((filename, data))
     )
-    copied = llm.model_copy(update={"log_completions_to_file": True})
+    copied = llm.model_copy(deep=deep, update={"log_completions_to_file": True})
     assert copied.log_completions_to_file is True
     assert copied.telemetry.completion_logging_enabled is True
-    assert copied.telemetry.metrics is llm.telemetry.metrics
-    copied.telemetry.on_request({})
-    copied.telemetry.on_response(create_mock_litellm_response(content="COPIED_OK"))
-    assert len(callback_calls) == 1
-    assert "COPIED_OK" in callback_calls[0][1]
+    # A shallow copy's Telemetry starts from (and keeps recording into) the
+    # same Metrics/callback as the original; a deep copy owns an independent
+    # Metrics instance and does not receive the original's callback.
+    if deep:
+        assert copied.telemetry.metrics is not llm.telemetry.metrics
+    else:
+        assert copied.telemetry.metrics is llm.telemetry.metrics
+        copied.telemetry.on_request({})
+        copied.telemetry.on_response(create_mock_litellm_response(content="COPIED_OK"))
+        assert len(callback_calls) == 1
+        assert "COPIED_OK" in callback_calls[0][1]
     assert llm.telemetry.completion_logging_enabled is False
 
 
-def test_model_copy_with_old_name_updates_new_field_and_warns():
+@pytest.mark.parametrize("deep", [False, True])
+def test_model_copy_with_old_name_updates_new_field_and_warns(deep: bool):
     llm = _llm()
     with pytest.warns(DeprecatedWarning):
-        copied = llm.model_copy(update={"log_completions": True})
+        copied = llm.model_copy(deep=deep, update={"log_completions": True})
     assert copied.log_completions_to_file is True
     assert copied.telemetry.completion_logging_enabled is True
+    assert llm.telemetry.completion_logging_enabled is False
 
 
 def test_model_copy_conflicting_names_raise():

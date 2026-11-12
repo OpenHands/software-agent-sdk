@@ -922,10 +922,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Sessions follow the role. A copy made for another role is a
             # different user of the model, so it starts its own accounting.
             copied.reset_metrics()
-        elif not deep:
-            # Same role, same sessions: the shallow copy shares ``_session``
-            # already, and stays with the conversation the original is in.
-            copied._registry_session = self._registered_session()
+        else:
+            if not deep:
+                # Same role, same session: the shallow copy shares
+                # ``_session`` already, and stays with the conversation the
+                # original is in.
+                copied._registry_session = self._registered_session()
+            # A deep copy never shares ``_registry_session``: it is a raw
+            # slot, not a ``PrivateAttr``, so pydantic's deepcopy leaves it
+            # unset on the copy (``_registered_session()`` below returns
+            # ``None`` for it via the ``AttributeError`` fallback).
             logging_changed = update is not None and (
                 "log_completions_to_file" in update
                 or "log_completions_folder" in update
@@ -934,10 +940,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # Not part of a conversation: ``session_for`` won't run
                 # ``LLMSession.follow`` to resync these settings before the
                 # next call, so give the copy its own ``Telemetry`` now.
-                # ``Telemetry.model_copy`` shares ``metrics`` and any
-                # attached callbacks with the original by reference.
+                # For a shallow copy this starts from ``self``'s telemetry
+                # (shared ``_session`` otherwise), carrying over ``metrics``
+                # and attached callbacks by reference. For a deep copy,
+                # ``copied.session.telemetry`` is already an independent
+                # deep copy (own ``Metrics``); rebuilding from ``self``'s
+                # telemetry instead would silently re-merge the two copies'
+                # usage into one shared ``Metrics`` instance.
+                source_telemetry = (
+                    copied.session.telemetry if deep else self.session.telemetry
+                )
                 copied._session = LLMSession._wrapping(
-                    self.session.telemetry.model_copy(
+                    source_telemetry.model_copy(
                         update={
                             "completion_logging_enabled": (
                                 copied.log_completions_to_file
