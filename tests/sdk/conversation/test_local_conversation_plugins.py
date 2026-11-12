@@ -3,6 +3,7 @@
 import json
 import logging
 import shutil
+import sys
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -1053,6 +1054,7 @@ class TestLocalConversationPlugins:
         agent = Agent(
             llm=mock_llm,
             tools=[],
+            mcp_gateway=False,
             agent_context=AgentContext(
                 registered_marketplaces=[
                     MarketplaceRegistration(name="manual", source=str(marketplace_dir))
@@ -1086,6 +1088,56 @@ class TestLocalConversationPlugins:
         assert "runtime-server" in created_config
 
         conversation.close()
+
+    def test_load_plugin_adds_live_mcp_server_to_gateway(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "mcp-plugin",
+                    "mcp_config": {
+                        "mcpServers": {
+                            "docs": {
+                                "command": sys.executable,
+                                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                                "cwd": str(Path(__file__).resolve().parents[3]),
+                            }
+                        }
+                    },
+                }
+            ],
+        )
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=mock_llm,
+                tools=[],
+                include_default_tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="manual", source=str(marketplace_dir)
+                        )
+                    ]
+                ),
+            ),
+            workspace=tmp_path / "workspace",
+            visualizer=None,
+        )
+        try:
+            conversation._ensure_agent_ready()
+            assert "list_mcp_tools" not in conversation.agent.tools_map
+            conversation.load_plugin("mcp-plugin")
+            assert {"list_mcp_tools", "call_mcp_tool"} <= set(
+                conversation.agent.tools_map
+            )
+            assert [
+                tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
+            ] == ["docs.fetch"]
+            assert "docs" in conversation.agent.mcp_config
+        finally:
+            conversation.close()
 
     def test_load_plugin_merges_runtime_hooks_and_restarts_processor(
         self, tmp_path: Path, mock_llm

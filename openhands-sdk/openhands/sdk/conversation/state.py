@@ -1,11 +1,13 @@
 # state.py
+from __future__ import annotations
+
 import json
 import threading
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from pydantic import Field, PrivateAttr, model_validator
 
@@ -42,6 +44,10 @@ from openhands.sdk.security.confirmation_policy import (
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.mcp.gateway import MCPToolGateway
 
 
 logger = get_logger(__name__)
@@ -159,6 +165,12 @@ class ConversationState(OpenHandsModel):
         default="workspace/conversations",
         description="Directory for persisting conversation state and events. "
         "If None, conversation will not be persisted.",
+    )
+    mcp_gateway_selected_tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Namespaced MCP tools selected for this conversation; None means all."
+        ),
     )
 
     max_iterations: int = Field(
@@ -305,6 +317,7 @@ class ConversationState(OpenHandsModel):
     )
 
     # ===== Private attrs (NOT Fields) =====
+    _mcp_gateway: MCPToolGateway | None = PrivateAttr(default=None)
     _fs: FileStore = PrivateAttr(default=cast(Any, None))  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
     # Cached projection of `_events` for the *active branch*, lazily updated on
@@ -333,19 +346,25 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _drop_stored_mcp_servers_without_endpoint(cls, data: Any) -> Any:
-        """Let a persisted state with an endpoint-less MCP server still load.
+    def _normalize_stored_agent(cls, data: Any) -> Any:
+        """Preserve legacy MCP behavior when loading a pre-gateway agent.
 
-        Such a server was accepted before ``MCPServer`` required ``command``
-        or ``url``; it never contributed tools, so drop it rather than fail.
+        Older agents have no ``mcp_gateway`` field, and endpoint-less MCP
+        servers accepted by older versions never contributed tools.
         """
         if not isinstance(data, dict):
             return data
         agent = data.get("agent")
-        if isinstance(agent, dict) and isinstance(agent.get("mcp_config"), dict):
-            mcp_config = drop_mcp_servers_without_endpoint(agent["mcp_config"])
-            data = {**data, "agent": {**agent, "mcp_config": mcp_config}}
-        return data
+        if not isinstance(agent, dict):
+            return data
+        if agent.get("kind", "Agent") == "Agent" and "mcp_gateway" not in agent:
+            agent = {**agent, "mcp_gateway": False}
+        if isinstance(agent.get("mcp_config"), dict):
+            agent = {
+                **agent,
+                "mcp_config": drop_mcp_servers_without_endpoint(agent["mcp_config"]),
+            }
+        return {**data, "agent": agent}
 
     @property
     def events(self) -> EventLog:
@@ -566,7 +585,7 @@ class ConversationState(OpenHandsModel):
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
     def create(
-        cls: type["ConversationState"],
+        cls: type[ConversationState],
         id: ConversationID,
         agent: AgentBase | None,
         workspace: BaseWorkspace,
@@ -577,7 +596,7 @@ class ConversationState(OpenHandsModel):
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
         max_budget_per_run: float | None = None,
-    ) -> "ConversationState":
+    ) -> ConversationState:
         """Create a new conversation state or resume from persistence.
 
         This factory method handles both new conversation creation and resumption
@@ -675,8 +694,7 @@ class ConversationState(OpenHandsModel):
             # let it override, so existing callers that reconfigure on resume
             # keep working.
             if agent is not None:
-                agent.verify(state.agent, events=state._events)
-                state.agent = agent
+                state.agent = agent.verify(state.agent, events=state._events)
             state.workspace = workspace
             state.max_iterations = max_iterations
             if max_budget_per_run is not None:

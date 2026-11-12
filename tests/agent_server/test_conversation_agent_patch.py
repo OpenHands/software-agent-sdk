@@ -1,5 +1,6 @@
 """Conversation-only profile edits use real state, persistence, and agent code."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -104,12 +105,54 @@ def test_patch_persists_profile_revision_and_private_credentials(conversation):
         assert resumed.state.secret_registry.get_secret_value("NEW_SECRET") == (
             "conversation-secret"
         )
-        assert (
-            resumed.state.conversation_mcp_servers["private"]
-            .env["API"]
-            .get_secret_value()
-            == "mcp-secret"
-        )
+        env = resumed.state.conversation_mcp_servers["private"].env
+        assert env is not None
+        assert env["API"].get_secret_value() == "mcp-secret"
+    finally:
+        resumed.close()
+
+
+def test_patch_adds_mcp_connection_to_gateway_without_changing_prompt(conversation):
+    conversation._ensure_agent_ready()
+    assert "list_mcp_tools" not in conversation.agent.tools_map
+    prompt_events = list(conversation.state.events)
+    request = UpdateConversationAgentRequest.model_validate(
+        {
+            "profile_diff": {"mcp_server_refs": ["docs"]},
+            "resources": {
+                "mcp_servers": {
+                    "docs": {
+                        "command": sys.executable,
+                        "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                        "cwd": str(Path(__file__).resolve().parents[2]),
+                    }
+                }
+            },
+        }
+    )
+    result = apply_conversation_agent_patch(conversation, request)
+    assert result.conversation_profile_revision == 1
+    assert conversation.agent is conversation.state.agent
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+    assert [
+        tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
+    ] == ["docs.fetch"]
+    assert list(conversation.state.events) == prompt_events
+
+    resumed = LocalConversation(
+        agent=None,
+        workspace=conversation.workspace,
+        persistence_dir=Path(conversation.state.persistence_dir).parent,
+        conversation_id=conversation.state.id,
+        cipher=Cipher("test-encryption-key"),
+        visualizer=None,
+        delete_on_close=False,
+    )
+    try:
+        assert resumed.state.conversation_profile_revision == 1
+        assert [tool["name"] for tool in resumed.mcp_gateway.list_tools()["tools"]] == [
+            "docs.fetch"
+        ]
     finally:
         resumed.close()
 
@@ -206,6 +249,7 @@ async def test_service_applies_patch_and_restores_revision_after_restart(tmp_pat
         info = await restarted.get_conversation(info.id)
         assert info is not None
         assert info.conversation_profile_revision == 1
+        assert info.conversation_profile is not None
         assert info.conversation_profile.secret_refs == ["TEST_SECRET"]
         event_service = await restarted.get_event_service(info.id)
         assert event_service is not None
@@ -223,6 +267,7 @@ def test_profile_resolution_records_immutable_launch_snapshot():
     launched = resolve(profile.id, stores)
     assert launched.profile is not None
     assert launched.profile.profile_snapshot == profile
+    assert launched.profile.profile_snapshot is not None
     profile.name = "mutated globally"
     assert launched.profile.profile_snapshot.name == "saved"
 
@@ -251,17 +296,25 @@ async def test_saved_profile_launch_is_snapshot_and_edits_are_local(
                 )
             )
             assert info.conversation_profile == profile
+            assert info.launched_agent_profile is not None
             assert info.launched_agent_profile.profile_snapshot == profile
             event_service = await service.get_event_service(info.id)
+            assert event_service is not None
             result = await event_service.update_agent_profile(
                 UpdateConversationAgentRequest(profile_diff={"secret_refs": []})
             )
             assert result.conversation_profile_revision == 1
-            assert get_agent_profile_store().load(profile.name).secret_refs is None
+            saved = get_agent_profile_store().load(profile.name)
+            assert saved is not None
+            assert saved.secret_refs is None
         async with ConversationService(
             conversations_dir=conversations_dir, cipher=cipher
         ) as restarted:
             restored = await restarted.get_conversation(info.id)
+            assert restored is not None
+            assert restored.conversation_profile is not None
+            assert restored.launched_agent_profile is not None
+            assert restored.launched_agent_profile.profile_snapshot is not None
             assert restored.conversation_profile.secret_refs == []
             assert restored.launched_agent_profile.profile_snapshot.secret_refs is None
     finally:
@@ -341,6 +394,8 @@ async def test_patch_endpoint_edits_only_its_conversation(tmp_path):
             assert "opaque-value" not in response.text
         changed = await service.get_conversation(first.id)
         untouched = await service.get_conversation(second.id)
+        assert changed is not None and changed.conversation_profile is not None
+        assert untouched is not None and untouched.conversation_profile is not None
         assert changed.conversation_profile.secret_refs == ["PRIVATE"]
         assert untouched.conversation_profile.secret_refs is None
         assert untouched.conversation_profile_revision == 0

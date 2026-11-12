@@ -12,7 +12,6 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import Event, MessageEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
-from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.testing import TestLLM
 
 
@@ -40,11 +39,7 @@ def conversation_with_servers(
 
 
 def mcp_tool_names(conversation: LocalConversation) -> set[str]:
-    return {
-        name
-        for name, tool in conversation.agent.tools_map.items()
-        if isinstance(tool, MCPToolDefinition)
-    }
+    return {tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]}
 
 
 def test_replace_removes_and_closes_only_obsolete_clients(tmp_path: Path) -> None:
@@ -52,32 +47,33 @@ def test_replace_removes_and_closes_only_obsolete_clients(tmp_path: Path) -> Non
     conversation = conversation_with_servers(tmp_path, initial)
     try:
         conversation._ensure_agent_ready()
-        alpha = conversation.agent.tools_map["alpha_fetch"]
-        beta = conversation.agent.tools_map["beta_fetch"]
-        assert isinstance(alpha, MCPToolDefinition)
-        assert isinstance(beta, MCPToolDefinition)
-        assert isinstance(alpha.executor, MCPToolExecutor)
-        assert isinstance(beta.executor, MCPToolExecutor)
+        alpha = conversation.mcp_gateway.clients["alpha"]
+        beta = conversation.mcp_gateway.clients["beta"]
+        gateway_tools = dict(conversation.agent.tools_map)
         prompt_events = list(conversation.state.events)
+        revision = conversation.mcp_gateway.revision
 
         replacement = coerce_mcp_config({"beta": FETCH_SERVER, "gamma": FETCH_SERVER})
         conversation.update_mcp_config(replacement)
 
         assert conversation.agent is conversation.state.agent
         assert conversation.agent.mcp_config == replacement
-        assert mcp_tool_names(conversation) == {"beta_fetch", "gamma_fetch"}
-        assert conversation.agent.tools_map["beta_fetch"].executor is beta.executor
-        assert alpha.executor.client._closed
-        assert not beta.executor.client._closed
+        assert mcp_tool_names(conversation) == {"beta.fetch", "gamma.fetch"}
+        assert conversation.mcp_gateway.clients["beta"] is beta
+        assert conversation.mcp_gateway.revision != revision
+        assert alpha._closed
+        assert not beta._closed
+        assert all(
+            conversation.agent.tools_map[name] is tool
+            for name, tool in gateway_tools.items()
+        )
         assert list(conversation.state.events) == prompt_events
 
-        gamma = conversation.agent.tools_map["gamma_fetch"]
-        assert isinstance(gamma, MCPToolDefinition)
-        assert isinstance(gamma.executor, MCPToolExecutor)
+        gamma = conversation.mcp_gateway.clients["gamma"]
         conversation.update_mcp_config({})
         assert mcp_tool_names(conversation) == set()
-        assert beta.executor.client._closed
-        assert gamma.executor.client._closed
+        assert beta._closed
+        assert gamma._closed
     finally:
         conversation.close()
 
@@ -87,9 +83,8 @@ def test_failed_replacement_rolls_back_connections_and_config(tmp_path: Path) ->
     conversation = conversation_with_servers(tmp_path, initial)
     try:
         conversation._ensure_agent_ready()
-        old_tool = conversation.agent.tools_map["fetch"]
-        assert isinstance(old_tool, MCPToolDefinition)
-        assert isinstance(old_tool.executor, MCPToolExecutor)
+        old_client = conversation.mcp_gateway.clients["docs"]
+        revision = conversation.mcp_gateway.revision
         with pytest.raises(Exception):
             conversation.update_mcp_config(
                 coerce_mcp_config(
@@ -101,8 +96,10 @@ def test_failed_replacement_rolls_back_connections_and_config(tmp_path: Path) ->
             )
         assert conversation.agent is conversation.state.agent
         assert conversation.agent.mcp_config == initial
-        assert conversation.agent.tools_map["fetch"].executor is old_tool.executor
-        assert not old_tool.executor.client._closed
+        assert conversation.mcp_gateway.clients["docs"] is old_client
+        assert conversation.mcp_gateway.revision == revision
+        assert mcp_tool_names(conversation) == {"docs.fetch"}
+        assert not old_client._closed
     finally:
         conversation.close()
 
@@ -116,24 +113,103 @@ def test_update_before_initialization_defers_connection(tmp_path: Path) -> None:
         assert conversation.agent.mcp_config == replacement
         assert not conversation._agent_ready
         conversation._ensure_agent_ready()
-        assert mcp_tool_names(conversation) == {"fetch"}
+        assert mcp_tool_names(conversation) == {"docs.fetch"}
     finally:
         conversation.close()
 
 
-def test_single_server_addition_renames_existing_tools(tmp_path: Path) -> None:
+def test_first_server_added_after_initialization_registers_gateway_tools(
+    tmp_path: Path,
+) -> None:
+    conversation = conversation_with_servers(tmp_path, {})
+    try:
+        conversation._ensure_agent_ready()
+        assert "list_mcp_tools" not in conversation.agent.tools_map
+        prompt_events = list(conversation.state.events)
+        conversation.update_mcp_config(coerce_mcp_config({"docs": FETCH_SERVER}))
+        assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+        assert mcp_tool_names(conversation) == {"docs.fetch"}
+        assert list(conversation.state.events) == prompt_events
+        listing = conversation.mcp_gateway.list_tools()
+        assert not conversation.mcp_gateway.call(
+            "docs.fetch", {"url": "x"}, listing["revision"], conversation
+        ).is_error
+    finally:
+        conversation.close()
+
+
+def test_failed_first_server_leaves_gateway_tools_unregistered(tmp_path: Path) -> None:
+    conversation = conversation_with_servers(tmp_path, {})
+    try:
+        conversation._ensure_agent_ready()
+        with pytest.raises(Exception):
+            conversation.update_mcp_config(
+                coerce_mcp_config({"broken": {"command": "nonexistent-mcp-executable"}})
+            )
+        assert conversation.agent.mcp_config == {}
+        assert conversation.agent is conversation.state.agent
+        assert "list_mcp_tools" not in conversation.agent.tools_map
+        assert conversation._mcp_gateway is None
+    finally:
+        conversation.close()
+
+
+def test_single_server_addition_keeps_names_and_connection(tmp_path: Path) -> None:
     initial = coerce_mcp_config({"docs": FETCH_SERVER})
     conversation = conversation_with_servers(tmp_path, initial)
     try:
         conversation._ensure_agent_ready()
-        old_tool = conversation.agent.tools_map["fetch"]
-        assert isinstance(old_tool, MCPToolDefinition)
-        assert isinstance(old_tool.executor, MCPToolExecutor)
+        old_client = conversation.mcp_gateway.clients["docs"]
         conversation.update_mcp_config(
             coerce_mcp_config({"docs": FETCH_SERVER, "other": FETCH_SERVER})
         )
-        assert mcp_tool_names(conversation) == {"docs_fetch", "other_fetch"}
-        assert old_tool.executor.client._closed
+        assert mcp_tool_names(conversation) == {"docs.fetch", "other.fetch"}
+        assert conversation.mcp_gateway.clients["docs"] is old_client
+        assert not old_client._closed
+    finally:
+        conversation.close()
+
+
+def test_server_names_with_dots_remain_in_catalog_after_addition(
+    tmp_path: Path,
+) -> None:
+    initial = coerce_mcp_config({"docs.search": FETCH_SERVER})
+    conversation = conversation_with_servers(tmp_path, initial)
+    try:
+        conversation._ensure_agent_ready()
+        existing = conversation.mcp_gateway.clients["docs.search"]
+        conversation.update_mcp_config(
+            coerce_mcp_config({"docs.search": FETCH_SERVER, "other": FETCH_SERVER})
+        )
+        assert conversation.mcp_gateway.clients["docs.search"] is existing
+        assert mcp_tool_names(conversation) == {"docs.search.fetch", "other.fetch"}
+    finally:
+        conversation.close()
+
+
+def test_legacy_runtime_update_is_rejected_without_rewiring_tools(
+    tmp_path: Path,
+) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_gateway=False,
+            mcp_config=coerce_mcp_config({"docs": FETCH_SERVER}),
+        ),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+    try:
+        conversation._ensure_agent_ready()
+        old_tool = conversation.agent.tools_map["fetch"]
+        with pytest.raises(ValueError, match="require the MCP gateway"):
+            conversation.update_mcp_config(coerce_mcp_config({"extra": FETCH_SERVER}))
+        assert conversation.agent.tools_map["fetch"] is old_tool
+        assert conversation.agent.mcp_config == coerce_mcp_config(
+            {"docs": FETCH_SERVER}
+        )
     finally:
         conversation.close()
 
@@ -189,7 +265,7 @@ def test_server_with_no_tools_is_closed_when_removed(tmp_path: Path) -> None:
     try:
         conversation._ensure_agent_ready()
         assert mcp_tool_names(conversation) == set()
-        client = conversation._mcp_clients["empty"]
+        client = conversation.mcp_gateway.clients["empty"]
         conversation.update_mcp_config({})
         assert client._closed
         assert mcp_tool_names(conversation) == set()
@@ -203,18 +279,15 @@ def test_replacing_same_named_server_closes_previous_client(tmp_path: Path) -> N
     )
     try:
         conversation._ensure_agent_ready()
-        old_tool = conversation.agent.tools_map["fetch"]
-        assert isinstance(old_tool, MCPToolDefinition)
-        assert isinstance(old_tool.executor, MCPToolExecutor)
+        old_client = conversation.mcp_gateway.clients["docs"]
         changed = coerce_mcp_config(
             {"docs": {**FETCH_SERVER, "env": {"MCP_UPDATE_TEST": "changed"}}}
         )
         conversation.update_mcp_config(changed)
-        new_tool = conversation.agent.tools_map["fetch"]
-        assert isinstance(new_tool, MCPToolDefinition)
-        assert isinstance(new_tool.executor, MCPToolExecutor)
-        assert new_tool.executor.client is not old_tool.executor.client
-        assert old_tool.executor.client._closed
-        assert not new_tool.executor.client._closed
+        new_client = conversation.mcp_gateway.clients["docs"]
+        assert new_client is not old_client
+        assert old_client._closed
+        assert not new_client._closed
+        assert mcp_tool_names(conversation) == {"docs.fetch"}
     finally:
         conversation.close()
