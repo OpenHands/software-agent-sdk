@@ -238,7 +238,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     --check name eq qa-f21-coder --check message eq "Agent profile 'qa-f21-coder' saved" --save F21.save-create/save
   CODER=$(control-agent-server api GET /api/agent-profiles/qa-f21-coder --expect 200 \
     --check name eq qa-f21-coder --check profile.name eq qa-f21-coder --check profile.id ne 11111111-1111-4111-8111-111111111111 \
-    --check profile.revision eq 0 --check profile.schema_version eq 3 --check profile.agent_kind eq openhands \
+    --check profile.revision eq 0 --check profile.schema_version eq 4 --check profile.agent_kind eq openhands \
     --check profile.llm_profile_ref eq deepseek-pro --check profile.tools len-eq 0 --check profile.mcp_server_refs len-eq 0 \
     --check profile.system_message_suffix eq 'QA F21 suffix' --check profile.agent eq CodeActAgent \
     --save F21.save-create/get --field profile.id)
@@ -927,7 +927,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
   not name `dangling_llm_profile_ref`, which only the launch's 422 carries
   (#5871).
-- **TypeScript payload types (`F21.ts-payload-types`), known bug.** The
+- **TypeScript payload types (`F21.ts-payload-types`).** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
@@ -962,7 +962,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
   $TSC "$D/contract.ts"
-  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'  # bug: value contains TS2353 && value contains public_skills && value contains 'Shape<OpenHandsAgentProfile>' && value contains 'Shape<AgentProfileDiagnostics>'
+  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
   Canvas's profile editor) can read every field the server sends under its
@@ -974,11 +974,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
   `acp_startup_timeout`. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
-  generated contract. A later `public_skills` field is now present in live
-  OpenHands profiles and materialize reports and in the generated contract,
-  but absent from both exported types. The generated positive control still
-  passes; the exported types fail with TS2353 naming `public_skills`
-  ([OpenHands/software-agent-sdk#6183](https://github.com/OpenHands/software-agent-sdk/issues/6183)).
+  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`
+  (#6187, which closed #6183).
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.

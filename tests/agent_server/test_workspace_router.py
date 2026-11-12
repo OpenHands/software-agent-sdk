@@ -44,8 +44,8 @@ def client_factory(tmp_path):
             return None
 
         conversation_service.get_event_service.side_effect = _get_event_service
-        app.dependency_overrides[get_conversation_service] = (
-            lambda: conversation_service
+        app.dependency_overrides[get_conversation_service] = lambda: (
+            conversation_service
         )
         return TestClient(app, raise_server_exceptions=False)
 
