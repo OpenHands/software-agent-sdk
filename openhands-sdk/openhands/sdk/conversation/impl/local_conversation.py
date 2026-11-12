@@ -2213,6 +2213,10 @@ class LocalConversation(BaseConversation):
         (a pending confirmation, a pause) the reaction is held back, and joins
         the events once every call is answered.
 
+        Returns:
+            The reaction as stored, with its ``parent_id``. A reaction held back
+            has no ``parent_id`` yet: it gets one when it joins the events.
+
         Raises:
             ValueError: The emoji is not allowed, or there is no such message.
         """
@@ -2233,6 +2237,9 @@ class LocalConversation(BaseConversation):
             if ConversationState.get_unmatched_actions(self._state.active_branch()):
                 self._pending_reactions.append(event)
             else:
+                # Stamp here, as the log will, so the caller gets the event as
+                # stored rather than the unstamped original.
+                event = cast(ReactionEvent, self._state._stamp_parent_id(event))
                 self._on_event(event)
         return event
 
