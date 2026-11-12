@@ -44,7 +44,8 @@ from openhands.sdk.settings import (
 from openhands.sdk.settings.api_models import MCPServerPatch
 from openhands.sdk.utils.pydantic_secrets import (
     SecretDecryptionError,
-    is_redacted_secret,
+    cipher_context,
+    client_context,
 )
 
 
@@ -329,7 +330,7 @@ def _with_profile_llm(
             **update_data,
             "agent_settings_diff": {
                 **agent_diff,
-                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+                "llm": llm.model_dump(mode="json", context=client_context("plaintext")),
             },
         },
     )
@@ -348,7 +349,7 @@ def _apply_settings_update(
         nonlocal applied_update
         if before_update is not None:
             before_update(settings)
-        context = {"cipher": config.cipher} if config.cipher is not None else None
+        context = cipher_context(config.cipher)
         applied_update = _with_profile_llm(update_data, profile_llm, settings)
         settings.update(applied_update, context=context)
         return settings
@@ -447,7 +448,7 @@ async def create_mcp_server(
     """Create one named MCP server without replacing an existing map entry."""
     server_data = server.model_dump(
         mode="python",
-        context={"expose_secrets": "plaintext"},
+        context=client_context("plaintext"),
         exclude_none=True,
         exclude_defaults=True,
     )
@@ -471,7 +472,7 @@ async def patch_mcp_server(
     """Sparsely update one existing named MCP server."""
     patch_data = patch.model_dump(
         mode="python",
-        context={"expose_secrets": "plaintext"},
+        context=client_context("plaintext"),
         exclude_unset=True,
     )
     update_data = cast(
@@ -588,11 +589,6 @@ async def create_secret(
     _validate_secret_name(secret.name)
 
     value = secret.value.get_secret_value()
-    if not value.strip() or is_redacted_secret(value):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Secret value must not be empty or redacted",
-        )
 
     config = get_config(request)
     store = get_secrets_store(config)

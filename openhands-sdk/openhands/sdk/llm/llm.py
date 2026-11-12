@@ -18,6 +18,7 @@ from collections.abc import (
 from contextvars import ContextVar
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Literal,
@@ -34,8 +35,6 @@ from pydantic import (
     PrivateAttr,
     SecretStr,
     computed_field,
-    field_serializer,
-    field_validator,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -66,7 +65,7 @@ from openhands.sdk.llm.utils.runtime_metadata import (
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
@@ -218,9 +217,8 @@ JOINT_BUDGET_MIN_OUTPUT_TOKENS: Final[int] = 1024
 # registry) for the same underlying API.
 _JOINT_BUDGET_PROVIDER_PREFIXES: Final[tuple[str, ...]] = ("bedrock",)
 
-# Secret-bearing fields on LLM. Kept as a single source of truth so callers that
-# need to walk secrets (e.g. cipher-aware decryption on the save path) stay in
-# sync with the serializer below.
+# The ``SecretField`` fields of LLM, for callers that walk secrets (e.g.
+# cipher-aware decryption on the save path).
 LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "api_key",
     "aws_access_key_id",
@@ -286,7 +284,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Model name.",
         json_schema_extra=field_meta(SettingProminence.CRITICAL),
     )
-    api_key: str | SecretStr | None = Field(
+    api_key: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         description="API key.",
         json_schema_extra=field_meta(
@@ -332,15 +330,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
 
-    aws_access_key_id: str | SecretStr | None = Field(
+    aws_access_key_id: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
-    aws_secret_access_key: str | SecretStr | None = Field(
+    aws_secret_access_key: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
-    aws_session_token: str | SecretStr | None = Field(
+    aws_session_token: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
@@ -737,13 +735,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             _serialized_is_subscription.set(bool(data.get("is_subscription")))
         return data
 
-    @field_validator(
-        "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
-    )
-    @classmethod
-    def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
-        return validate_secret(v, info)
-
     @model_validator(mode="before")
     @classmethod
     def _coerce_inputs(cls, data):
@@ -897,13 +888,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # which would create noisy duplicate error logs.
         # The completion()/responses() exception handlers call Telemetry.on_error
         # after retries are exhausted (final failure), which is what we want to log.
-
-    # =========================================================================
-    # Serializers
-    # =========================================================================
-    @field_serializer(*LLM_SECRET_FIELDS, when_used="always")
-    def _serialize_secrets(self, v: SecretStr | None, info):
-        return serialize_secret(v, info)
 
     # =========================================================================
     # Public API
@@ -3362,7 +3346,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return template_messages
 
     @classmethod
-    def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
+    def from_persisted(
+        cls, data: Any, *, context: Mapping[str, Any] | None = None
+    ) -> LLM:
         """Load a persisted LLM profile payload, applying schema migrations."""
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -3389,7 +3375,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return create_subscription_llm_from_config(llm)
         return llm
 
-    def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def to_persisted(
+        self, *, context: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Serialize this LLM for profile persistence."""
         data = self.model_dump(mode="json", exclude_none=True, context=context)
         if data.get("auth_type") == "subscription":
@@ -3404,13 +3392,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     @classmethod
     def load_from_json(
-        cls, json_path: str, *, context: dict[str, Any] | None = None
+        cls, json_path: str, *, context: Mapping[str, Any] | None = None
     ) -> LLM:
         """Load an LLM instance from a JSON file.
 
         Args:
             json_path: Path to the JSON file containing LLM configuration.
-            context: Optional validation context (e.g., ``{"cipher": cipher}``
+            context: Optional validation context (e.g., ``cipher_context(cipher)``
                 for decrypting secrets stored at rest).
 
         Returns:

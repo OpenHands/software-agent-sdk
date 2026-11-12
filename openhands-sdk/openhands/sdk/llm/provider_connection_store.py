@@ -26,7 +26,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Annotated, Final
 
 from filelock import FileLock, Timeout
 from pydantic import (
@@ -34,12 +34,14 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    field_serializer,
-    field_validator,
 )
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.pydantic_secrets import is_redacted_secret, serialize_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    SecretField,
+    cipher_context,
+    client_context,
+)
 
 
 if TYPE_CHECKING:
@@ -89,46 +91,15 @@ class ProviderConnection(BaseModel):
     id: str = Field(..., min_length=1, max_length=128)
     display_name: str = Field(..., min_length=1, max_length=128)
     provider: str = Field(default="custom", min_length=1, max_length=128)
-    api_key: SecretStr | None = None
+    # A stored key that cannot be decrypted fails the load instead of reading
+    # as unset: a wrong-cipher read-modify-write would otherwise rewrite the
+    # collection with api_key=null and destroy the stored ciphertext.
+    api_key: Annotated[SecretStr | None, SecretField(undecryptable="raise")] = None
     base_url: str | None = Field(default=None, max_length=2048)
     created_at: int = Field(..., description="Unix epoch seconds.")
     updated_at: int = Field(..., description="Unix epoch seconds.")
 
     model_config = ConfigDict(populate_by_name=True)
-
-    @field_validator("api_key", mode="before")
-    @classmethod
-    def _validate_api_key(cls, v: str | SecretStr | None, info) -> SecretStr | None:
-        # Provider connections use a strict decryption path: a Fernet-encrypted key
-        # that cannot be decrypted raises instead of silently becoming None.  A
-        # wrong-cipher read→modify→write would otherwise rewrite the collection
-        # with api_key=null, permanently destroying the stored ciphertext.
-        from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
-
-        if v is None:
-            return None
-        secret_value = v.get_secret_value() if isinstance(v, SecretStr) else v
-        if (
-            not secret_value
-            or not secret_value.strip()
-            or is_redacted_secret(secret_value)
-        ):
-            return None
-        cipher = (info.context or {}).get("cipher")
-        if cipher is not None and secret_value.startswith(FERNET_TOKEN_PREFIX):
-            decrypted = cipher.decrypt(secret_value)
-            if decrypted is None:
-                raise ValueError(
-                    "api_key is encrypted but cannot be decrypted with the current "
-                    "cipher. Verify that OH_SECRET_KEY matches the key used when "
-                    "this connection was saved."
-                )
-            return decrypted
-        return v if isinstance(v, SecretStr) else SecretStr(secret_value)
-
-    @field_serializer("api_key", when_used="always")
-    def _serialize_api_key(self, v: SecretStr | None, info):
-        return serialize_secret(v, info)
 
     def api_key_value(self) -> str | None:
         """Return the plaintext key, or ``None`` when unset/empty."""
@@ -199,18 +170,13 @@ class ProviderConnectionStore:
                 f"{PROVIDER_CONNECTIONS_SCHEMA_VERSION}"
             )
         raw["schema_version"] = PROVIDER_CONNECTIONS_SCHEMA_VERSION
-        context = {"cipher": cipher} if cipher else None
+        context = cipher_context(cipher)
         return PersistedProviderConnections.model_validate(raw, context=context)
 
     def _write(
         self, persisted: PersistedProviderConnections, *, cipher: Cipher | None
     ) -> None:
-        context: dict[str, Any] = {}
-        if cipher is not None:
-            context["cipher"] = cipher
-            context["expose_secrets"] = "encrypted"
-        else:
-            context["expose_secrets"] = True
+        context = cipher_context(cipher) if cipher else client_context("plaintext")
         data = persisted.model_dump(mode="json", context=context)
         payload = json.dumps(data, indent=2)
         with tempfile.NamedTemporaryFile(

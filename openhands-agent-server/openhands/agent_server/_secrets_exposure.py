@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from fastapi import HTTPException, Request, status
 from pydantic import SecretStr
@@ -15,7 +15,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     MissingCipherError,
+    SecretContext,
     SecretDecryptionError,
+    client_context,
 )
 
 
@@ -71,11 +73,9 @@ def parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
 
 def build_expose_context(
     expose_mode: ExposeSecretsMode | None, cipher: Cipher | None
-) -> dict[str, Any]:
+) -> SecretContext:
     """Build the pydantic serialization context for the given expose mode."""
-    if expose_mode is None:
-        return {}
-    return {"expose_secrets": expose_mode, "cipher": cipher}
+    return client_context(expose_mode or "redact", cipher)
 
 
 def _has_missing_cipher_cause(exc: BaseException) -> bool:

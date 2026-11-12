@@ -24,11 +24,8 @@ from pydantic import (
     Discriminator,
     Field,
     SecretStr,
-    SerializationInfo,
     Tag,
     TypeAdapter,
-    ValidationInfo,
-    field_serializer,
     field_validator,
     model_validator,
 )
@@ -65,10 +62,7 @@ from openhands.sdk.tool.defaults import (
     merge_duplicate_tools,
     resolve_tool_specs,
 )
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 from .acp_providers import (
@@ -471,7 +465,9 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
-    critic_api_key: str | SecretStr | None = Field(
+    critic_api_key: Annotated[
+        str | SecretStr | None, SecretField(serialized_as=Any)
+    ] = Field(
         default=None,
         description=(
             "API key used to authenticate with the critic service. "
@@ -487,43 +483,19 @@ class VerificationSettings(BaseModel):
         },
     )
 
-    @field_validator("critic_api_key")
-    @classmethod
-    def _validate_critic_api_key(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("critic_api_key", when_used="always")
-    def _serialize_critic_api_key(
-        self, v: SecretStr | None, info: SerializationInfo
-    ) -> Any:
-        return serialize_secret(v, info)
-
 
 class ACPVerificationSettings(BaseModel):
     """The server-wide part of :class:`VerificationSettings`."""
 
-    critic_api_key: str | SecretStr | None = Field(
+    critic_api_key: Annotated[
+        str | SecretStr | None, SecretField(serialized_as=Any)
+    ] = Field(
         default=None,
         description=(
             "API key used to authenticate with the critic service. ACP agents "
             "run no critic; the key is kept for OpenHands profiles on this server."
         ),
     )
-
-    @field_validator("critic_api_key")
-    @classmethod
-    def _validate_critic_api_key(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("critic_api_key", when_used="always")
-    def _serialize_critic_api_key(
-        self, v: SecretStr | None, info: SerializationInfo
-    ) -> Any:
-        return serialize_secret(v, info)
 
 
 def _default_llm_settings() -> LLM:
@@ -590,7 +562,7 @@ class AgentSettingsBase(BaseModel):
         :meth:`OpenHandsAgentSettings.from_persisted`.
 
         When loading an encrypted persisted mapping, pass the same validation
-        context used to write it (for example ``{"cipher": cipher}``) so
+        context used to write it (for example ``cipher_context(cipher)``) so
         secret-bearing fields can be decrypted. An already-validated instance
         of this concrete variant is returned unchanged, preserving its secrets
         without a lossy serialization round trip.
@@ -609,7 +581,7 @@ class AgentSettingsBase(BaseModel):
         if isinstance(data, cls):
             return data
         if isinstance(data, BaseModel):
-            data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+            data = data.model_dump(mode="json", context=client_context("plaintext"))
         payload = _migrate_agent_settings_payload(data, persisted=True)
         return cls.model_validate(payload, context=context)
 
@@ -2373,7 +2345,9 @@ def apply_agent_settings_diff(
     base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
-    merge_base = base_settings.model_dump(mode="json", context={"expose_secrets": True})
+    merge_base = base_settings.model_dump(
+        mode="json", context=client_context("plaintext")
+    )
     new_kind = diff.get("agent_kind")
     if new_kind and new_kind != base_settings.agent_kind:
         merge_base = {"agent_kind": new_kind, **_server_wide_settings(merge_base)}

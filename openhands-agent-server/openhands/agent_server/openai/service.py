@@ -63,6 +63,7 @@ from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -686,7 +687,7 @@ async def _run_docker_agent(
             }
         )
         status_code, _, conversation_id = await start_docker_conversation(
-            docker_request.model_dump(mode="json", context={"expose_secrets": True}),
+            docker_request.model_dump(mode="json", context=client_context("plaintext")),
             registry,
         )
         if status_code >= 400:

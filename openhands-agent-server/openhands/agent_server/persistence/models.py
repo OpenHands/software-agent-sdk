@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -31,13 +31,14 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import SecretField, cipher_context
 
 
-class _SecretProbeCipher:
+class _SecretProbeCipher(Cipher):
     """Fake cipher that flags secret serialization without needing a real key.
 
-    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    Passed as ``context=cipher_context(probe)`` this forces every secret field's
     serializer down the "encrypted" branch (see ``resolve_expose_mode``),
     reusing the real serialization pipeline to detect secret-bearing fields
     instead of hand-walking the model for ``SecretStr`` instances. That
@@ -50,11 +51,11 @@ class _SecretProbeCipher:
     def __init__(self) -> None:
         self.found = False
 
-    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+    def try_decrypt_str(self, value: str) -> str | None:  # noqa: ARG002
         return None
 
-    def encrypt(self, value: SecretStr) -> str:
-        if value.get_secret_value():
+    def encrypt(self, secret: SecretStr | None) -> str | None:
+        if secret is not None and secret.get_secret_value():
             self.found = True
         return ""
 
@@ -62,7 +63,7 @@ class _SecretProbeCipher:
 def _contains_secret_value(model: BaseModel) -> bool:
     """Check if serializing `model` would touch any secret-bearing field."""
     probe = _SecretProbeCipher()
-    model.model_dump(mode="json", context={"cipher": probe})
+    model.model_dump(mode="json", context=cipher_context(probe))
     return probe.found
 
 
@@ -394,7 +395,7 @@ class PersistedSettings(BaseModel):
 
     @classmethod
     def from_persisted(
-        cls, data: Any, *, context: dict[str, Any] | None = None
+        cls, data: Any, *, context: Mapping[str, Any] | None = None
     ) -> PersistedSettings:
         """Load persisted settings.
 
@@ -495,7 +496,7 @@ class CustomSecret(BaseModel):
     """A custom secret with name, value, and optional description."""
 
     name: str
-    secret: SecretStr | None
+    secret: Annotated[SecretStr | None, SecretField()]
     description: str | None = None
 
     @field_validator("name")
@@ -519,17 +520,6 @@ class CustomSecret(BaseModel):
                 "letters/numbers/underscores, and be 1-64 characters"
             )
         return v
-
-    @field_validator("secret")
-    @classmethod
-    def _validate_secret(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("secret", when_used="always")
-    def _serialize_secret(self, v: SecretStr | None, info: SerializationInfo):
-        return serialize_secret(v, info)
 
 
 class Secrets(BaseModel):
@@ -579,8 +569,8 @@ class Secrets(BaseModel):
     def custom_secrets_serializer(
         self, custom_secrets: dict[str, CustomSecret], info: SerializationInfo
     ) -> dict[str, dict[str, Any]]:
-        # Delegate to CustomSecret.model_dump which uses serialize_secret
-        # This ensures cipher context flows through for encryption
+        # Delegate to CustomSecret.model_dump so the cipher context reaches
+        # its SecretField
         result = {}
         for name, secret in custom_secrets.items():
             result[name] = secret.model_dump(mode="json", context=info.context)
@@ -594,7 +584,7 @@ class Secrets(BaseModel):
         Note: We deliberately keep values as raw strings/dicts here so that
         Pydantic's field validators can handle cipher-based decryption via
         the validation context. Wrapping in SecretStr here would bypass the
-        validate_secret() call that handles decryption.
+        SecretField decryption.
         """
         if not isinstance(data, dict):
             return data
