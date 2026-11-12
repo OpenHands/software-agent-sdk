@@ -160,10 +160,12 @@ Preconditions:
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S17/schema_constraints \
-    --check pydantic.order_id_pattern eq '^ORD-[0-9]{6}$' --check pydantic.additional_properties eq false \
+    --check pydantic.order_id_pattern eq '^ORD-[0-9]{6}$' --check pydantic.currency_const eq USD \
+    --check pydantic.additional_properties eq false \
     --check openai.order_id_pattern eq '^ORD-[0-9]{6}$' --check openai.currency_const eq USD \
     --check openai.additional_properties eq false \
-    --check responses.order_id_pattern eq '^ORD-[0-9]{6}$' --check responses.additional_properties eq false
+    --check responses.order_id_pattern eq '^ORD-[0-9]{6}$' --check responses.currency_const eq USD \
+    --check responses.additional_properties eq false
   ```
   Expected: the parameters the model gets keep `pattern`, the `const` (or a one-value `enum`) and `additionalProperties: false`. Known failure (reproduced 2026-11-12, [#6766](https://github.com/OpenHands/software-agent-sdk/issues/6766)): pydantic's schema has all three, but both rendered tools send `order_id` as `{"type": "string", "description": ...}`, `currency` as a plain string and no `additionalProperties`: `_process_schema_node` in `openhands/sdk/tool/schema.py` keeps only `type`, `description`, `properties`, `required`, `items`, `enum` and the first `anyOf` branch.
 - **Validating a dumped action twice (`S17.schema-serialization`).** The program validates `action.model_dump(mode="json")` back into an `Action` and then validates the same dict again.

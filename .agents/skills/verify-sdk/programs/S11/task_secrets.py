@@ -1,11 +1,12 @@
 """A parent conversation with a secret delegates a command that needs it.
 
 The parent registers `PROBE_TOKEN` with `conversation.update_secrets(...)`,
-runs `echo probe=${PROBE_TOKEN:+set}` itself, then delegates the same
+runs `echo probe=${PROBE_TOKEN:+set} value=$PROBE_TOKEN` itself, then delegates the same
 command to the programmatic sub-agent `prober` (create), and once more to the
 same task id (resume). Each terminal observation says `probe=set` when the
-secret reached that shell and `probe=` when it did not; the secret's value
-never appears in the result.
+secret reached that shell and `probe=` when it did not, and prints the value
+so that masking is visible: the parent's observation shows `<secret-hidden>`,
+and the secret's value appears in no observation or task result.
 """
 
 import json
@@ -20,7 +21,7 @@ from openhands.tools.terminal import TerminalTool
 
 
 SECRET = "s3cr3t-probe-value-6724"
-PROBE = "echo probe=${PROBE_TOKEN:+set}"
+PROBE = "echo probe=${PROBE_TOKEN:+set} value=$PROBE_TOKEN"
 
 paths = run_paths()
 workspace = paths["workspace"]
@@ -102,6 +103,7 @@ def probe_value(text):
 
 # The sub-agents' own terminal output is in their persisted event logs.
 sub_probes = []
+sub_texts = []
 sub_root = paths["conversations"]
 for f in sorted(sub_root.rglob("subagents/*/events/*.json")):
     event = json.loads(f.read_text())
@@ -114,8 +116,9 @@ for f in sorted(sub_root.rglob("subagents/*/events/*.json")):
     text = "".join(c.get("text", "") for c in obs.get("content") or [])
     if text.startswith("probe="):
         sub_probes.append(probe_value(text))
+        sub_texts.append(text)
 
-all_text = (parent_probe or "") + "".join(t["text"] for t in tasks)
+all_text = (parent_probe or "") + "".join(t["text"] for t in tasks) + "".join(sub_texts)
 emit(
     {
         "ok": True,
@@ -125,6 +128,7 @@ emit(
         "sub_probes": sub_probes,
         "create_probe": sub_probes[0] if sub_probes else None,
         "resume_probe": sub_probes[1] if len(sub_probes) > 1 else None,
+        "parent_masked": "<secret-hidden>" in (parent_probe or ""),
         "secret_leaked": SECRET in all_text,
     }
 )

@@ -192,7 +192,9 @@ Preconditions:
     --check observations.0.text eq "Reacted :eyes:." --check observations.1.text eq "Removed :eyes:." \
     --check agent_errors len-eq 1 --check agent_errors.0 contains "Error validating tool 'react'" \
     --check bad_user_emoji contains "Unknown emoji 'rocket'" --check user_reaction_target_is_finish eq true \
-    --check turn2_sees_user_heart eq true --check turn2_sees_own_reaction_line eq false
+    --check agent_reaction_preceded_by len-eq 3 --check agent_reaction_preceded_by.0 eq ObservationEvent \
+    --check agent_reaction_preceded_by.1 eq ObservationEvent --check agent_reaction_preceded_by.2 eq ObservationEvent \
+    --check turn2_sees_user_heart eq true --check turn2_user_reaction_lines eq 1 --check turn2_sees_own_reaction_line eq false
   ```
 - **Emoji reactions with a real model (`S16.reactions`).** Live; the model gets `react` and `unreact` and one message asking it to react `eyes` first and then answer.
   ```sh

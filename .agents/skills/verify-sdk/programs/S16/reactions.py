@@ -150,6 +150,11 @@ reactions = [
     if isinstance(e, ReactionEvent)
 ]
 kinds = [type(e).__name__ for e in events]
+agent_reaction_preceded_by = [
+    kinds[i - 1]
+    for i, e in enumerate(events)
+    if isinstance(e, ReactionEvent) and e.source == "agent" and i > 0
+]
 first_reaction_at = kinds.index("ReactionEvent") if "ReactionEvent" in kinds else -1
 observations = [
     {
@@ -174,6 +179,7 @@ emit(
         "status_after_user_react": status_after_react,
         "status_turn2": status_2,
         "reactions": reactions,
+        "agent_reaction_preceded_by": agent_reaction_preceded_by,
         "event_before_first_reaction": kinds[first_reaction_at - 1]
         if first_reaction_at > 0
         else None,
@@ -182,9 +188,10 @@ emit(
         "bad_user_emoji": bad_user_emoji,
         "user_reaction_target_is_finish": bool(finish_ids)
         and user_reaction.target_event_id == finish_ids[0],
-        "turn2_sees_user_heart": "[The user reacted" in turn2_text
-        and "The build is green." in turn2_text,
-        "turn2_sees_own_reaction_line": "[You reacted" in turn2_text,
+        "turn2_sees_user_heart": "[The user reacted \u2764\ufe0f to this message:]\n"
+        "The build is green." in turn2_text,
+        "turn2_user_reaction_lines": turn2_text.count("[The user reacted"),
+        "turn2_sees_own_reaction_line": "[You " in turn2_text,
         "llm_calls": len(SEEN),
     }
 )
