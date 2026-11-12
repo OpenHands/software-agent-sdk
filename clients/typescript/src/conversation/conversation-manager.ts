@@ -295,13 +295,9 @@ export class ConversationManager {
   async getACPConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ACPConversationInfo | null>> {
-    const response = await this.client.get<Array<ACPConversationInfo | null>>(
-      '/api/conversations',
-      {
-        params: { ids: conversationIds },
-      }
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
     );
-    return response.data;
   }
 
   /**

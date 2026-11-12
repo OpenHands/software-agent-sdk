@@ -6,9 +6,10 @@ import { ConversationManager } from '../conversation/conversation-manager';
 
 // Exercise real HTTP serialization and error handling against the server's batch contract.
 describe.each([
-  ['ConversationClient', ConversationClient],
-  ['ConversationManager', ConversationManager],
-] as const)('%s conversation batches', (_name, Client) => {
+  ['ConversationClient', (host: string) => new ConversationClient({ host })],
+  ['ConversationManager', (host: string) => new ConversationManager({ host })],
+  ['ACP namespace', (host: string) => new ConversationManager({ host }).acp],
+] as const)('%s conversation batches', (_name, createClient) => {
   let server: Server;
   let host: string;
   let batches: string[][];
@@ -52,7 +53,7 @@ describe.each([
       );
       if (count > 100) ids[100] = ids[0];
 
-      const result = await new Client({ host }).getConversations(ids);
+      const result = await createClient(host).getConversations(ids);
 
       expect(result).toEqual(ids.map((id) => (id.endsWith('7') ? null : { id })));
       expect(batches.flat()).toEqual(ids);
@@ -68,7 +69,7 @@ describe.each([
       (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
     );
 
-    await expect(new Client({ host }).getConversations(ids)).rejects.toMatchObject({
+    await expect(createClient(host).getConversations(ids)).rejects.toMatchObject({
       constructor: HttpError,
       status: 503,
     });
