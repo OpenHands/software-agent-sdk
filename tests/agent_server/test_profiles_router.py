@@ -1945,6 +1945,76 @@ def test_patch_provider_connection_maps_corrupted_file(client, temp_profiles_dir
     assert response.status_code != 500
 
 
+# ── Context window below the minimum ─────────────────────────────────────────
+
+
+def test_save_profile_context_window_below_minimum_is_client_error(client, store):
+    """POST /api/profiles/{name} returns 422 when the context window is too small."""
+    response = client.post(
+        "/api/profiles/short-window",
+        json={
+            "llm": {
+                "model": "deepseek/deepseek-flash",
+                "max_input_tokens": 16000,
+            }
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert "16,000" in body["detail"]
+    assert "16,384" in body["detail"]
+    assert "exception" not in body
+    with pytest.raises(FileNotFoundError):
+        store.load("short-window")
+
+
+def test_validate_profile_context_window_below_minimum_is_client_error(client):
+    """POST /api/profiles/{name}/validate returns 422 for a too-small window."""
+    response = client.post(
+        "/api/profiles/short-window/validate",
+        json={
+            "llm": {
+                "model": "deepseek/deepseek-flash",
+                "max_input_tokens": 16000,
+            }
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert "16,000" in body["detail"]
+    assert "16,384" in body["detail"]
+    assert "exception" not in body
+
+
+def test_save_and_validate_profile_at_minimum_context_window(client, store):
+    """A window at the 16,384 minimum still saves and validates."""
+    from unittest.mock import MagicMock
+
+    payload = {
+        "llm": {
+            "model": "deepseek/deepseek-flash",
+            "max_input_tokens": 16384,
+            "api_key": "sk-test",
+        }
+    }
+    save_response = client.post("/api/profiles/min-window", json=payload)
+    assert save_response.status_code == 201
+    assert store.load("min-window").max_input_tokens == 16384
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", return_value=MagicMock()),
+    ):
+        validate_response = client.post(
+            "/api/profiles/min-window/validate", json=payload
+        )
+
+    assert validate_response.status_code == 200
+    assert validate_response.json()["valid"] is True
+
+
 # ── Pre-flight validation: POST /api/profiles/{name}/validate ────────────────
 
 
