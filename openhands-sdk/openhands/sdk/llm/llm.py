@@ -977,7 +977,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if session is None:
             session = self._registered_session()
         if session is None:
-            return self.session
+            session = self.session
         if session is not self._session:
             self._keep_own_session_apart()
         session.follow(self)
@@ -1093,6 +1093,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 primary_error=error,
                 primary_metrics=session.metrics,
                 call_fn=fallback_call_fn,
+                primary=self,
             )
             if result is not None:
                 return result
@@ -1111,21 +1112,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         The *fallback_call_fn* is synchronous (it calls the fallback LLM's
         sync ``completion``/``responses``), so the fallback attempt is
-        offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
+        offloaded to a thread via :func:`asyncio.to_thread` to
         avoid blocking the event loop.
         """
         if session is None:
             session = self.session
         session.telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
+            result = await asyncio.to_thread(
                 self.fallback_strategy.try_fallback,
                 self.model,
                 error,
                 session.metrics,
                 fallback_call_fn,
+                primary=self,
             )
             if result is not None:
                 return result

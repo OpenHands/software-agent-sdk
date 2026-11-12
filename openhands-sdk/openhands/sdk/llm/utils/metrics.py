@@ -186,24 +186,28 @@ class Metrics(MetricsSnapshot):
         except AttributeError:  # never attached: the slot is still empty
             return None
 
-    def add_cost(self, value: float) -> None:
+    def add_cost(self, value: float, *, model_name: str | None = None) -> None:
         if value < 0:
             raise ValueError("Added cost cannot be negative.")
         self.accumulated_cost += value
-        self.costs.append(Cost(cost=value, model=self.model_name))
+        self.costs.append(Cost(cost=value, model=model_name or self.model_name))
         target = self.rolls_up_into
         if target is not None:
-            target.add_cost(value)
+            target.add_cost(value, model_name=model_name)
 
-    def add_response_latency(self, value: float, response_id: str) -> None:
+    def add_response_latency(
+        self, value: float, response_id: str, *, model_name: str | None = None
+    ) -> None:
         self.response_latencies.append(
             ResponseLatency(
-                latency=max(0.0, value), model=self.model_name, response_id=response_id
+                latency=max(0.0, value),
+                model=model_name or self.model_name,
+                response_id=response_id,
             )
         )
         target = self.rolls_up_into
         if target is not None:
-            target.add_response_latency(value, response_id)
+            target.add_response_latency(value, response_id, model_name=model_name)
 
     def add_token_usage(
         self,
@@ -214,13 +218,15 @@ class Metrics(MetricsSnapshot):
         context_window: int,
         response_id: str,
         reasoning_tokens: int = 0,
+        *,
+        model_name: str | None = None,
     ) -> None:
         """Add a single usage record."""
         # Token each turn for calculating context usage.
         per_turn_token = prompt_tokens + completion_tokens
 
         usage = TokenUsage(
-            model=self.model_name,
+            model=model_name or self.model_name,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cache_read_tokens=cache_read_tokens,
@@ -259,6 +265,7 @@ class Metrics(MetricsSnapshot):
                 context_window=context_window,
                 response_id=response_id,
                 reasoning_tokens=reasoning_tokens,
+                model_name=model_name,
             )
 
     def merge(self, other: "Metrics") -> None:
