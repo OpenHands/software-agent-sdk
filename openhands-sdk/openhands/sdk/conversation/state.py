@@ -342,19 +342,25 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _drop_stored_mcp_servers_without_endpoint(cls, data: Any) -> Any:
-        """Let a persisted state with an endpoint-less MCP server still load.
+    def _normalize_stored_agent(cls, data: Any) -> Any:
+        """Preserve legacy MCP behavior when loading a pre-gateway agent.
 
-        Such a server was accepted before ``MCPServer`` required ``command``
-        or ``url``; it never contributed tools, so drop it rather than fail.
+        Older agents have no ``mcp_gateway`` field, and endpoint-less MCP
+        servers accepted by older versions never contributed tools.
         """
         if not isinstance(data, dict):
             return data
         agent = data.get("agent")
-        if isinstance(agent, dict) and isinstance(agent.get("mcp_config"), dict):
-            mcp_config = drop_mcp_servers_without_endpoint(agent["mcp_config"])
-            data = {**data, "agent": {**agent, "mcp_config": mcp_config}}
-        return data
+        if not isinstance(agent, dict):
+            return data
+        if agent.get("kind", "Agent") == "Agent" and "mcp_gateway" not in agent:
+            agent = {**agent, "mcp_gateway": False}
+        if isinstance(agent.get("mcp_config"), dict):
+            agent = {
+                **agent,
+                "mcp_config": drop_mcp_servers_without_endpoint(agent["mcp_config"]),
+            }
+        return {**data, "agent": agent}
 
     @property
     def events(self) -> EventLog:
@@ -684,8 +690,7 @@ class ConversationState(OpenHandsModel):
             # let it override, so existing callers that reconfigure on resume
             # keep working.
             if agent is not None:
-                agent.verify(state.agent, events=state._events)
-                state.agent = agent
+                state.agent = agent.verify(state.agent, events=state._events)
             state.workspace = workspace
             state.max_iterations = max_iterations
             if max_budget_per_run is not None:

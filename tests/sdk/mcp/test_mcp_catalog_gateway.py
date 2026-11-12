@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, OpenHandsAgentSettings
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, builtin_tool_class
@@ -36,7 +36,6 @@ def gateway_conversation(
             tools=[],
             include_default_tools=[],
             mcp_config={"alpha": SERVER, "beta": SERVER},
-            mcp_gateway=True,
             mcp_gateway_startup_catalog=startup_catalog,
             mcp_gateway_initial_tools=initial_tools,
             filter_tools_regex=filter_regex,
@@ -51,6 +50,118 @@ def gateway_conversation(
 def call(conversation: LocalConversation, name: str, args: dict):
     tool = conversation.agent.tools_map[name]
     return tool(tool.action_from_arguments(args), conversation)
+
+
+def test_new_agents_and_settings_use_gateway_by_default(tmp_path: Path):
+    agent = Agent(
+        llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+        tools=[],
+        include_default_tools=[],
+        mcp_config={"alpha": SERVER},
+    )
+    assert agent.mcp_gateway is True
+    assert (
+        OpenHandsAgentSettings(mcp_config={"alpha": SERVER}).create_agent().mcp_gateway
+    )
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        conversation._ensure_agent_ready()
+        assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+        assert "fetch" not in conversation.agent.tools_map
+        assert (
+            json.loads(call(conversation, "list_mcp_tools", {}).text)["tools"][0][
+                "name"
+            ]
+            == "alpha.fetch"
+        )
+    finally:
+        conversation.close()
+
+
+@pytest.mark.parametrize("remove_flag", [False, True])
+def test_legacy_mcp_conversation_keeps_its_mode_on_resume(
+    tmp_path: Path, remove_flag: bool
+):
+    first = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config={"alpha": SERVER},
+            mcp_gateway=False,
+        ),
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        first._ensure_agent_ready()
+        assert "fetch" in first.agent.tools_map
+        assert "list_mcp_tools" not in first.agent.tools_map
+        assert first.state.persistence_dir is not None
+        state_path = Path(first.state.persistence_dir) / "base_state.json"
+        conversation_id = first.state.id
+    finally:
+        first.close()
+
+    if remove_flag:
+        stored = json.loads(state_path.read_text())
+        stored["agent"].pop("mcp_gateway")
+        state_path.write_text(json.dumps(stored))
+
+    resumed = LocalConversation(
+        agent=None,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        conversation_id=conversation_id,
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        assert isinstance(resumed.agent, Agent)
+        assert resumed.agent.mcp_gateway is False
+        resumed._ensure_agent_ready()
+        assert "fetch" in resumed.agent.tools_map
+        assert "list_mcp_tools" not in resumed.agent.tools_map
+    finally:
+        resumed.close()
+
+    runtime_agent = Agent(
+        llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+        tools=[],
+        include_default_tools=[],
+        mcp_config={"alpha": SERVER},
+    )
+    replacement = LocalConversation(
+        agent=runtime_agent,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+    try:
+        assert runtime_agent.mcp_gateway is True
+        assert isinstance(replacement.agent, Agent)
+        assert replacement.agent.mcp_gateway is False
+        assert replacement.state.agent is replacement.agent
+    finally:
+        replacement.close()
+
+    with pytest.raises(ValueError, match="MCP exposure mode"):
+        LocalConversation(
+            agent=runtime_agent.model_copy(update={"mcp_gateway": True}),
+            workspace=tmp_path,
+            persistence_dir=tmp_path / "history",
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
 
 
 def test_gateway_tools_resolve_as_builtins():

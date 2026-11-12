@@ -556,6 +556,7 @@ def test_list_changed_in_multi_server_conversation_keeps_server_prefix(
             llm=LLM(model="test-model", api_key=SecretStr("test-key")),
             tools=[],
             include_default_tools=[],
+            mcp_gateway=False,
             mcp_config=_native_config(
                 {
                     "progressive": {

@@ -471,7 +471,7 @@ class LocalConversation(BaseConversation):
             with self._state:
                 self._state.ambient_plugin_skills = []
                 self._state.ambient_plugin_mcp_servers = []
-        self.agent = agent
+        self.agent = self._state.agent
 
         # Default callback: persist every event to state
         def _default_callback(e):

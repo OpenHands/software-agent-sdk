@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -467,10 +467,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         ),
     )
     mcp_gateway: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Expose configured MCP servers through stable list_mcp_tools and "
-            "call_mcp_tool tools instead of registering each downstream tool."
+            "call_mcp_tool tools instead of registering each downstream tool. "
+            "Set to False to use the legacy per-tool registration mode."
         ),
     )
     mcp_gateway_startup_catalog: bool = Field(
@@ -496,6 +497,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self._parallel_executor = ParallelToolExecutor(
             max_workers=self.tool_concurrency_limit
         )
+
+    def verify(
+        self, persisted: AgentBase, events: Sequence[Any] | None = None
+    ) -> AgentBase:
+        super().verify(persisted, events=events)
+        if (
+            isinstance(persisted, Agent)
+            and self.mcp_gateway != persisted.mcp_gateway
+            and (self.mcp_config or persisted.mcp_config)
+        ):
+            # Omitted means the new default, not a request to rename old tool calls.
+            if "mcp_gateway" not in self.model_fields_set:
+                return self.model_copy(update={"mcp_gateway": persisted.mcp_gateway})
+            raise ValueError(
+                "Cannot resume conversation: MCP exposure mode changed. "
+                "Resume with the persisted mcp_gateway value or start a new "
+                "conversation."
+            )
+        return self
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         template_kwargs = super()._resolved_template_kwargs()
