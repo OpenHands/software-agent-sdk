@@ -21,6 +21,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from openhands.agent_server import bash_router as bash_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -86,13 +87,14 @@ def app(
     so /ready returns 200 in the responsiveness canary.
     """
     fastapi_app = FastAPI()
+    add_domain_error_handler(fastapi_app)
     install_test_context(fastapi_app, Config(), bash_event_service=bash_service)
     fastapi_app.include_router(server_details_router)
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")
     fastapi_app.include_router(bash_router_module.bash_router, prefix="/api")
-    fastapi_app.dependency_overrides[get_conversation_service] = (
-        lambda: conversation_service
+    fastapi_app.dependency_overrides[get_conversation_service] = lambda: (
+        conversation_service
     )
     mark_initialization_complete()
     return fastapi_app

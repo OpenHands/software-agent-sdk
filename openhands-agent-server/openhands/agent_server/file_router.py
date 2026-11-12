@@ -4,11 +4,14 @@ import fnmatch
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import IO, Annotated, Any, Literal
 from urllib.parse import quote
@@ -18,14 +21,13 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
-    HTTPException,
     Query,
     UploadFile,
-    status,
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from starlette.types import Receive, Scope, Send
 
 from openhands.agent_server._secret_redaction import (
     redacted_json_bytes,
@@ -35,6 +37,13 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.models import FileUploadResult, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.sdk.errors import (
+    DomainError,
+    Forbidden,
+    Invalid,
+    NotFound,
+    OperationFailed,
+)
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
@@ -91,10 +100,7 @@ async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
     try:
         target_path = Path(path)
         if not target_path.is_absolute():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Path must be absolute",
-            )
+            raise Invalid("Path must be absolute")
 
         # Ensure target directory exists
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,28 +118,19 @@ async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
         logger.info(f"Uploaded file to {target_path}")
         return FileUploadResult(file_size=file_size)
 
-    except HTTPException:
+    except DomainError:
         raise
     except IsADirectoryError:
         # The target itself is an existing directory: the caller's path is
         # wrong, not a server fault (create_directory answers 400 likewise).
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path is a directory",
-        )
+        raise Invalid("Path is a directory")
     except (FileExistsError, NotADirectoryError):
         # mkdir(parents=True) raises FileExistsError when the direct parent is
         # a file and NotADirectoryError when a component further up is one.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A parent of the path is not a directory",
-        )
+        raise Invalid("A parent of the path is not a directory")
     except Exception as e:
         logger.error(f"Failed to upload file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file: {str(e)}",
-        )
+        raise OperationFailed(f"Failed to upload file: {str(e)}")
 
 
 async def _download_file(path: str) -> FileResponse:
@@ -143,20 +140,13 @@ async def _download_file(path: str) -> FileResponse:
     try:
         target_path = Path(path)
         if not target_path.is_absolute():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Path must be absolute",
-            )
+            raise Invalid("Path must be absolute")
 
         if not target_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
-            )
+            raise NotFound("File not found")
 
         if not target_path.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a file"
-            )
+            raise Invalid("Path is not a file")
 
         return FileResponse(
             path=target_path,
@@ -164,17 +154,35 @@ async def _download_file(path: str) -> FileResponse:
             media_type="application/octet-stream",
         )
 
-    except HTTPException:
+    except DomainError:
         raise
     except Exception as e:
         logger.error(f"Failed to download file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download file: {str(e)}",
-        )
+        raise OperationFailed(f"Failed to download file: {str(e)}")
 
 
 _TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+_TRAJECTORY_TEMP_ZIP_NAME = re.compile(r"\.[0-9a-f]{32}-\w+\.zip")
+_TRAJECTORY_TEMP_ZIP_MAX_AGE_SECONDS = 60 * 60
+_TRAJECTORY_ZIP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="trajectory-zip"
+)
+
+
+def _remove_stale_trajectory_temp_zips(conversations_path: Path) -> None:
+    """Remove temp zips left behind when a server died during a download.
+
+    A younger zip may belong to a live download, possibly in another server
+    process sharing this directory, so only old ones are removed.
+    """
+    cutoff = time.time() - _TRAJECTORY_TEMP_ZIP_MAX_AGE_SECONDS
+    with contextlib.suppress(OSError):
+        for path in conversations_path.iterdir():
+            if not _TRAJECTORY_TEMP_ZIP_NAME.fullmatch(path.name):
+                continue
+            with contextlib.suppress(OSError):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
 
 
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
@@ -221,6 +229,14 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
+
+
+class _TemporaryFileResponse(FileResponse):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            Path(self.path).unlink(missing_ok=True)
 
 
 ArchiveFormat = Literal["git-delta", "tar.gz"]
@@ -741,10 +757,7 @@ async def create_directory(
 
     target_path = Path(path)
     if not target_path.is_absolute():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path must be absolute",
-        )
+        raise Invalid("Path must be absolute")
 
     try:
         await asyncio.to_thread(lambda: target_path.mkdir(parents=True, exist_ok=True))
@@ -752,21 +765,12 @@ async def create_directory(
         # mkdir(exist_ok=True) still raises when the final component exists as a
         # non-directory; NotADirectoryError covers a parent component being a
         # file. Both are the caller's path being wrong, not a server fault.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path exists and is not a directory",
-        )
+        raise Invalid("Path exists and is not a directory")
     except PermissionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Permission denied: {e}",
-        )
+        raise Forbidden(f"Permission denied: {e}")
     except Exception as e:
         logger.error(f"Failed to create directory {path}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create directory: {str(e)}",
-        )
+        raise OperationFailed(f"Failed to create directory: {str(e)}")
 
     logger.info(f"Created directory {target_path}")
     return Success()
@@ -876,20 +880,11 @@ async def search_subdirs(
 
     target = Path(path)
     if not target.is_absolute():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path must be absolute",
-        )
+        raise Invalid("Path must be absolute")
     if not target.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Directory not found",
-        )
+        raise NotFound("Directory not found")
     if not target.is_dir():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path is not a directory",
-        )
+        raise Invalid("Path is not a directory")
 
     entries: list[SubdirectoryEntry] = []
     try:
@@ -906,10 +901,7 @@ async def search_subdirs(
                     SubdirectoryEntry(name=entry.name, path=str(target / entry.name))
                 )
     except PermissionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Permission denied: {e}",
-        )
+        raise Forbidden(f"Permission denied: {e}")
 
     # Break case-insensitive ties by the exact name so that names differing
     # only by case ("Foo", "foo") have a stable order and distinct cursors.
@@ -945,21 +937,41 @@ async def download_trajectory(
     config: Config = Depends(get_config),
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
-    temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 
     if not conversation_dir.is_dir():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
-        )
+        raise NotFound("Conversation not found")
 
-    await asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
-    return FileResponse(
+    await asyncio.to_thread(
+        _remove_stale_trajectory_temp_zips, config.conversations_path
+    )
+
+    # Each request gets its own temp zip: a shared path would let one
+    # response's cleanup, or another request's rewrite, break a download of
+    # the same trajectory that is still being built or streamed.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{conversation_id.hex}-", suffix=".zip", dir=config.conversations_path
+    )
+    os.close(fd)
+    temp_file = Path(tmp_name)
+    zip_task = asyncio.get_running_loop().run_in_executor(
+        _TRAJECTORY_ZIP_EXECUTOR,
+        _create_zip_from_directory,
+        conversation_dir,
+        temp_file,
+    )
+    try:
+        await asyncio.shield(zip_task)
+    except BaseException:
+        try:
+            await zip_task
+        finally:
+            temp_file.unlink(missing_ok=True)
+        raise
+    return _TemporaryFileResponse(
         path=temp_file,
-        filename=temp_file.name,
+        filename=f"{conversation_id.hex}.zip",
         media_type="application/octet-stream",
-        background=BackgroundTask(temp_file.unlink),
     )
 
 
@@ -1041,25 +1053,13 @@ async def archive_directory(
 
     target = Path(path)
     if not target.is_absolute():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path must be absolute",
-        )
+        raise Invalid("Path must be absolute")
     if not target.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Directory not found",
-        )
+        raise NotFound("Directory not found")
     if not target.is_dir():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path is not a directory",
-        )
+        raise Invalid("Path is not a directory")
     if base_ref is not None and base_ref.startswith("-"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="base_ref must not start with '-'",
-        )
+        raise Invalid("base_ref must not start with '-'")
 
     target = target.resolve()
     effective_excludes = (
@@ -1101,29 +1101,17 @@ async def archive_directory(
             )
     except GitRepositoryError as e:
         output_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Not a git repository: {e}",
-        )
+        raise Invalid(f"Not a git repository: {e}")
     except ValueError as e:
         output_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+        raise Invalid(str(e))
     except GitCommandError as e:
         output_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate git delta: {e}",
-        )
+        raise OperationFailed(f"Failed to generate git delta: {e}")
     except Exception as e:
         output_path.unlink(missing_ok=True)
         logger.error(f"Failed to archive {target}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to archive directory: {str(e)}",
-        )
+        raise OperationFailed(f"Failed to archive directory: {str(e)}")
 
     # Repo identity (remote / branch / HEAD) applies to both formats so a
     # tar.gz snapshot is self-describing too; base_commit/base_ref are

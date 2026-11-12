@@ -626,7 +626,7 @@ Preconditions:
   temporary file is left next to it, and the restored file lists everything
   again. The log has one `Cannot access workspaces file: [Errno 21] Is a
   directory` ERROR line per call and no traceback: the 500 is a deliberate
-  `HTTPException`, which the server logs without a stack.
+  `OperationFailed` domain error, which the server logs without a stack.
 - **No-op writes on read-only storage (`F17.noop-write-readonly`).**
   Make the persistence directory immutable (`chattr +i`, standing in for a
   read-only mount: the server owns the directory and re-applies mode `0700`

@@ -23,6 +23,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import api_lifespan, create_app
 from openhands.agent_server.config import CONFIG_PATH_ENV, Config, load_config
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.init_router import (
     InitRequest,
     InitService,
@@ -36,6 +37,7 @@ from openhands.agent_server.server_context import (
     server_context_of,
 )
 from openhands.agent_server.vscode_service import VSCodeService
+from openhands.sdk.errors import DomainError
 
 
 @pytest.fixture(autouse=True)
@@ -220,8 +222,6 @@ class TestInitServiceTransitions:
 
     @pytest.mark.asyncio
     async def test_second_init_rejected_with_400(self, tmp_path):
-        from fastapi import HTTPException
-
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -237,9 +237,9 @@ class TestInitServiceTransitions:
             )
         )
         try:
-            with pytest.raises(HTTPException) as excinfo:
+            with pytest.raises(DomainError) as excinfo:
                 await svc.initialize(InitRequest())
-            assert excinfo.value.status_code == 400
+            assert status_for(excinfo.value) == 400
             assert "already in state" in str(excinfo.value.detail)
         finally:
             await svc.teardown()

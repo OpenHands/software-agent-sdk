@@ -19,6 +19,7 @@ from openhands.agent_server.persistence import (
     ServerStores,
 )
 from openhands.agent_server.persistence.models import _deep_merge
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.profiles import OpenHandsAgentProfile
@@ -2079,7 +2080,10 @@ def test_list_secrets_busy_agent_profile_store_is_503(
     store = client_context(client_with_settings).stores.agent_profiles
 
     def _timeout(*_args, **_kwargs):
-        raise TimeoutError("Agent profile store lock acquisition timed out")
+        raise LockTimeout(
+            "Profile store is busy. Please retry.",
+            message="Agent profile store lock acquisition timed out",
+        )
 
     monkeypatch.setattr(store, "name_for_id", _timeout)
 

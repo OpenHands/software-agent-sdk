@@ -1,7 +1,7 @@
 import pytest
-from fastapi import HTTPException
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.launch import launch_source, server_launch_stores
 from openhands.agent_server.openai.service import _create_conversation_request
 from openhands.agent_server.persistence import (
@@ -11,6 +11,7 @@ from openhands.agent_server.persistence import (
 from openhands.sdk import LLM
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.errors import DomainError
 from openhands.sdk.launch import ResolvedLaunch
 from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
@@ -122,7 +123,7 @@ def test_without_an_active_profile_the_gateway_activates_default(config):
 def test_an_unknown_model_is_not_found_whatever_the_profile(config, profile):
     _activate(config, profile)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         _gateway_request(config, "openhands_missing")
 
-    assert exc_info.value.status_code == 404
+    assert status_for(exc_info.value) == 404

@@ -18,7 +18,9 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_server_bash_event_service,
 )
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.openai.router import _parse_observability_overrides
+from openhands.sdk.errors import DomainError
 
 
 @pytest.fixture
@@ -161,14 +163,14 @@ def test_openai_observability_headers_parse_to_conversation_overrides():
 
 
 def test_openai_observability_headers_reject_invalid_span_name():
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         _parse_observability_overrides(
             span_name="bad span name",
             tags=None,
             metadata=None,
         )
 
-    assert exc_info.value.status_code == 422
+    assert status_for(exc_info.value) == 422
     json.dumps(exc_info.value.detail)
 
 

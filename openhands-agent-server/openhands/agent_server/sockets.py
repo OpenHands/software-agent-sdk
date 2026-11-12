@@ -481,6 +481,22 @@ async def _safe_close_websocket(
         logger.debug("WebSocket close failed (may already be closed)")
 
 
+# A peer that stopped reading must not hold up the DELETE or the shutdown.
+SUBSCRIBER_CLOSE_TIMEOUT_SECONDS = 5.0
+
+
+async def _close_subscribed_websocket(
+    websocket: WebSocket, code: int, reason: str
+) -> None:
+    try:
+        await asyncio.wait_for(
+            _safe_close_websocket(websocket, code=code, reason=reason),
+            timeout=SUBSCRIBER_CLOSE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.info("WebSocket close timed out; peer is not reading")
+
+
 def _is_websocket_connected(websocket: WebSocket) -> bool:
     """Best-effort check that the websocket is still in the CONNECTED state.
 
@@ -526,6 +542,10 @@ class _WebSocketSubscriber(Subscriber):
         if event.id in self._replayed_ids:
             return
         await _send_event(event, self.websocket)
+
+    async def close_connection(self, code: int, reason: str) -> None:
+        # The handler is parked in receive_json(); closing ends it too.
+        await _close_subscribed_websocket(self.websocket, code, reason)
 
     async def on_initial_state(self, event: Event, log_length: int | None) -> None:  # noqa: ARG002
         await _send_event(event, self.websocket)

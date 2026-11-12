@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from openhands.agent_server import canvas_extensions_bridge_router as bridge_router
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from tests.agent_server.conftest import install_test_context
 
@@ -34,6 +35,7 @@ def proxied(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, list[str]]:
     monkeypatch.setattr(bridge_router, "proxy_app_backend_http", fake_http)
     monkeypatch.setattr(bridge_router, "proxy_app_backend_websocket", fake_websocket)
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(app)
     app.include_router(bridge_router.app_backend_bridge_router)
     return TestClient(app), paths

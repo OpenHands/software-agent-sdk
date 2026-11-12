@@ -2,14 +2,13 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
     parse_expose_secrets_header,
     profile_key_mismatch,
-    store_errors,
     translate_missing_cipher,
 )
 from openhands.agent_server.config import Config
@@ -29,6 +28,13 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    OperationFailed,
+    Unprocessable,
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import (
@@ -117,13 +123,10 @@ def _validate_secret_name(name: str) -> None:
         HTTPException: 422 if name format is invalid.
     """
     if not SECRET_NAME_PATTERN.match(name):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "Invalid secret name format. Must start with a letter, "
-                "contain only letters, numbers, and underscores, "
-                "and be 1-64 characters long."
-            ),
+        raise Unprocessable(
+            "Invalid secret name format. Must start with a letter, "
+            "contain only letters, numbers, and underscores, "
+            "and be 1-64 characters long."
         )
 
 
@@ -251,14 +254,11 @@ def update_settings(
         update_data["active_meta_profile"] = payload.active_meta_profile
     if not update_data:
         # No updates provided - this is a client error
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "At least one of agent_settings_diff, "
-                "conversation_settings_diff, misc_settings_diff, "
-                "active_profile, active_agent_profile_id, or active_meta_profile "
-                "must be provided"
-            ),
+        raise Invalid(
+            "At least one of agent_settings_diff, "
+            "conversation_settings_diff, misc_settings_diff, "
+            "active_profile, active_agent_profile_id, or active_meta_profile "
+            "must be provided"
         )
 
     _require_pointer_targets(stores, update_data)
@@ -278,24 +278,16 @@ def _require_pointer_targets(stores: ServerStores, update_data: dict) -> None:
     """
     profile_id = update_data.get("active_agent_profile_id")
     if profile_id is not None:
-        with store_errors():
-            known = stores.agent_profiles.name_for_id(profile_id) is not None
+        known = stores.agent_profiles.name_for_id(profile_id) is not None
         if not known:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent profile with id '{profile_id}' not found",
-            )
+            raise NotFound(f"Agent profile with id '{profile_id}' not found")
 
     meta_name = update_data.get("active_meta_profile")
     if meta_name is not None:
         try:
-            with store_errors():
-                MetaProfileStore(base_dir=default_meta_profile_dir()).load(meta_name)
+            MetaProfileStore(base_dir=default_meta_profile_dir()).load(meta_name)
         except FileNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Meta-profile '{meta_name}' not found",
-            )
+            raise NotFound(f"Meta-profile '{meta_name}' not found")
 
 
 def _load_active_profile_llm(
@@ -311,19 +303,15 @@ def _load_active_profile_llm(
         return None
 
     # ``load`` resolves any referenced provider connection (read-at-use); a
-    # dangling reference raises ProviderConnectionNotFound, which
-    # store_errors() maps to 422. A key the cipher cannot decrypt is refused
+    # dangling reference raises ProviderConnectionNotFound (422). A key the
+    # cipher cannot decrypt is refused
     # (409) rather than applied to settings as ``null``.
     try:
-        with store_errors():
-            llm = profile_store.load(profile_name, cipher=cipher, strict=True)
+        llm = profile_store.load(profile_name, cipher=cipher, strict=True)
     except SecretDecryptionError as e:
         raise profile_key_mismatch(profile_name, e)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{profile_name}' not found",
-        )
+        raise NotFound(f"Profile '{profile_name}' not found")
     return llm
 
 
@@ -404,25 +392,19 @@ def _apply_settings_update(
         )
         # 422 Unprocessable Entity - semantic validation failure
         # Don't expose error details - could contain secrets in tracebacks
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Settings validation failed",
-        )
+        raise Unprocessable("Settings validation failed")
     except RuntimeError as e:
         # Data corruption protection triggered (file exists but unreadable)
         logger.error(f"Settings update blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Settings file is corrupted or encrypted with a different key: "
-                "restore that key as OH_SECRET_KEY or add it to "
-                "OH_PREVIOUS_SECRET_KEYS"
-            ),
+        raise Conflict(
+            "Settings file is corrupted or encrypted with a different key: "
+            "restore that key as OH_SECRET_KEY or add it to "
+            "OH_PREVIOUS_SECRET_KEYS"
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secrets in scope from leaking in tracebacks
         logger.error("Settings update failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to update settings")
+        raise OperationFailed("Failed to update settings")
 
     # Don't expose secrets in mutation responses (consistent with GET behavior)
     return SettingsResponse(
@@ -438,18 +420,12 @@ def _apply_settings_update(
 
 def _require_mcp_server_absent(settings: PersistedSettings, settings_key: str) -> None:
     if settings_key in settings.agent_settings.mcp_config:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"MCP server '{settings_key}' already exists",
-        )
+        raise Conflict(f"MCP server '{settings_key}' already exists")
 
 
 def _require_mcp_server_present(settings: PersistedSettings, settings_key: str) -> None:
     if settings_key not in settings.agent_settings.mcp_config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"MCP server '{settings_key}' was not found",
-        )
+        raise NotFound(f"MCP server '{settings_key}' was not found")
 
 
 @settings_router.post(
@@ -547,13 +523,12 @@ def list_secrets(
 
     allowed_names: set[str] | None = None
     if agent_profile_id is not None:
-        # store_errors() answers an unloadable profile (400) and a busy store
-        # (503) the way the agent-profile routes do.
-        with store_errors():
-            profile_name = profile_store.name_for_id(agent_profile_id)
-            if profile_name is None:
-                raise HTTPException(status_code=404, detail="Agent profile not found")
-            profile = profile_store.load(profile_name)
+        # The store raises Invalid for an unloadable profile (400) and
+        # LockTimeout for a busy store (503), as on the agent-profile routes.
+        profile_name = profile_store.name_for_id(agent_profile_id)
+        if profile_name is None:
+            raise NotFound("Agent profile not found")
+        profile = profile_store.load(profile_name)
         if profile.secret_refs is not None:
             allowed_names = set(profile.secret_refs)
 
@@ -602,7 +577,7 @@ async def get_secret_value(
             extra={"secret_name": name, "client_host": client_host},
         )
         # Use generic message to prevent secret name enumeration attacks
-        raise HTTPException(status_code=404, detail="Secret not found")
+        raise NotFound("Secret not found")
 
     logger.info(
         "Secret accessed",
@@ -626,10 +601,7 @@ async def create_secret(
 
     value = secret.value.get_secret_value()
     if not value.strip() or is_redacted_secret(value):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Secret value must not be empty or redacted",
-        )
+        raise Unprocessable("Secret value must not be empty or redacted")
 
     try:
         store.set_secret(
@@ -640,18 +612,15 @@ async def create_secret(
     except RuntimeError as e:
         # Data corruption protection triggered (file exists but unreadable)
         logger.error(f"Secret create blocked: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Secrets file is corrupted or encrypted with a different key: "
-                "restore that key as OH_SECRET_KEY or add it to "
-                "OH_PREVIOUS_SECRET_KEYS"
-            ),
+        raise OperationFailed(
+            "Secrets file is corrupted or encrypted with a different key: "
+            "restore that key as OH_SECRET_KEY or add it to "
+            "OH_PREVIOUS_SECRET_KEYS"
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secret values from leaking in tracebacks
         logger.error("Failed to save secret - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to save secret")
+        raise OperationFailed("Failed to save secret")
 
     logger.info(
         "Secret created/updated",
@@ -683,13 +652,10 @@ async def delete_secret(
     except RuntimeError as e:
         # Data corruption protection triggered (file exists but unreadable)
         logger.error(f"Secret delete blocked: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Secrets file is corrupted or encrypted with a different key: "
-                "restore that key as OH_SECRET_KEY or add it to "
-                "OH_PREVIOUS_SECRET_KEYS"
-            ),
+        raise OperationFailed(
+            "Secrets file is corrupted or encrypted with a different key: "
+            "restore that key as OH_SECRET_KEY or add it to "
+            "OH_PREVIOUS_SECRET_KEYS"
         )
 
     if not deleted:
@@ -699,7 +665,7 @@ async def delete_secret(
             extra={"secret_name": name, "client_host": client_host},
         )
         # Use generic message to prevent secret name enumeration attacks
-        raise HTTPException(status_code=404, detail="Secret not found")
+        raise NotFound("Secret not found")
 
     logger.info(
         "Secret deleted",

@@ -28,7 +28,8 @@ from openhands.agent_server.models import ConversationInfo, StoredConversation
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_contracts import ACPSessionEffortState
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -90,6 +91,52 @@ def test_current_model_id_is_lifted_from_acp_agent():
 
     assert isinstance(info, ConversationInfo)
     assert info.current_model_id == "claude-opus-4-1"
+
+
+def test_effort_is_lifted_from_acp_agent_then_persisted_hints():
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._effort_state = ACPSessionEffortState(
+        config_id="effort",
+        current="high",
+        available=[ACPEffortOption(value="low"), ACPEffortOption(value="high")],
+    )
+    state = _make_state(agent)
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort == "high"
+    assert [o.value for o in info.available_efforts] == ["low", "high"]
+
+    cold_agent = ACPAgent(acp_command=["echo", "test"])
+    cold_state = _make_state(cold_agent)
+    cold_state.agent_state = {
+        "acp_current_effort": "max",
+        "acp_available_efforts": [{"value": "max", "name": "Max"}],
+    }
+
+    cold = _compose_conversation_info(_make_stored(cold_state), cold_state)
+
+    assert cold.current_effort == "max"
+    assert cold.available_efforts == [ACPEffortOption(value="max", name="Max")]
+
+
+def test_effort_falls_back_to_acp_effort_before_the_session_starts():
+    agent = ACPAgent(acp_command=["echo", "test"], acp_effort="low")
+    state = _make_state(agent)
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort == "low"
+
+
+def test_a_stored_no_effort_hint_beats_the_configured_effort():
+    agent = ACPAgent(acp_command=["echo", "test"], acp_effort="high")
+    state = _make_state(agent)
+    state.agent_state = {"acp_current_effort": None}
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort is None
 
 
 def test_current_model_id_is_none_when_acp_agent_has_no_model():

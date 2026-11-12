@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 
@@ -31,6 +31,7 @@ from openhands.agent_server.vscode_router import (
     vscode_router,
 )
 from openhands.agent_server.vscode_service import VSCodeService
+from openhands.sdk.errors import NotFound, Unprocessable
 
 
 async def bind_local_conversation_runtime(
@@ -43,7 +44,7 @@ async def bind_local_conversation_runtime(
         runtime_conversation_id, conversation_service, registry
     )
     if event_service is None:
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
     request.state.runtime_event_service = event_service
     workspace_root = Path(
         event_service.get_conversation().workspace.working_dir
@@ -54,19 +55,15 @@ async def bind_local_conversation_runtime(
             not Path(requested_path).is_absolute()
             or not Path(requested_path).resolve().is_relative_to(workspace_root)
         ):
-            raise HTTPException(
-                422, f"{name} must be inside the conversation workspace"
-            )
+            raise Unprocessable(f"{name} must be inside the conversation workspace")
     trajectory_id = request.path_params.get("conversation_id")
     if trajectory_id is not None:
         try:
             matches = UUID(trajectory_id) == runtime_conversation_id
         except ValueError as exc:
-            raise HTTPException(422, "Invalid trajectory conversation id") from exc
+            raise Unprocessable("Invalid trajectory conversation id") from exc
         if not matches:
-            raise HTTPException(
-                422, "Trajectory must belong to the selected conversation"
-            )
+            raise Unprocessable("Trajectory must belong to the selected conversation")
 
 
 class RuntimeRouter(APIRouter):

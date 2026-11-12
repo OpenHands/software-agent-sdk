@@ -23,6 +23,7 @@ from openhands.agent_server.telemetry.factory import (
     DiagnosticEventFactory,
     build_runtime_properties,
 )
+from openhands.sdk.errors import DomainError
 
 
 class _RecordingSink:
@@ -109,10 +110,8 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
 
     monkeypatch.setattr(init_mod.ConversationService, "get_instance", _maybe_boom)
 
-    from fastapi import HTTPException
-
     try:
-        with pytest.raises(HTTPException):
+        with pytest.raises(DomainError):
             await svc.initialize(InitRequest())
         assert svc.state == "dormant", "failed init should roll back to dormant"
         assert recording.events == [], "a failed init must not emit server_started"

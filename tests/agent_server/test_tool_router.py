@@ -2,6 +2,7 @@
 
 import importlib
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -38,6 +39,7 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(app, Config())
     app.include_router(tool_router, prefix="/api")
     response = TestClient(app).get("/api/tools/catalog")
@@ -92,6 +94,7 @@ def test_docker_runtime_catalog_does_not_report_host_usability(monkeypatch):
         "openhands.sdk.tool.registry._check_tool_usable", lambda name, checker: False
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(
         app,
         Config(
@@ -114,6 +117,7 @@ def test_docker_catalog_follows_the_image_browser_setting(monkeypatch):
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(
         app,
         Config(
@@ -138,6 +142,7 @@ def test_catalog_reports_a_disabled_browser_as_unusable():
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(
         app,
         Config(

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server import event_router as event_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import (
     event_router,
@@ -71,6 +72,7 @@ def test_normalize_datetime_fixed_offset_timezone():
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(app)
     app.include_router(event_router, prefix="/api")
     return TestClient(app)

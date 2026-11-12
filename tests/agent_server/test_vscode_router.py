@@ -4,18 +4,20 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_vscode_service
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.server_context import server_context_of
 from openhands.agent_server.vscode_router import (
     get_vscode_status,
     get_vscode_url,
 )
 from openhands.agent_server.vscode_service import VSCodeService
+from openhands.sdk.errors import DomainError
 
 
 @pytest.fixture
@@ -76,10 +78,10 @@ async def test_get_vscode_url_error(mock_vscode_service):
     """Test getting VSCode URL with service error."""
     mock_vscode_service.get_vscode_url.side_effect = Exception("Service error")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await get_vscode_url(vscode_service=mock_vscode_service)
 
-    assert exc_info.value.status_code == 500
+    assert status_for(exc_info.value) == 500
     assert "Failed to get VSCode URL" in str(exc_info.value.detail)
 
 
@@ -109,10 +111,10 @@ async def test_get_vscode_status_error(mock_vscode_service):
     """Test getting VSCode status with service error."""
     mock_vscode_service.is_running.side_effect = Exception("Service error")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await get_vscode_status(vscode_service=mock_vscode_service)
 
-    assert exc_info.value.status_code == 500
+    assert status_for(exc_info.value) == 500
     assert "Failed to get VSCode status" in str(exc_info.value.detail)
 
 
@@ -163,10 +165,10 @@ def test_vscode_router_endpoints_with_errors(app, client, mock_vscode_service):
 @pytest.mark.asyncio
 async def test_get_vscode_url_disabled():
     """Test getting VSCode URL when VSCode is disabled."""
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await get_vscode_url(vscode_service=None)
 
-    assert exc_info.value.status_code == 503
+    assert status_for(exc_info.value) == 503
     assert "VSCode is disabled in configuration" in str(exc_info.value.detail)
 
 

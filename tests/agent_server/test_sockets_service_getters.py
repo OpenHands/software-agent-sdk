@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException, WebSocketDisconnect, WebSocketException, status
+from fastapi import WebSocketDisconnect, WebSocketException, status
 
 import openhands.agent_server.sockets as sockets_mod
 from openhands.agent_server.bash_service import BashEventService
@@ -22,12 +22,14 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_server_bash_event_service,
 )
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.server_context import (
     ServerContext,
     build_server_context,
     get_server_context,
 )
+from openhands.sdk.errors import Unavailable
 
 
 def _context(
@@ -85,9 +87,9 @@ def test_get_conversation_service_refuses_a_socket_without_a_started_service():
 def test_get_conversation_service_answers_503_to_a_request_without_a_service():
     context = _context()
     request = _make_ws(context, scope_type="http")
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(Unavailable) as excinfo:
         get_conversation_service(request, context)
-    assert excinfo.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert status_for(excinfo.value) == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 # -- get_server_bash_event_service --
@@ -110,9 +112,9 @@ def test_get_bash_event_service_refuses_a_socket_without_a_started_service():
 def test_get_bash_event_service_answers_503_to_a_request_without_a_service():
     context = _context()
     request = _make_ws(context, scope_type="http")
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(Unavailable) as excinfo:
         get_server_bash_event_service(request, context)
-    assert excinfo.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert status_for(excinfo.value) == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 def test_an_app_without_a_context_is_a_programming_error():

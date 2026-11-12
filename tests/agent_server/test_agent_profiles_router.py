@@ -17,6 +17,7 @@ from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.profiles_router import MAX_PROFILES
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
@@ -1121,7 +1122,7 @@ def test_seed_preserves_acp_fields(client):
 
 def test_list_timeout_returns_503(client, monkeypatch):
     def boom(self, timeout=0):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(AgentProfileStore, "lock", boom)
     response = client.get("/api/agent-profiles")
@@ -1130,7 +1131,7 @@ def test_list_timeout_returns_503(client, monkeypatch):
 
 def test_save_timeout_returns_503(client, monkeypatch):
     def boom(self, profile, *, max_profiles=None):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(AgentProfileStore, "save", boom)
     response = client.post("/api/agent-profiles/x", json={"llm_profile_ref": "y"})

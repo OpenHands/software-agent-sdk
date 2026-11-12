@@ -17,6 +17,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from openhands.agent_server import bash_router as bash_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.models import BashCommand, BashEventSortOrder, BashOutput
@@ -38,6 +39,7 @@ async def bash_service(tmp_path: Path) -> AsyncIterator[BashEventService]:
 @pytest_asyncio.fixture
 async def client(bash_service: BashEventService) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
+    add_domain_error_handler(app)
     install_test_context(app, Config(), bash_event_service=bash_service)
     app.include_router(server_details_router)
     app.include_router(bash_router_module.bash_router, prefix="/api")

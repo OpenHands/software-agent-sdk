@@ -15,10 +15,9 @@ dangling refs — those appear in the body).
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, Path, status
 from pydantic import BaseModel, ConfigDict, Field, PlainValidator, ValidationError
 
-from openhands.agent_server._secrets_exposure import store_errors
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import (
     get_agent_profile_store,
@@ -38,6 +37,7 @@ from openhands.agent_server.persistence import (
     ServerStores,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
+from openhands.sdk.errors import Conflict, NotFound, OperationFailed, Unprocessable
 from openhands.sdk.launch import preview_launch
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
@@ -184,46 +184,45 @@ def _seed_default_llm_profile(
     silently clobber it.
     """
     llm_store = stores.llm_profiles
-    with store_errors():
-        try:
-            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
-            return SEED_PROFILE_NAME
-        except FileNotFoundError:
-            pass
-        except ValueError:
-            # Something already occupies the name (e.g. corrupted/unparsable
-            # file) — never overwrite it; a broken ref surfaces at
-            # materialize/launch time instead.
-            logger.warning(
-                f"Default LLM profile '{SEED_PROFILE_NAME}' exists but "
-                "failed to load; leaving it as-is"
-            )
-            return SEED_PROFILE_NAME
-        if not _llm_has_real_config(llm):
-            # Never-configured account: don't persist a keyless ghost profile.
-            # Leave the ref soft/dangling; the banner + launch-time error handle
-            # it, and it resolves for real once the user saves a profile.
-            logger.info(
-                f"Skipping default LLM profile '{SEED_PROFILE_NAME}' seed: "
-                "no real LLM config yet (leaving llm_profile_ref as a soft ref)"
-            )
-            return SEED_PROFILE_NAME
-        try:
-            llm_store.save(
-                SEED_PROFILE_NAME,
-                llm,
-                include_secrets=True,
-                cipher=cipher,
-                max_profiles=MAX_PROFILES,
-            )
-            logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
-        except LLMProfileLimitExceeded:
-            # Can't mirror the live LLM as a profile; the agent profile's
-            # llm_profile_ref will still dangle, but no worse than before.
-            logger.warning(
-                "Could not seed default LLM profile "
-                f"'{SEED_PROFILE_NAME}': profile limit reached"
-            )
+    try:
+        llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+        return SEED_PROFILE_NAME
+    except FileNotFoundError:
+        pass
+    except ValueError:
+        # Something already occupies the name (e.g. corrupted/unparsable
+        # file) — never overwrite it; a broken ref surfaces at
+        # materialize/launch time instead.
+        logger.warning(
+            f"Default LLM profile '{SEED_PROFILE_NAME}' exists but "
+            "failed to load; leaving it as-is"
+        )
+        return SEED_PROFILE_NAME
+    if not _llm_has_real_config(llm):
+        # Never-configured account: don't persist a keyless ghost profile.
+        # Leave the ref soft/dangling; the banner + launch-time error handle
+        # it, and it resolves for real once the user saves a profile.
+        logger.info(
+            f"Skipping default LLM profile '{SEED_PROFILE_NAME}' seed: "
+            "no real LLM config yet (leaving llm_profile_ref as a soft ref)"
+        )
+        return SEED_PROFILE_NAME
+    try:
+        llm_store.save(
+            SEED_PROFILE_NAME,
+            llm,
+            include_secrets=True,
+            cipher=cipher,
+            max_profiles=MAX_PROFILES,
+        )
+        logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
+    except LLMProfileLimitExceeded:
+        # Can't mirror the live LLM as a profile; the agent profile's
+        # llm_profile_ref will still dangle, but no worse than before.
+        logger.warning(
+            "Could not seed default LLM profile "
+            f"'{SEED_PROFILE_NAME}': profile limit reached"
+        )
     return SEED_PROFILE_NAME
 
 
@@ -238,7 +237,7 @@ def _ensure_active_profile(stores: ServerStores, cipher: Cipher | None) -> None:
     """
     store = stores.agent_profiles
     settings_store = stores.settings
-    with store_errors(), store.lock():
+    with store.lock():
         settings = settings_store.load() or PersistedSettings()
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
@@ -316,24 +315,22 @@ def active_agent_profile(
     settings = stores.settings.load() or PersistedSettings()
     if settings.active_agent_profile_id is None:
         return None
-    with store_errors():
-        name = store.name_for_id(settings.active_agent_profile_id)
-        if name is None:
-            return None
-        try:
-            return store.load(name)
-        except FileNotFoundError:
-            return None
+    name = store.name_for_id(settings.active_agent_profile_id)
+    if name is None:
+        return None
+    try:
+        return store.load(name)
+    except FileNotFoundError:
+        return None
 
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     """Return the stable id of the profile stored under ``name``, if present."""
     name = canonical_profile_name(name)
-    with store_errors():
-        for summary in store.list_summaries():
-            if summary.get("name") == name:
-                sid = summary.get("id")
-                return str(sid) if sid is not None else None
+    for summary in store.list_summaries():
+        if summary.get("name") == name:
+            sid = summary.get("id")
+            return str(sid) if sid is not None else None
     return None
 
 
@@ -354,8 +351,7 @@ def list_agent_profiles(
     _ensure_active_profile(stores, cipher)
     settings = settings_store.load() or settings
 
-    with store_errors():
-        summaries = store.list_summaries()
+    summaries = store.list_summaries()
 
     return AgentProfileListResponse(
         profiles=[AgentProfileInfo(**s) for s in summaries],
@@ -375,13 +371,9 @@ def get_agent_profile(
     ``X-Expose-Secrets`` behavior.
     """
     try:
-        with store_errors():
-            profile = store.load(name)
+        profile = store.load(name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent profile '{name}' not found",
-        )
+        raise NotFound(f"Agent profile '{name}' not found")
 
     payload = profile.model_dump(mode="json")
     return AgentProfileDetailResponse(name=name, profile=payload)
@@ -396,18 +388,12 @@ def _validate_profile_payload(
         # Match FastAPI's request-validation shape (``detail`` is a list of
         # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
         # safe_validation_error_detail's docstring for why msg is now safe).
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=safe_validation_error_detail(e),
-        )
+        raise Unprocessable(safe_validation_error_detail(e))
     except Exception:
         # Any other validation failure (e.g. a schema/migration error) is a
         # client error, never a 500. Stay generic — these messages can embed
         # the input.
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid agent profile",
-        )
+        raise Unprocessable("Invalid agent profile")
 
 
 @agent_profiles_router.post(
@@ -435,17 +421,13 @@ def save_agent_profile(
     # holds the store lock across read + mint + save so two concurrent creates
     # of the same new name can't both mint an id and clobber each other.
     try:
-        with store_errors():
-            save_profile_preserving_identity(
-                store, profile, max_profiles=MAX_AGENT_PROFILES
-            )
+        save_profile_preserving_identity(
+            store, profile, max_profiles=MAX_AGENT_PROFILES
+        )
     except ProfileLimitExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Agent profile limit reached ({MAX_AGENT_PROFILES}). "
-                "Delete a profile before saving a new one."
-            ),
+        raise Conflict(
+            f"Agent profile limit reached ({MAX_AGENT_PROFILES}). "
+            "Delete a profile before saving a new one."
         )
 
     logger.info(f"Saved agent profile '{name}'")
@@ -471,8 +453,7 @@ def delete_agent_profile(
     store = stores.agent_profiles
     deleted_id = _summary_id_for_name(store, name)
 
-    with store_errors():
-        store.delete(name)
+    store.delete(name)
 
     if deleted_id is not None:
         settings_store = stores.settings
@@ -519,18 +500,11 @@ def rename_agent_profile(
     ``new_name`` is taken.
     """
     try:
-        with store_errors():
-            store.rename(name, body.new_name)
+        store.rename(name, body.new_name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent profile '{name}' not found",
-        )
+        raise NotFound(f"Agent profile '{name}' not found")
     except FileExistsError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Agent profile '{body.new_name}' already exists",
-        )
+        raise Conflict(f"Agent profile '{body.new_name}' already exists")
 
     if name == body.new_name:
         message = f"Agent profile '{name}' unchanged (same name)"
@@ -554,15 +528,11 @@ def activate_agent_profile(
     ``/activate``, this does **not** write ``agent_settings`` (the
     creation-time-only contract). Returns 404 if no stored profile has that id.
     """
-    with store_errors():
-        known_ids = {
-            str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
-        }
+    known_ids = {
+        str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
+    }
     if profile_id not in known_ids:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent profile with id '{profile_id}' not found",
-        )
+        raise NotFound(f"Agent profile with id '{profile_id}' not found")
 
     def set_pointer(settings: PersistedSettings) -> PersistedSettings:
         settings.active_agent_profile_id = profile_id
@@ -572,15 +542,12 @@ def activate_agent_profile(
         settings_store.update(set_pointer)
     except (OSError, PermissionError):
         logger.error("Failed to activate agent profile - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to activate agent profile")
+        raise OperationFailed("Failed to activate agent profile")
     except RuntimeError as e:
         # A corrupted / mis-keyed settings file is a server-side integrity
         # failure, not a client conflict.
         logger.error(f"Failed to activate agent profile: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to activate agent profile",
-        )
+        raise OperationFailed("Failed to activate agent profile")
 
     logger.info(f"Activated agent profile id '{profile_id}'")
     return ActivateAgentProfileResponse(
@@ -614,14 +581,10 @@ async def materialize_agent_profile(
     else:
         store = stores.agent_profiles
         try:
-            with store_errors():
-                # Off the event loop: the store lock wait blocks (up to 30 s).
-                profile = await asyncio.to_thread(store.load, name)
+            # Off the event loop: the store lock wait blocks (up to 30 s).
+            profile = await asyncio.to_thread(store.load, name)
         except FileNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent profile '{name}' not found",
-            )
+            raise NotFound(f"Agent profile '{name}' not found")
 
     settings = stores.settings.load() or PersistedSettings()
     context = settings.agent_settings.agent_context

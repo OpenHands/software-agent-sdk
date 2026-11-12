@@ -1,10 +1,11 @@
 """VSCode router for agent server API endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from openhands.agent_server.dependencies import get_vscode_service
 from openhands.agent_server.vscode_service import VSCodeService
+from openhands.sdk.errors import OperationFailed, Unavailable
 from openhands.sdk.logger import get_logger
 
 
@@ -39,11 +40,8 @@ async def get_vscode_url(
         VSCode URL with token if available, None otherwise
     """
     if vscode_service is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "VSCode is disabled in configuration. Set enable_vscode=true to enable."
-            ),
+        raise Unavailable(
+            "VSCode is disabled in configuration. Set enable_vscode=true to enable."
         )
 
     try:
@@ -51,7 +49,7 @@ async def get_vscode_url(
         return VSCodeUrlResponse(url=url)
     except Exception as e:
         logger.error(f"Error getting VSCode URL: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get VSCode URL")
+        raise OperationFailed("Failed to get VSCode URL")
 
 
 @vscode_router.get("/status")
@@ -74,4 +72,4 @@ async def get_vscode_status(
         return {"running": vscode_service.is_running(), "enabled": True}
     except Exception as e:
         logger.error(f"Error getting VSCode status: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get VSCode status")
+        raise OperationFailed("Failed to get VSCode status")

@@ -6,7 +6,7 @@ import tempfile
 import threading
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
@@ -44,18 +44,12 @@ from openhands.agent_server.config import (
     export_session_api_key,
     load_config,
 )
-from openhands.agent_server.conversation_lease import (
-    ConversationOwnershipLostError,
-    _is_pid_alive,
-)
+from openhands.agent_server.conversation_lease import _is_pid_alive
 from openhands.agent_server.conversation_router import (
     conversation_catalog_router,
     conversation_router,
 )
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    CredentialBindingActivationRequired,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
 )
@@ -63,7 +57,10 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.errors import status_for
+from openhands.agent_server.experimental_features_router import (
+    experimental_features_router,
+)
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -121,6 +118,7 @@ from openhands.agent_server.tool_preload_service import ToolPreloadService
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.workspaces_router import workspaces_router
+from openhands.sdk.errors import DomainError
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
@@ -606,17 +604,19 @@ def _create_fastapi_instance(config: Config) -> FastAPI:
     )
 
 
-def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
-    """Helper function to find HTTPException in ExceptionGroup.
+def _find_http_exception(
+    exc: BaseExceptionGroup,
+) -> HTTPException | DomainError | None:
+    """Find the first HTTPException or domain error in an ExceptionGroup.
 
     Args:
-        exc: BaseExceptionGroup to search for HTTPException.
+        exc: BaseExceptionGroup to search.
 
     Returns:
-        HTTPException if found, None otherwise.
+        The first HTTPException or DomainError found, None otherwise.
     """
     for inner_exc in exc.exceptions:
-        if isinstance(inner_exc, HTTPException):
+        if isinstance(inner_exc, (HTTPException, DomainError)):
             return inner_exc
         # Recursively search nested ExceptionGroups
         if isinstance(inner_exc, BaseExceptionGroup):
@@ -674,6 +674,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(acp_router)
     api_router.include_router(provider_connections_router)
     api_router.include_router(mcp_router)
+    api_router.include_router(experimental_features_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
@@ -775,43 +776,28 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
     return sanitized
 
 
+async def _domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
+    """Map a domain error to its status from ``ERROR_STATUS``, the only map."""
+    headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+    return _error_response(
+        request,
+        HTTPException(status_for(exc), exc.detail, headers),
+        exc.extra,
+    )
+
+
+def add_domain_error_handler(app: FastAPI) -> None:
+    """Answer ``openhands.sdk.errors`` categories with their mapped status.
+
+    ``create_app`` installs it with the other handlers; an app that mounts
+    agent-server routers on its own needs it too, or those errors become 500s.
+    """
+    app.exception_handler(DomainError)(_domain_error_handler)
+
+
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
-
-    @api.exception_handler(ConversationRunLimitExceeded)
-    async def _run_limit_handler(
-        _request: Request, exc: ConversationRunLimitExceeded
-    ) -> JSONResponse:
-        return JSONResponse(status_code=429, content={"detail": str(exc)})
-
-    @api.exception_handler(ConversationOwnershipLostError)
-    async def _ownership_lost_handler(
-        _request: Request, _exc: ConversationOwnershipLostError
-    ) -> JSONResponse:
-        # Another server instance took over this conversation's lease, so the
-        # guarded write was refused: a conflict, not a server fault.
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": (
-                    "Conversation is owned by another agent server instance; "
-                    "the write was refused"
-                )
-            },
-        )
-
-    @api.exception_handler(CredentialBindingActivationRequired)
-    async def _credential_binding_activation_required_handler(
-        _request: Request,
-        exc: CredentialBindingActivationRequired,
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": str(exc),
-                "retryable": True,
-            },
-        )
+    add_domain_error_handler(api)
 
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(
@@ -868,12 +854,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Check if this is an HTTPException that should be handled directly
         if isinstance(exc, HTTPException):
             return await _http_exception_handler(request, exc)
+        if isinstance(exc, DomainError):
+            return await _domain_error_handler(request, exc)
 
         # Check if this is a BaseExceptionGroup with HTTPExceptions
         if isinstance(exc, BaseExceptionGroup):
             http_exc = _find_http_exception(exc)
-            if http_exc:
+            if isinstance(http_exc, HTTPException):
                 return await _http_exception_handler(request, http_exc)
+            if isinstance(http_exc, DomainError):
+                return await _domain_error_handler(request, http_exc)
             # If no HTTPException found, treat as unhandled exception
             logger.error(
                 "Unhandled ExceptionGroup on %s %s [error_id=%s]",
@@ -901,47 +891,60 @@ def _add_exception_handlers(api: FastAPI) -> None:
     async def _http_exception_handler(
         request: Request, exc: HTTPException
     ) -> JSONResponse:
-        """Handle HTTPExceptions with appropriate logging."""
-        # Log 4xx errors at info level (expected client errors like auth failures)
-        if 400 <= exc.status_code < 500:
-            logger.info(
-                "HTTPException %d on %s %s: %s",
-                exc.status_code,
-                request.method,
-                request.url.path,
-                exc.detail,
-            )
-        # Log 5xx errors at error level. HTTPException is intentionally
-        # raised flow control — the route picked this status and detail
-        # on purpose — so a stack trace adds no information beyond
-        # `exc.detail` and makes routine upstream blips look
-        # indistinguishable from a process crash. Unhandled exceptions
-        # still get a full traceback via _unhandled_exception_handler
-        # above. Include the traceback only when DEBUG is on, as an
-        # opt-in debugging aid.
-        elif exc.status_code >= 500:
-            logger.error(
-                "HTTPException %d on %s %s: %s",
-                exc.status_code,
-                request.method,
-                request.url.path,
-                exc.detail,
-                exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
-            )
-            content = {
-                "detail": "Internal Server Error",
-                "exception": str(exc),
-            }
-            if DEBUG:
-                content["traceback"] = traceback.format_exc()
-            # Don't leak internal details to clients for 5xx errors in production
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=content,
-            )
+        """Handle HTTPExceptions raised by FastAPI itself (routing, security)."""
+        return _error_response(request, exc, {})
 
-        # Return clean JSON response for all non-5xx HTTP exceptions
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+def _error_response(
+    request: Request, exc: HTTPException, extra: Mapping[str, object]
+) -> JSONResponse:
+    """Render an error with logging; 5xx details are not shown to clients."""
+    # Log 4xx errors at info level (expected client errors like auth failures)
+    if 400 <= exc.status_code < 500:
+        logger.info(
+            "HTTPException %d on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+        )
+    # Log 5xx errors at error level. HTTPException is intentionally
+    # raised flow control — the route picked this status and detail
+    # on purpose — so a stack trace adds no information beyond
+    # `exc.detail` and makes routine upstream blips look
+    # indistinguishable from a process crash. Unhandled exceptions
+    # still get a full traceback via _unhandled_exception_handler
+    # above. Include the traceback only when DEBUG is on, as an
+    # opt-in debugging aid.
+    elif exc.status_code >= 500:
+        logger.error(
+            "HTTPException %d on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+            exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
+        )
+        content = {
+            "detail": "Internal Server Error",
+            "exception": str(exc),
+        }
+        if DEBUG:
+            content["traceback"] = traceback.format_exc()
+        # Don't leak internal details to clients for 5xx errors in production
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=content,
+            headers=exc.headers,
+        )
+
+    # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
+    # exception's headers (e.g. Retry-After, WWW-Authenticate).
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, **extra},
+        headers=exc.headers,
+    )
 
 
 def create_app(config: Config | None = None) -> FastAPI:

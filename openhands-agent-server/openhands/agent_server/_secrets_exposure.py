@@ -4,13 +4,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Literal, cast
 
-from fastapi import HTTPException, Request, status
+from fastapi import Request
 from pydantic import SecretStr
 from pydantic_core import PydanticSerializationError
 
+from openhands.sdk.errors import Conflict, Invalid, Unavailable
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
-from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import (
@@ -29,7 +29,7 @@ def parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
     """Parse the ``X-Expose-Secrets`` header.
 
     Returns ``"encrypted"``, ``"plaintext"``, or ``None`` (header absent).
-    Raises ``HTTPException(400)`` for any other value.
+    Raises ``Invalid`` (400) for any other value.
     """
     header_value = request.headers.get("X-Expose-Secrets", "").lower().strip()
 
@@ -44,12 +44,9 @@ def parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
     if header_value in ("encrypted", "plaintext"):
         return cast(ExposeSecretsMode, header_value)
 
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"Invalid X-Expose-Secrets header value: '{header_value}'. "
-            "Valid values are: 'encrypted', 'plaintext'."
-        ),
+    raise Invalid(
+        f"Invalid X-Expose-Secrets header value: '{header_value}'. "
+        "Valid values are: 'encrypted', 'plaintext'."
     )
 
 
@@ -99,56 +96,22 @@ def decrypt_incoming_llm_secrets(llm: LLM, cipher: Cipher) -> LLM:
 
 @contextmanager
 def translate_missing_cipher() -> Iterator[None]:
-    """Translate a missing-cipher serializer error into HTTP 503."""
+    """Translate a missing-cipher serializer error into ``Unavailable`` (503)."""
     try:
         yield
     except (PydanticSerializationError, MissingCipherError) as e:
         if _has_missing_cipher_cause(e):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "Encryption not available: OH_SECRET_KEY is not configured. "
-                    "Cannot return encrypted secrets."
-                ),
+            raise Unavailable(
+                "Encryption not available: OH_SECRET_KEY is not configured. "
+                "Cannot return encrypted secrets."
             )
         raise
 
 
-def profile_key_mismatch(name: str, error: SecretDecryptionError) -> HTTPException:
+def profile_key_mismatch(name: str, error: SecretDecryptionError) -> Conflict:
     """409 for a profile whose stored key the current cipher cannot decrypt."""
     _logger.error(f"Refusing to use profile '{name}': {error}")
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=(
-            f"Profile '{name}' is encrypted with a different key: restore that "
-            "key as OH_SECRET_KEY or add it to OH_PREVIOUS_SECRET_KEYS"
-        ),
+    return Conflict(
+        f"Profile '{name}' is encrypted with a different key: restore that "
+        "key as OH_SECRET_KEY or add it to OH_PREVIOUS_SECRET_KEYS"
     )
-
-
-@contextmanager
-def store_errors() -> Iterator[None]:
-    """Map profile-store errors (``LLMProfileStore``/``AgentProfileStore``) to
-    HTTP responses. Shared by the settings, profiles, and agent-profiles
-    routers."""
-    try:
-        yield
-    except TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Profile store is busy. Please retry.",
-        )
-    except ProviderConnectionNotFound as e:
-        # Subclass of ValueError, so it must be handled before the generic
-        # ValueError arm below. A dangling provider reference is a resolvable
-        # config problem (recreate the connection or edit the profile), hence
-        # 422 rather than a generic 400.
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(e),
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )

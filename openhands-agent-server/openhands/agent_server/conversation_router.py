@@ -9,7 +9,6 @@ from fastapi import (
     Body,
     Depends,
     Header,
-    HTTPException,
     Query,
     Response,
     status,
@@ -18,7 +17,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
-    store_errors,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
@@ -32,8 +30,9 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_llm_profile_store,
 )
+from openhands.agent_server.errors import error_responses
 from openhands.agent_server.event_service import CondensationUnavailable
-from openhands.agent_server.launch import launch_http_exception
+from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
@@ -62,6 +61,14 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    RateLimited,
+    Unprocessable,
+    UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -112,15 +119,11 @@ def _request_with_observability_headers(
                 **request.observability_metadata,
             }
     except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        raise Unprocessable(
+            "X-OpenHands-Observability-Metadata must be a JSON object"
         ) from exc
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=exc.errors(include_context=False),
-        ) from exc
+        raise Unprocessable(exc.errors(include_context=False)) from exc
     if parent_span_context and not request.observability_parent_span_context:
         updates["observability_parent_span_context"] = parent_span_context
     return request.model_copy(update=updates) if updates else request
@@ -217,7 +220,7 @@ async def count_conversations(
 
 
 @conversation_router.get(
-    "/{conversation_id}", responses={404: {"description": "Item not found"}}
+    "/{conversation_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def get_conversation(
     conversation_id: UUID,
@@ -228,7 +231,7 @@ async def get_conversation(
     """Given an id, get a conversation"""
     conversation = await conversation_service.get_conversation(conversation_id)
     if conversation is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
     return _with_runtime_info(registry, conversation)
@@ -242,7 +245,7 @@ async def get_local_conversation_runtime(
 ) -> ConversationRuntimeInfo:
     """Inspect the always-available in-process runtime."""
     if await conversation_service.get_conversation(conversation_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return registry.runtime_info(conversation_id)
 
 
@@ -260,7 +263,7 @@ async def reprovision_local_conversation_runtime(
 
 @conversation_router.get(
     "/{conversation_id}/agent_final_response",
-    responses={404: {"description": "Conversation not found"}},
+    responses=error_responses({NotFound: "Conversation not found"}),
 )
 async def get_conversation_agent_final_response(
     conversation_id: UUID,
@@ -274,7 +277,7 @@ async def get_conversation_agent_final_response(
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     response = await event_service.get_agent_final_response()
     return AgentResponseResult(response=response)
 
@@ -305,7 +308,10 @@ async def batch_get_conversations(
 
 
 @conversation_router.post(
-    "", responses={429: {"description": "Server conversation run capacity is full"}}
+    "",
+    responses=error_responses(
+        {RateLimited: "Server conversation run capacity is full"}
+    ),
 )
 async def start_conversation(
     request: Annotated[
@@ -329,10 +335,7 @@ async def start_conversation(
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
     if request.conversation_runtime not in (None, "local"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="This server only runs local conversations",
-        )
+        raise Unprocessable("This server only runs local conversations")
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -343,15 +346,11 @@ async def start_conversation(
     try:
         info, is_new = await conversation_service.start_conversation(request)
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
-        raise launch_http_exception(e) from e
+        raise launch_error(e) from e
     except ClientToolRegistrationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
-        ) from e
+        raise Unprocessable(str(e)) from e
     except (InvalidParentConversation, UnavailableAgentTool) as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
-        ) from e
+        raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
         info = trim_conversation_response_skills(info)
@@ -359,7 +358,7 @@ async def start_conversation(
 
 
 @conversation_router.post(
-    "/{conversation_id}/pause", responses={404: {"description": "Item not found"}}
+    "/{conversation_id}/pause", responses=error_responses({NotFound: "Item not found"})
 )
 async def pause_conversation(
     conversation_id: UUID,
@@ -368,13 +367,13 @@ async def pause_conversation(
     """Pause a conversation, allowing it to be resumed later."""
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/interrupt",
-    responses={404: {"description": "Item not found"}},
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def interrupt_conversation(
     conversation_id: UUID,
@@ -388,12 +387,12 @@ async def interrupt_conversation(
     """
     interrupted = await conversation_service.interrupt_conversation(conversation_id)
     if not interrupted:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return Success()
 
 
 @conversation_router.delete(
-    "/{conversation_id}", responses={404: {"description": "Item not found"}}
+    "/{conversation_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def delete_conversation(
     conversation_id: UUID,
@@ -402,17 +401,19 @@ async def delete_conversation(
     """Permanently delete a conversation."""
     deleted = await conversation_service.delete_conversation(conversation_id)
     if not deleted:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/run",
-    responses={
-        404: {"description": "Item not found"},
-        409: {"description": "Conversation is already running"},
-        429: {"description": "Server conversation run capacity is full"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "Item not found",
+            Conflict: "Conversation is already running",
+            RateLimited: "Server conversation run capacity is full",
+        }
+    ),
 )
 async def run_conversation(
     conversation_id: UUID,
@@ -421,30 +422,29 @@ async def run_conversation(
     """Start running the conversation in the background."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
 
     try:
         await event_service.run()
     except ValueError as e:
         if str(e) == "conversation_already_running":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "Conversation already running. Wait for completion or pause first."
-                ),
+            raise Conflict(
+                "Conversation already running. Wait for completion or pause first."
             )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise Invalid(str(e))
 
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/goal",
-    responses={
-        404: {"description": "Item not found"},
-        409: {"description": "Conversation run or goal loop is already running"},
-        429: {"description": "Server conversation run capacity is full"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "Item not found",
+            Conflict: "Conversation run or goal loop is already running",
+            RateLimited: "Server conversation run capacity is full",
+        }
+    ),
 )
 async def start_goal_in_conversation(
     conversation_id: UUID,
@@ -459,7 +459,7 @@ async def start_goal_in_conversation(
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
 
     try:
         await event_service.start_goal_loop(
@@ -468,18 +468,15 @@ async def start_goal_in_conversation(
     except ValueError as e:
         message = str(e)
         if message in ("conversation_already_running", "goal_already_running"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Conversation run or goal loop already running.",
-            )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+            raise Conflict("Conversation run or goal loop already running.")
+        raise Invalid(message)
 
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/goal/stop",
-    responses={404: {"description": "Item not found"}},
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def stop_goal_in_conversation(
     conversation_id: UUID,
@@ -492,18 +489,20 @@ async def stop_goal_in_conversation(
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     await event_service.stop_goal_loop()
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/goal/resume",
-    responses={
-        404: {"description": "Item not found"},
-        409: {"description": "Conversation run or goal loop is already running"},
-        429: {"description": "Server conversation run capacity is full"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "Item not found",
+            Conflict: "Conversation run or goal loop is already running",
+            RateLimited: "Server conversation run capacity is full",
+        }
+    ),
 )
 async def resume_goal_in_conversation(
     conversation_id: UUID,
@@ -512,24 +511,22 @@ async def resume_goal_in_conversation(
     """Resume the last interrupted ``/goal`` loop inside this conversation."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
 
     try:
         await event_service.resume_goal_loop()
     except ValueError as e:
         message = str(e)
         if message in ("conversation_already_running", "goal_already_running"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Conversation run or goal loop already running.",
-            )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+            raise Conflict("Conversation run or goal loop already running.")
+        raise Invalid(message)
 
     return Success()
 
 
 @conversation_router.post(
-    "/{conversation_id}/secrets", responses={404: {"description": "Item not found"}}
+    "/{conversation_id}/secrets",
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def update_conversation_secrets(
     conversation_id: UUID,
@@ -539,7 +536,7 @@ async def update_conversation_secrets(
     """Update secrets for a conversation."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     # Strings are valid SecretValue (SecretValue = str | SecretProvider)
     from typing import cast
 
@@ -552,7 +549,7 @@ async def update_conversation_secrets(
 
 @conversation_router.post(
     "/{conversation_id}/confirmation_policy",
-    responses={404: {"description": "Item not found"}},
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def set_conversation_confirmation_policy(
     conversation_id: UUID,
@@ -562,14 +559,14 @@ async def set_conversation_confirmation_policy(
     """Set the confirmation policy for a conversation."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     await event_service.set_confirmation_policy(request.policy)
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/security_analyzer",
-    responses={404: {"description": "Item not found"}},
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def set_conversation_security_analyzer(
     conversation_id: UUID,
@@ -579,17 +576,19 @@ async def set_conversation_security_analyzer(
     """Set the security analyzer for a conversation."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     await event_service.set_security_analyzer(request.security_analyzer)
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/switch_profile",
-    responses={
-        400: {"description": "Invalid or corrupted profile, or an ACP agent"},
-        404: {"description": "Conversation or profile not found"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Invalid or corrupted profile, or an ACP agent",
+            NotFound: "Conversation or profile not found",
+        }
+    ),
 )
 async def switch_conversation_profile(
     conversation_id: UUID,
@@ -599,29 +598,25 @@ async def switch_conversation_profile(
     """Switch the conversation's LLM profile to a named profile."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     conversation = event_service.get_conversation()
     try:
         conversation.switch_profile(profile_name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{profile_name}' not found",
-        )
+        raise NotFound(f"Profile '{profile_name}' not found")
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+        raise Invalid(str(e))
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/switch_llm",
-    responses={
-        400: {"description": "Agent is ACP (use switch_acp_model)"},
-        404: {"description": "Conversation not found"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Agent is ACP (use switch_acp_model)",
+            NotFound: "Conversation not found",
+        }
+    ),
 )
 async def switch_conversation_llm(
     conversation_id: UUID,
@@ -640,7 +635,7 @@ async def switch_conversation_llm(
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     conversation = event_service.get_conversation()
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
@@ -650,24 +645,22 @@ async def switch_conversation_llm(
     # reference or missing credential surfaces as 422 before the working LLM
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
-    with store_errors():
-        llm = llm_profile_store.resolve_provider_connection(llm, cipher=cipher)
+    llm = llm_profile_store.resolve_provider_connection(llm, cipher=cipher)
     try:
         conversation.switch_llm(llm)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+        raise Invalid(str(e))
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/load_plugin",
-    responses={
-        400: {"description": "Invalid plugin reference or inactive conversation"},
-        404: {"description": "Conversation or plugin not found"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Invalid plugin reference or inactive conversation",
+            NotFound: "Conversation or plugin not found",
+        }
+    ),
 )
 async def load_conversation_plugin(
     conversation_id: UUID,
@@ -677,34 +670,30 @@ async def load_conversation_plugin(
     """Load a plugin from the conversation's registered marketplaces."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     try:
         await event_service.load_plugin(plugin_ref)
     except (PluginNotFoundError, MarketplaceNotFoundError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        )
+        raise NotFound(str(e))
     except (
         PluginResolutionError,
         PluginFetchError,
         FileNotFoundError,
         ValueError,
     ) as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+        raise Invalid(str(e))
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/switch_acp_model",
-    responses={
-        400: {"description": "Agent is not ACP, or provider can't switch models"},
-        404: {"description": "Conversation not found"},
-        504: {"description": "ACP server did not answer the model switch in time"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Agent is not ACP, or provider can't switch models",
+            NotFound: "Conversation not found",
+            UpstreamTimeout: "ACP server did not answer the model switch in time",
+        }
+    ),
 )
 async def switch_conversation_acp_model(
     conversation_id: UUID,
@@ -722,27 +711,56 @@ async def switch_conversation_acp_model(
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     try:
         await event_service.switch_acp_model(model)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+        raise Invalid(str(e))
     except TimeoutError as e:
         # The bounded session/set_model round-trip expired. The ACP server is
         # wedged/slow rather than rejecting the request, so surface a 504
         # instead of an opaque 500.
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=str(e),
-        )
+        raise UpstreamTimeout(str(e))
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/switch_acp_effort",
+    responses=error_responses(
+        {
+            Invalid: "Agent is not ACP, or the model doesn't offer it",
+            NotFound: "Conversation not found",
+            UpstreamTimeout: "ACP server did not answer the switch in time",
+        }
+    ),
+)
+async def switch_conversation_acp_effort(
+    conversation_id: UUID,
+    effort: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Switch the reasoning effort of an ACP conversation.
+
+    For a conversation that has already started, sets the session's reasoning
+    effort option so subsequent turns use it without losing context. For one
+    created but not yet run, the value is persisted and applied when the first
+    session starts (returns ``200`` either way). ``effort`` must be one of the
+    conversation's ``available_efforts`` when the session reports them.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    try:
+        await event_service.switch_acp_effort(effort)
+    except ValueError as e:
+        raise Invalid(str(e))
+    except TimeoutError as e:
+        raise UpstreamTimeout(str(e))
     return Success()
 
 
 @conversation_router.patch(
-    "/{conversation_id}", responses={404: {"description": "Item not found"}}
+    "/{conversation_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def update_conversation(
     conversation_id: UUID,
@@ -755,13 +773,13 @@ async def update_conversation(
     """
     updated = await conversation_service.update_conversation(conversation_id, request)
     if not updated:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return Success()
 
 
 @conversation_router.post(
     "/{conversation_id}/ask_agent",
-    responses={404: {"description": "Item not found"}},
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def ask_agent(
     conversation_id: UUID,
@@ -771,16 +789,18 @@ async def ask_agent(
     """Ask the agent a simple question without affecting conversation state."""
     response = await conversation_service.ask_agent(conversation_id, request.question)
     if response is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        raise NotFound("Conversation not found")
     return AskAgentResponse(response=response)
 
 
 @conversation_router.post(
     "/{conversation_id}/condense",
-    responses={
-        404: {"description": "Item not found"},
-        409: {"description": "The agent has no condenser that handles requests"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "Item not found",
+            Conflict: "The agent has no condenser that handles requests",
+        }
+    ),
 )
 async def condense_conversation(
     conversation_id: UUID,
@@ -790,9 +810,9 @@ async def condense_conversation(
     try:
         success = await conversation_service.condense(conversation_id)
     except CondensationUnavailable as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise Conflict(str(exc)) from exc
     if not success:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        raise NotFound("Conversation not found")
     return Success()
 
 
@@ -800,8 +820,12 @@ async def condense_conversation(
     "/{conversation_id}/fork",
     responses={
         201: {"description": "Forked conversation created"},
-        404: {"description": "Source conversation not found"},
-        409: {"description": "Fork ID already in use"},
+        **error_responses(
+            {
+                NotFound: "Source conversation not found",
+                Conflict: "Fork ID already in use",
+            }
+        ),
     },
     status_code=status.HTTP_201_CREATED,
 )
@@ -828,17 +852,14 @@ async def fork_conversation(
         )
     except ValueError as exc:
         if "already exists" in str(exc):
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            raise Conflict(str(exc)) from exc
         # An unknown ``from_event_id`` is a bad request against an existing
         # source conversation, not a missing conversation.
         if "from_event_id" in str(exc):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            raise NotFound(str(exc)) from exc
         raise
     if info is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            detail="Source conversation not found",
-        )
+        raise NotFound("Source conversation not found")
     if not include_skills:
         info = trim_conversation_response_skills(info)
     return info
@@ -848,8 +869,12 @@ async def fork_conversation(
     "/{conversation_id}/children",
     responses={
         201: {"description": "Child conversation created"},
-        404: {"description": "Parent conversation not found"},
-        429: {"description": "Server conversation run capacity is full"},
+        **error_responses(
+            {
+                NotFound: "Parent conversation not found",
+                RateLimited: "Server conversation run capacity is full",
+            }
+        ),
     },
     status_code=status.HTTP_201_CREATED,
 )
@@ -870,21 +895,15 @@ async def start_child_conversation(
             conversation_id, request
         )
     except ValueError as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise Unprocessable(str(exc)) from exc
     if result is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, detail="Parent conversation not found"
-        )
+        raise NotFound("Parent conversation not found")
     return result
 
 
 @conversation_router.post(
     "/{conversation_id}/navigate",
-    responses={
-        404: {"description": "Conversation or event not found"},
-    },
+    responses=error_responses({NotFound: "Conversation or event not found"}),
 )
 async def navigate_conversation(
     conversation_id: UUID,
@@ -906,13 +925,10 @@ async def navigate_conversation(
         # An unknown ``event_id`` against an existing conversation is a 404;
         # other ValueErrors (e.g. inactive_service) are genuine server errors.
         if "event_id" in str(exc):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            raise NotFound(str(exc)) from exc
         raise
     if info is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
-        )
+        raise NotFound("Conversation not found")
     if not include_skills:
         info = trim_conversation_response_skills(info)
     return info

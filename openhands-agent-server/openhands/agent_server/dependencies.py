@@ -12,7 +12,7 @@ them through ``app.dependency_overrides``.
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, WebSocketException, status
+from fastapi import Depends, Request, WebSocketException, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import APIKeyCookie, APIKeyHeader
 from pydantic import TypeAdapter, ValidationError
@@ -32,6 +32,7 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.agent_server.vscode_service import VSCodeService
+from openhands.sdk.errors import NotFound, OperationFailed, Unauthenticated, Unavailable
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
@@ -119,7 +120,7 @@ def _unavailable(connection: HTTPConnection, detail: str) -> Exception:
     """A started-service lookup that found none: 503, or 1013 on a WebSocket."""
     if connection.scope["type"] == "websocket":
         return WebSocketException(code=status.WS_1013_TRY_AGAIN_LATER, reason=detail)
-    return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail)
+    return Unavailable(detail)
 
 
 def check_session_api_key(
@@ -128,7 +129,7 @@ def check_session_api_key(
 ) -> None:
     """Reject the request if the supplied key is not in the current session keys."""
     if config.session_api_keys and session_api_key not in config.session_api_keys:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+        raise Unauthenticated()
 
 
 def check_workspace_session(
@@ -151,7 +152,7 @@ def check_workspace_session(
     for candidate in (header_key, cookie_key):
         if candidate and candidate in config.session_api_keys:
             return
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    raise Unauthenticated()
 
 
 def get_conversation_service(
@@ -194,10 +195,7 @@ async def get_bash_event_service(
                         for error in exc.errors(include_url=False)
                     ]
                 ) from exc
-            raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                "Conversation runtime is not bound",
-            )
+            raise OperationFailed("Conversation runtime is not bound")
         if event_service.bash_event_service is None:
             event_service.bash_event_service = BashEventService(
                 bash_events_dir=event_service.conversation_dir / "bash_events",
@@ -224,8 +222,5 @@ async def get_event_service(
     else:
         event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Conversation not found: {conversation_id}",
-        )
+        raise NotFound(f"Conversation not found: {conversation_id}")
     return event_service

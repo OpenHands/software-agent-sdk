@@ -4,7 +4,7 @@ import json
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import TypeAdapter, ValidationError
@@ -38,6 +38,7 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
 )
+from openhands.sdk.errors import Unauthenticated, Unprocessable
 
 
 openai_router = APIRouter(tags=["OpenAI Compatibility"])
@@ -73,7 +74,7 @@ def check_openai_api_key(
         return
     if bearer_token in config.session_api_keys:
         return
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    raise Unauthenticated()
 
 
 def _get_docker_registry(
@@ -106,15 +107,11 @@ def _parse_observability_overrides(
                 _OBSERVABILITY_METADATA_ADAPTER.validate_python(metadata_payload)
             )
     except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        raise Unprocessable(
+            "X-OpenHands-Observability-Metadata must be a JSON object"
         ) from exc
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=exc.errors(include_context=False),
-        ) from exc
+        raise Unprocessable(exc.errors(include_context=False)) from exc
     if parent_span_context:
         overrides["observability_parent_span_context"] = parent_span_context
     return overrides
