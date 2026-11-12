@@ -25,6 +25,10 @@ from openhands.agent_server.event_service import (
     EventService,
     RunSlot,
 )
+from openhands.agent_server.experimental_features import (
+    experimental_feature_tools,
+    host_experimental_features,
+)
 from openhands.agent_server.launch import (
     is_codex_source,
     launch_source,
@@ -1583,6 +1587,11 @@ class ConversationService:
         # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
         stored_context = settings.agent_settings.agent_context
         load_memory = bool(stored_context and stored_context.load_memory)
+        # In a Docker runtime the user's switches live on the host.
+        host_features = host_experimental_features()
+        experimental_features = (
+            settings.experimental_features if host_features is None else host_features
+        )
 
         source = await asyncio.to_thread(
             launch_source,
@@ -1650,6 +1659,9 @@ class ConversationService:
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
                 client_tools=client_tools,
+                experimental_feature_tools=experimental_feature_tools(
+                    experimental_features
+                ),
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
