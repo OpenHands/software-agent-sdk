@@ -7,42 +7,31 @@ import secrets
 import tempfile
 from pathlib import Path
 from stat import S_ISREG
+from typing import Annotated
 from uuid import UUID
 
 from filelock import FileLock
-from pydantic import BaseModel, ConfigDict, SecretStr, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import SecretField, cipher_context
 
 
 class RuntimeIdentity(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     conversation_id: UUID
-    api_key: SecretStr
-    encryption_key: SecretStr
+    api_key: Annotated[SecretStr, SecretField()]
+    encryption_key: Annotated[SecretStr, SecretField()]
     workspace_path: Path
     worktree_repository_path: Path | None = None
     worktree_git_common_dir_path: Path | None = None
     launched_agent_profile: LaunchedAgentProfile | None = None
     container: ConversationContainerOptions | None = None
-
-    @field_serializer("api_key", "encryption_key")
-    def serialize_key(self, value, info):
-        return serialize_secret(value, info)
-
-    @field_validator("api_key", "encryption_key")
-    @classmethod
-    def validate_key(cls, value, info):
-        result = validate_secret(value, info)
-        if result is None:
-            raise ValueError("Runtime identity cannot be decrypted")
-        return result
 
     @property
     def cipher(self) -> Cipher:
@@ -104,7 +93,7 @@ class RuntimeProvisioningStore:
         if cached is not None and cached[0] == signature:
             return cached[1]
         identity = RuntimeIdentity.model_validate_json(
-            path.read_text(), context={"cipher": self.cipher}
+            path.read_text(), context=cipher_context(self.cipher)
         )
         if identity.conversation_id != conversation_id:
             raise ValueError("Runtime identity does not match conversation")
@@ -172,7 +161,7 @@ class RuntimeProvisioningStore:
             self._save(identity)
 
     def _save(self, identity: RuntimeIdentity) -> None:
-        payload = identity.model_dump_json(context={"cipher": self.cipher})
+        payload = identity.model_dump_json(context=cipher_context(self.cipher))
         fd, temporary = tempfile.mkstemp(dir=self.control_root)
         try:
             with os.fdopen(fd, "w") as stream:

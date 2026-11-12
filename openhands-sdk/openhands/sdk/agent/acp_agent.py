@@ -38,7 +38,7 @@ from collections.abc import (
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -81,10 +81,7 @@ from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
-    SecretStr,
     ValidationError,
-    ValidationInfo,
-    field_serializer,
     field_validator,
 )
 
@@ -147,10 +144,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -1981,7 +1975,7 @@ class ACPAgent(AgentBase):
             "the server keeps its own."
         ),
     )
-    acp_resume_session_id: str | None = Field(
+    acp_resume_session_id: Annotated[str | None, SecretField()] = Field(
         default=None,
         description=(
             "Optional explicit ACP session id to resume. When set, takes "
@@ -1999,46 +1993,6 @@ class ACPAgent(AgentBase):
             "trip) when the value must cross a serialization boundary."
         ),
     )
-
-    @field_serializer("acp_resume_session_id", when_used="always")
-    def _serialize_acp_resume_session_id(self, value: str | None, info):
-        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
-
-        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
-        cannot leak into logs, trace exports, or PR review attachments.
-        Trusted backend callers opt into plaintext via Pydantic's context
-        (``expose_secrets='plaintext'``); frontend round-trips use the
-        ``"encrypted"`` mode with a cipher in the context.
-        """
-        if value is None:
-            return None
-        return serialize_secret(SecretStr(value), info)
-
-    @field_validator("acp_resume_session_id", mode="before")
-    @classmethod
-    def _validate_acp_resume_session_id(
-        cls, value: Any, info: ValidationInfo
-    ) -> str | None:
-        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
-
-        Without this validator, ``model_validate_json`` of a previously
-        serialized agent would put garbage in ``acp_resume_session_id``:
-
-        - Default-redacted dumps would reload as the literal ``"**********"``
-          sentinel — calling ``session/load`` with that fails server-side and
-          we fall back to a fresh session every time, defeating the whole
-          point of the durable mirror.
-        - Encrypted dumps (frontend round-trip) would reload as the raw
-          Fernet ciphertext — same failure mode, plus the ciphertext sits
-          in ``state.agent_state`` on disk.
-
-        :func:`validate_secret` returns ``None`` for empty/redacted values
-        and decrypts when a cipher is present in the validation context.
-        We unwrap the returned ``SecretStr`` so the field's runtime type
-        stays ``str | None`` (the rest of the SDK reads it directly).
-        """
-        secret = validate_secret(value, info)
-        return secret.get_secret_value() if secret is not None else None
 
     acp_file_secrets: list[ACPFileSecretSpec] = Field(
         default_factory=lambda: list(default_acp_file_secrets()),

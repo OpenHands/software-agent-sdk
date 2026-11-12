@@ -54,6 +54,11 @@ from openhands.sdk.settings.model import (
 )
 from openhands.sdk.tool import BROWSER_TOOL_NAME, is_tool_usable
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import (
+    SecretContext,
+    cipher_context,
+    client_context,
+)
 
 
 _SECRETS_ADAPTER: TypeAdapter[dict[str, SecretSource]] = TypeAdapter(
@@ -152,7 +157,7 @@ def launch_source(
         if context is None:
             return agent
         return type(agent).model_validate(
-            agent.model_dump(mode="json", context={"expose_secrets": True}),
+            agent.model_dump(mode="json", context=client_context("plaintext")),
             context=context,
         )
     if request.agent_settings is None:
@@ -173,7 +178,7 @@ def request_secrets(
         return dict(request.secrets)
     return _SECRETS_ADAPTER.validate_python(
         _SECRETS_ADAPTER.dump_python(
-            request.secrets, mode="json", context={"expose_secrets": True}
+            request.secrets, mode="json", context=client_context("plaintext")
         ),
         context=context,
     )
@@ -181,7 +186,7 @@ def request_secrets(
 
 def _decryption_context(
     request: StartConversationRequest, cipher: Cipher | None
-) -> dict[str, Any] | None:
+) -> SecretContext | None:
     if not request.secrets_encrypted:
         return None
     if cipher is None:
@@ -189,7 +194,7 @@ def _decryption_context(
             "Cannot decrypt secrets: cipher not configured. "
             "Set OH_SECRET_KEY environment variable."
         )
-    return {"cipher": cipher}
+    return cipher_context(cipher)
 
 
 LaunchFailure = ProfileNotFound | AgentLaunchError | LaunchStoreError
@@ -247,7 +252,7 @@ def forward_to_runtime(
     sources = {"agent", "agent_settings", "agent_profile_id"}
     payload = forwarded.model_dump(
         mode="json",
-        context={"cipher": cipher},
+        context=cipher_context(cipher),
         exclude=sources if source is not None else {"agent", "agent_settings"},
     )
     if source is None:
@@ -256,7 +261,7 @@ def forward_to_runtime(
     field = "agent_settings" if isinstance(source, ResolvedLaunch) else "agent"
     payload[field] = model.model_copy(
         update=_forwarded_context(model.agent_context, load_memory=load_memory)
-    ).model_dump(mode="json", context={"cipher": cipher})
+    ).model_dump(mode="json", context=cipher_context(cipher))
     additions = dict(payload.get("agent_launch_additions") or {})
     # Already applied by resolve; without a profile source it is invalid.
     additions.pop("llm_profile_ref", None)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import (
@@ -21,7 +21,6 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    field_validator,
     model_validator,
 )
 
@@ -42,7 +41,7 @@ from openhands.sdk.llm.provider_connection_store import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import OpenHandsAgentSettings
-from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 logger = get_logger(__name__)
@@ -56,35 +55,27 @@ def _now() -> int:
     return int(time.time())
 
 
-def _require_usable_api_key(v: SecretStr | None) -> SecretStr | None:
-    # The stored model turns a blank or redacted key into None, so accepting one
-    # would create a keyless connection (POST) or wipe/corrupt the shared key
-    # (PATCH). Refuse it up front; the message must not echo the value.
-    if v is not None and (not v.get_secret_value().strip() or is_redacted_secret(v)):
-        raise ValueError("api_key must be a real key, not blank or redacted")
-    return v
+# The stored model turns a blank or redacted key into None, so accepting one
+# would create a keyless connection (POST) or wipe/corrupt the shared key (PATCH).
+_ClientApiKey = SecretField(from_client=True)
 
 
 class ProviderConnectionCreateRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=128)
     provider: str = Field(default="custom", min_length=1, max_length=128)
-    api_key: SecretStr = Field(..., min_length=1)
+    api_key: Annotated[SecretStr, _ClientApiKey] = Field(..., min_length=1)
     base_url: str | None = Field(default=None, max_length=2048)
 
     model_config = ConfigDict(extra="forbid")
-
-    _validate_api_key = field_validator("api_key")(_require_usable_api_key)
 
 
 class ProviderConnectionUpdateRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=128)
     provider: str | None = Field(default=None, min_length=1, max_length=128)
-    api_key: SecretStr | None = None
+    api_key: Annotated[SecretStr | None, _ClientApiKey] = None
     base_url: str | None = Field(default=None, max_length=2048)
 
     model_config = ConfigDict(extra="forbid")
-
-    _validate_api_key = field_validator("api_key")(_require_usable_api_key)
 
     @model_validator(mode="after")
     def _reject_null_required_fields(self) -> ProviderConnectionUpdateRequest:

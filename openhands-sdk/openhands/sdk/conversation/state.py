@@ -40,6 +40,7 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
+from openhands.sdk.utils.pydantic_secrets import cipher_context
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
@@ -478,7 +479,7 @@ class ConversationState(OpenHandsModel):
         If a cipher is configured, secrets will be encrypted. Otherwise, they
         will be redacted (serialized as '**********').
         """
-        context = {"cipher": self._cipher} if self._cipher else None
+        context = cipher_context(self._cipher)
         # Warn if secrets exist but no cipher is configured
         if not self._cipher and self.secret_registry.secret_sources:
             logger.warning(
@@ -573,7 +574,7 @@ class ConversationState(OpenHandsModel):
         # ---- Resume path ----
         if base_text:
             # Use cipher context for decrypting secrets if provided
-            context = {"cipher": cipher} if cipher else None
+            context = cipher_context(cipher)
             state = cls.model_validate(json.loads(base_text), context=context)
 
             # Restore the conversation with the same id

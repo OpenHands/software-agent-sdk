@@ -35,8 +35,9 @@ from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import (
-    STRICT_DECRYPT_CONTEXT_KEY,
     SecretDecryptionError,
+    cipher_context,
+    client_context,
 )
 
 
@@ -273,13 +274,6 @@ def _file_has_stale_token(path: Path, cipher: Cipher | None) -> bool:
     return _has_stale_token(cipher, data)
 
 
-def _load_context(cipher: Cipher | None, strict: bool) -> dict[str, Any] | None:
-    """Validation context for loading a store file with ``cipher``."""
-    if cipher is None:
-        return None
-    return {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
-
-
 class SettingsStore(ABC):
     """Abstract base class for settings storage."""
 
@@ -361,7 +355,7 @@ class FileSettingsStore(SettingsStore):
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
-        flows through to field validators using validate_secret().
+        flows through to the models' ``SecretField`` validators.
 
         A secret the cipher cannot decrypt loads as ``None``. With
         ``strict=True`` (read-modify-write paths) the load fails instead,
@@ -376,8 +370,7 @@ class FileSettingsStore(SettingsStore):
                 data = json.load(f)
 
             # Pass cipher in context for automatic decryption of all secret fields
-            # This flows through to field validators using validate_secret()
-            context = _load_context(self.cipher, strict)
+            context = cipher_context(self.cipher, strict=strict)
             return PersistedSettings.from_persisted(data, context=context)
         except SecretDecryptionError as e:
             logger.error(f"Cannot load settings for update: {e}")
@@ -400,7 +393,7 @@ class FileSettingsStore(SettingsStore):
 
         If a cipher is provided, secrets are encrypted via Pydantic's
         serialization context. The cipher is passed to model_dump which
-        flows through to field serializers using serialize_secret().
+        flows through to the models' ``SecretField`` serializers.
 
         Warning:
             This method does NOT acquire a file lock. For concurrent-safe
@@ -414,11 +407,10 @@ class FileSettingsStore(SettingsStore):
         _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
-        # This flows through to field serializers using serialize_secret()
         if self.cipher:
-            context: dict[str, Any] = {"cipher": self.cipher}
+            context = cipher_context(self.cipher)
         else:
-            context = {"expose_secrets": "plaintext"}
+            context = client_context("plaintext")
             # Warn about plaintext secret storage (only if secrets exist)
             if settings.has_any_secret:
                 logger.warning(
@@ -531,7 +523,7 @@ class FileSecretsStore(SecretsStore):
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
-        flows through to field validators using validate_secret().
+        flows through to the models' ``SecretField`` validators.
 
         A secret the cipher cannot decrypt loads as ``None``. With
         ``strict=True`` (read-modify-write paths) the load fails instead,
@@ -546,7 +538,7 @@ class FileSecretsStore(SecretsStore):
                 data = json.load(f)
 
             # Pass cipher in context for automatic decryption of all secret fields
-            context = _load_context(self.cipher, strict)
+            context = cipher_context(self.cipher, strict=strict)
             return Secrets.model_validate(data, context=context)
         except SecretDecryptionError as e:
             logger.error(f"Cannot load secrets for update: {e}")
@@ -625,9 +617,9 @@ class FileSecretsStore(SecretsStore):
 
         # Pass cipher in context for automatic encryption of all secret fields
         if self.cipher:
-            context: dict[str, Any] = {"cipher": self.cipher}
+            context = cipher_context(self.cipher)
         else:
-            context = {"expose_secrets": "plaintext"}
+            context = client_context("plaintext")
             # Warn about plaintext secret storage (only if secrets exist)
             if secrets.has_any_secret:
                 logger.warning(

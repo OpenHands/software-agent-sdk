@@ -62,3 +62,11 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
+          - id: check-secret-fields
+            name: Keep secrets on SecretField
+            entry: uv
+            args: [run, python, scripts/check_secret_fields.py]
+            language: system
+            files: ^openhands-(sdk|agent-server|tools|workspace)/openhands/.*\.py$
+            pass_filenames: true
+            always_run: false

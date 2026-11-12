@@ -20,8 +20,9 @@ from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
-    STRICT_DECRYPT_CONTEXT_KEY,
     SecretDecryptionError,
+    cipher_context,
+    client_context,
 )
 
 
@@ -271,13 +272,12 @@ class LLMProfileStore:
             if llm.provider_connection_id:
                 llm = llm.model_copy(update={"api_key": None, "base_url": None})
 
-            context: dict[str, Any] = {}
-            if include_secrets:
-                if cipher:
-                    context["cipher"] = cipher
-                    context["expose_secrets"] = "encrypted"
-                else:
-                    context["expose_secrets"] = True
+            if not include_secrets:
+                context = client_context("redact")
+            elif cipher:
+                context = cipher_context(cipher)
+            else:
+                context = client_context("plaintext")
 
             profile_json = json.dumps(llm.to_persisted(context=context), indent=2)
             with tempfile.NamedTemporaryFile(
@@ -342,11 +342,7 @@ class LLMProfileStore:
             try:
                 from openhands.sdk.llm.llm import LLM
 
-                context: dict[str, Any] | None = (
-                    {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
-                    if cipher
-                    else None
-                )
+                context = cipher_context(cipher, strict=strict)
 
                 llm_instance = LLM.load_from_json(str(profile_path), context=context)
             except SecretDecryptionError:
