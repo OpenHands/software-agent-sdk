@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import io
 import json
 import os
 import sys
@@ -11,6 +12,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import zipfile
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -29,6 +31,10 @@ from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
+from openhands.agent_server import (
+    config as config_module,
+    conversation_service as service_module,
+)
 from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
@@ -48,6 +54,7 @@ from openhands.sdk.event import (
     SecurityAnalysisEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
@@ -324,6 +331,91 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_recovery_provenance_served_over_http_and_websocket(server_env):
+    recovery = AgentErrorEvent(
+        error="Interrupted execution",
+        tool_name="terminal",
+        tool_call_id="interrupted_call",
+        recovery_reason="server_restart",
+        classification=ErrorClassification(kind=FailureKind.INTERNAL, retryable=False),
+    )
+    received: list[Event] = []
+    delivered = threading.Event()
+
+    def on_event(event: Event) -> None:
+        if event.id == recovery.id:
+            received.append(event)
+            delivered.set()
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    conversation: RemoteConversation = Conversation(
+        agent=agent, workspace=workspace, callbacks=[on_event], visualizer=None
+    )
+    try:
+        event_service = server_env["conversation_service"]._event_services[
+            conversation.id
+        ]
+        event_service.get_conversation()._on_event(recovery)
+        assert delivered.wait(5)
+        websocket_event = received[0]
+        assert isinstance(websocket_event, AgentErrorEvent)
+        assert websocket_event.recovery_reason == "server_restart"
+
+        event_path = f"/api/conversations/{conversation.id}/events"
+        with httpx.Client(base_url=server_env["host"]) as client:
+            single = client.get(f"{event_path}/{recovery.id}")
+            single.raise_for_status()
+            search = client.get(
+                f"{event_path}/search", params={"kind": "AgentErrorEvent"}
+            )
+            search.raise_for_status()
+
+        assert single.json()["recovery_reason"] == "server_restart"
+        assert [Event.model_validate(item) for item in search.json()["items"]] == [
+            websocket_event
+        ]
+        assert Event.model_validate(single.json()) == websocket_event
+    finally:
+        conversation.close()
+
+
+def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    with live_server_env(tmp_path, monkeypatch) as server_env:
+        agent = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+            tools=[],
+        )
+        payload = {
+            "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+            "workspace": {"working_dir": str(server_env["workspace_path"])},
+        }
+        with httpx.Client(base_url=server_env["host"]) as client:
+            start = client.post("/api/conversations", json=payload, timeout=10.0)
+            start.raise_for_status()
+            conversation_id = UUID(start.json()["id"])
+            download_path = f"/api/file/download-trajectory/{conversation_id}"
+            downloads = [client.get(download_path) for _ in range(5)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                downloads.extend(
+                    pool.map(lambda _: client.get(download_path), range(24))
+                )
+            for download in downloads:
+                download.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+                    assert archive.testzip() is None
+                    assert (
+                        f"{conversation_id.hex}/base_state.json" in archive.namelist()
+                    )
+            assert not list(
+                (server_env["workspace_path"].parent / "conversations").glob("*.zip*")
+            )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
@@ -1157,10 +1249,12 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "role": "assistant",
                     "content": "Hello from patched LLM",
                 }
+                # A continued turn reports only its own model call, not the
+                # conversation's running total (7/5 per call, two calls so far).
                 assert reused_response.json()["usage"] == {
-                    "prompt_tokens": 14,
-                    "completion_tokens": 10,
-                    "total_tokens": 24,
+                    "prompt_tokens": 7,
+                    "completion_tokens": 5,
+                    "total_tokens": 12,
                 }
 
                 from openai import BadRequestError, OpenAI
@@ -1170,6 +1264,21 @@ def test_openai_chat_completions_gateway_over_real_server(
                     base_url=f"{env['host']}/v1",
                     timeout=10,
                 )
+                reused_stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[{"role": "user", "content": "Say hello a third time."}],
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_headers={
+                        "X-OpenHands-ServerConversation-ID": conversation_id
+                    },
+                )
+                reused_usage = [chunk.usage for chunk in reused_stream if chunk.usage]
+                assert len(reused_usage) == 1
+                assert reused_usage[0].prompt_tokens == 7
+                assert reused_usage[0].completion_tokens == 5
+                assert reused_usage[0].total_tokens == 12
+
                 stream = openai_client.chat.completions.create(
                     model="openhands_smoke",
                     messages=[

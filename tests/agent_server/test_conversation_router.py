@@ -1327,8 +1327,8 @@ def test_start_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1350,8 +1350,8 @@ def test_start_goal_in_conversation_not_found(
     """/goal returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1370,8 +1370,8 @@ def test_start_goal_in_conversation_rejects_busy_loop(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1390,8 +1390,8 @@ def test_stop_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.stop_goal_loop.return_value = True
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1408,8 +1408,8 @@ def test_stop_goal_in_conversation_not_found(
     """/goal/stop returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1425,8 +1425,8 @@ def test_resume_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1445,8 +1445,8 @@ def test_resume_goal_in_conversation_not_found(
     """/goal/resume returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1464,8 +1464,8 @@ def test_resume_goal_in_conversation_no_resumable(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.side_effect = ValueError("no_resumable_goal")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1494,6 +1494,35 @@ def test_switch_acp_model_success(
         assert response.status_code == 200
         assert response.json()["success"] is True
         mock_event_service.switch_acp_model.assert_awaited_once_with("haiku")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "status_code"),
+    [(None, 200), (ValueError("not offered"), 400), (TimeoutError("slow"), 504)],
+)
+def test_switch_acp_effort(
+    client,
+    mock_conversation_service,
+    mock_event_service,
+    sample_conversation_id,
+    side_effect,
+    status_code,
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_effort.side_effect = side_effect
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_effort",
+            json={"effort": "high"},
+        )
+        assert response.status_code == status_code
+        mock_event_service.switch_acp_effort.assert_awaited_once_with("high")
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2675,6 +2704,40 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
         assert isinstance(forwarded_llm.api_key, SecretStr)
         assert forwarded_llm.api_key.get_secret_value() == "sk-plaintext"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_acp_agent_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A refused switch_llm (an ACP conversation, #4158) is a 400, not a 500."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_llm.side_effect = ValueError(
+        "switch_llm and switch_profile are not supported for ACP conversations; "
+        "use switch_acp_model instead."
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "usage_id": "x",
+                }
+            },
+        )
+
+        assert response.status_code == 400
+        assert "switch_acp_model" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
