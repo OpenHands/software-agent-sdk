@@ -616,6 +616,18 @@ def test_list_summaries_skips_non_dict(
     assert [s["name"] for s in summaries] == ["good"]
 
 
+def test_list_summaries_skips_a_file_that_is_not_valid_utf8(
+    profile_store: LLMProfileStore, sample_llm: LLM
+) -> None:
+    """A decode failure is corruption too: one bad file must not break the listing."""
+    profile_store.save("good", sample_llm)
+    (profile_store.base_dir / "garbled.json").write_bytes(b"\xff\xfe")
+
+    summaries = profile_store.list_summaries()
+
+    assert [summary["name"] for summary in summaries] == ["good"]
+
+
 def test_list_summaries_skips_invalid_filename(
     profile_store: LLMProfileStore, sample_llm: LLM
 ) -> None:

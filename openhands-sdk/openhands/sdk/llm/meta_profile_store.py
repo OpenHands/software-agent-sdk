@@ -261,7 +261,7 @@ class MetaProfileStore:
         for name in self.list():
             try:
                 data = json.loads(self._get_path(name).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as e:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                 logger.warning(f"Skipping corrupted meta-profile {name!r}: {e}")
                 continue
             if not isinstance(data, dict):

@@ -219,6 +219,17 @@ def test_delete_is_idempotent(tmp_path: Path) -> None:
     store.delete("p")
 
 
+def test_list_summaries_skips_a_file_that_is_not_valid_utf8(tmp_path: Path) -> None:
+    """A decode failure is corruption too: one bad file must not break the listing."""
+    _write(tmp_path, "good", VALID)
+    (tmp_path / "garbled.json").write_bytes(b"\xff\xfe")
+    store = MetaProfileStore(base_dir=tmp_path)
+
+    summaries = store.list_summaries()
+
+    assert [summary["name"] for summary in summaries] == ["good"]
+
+
 def test_list_summaries_skips_corrupted(tmp_path: Path) -> None:
     _write(tmp_path, "good", VALID)
     (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
