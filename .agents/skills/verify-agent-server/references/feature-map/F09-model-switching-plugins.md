@@ -49,7 +49,7 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.acp-model-id-bare`: on a live ACP session `current_model_id` is the bare model id: a legacy `<model>/<effort>` `acp_model` (`sonnet/high`) still starts the session, `current_model_id` is `sonnet`, and an explicit `acp_effort` wins over the suffix in `current_effort`.
 - `F09.acp-effort-live`: on a live ACP session, `switch_acp_effort` to a level in `available_efforts` answers 200 and switches the session in place (same `acp_session_id`); `current_effort`, `agent.acp_effort`, `agent_state.acp_current_effort` and `base_state.json` follow, and the next turn finishes in the same session.
 - `F09.acp-effort-unoffered`: on a live session, a level the current model does not offer is 400 naming the offered levels, a blank level is 400, and `current_effort` and `acp_effort` are unchanged.
-- `F09.acp-effort-model-switch`: after `switch_acp_model` to a model without effort levels (`haiku`), `current_effort` is null and `available_efforts` empty while `acp_effort` is kept, `switch_acp_effort` is 400 `The current model offers no reasoning effort setting.`, and switching back to a model with levels re-applies the pinned `acp_effort`.
+- `F09.acp-effort-model-switch`: after `switch_acp_model` to another model (`haiku`) and back (`sonnet`), the pinned `acp_effort` is kept and applied on each model that offers it (`current_effort` follows, `available_efforts` lists that model's levels), in the same session.
 - `F09.acp-effort-live-timeout`: a live `switch_acp_effort` whose round-trip outlasts `acp_prompt_timeout` is 504 with `detail` `Internal Server Error` and leaves the effort unchanged.
 - `F09.acp-effort-codex`: on a Codex (`codex`) ACP conversation signed in with a ChatGPT subscription, `available_efforts` lists the levels the current model offers and `switch_acp_effort` switches among them live (blocked: needs a ChatGPT login).
 - `F09.ts-client`: the TypeScript client's `ConversationClient.switchLLM`, `switchProfile` and `switchAcpModel` and `ConversationManager.switchProfile` reach the routes: each switch resolves and reads back through `getConversation`, an unknown profile rejects with 404, `switchAcpModel` on a regular conversation with 400, a call without a key with 401, and `switchAcpModel` on an ACP conversation that has not run resolves and stores the model.
@@ -502,8 +502,8 @@ Preconditions:
   ```
   After the first turn the conversation reports
   `supports_runtime_model_switch: true` and the adapter's
-  `available_models` (`default`, `opus[1m]`, `sonnet`, `sonnet[1m]`,
-  `haiku`), on `sonnet`. The switch to `haiku` is 200 and `current_model_id`,
+  `available_models` (`default`, `opus`, `fable`, `sonnet`, `haiku`), on
+  `sonnet`. The switch to `haiku` is 200 and `current_model_id`,
   `agent.acp_model`, `agent_state.acp_current_model_id` and
   `base_state.json` follow, with the same `acp_session_id` (switched in
   place, not a new session). A blank model is 400 `model must be a
@@ -514,26 +514,27 @@ Preconditions:
   `haiku`. Every built-in provider declares
   runtime switching, so the route's other 400 (`does not support runtime
   model switching`) is not reachable with them.
-- **Unknown model on a live session (`F09.acp-model-live-unknown`), known bug.**
+- **Unknown model on a live session (`F09.acp-model-live-unknown`).**
   `LID` from the bullet above, whose adapter lists its models.
 
   Requires: `F09.acp-model-live`
   ```sh
   control-agent-server api GET "/api/conversations/$LID" --quiet --check supports_runtime_model_switch eq true \
     --check available_models contains '"model_id": "sonnet"' --check available_models not-contains qa-f09-nope
-  control-agent-server api POST "/api/conversations/$LID/switch_acp_model" --json '{"model": "qa-f09-nope"}' --expect 400,422 --save F09.acp-model-live-unknown/switch  # bug: status eq 500 && response.body.exception contains 'Internal error'
+  control-agent-server api POST "/api/conversations/$LID/switch_acp_model" --json '{"model": "qa-f09-nope"}' --expect 400 \
+    --check detail contains 'Invalid value for config option model: qa-f09-nope' --save F09.acp-model-live-unknown/switch
+  control-agent-server api GET "/api/conversations/$LID" --quiet --check current_model_id eq haiku --check agent.acp_model eq haiku
   ```
-  Expected: a client error, as `ACPAgent.set_acp_model` documents ("the ACP
-  server rejects the model-switch call (e.g. ... an invalid model id)" is a
-  `ValueError`, which the route turns into 400) and as a blank model already
-  is. Today it is 500 `Internal Server Error` with `exception` `Internal
-  error`: claude-agent-acp answers `set_config_option(model)` with an id it
-  does not offer with JSON-RPC -32603, and `set_acp_model` re-raises -32603
-  as a server-side failure instead of a `ValueError`, although the session's
-  `available_models` already shows the id is not offered. A consumer that
-  mistypes a model sees a retriable-looking 500 for a request that can
-  never succeed. Nothing changes either way (`F09.acp-model-live` checks
-  that the model stays `haiku`).
+  A client error, as `ACPAgent.set_acp_model` documents ("the ACP server
+  rejects the model-switch call (e.g. ... an invalid model id)" is a
+  `ValueError`, which the route turns into 400) and as a blank model is:
+  claude-agent-acp answers `set_config_option(model)` with JSON-RPC -32602
+  `Invalid params`, and the `detail` carries the adapter's message (`ACP
+  server rejected set_config_option(model)(model='qa-f09-nope'): Invalid
+  params: Invalid value for config option model: qa-f09-nope`). The model
+  stays `haiku`. `set_acp_model` still re-raises an adapter's -32603
+  (`Internal error`) as a server-side failure (500), so an adapter that
+  answered an unknown id with -32603 would surface as a 500 here.
 - **Live switch that times out (`F09.acp-model-live-timeout`).** The same
   translated provider, on a conversation created with
   `acp_prompt_timeout: 0.001`: the server's own timer is what is under test.
@@ -632,24 +633,26 @@ Preconditions:
   A level the adapter does not offer for `sonnet` is 400 and the detail
   lists the offered levels; a blank level is 400; the effort stays `high`.
 - **Effort across a model switch (`F09.acp-effort-model-switch`).** Switch
-  `EID` to `haiku`, which offers no effort levels, and back to `sonnet`.
+  `EID` (effort pinned to `high`) to `haiku` and back to `sonnet`.
 
   Requires: `F09.acp-effort-live`
   ```sh
   control-agent-server api POST "/api/conversations/$EID/switch_acp_model" --json '{"model": "haiku"}' --expect 200
-  control-agent-server api GET "/api/conversations/$EID" --quiet --check current_model_id eq haiku --check current_effort eq null \
-    --check available_efforts len-eq 0 --check agent.acp_effort eq high --save F09.acp-effort-model-switch/haiku
-  control-agent-server api POST "/api/conversations/$EID/switch_acp_effort" --json '{"effort": "low"}' --expect 400 \
-    --check detail eq 'The current model offers no reasoning effort setting.' --save F09.acp-effort-model-switch/no-effort
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check current_model_id eq haiku --check current_effort eq high \
+    --check available_efforts contains '"value": "high"' --check agent.acp_effort eq high --check agent_state.acp_current_effort eq high \
+    --check agent_state.acp_session_id eq "$ESESS" --save F09.acp-effort-model-switch/haiku
   control-agent-server api POST "/api/conversations/$EID/switch_acp_model" --json '{"model": "sonnet"}' --expect 200
   control-agent-server api GET "/api/conversations/$EID" --quiet --check current_model_id eq sonnet --check current_effort eq high \
     --check available_efforts contains '"value": "max"' --check agent_state.acp_session_id eq "$ESESS" --save F09.acp-effort-model-switch/back
   ```
-  On `haiku` the conversation reports no effort and no levels, while the
-  pinned `acp_effort` stays `high`; an effort switch there is 400. Back on
-  `sonnet` the levels return and `current_effort` is `high` again: the
-  server re-applies the pinned effort after the model switch, in the same
-  session.
+  On `haiku` the adapter lists the same levels (`default` to `max`), and
+  `current_effort` and the pinned `acp_effort` stay `high`. Back on `sonnet`
+  `current_effort` is `high` again, in the same session. The server re-applies
+  a pinned effort after a model switch when the new model offers it; on a
+  model that offers no levels `current_effort` would read null and
+  `switch_acp_effort` 400 `The current model offers no reasoning effort
+  setting.`, but every model the pinned claude-agent-acp lists offers
+  levels, so that path is not reachable with the built-in providers.
 - **Live effort switch that times out (`F09.acp-effort-live-timeout`).**
   `TOID` from `F09.acp-model-live-timeout` (`acp_prompt_timeout: 0.001`,
   live session on `sonnet`, no pinned effort).
@@ -994,9 +997,9 @@ Preconditions:
   offers it (otherwise the server logs a warning and the session keeps the
   adapter's default), and `current_effort` then reports what the session
   runs. On a live session the level must be in `available_efforts`, which
-  are per model: `haiku` offers none, so switching to it clears
-  `current_effort` while `acp_effort` stays pinned and is re-applied when a
-  model with levels is selected again. With nothing pinned the session runs
+  are per model (with claude-agent-acp every listed model offers `default`
+  to `max`); `acp_effort` stays pinned across a model switch and is
+  re-applied when the new model offers it. With nothing pinned the session runs
   at the adapter's own `default` level (`F09.acp-effort-deferred`,
   `F09.acp-effort-model-switch`, `F09.acp-effort-live-timeout`).
 - `current_model_id` is the bare model id (`sonnet`), also for a legacy

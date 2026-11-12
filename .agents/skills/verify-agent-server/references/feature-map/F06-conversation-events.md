@@ -56,6 +56,8 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.send-run-limit`: with every run slot taken, `POST .../events` with `run: true` returns 429 `Message saved...` and the message is persisted; a socket send gets a `ConversationRunLimitExceeded` `ServerErrorEvent`.
 - `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run.
 
+- `F06.send-during-tool-call`: `POST .../events` to a conversation whose agent is inside a long tool call saves the message and answers at once, before the tool call ends.
+
 ## How to get to it (agent POV)
 
 - REST: `POST /api/conversations/{conversation_id}/events` with a
@@ -701,6 +703,38 @@ Preconditions:
   The live frames contain `content` or `reasoning_content` deltas. None is
   stored or replayed: clients use the final durable message after reconnect,
   and keep transient tokens out of their event-log cache.
+
+- **A message during a tool call (`F06.send-during-tool-call`), known bug #6729.**
+  Last bullet. A scripted model asks for `terminal` `sleep 20` on every
+  call (a real model cannot be held inside a tool call on demand); once its
+  `ActionEvent` is logged and no observation is, a message is appended with
+  `run: false`. The run slot is free: `HOLD` was interrupted and the
+  streamed conversation finished.
+
+  Needs: `tmux`
+  ```sh
+  TOOL_STUB=$(control-agent-server fixture llm-stub --name qa-f06-tool --step 'tool:terminal:{"command":"sleep 20"}' --print-path)
+  TOOL_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$TOOL_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  TC=$(control-agent-server conversation start --body-json "{\"agent\": $TOOL_AGENT}" --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$TC/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_TOOL"}],"run":true}' --expect 200
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ActionEvent --check . eq 1 --until-ok 30
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api POST "/api/conversations/$TC/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_DURING_TOOL"}],"run":false}' --expect 200 --expect-max-ms 3000 --timeout 60 \
+    --save F06.send-during-tool-call/post  # bug: status eq 200 && elapsed_ms ge 15000
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query body=QA_F06_DURING_TOOL --check . eq 1
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api POST "/api/conversations/$TC/interrupt" --expect 200
+  control-agent-server conversation wait "$TC" --until paused --timeout 60
+  ```
+  Expected: the POST answers within 3 s and the message is in the log
+  while the command still runs (no observation yet); the agent sees it at
+  its next step. Today the POST waits for the state lock, which the run
+  loop holds for the whole tool call, so it answers 200 only when
+  `sleep 20` ends, about 20 s later (#6729; the same lock makes `/pause`
+  wait, F05). The message is then saved. A user's correction to a busy
+  agent waits as long as the running command.
 
 ## Gotchas
 

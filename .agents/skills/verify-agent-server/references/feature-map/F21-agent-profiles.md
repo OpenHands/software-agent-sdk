@@ -132,9 +132,9 @@ Preconditions:
   restarts the run twice (with `OH_ACP_SKILL_SOURCING=openhands_managed`,
   then with `--reset-config`). `F21.store-busy`, `F21.launch-store-busy`
   and `F21.busy-blocks-server` hold the store lock for about 30 seconds
-  each. The three known-bug bullets come last, then
-  `F21.json-suffix-identity`, which activates its own profile and ends by
-  deleting it, so the run is left with `default` active.
+  each. `F21.busy-blocks-server`, `F21.dangling-llm-report` and
+  `F21.ts-payload-types` come last, then `F21.json-suffix-identity`,
+  which activates its own profile and ends by deleting it, so the run is left with `default` active.
 
 ```sh
 control-agent-server llm preset deepseek
@@ -927,7 +927,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
   not name `dangling_llm_profile_ref`, which only the launch's 422 carries
   (#5871).
-- **TypeScript payload types (`F21.ts-payload-types`), known bug #6747.** The
+- **TypeScript payload types (`F21.ts-payload-types`).** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
@@ -961,7 +961,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const openhands: Shape<OpenHandsAgentProfile> = $OPENHANDS;" "export const acp: Shape<ACPAgentProfile> = $ACPKEYS;" \
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
-  $TSC "$D/contract.ts"  # bug: exit 2
+  $TSC "$D/contract.ts"
   $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
@@ -974,14 +974,13 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
   `acp_startup_timeout`. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
-  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`.
-  Today the server's ACP profile also carries `acp_effort`, which neither
-  the generated `AcpAgentProfile` (regenerated only from the pinned release
-  image, which predates the field) nor the exported `ACPAgentProfile`
-  declares, so `contract.ts` fails with `TS2353 ... '"acp_effort"' does not
-  exist` (#6747). Release PR #6731 regenerates the contract and adds the
-  field to `ACPAgentProfile`, which the client's key-parity test requires to
-  happen together.
+  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`,
+  and `acp_effort` (which the server's ACP profile carries) on both the
+  generated `AcpAgentProfile` and the exported `ACPAgentProfile`. The
+  generated contract is regenerated only from the pinned release image, so
+  a field the server adds after the last release fails `contract.ts` with
+  `TS2353 ... does not exist` until the next release regenerates it; the
+  client's key-parity test requires the exported type to change with it.
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.

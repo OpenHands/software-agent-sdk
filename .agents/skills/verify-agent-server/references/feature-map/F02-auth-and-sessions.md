@@ -105,7 +105,9 @@ Preconditions:
   network namespace (`unshare -rn`, so nothing outside it can connect, and
   port 8000 is free in every replay), it runs this checkout's server the way
   an operator would (`python -m openhands.agent_server`, no `--host` unless
-  given, default port 8000) with its own `HOME` and config, waits until
+  given, default port 8000) with its own `HOME` and config and
+  `LITELLM_LOCAL_MODEL_COST_MAP=True` (the namespace has no network, and a
+  failed cost-map fetch at `import litellm` can crash startup, #6749), waits until
   `/proc/net/tcp` shows the listening socket, stops the server, prints its
   log and `listening on ADDRESS:8000`, and fails if nothing listened.
   Needs `unshare` (util-linux) with unprivileged user namespaces, or root.
@@ -143,7 +145,7 @@ Preconditions:
   cd "$dir" || exit 1
   printf '{"preload_tools": false, "enable_vscode": false}\n' > config.json
   HOME="$dir/home" OH_PERSISTENCE_DIR="$dir/home/.openhands" OPENHANDS_AGENT_SERVER_CONFIG_PATH="$dir/config.json" \
-    COLUMNS=400 PYTHONUNBUFFERED=1 "$QA_F02_PYTHON" -m openhands.agent_server "$@" > server.log 2>&1 &
+    LITELLM_LOCAL_MODEL_COST_MAP=True COLUMNS=400 PYTHONUNBUFFERED=1 "$QA_F02_PYTHON" -m openhands.agent_server "$@" > server.log 2>&1 &
   pid=$!
   addr=
   for _ in $(seq 240); do
@@ -546,6 +548,13 @@ Preconditions:
   commands run as the server's user and can read `/proc/<server pid>/environ`.
 - `restart --env` values persist for later restarts of the same run; this
   family leaves `OH_SESSION_API_KEYS_1` and the CORS variables on its run.
+- `bind.sh` sets `LITELLM_LOCAL_MODEL_COST_MAP=True` because the private
+  namespace has no network: without it LiteLLM's remote cost-map fetch fails
+  at import and startup crashes most of the time with an `ImportError`
+  (`LoggerContext` from a partially initialized
+  `litellm.rust_bridge.catalog`) or a `_DeadlockError` (#6749, also hit by
+  `F24.offline-safe`), so `F02.default-bind` failed for a reason unrelated
+  to the bind address.
 - With keys configured and no `--host`, the server binds `0.0.0.0`; without
   keys, `127.0.0.1` (`F02.default-bind`). The launcher always passes
   `--host 127.0.0.1`, so only `F02.default-bind` sees the default.

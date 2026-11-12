@@ -53,6 +53,7 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
 - `F05.restart-running-graceful`: a conversation running at a graceful restart comes back `paused`, with a `PauseEvent` and an `InterruptEvent`.
 - `F05.restart-keeps-status`: `finished`, `paused` and `error` statuses survive a restart unchanged.
 - `F05.restart-hard-running`: a conversation running when the server is SIGKILLed comes back `error` on the next start, and `/run` resumes it.
+- `F05.restart-hard-tool-call`: a conversation SIGKILLed while a tool call runs comes back `error` with one `AgentErrorEvent` for that `tool_call_id` that says where it came from: `recovery_reason` `server_restart` and `classification` `{"kind": "internal", "retryable": false}`, on search, get-one and the events socket replay; an interrupted call's `AgentErrorEvent` has no `recovery_reason`.
 - `F05.pause-running-crash`: a pause accepted during a model call survives a SIGKILL: the conversation comes back `paused`, as its persisted `PauseEvent` and status update say, not `error`.
 
 ## How to get to it (agent POV)
@@ -700,6 +701,45 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   over the dead owner's lease, marks `K` `error` (a persisted
   `execution_status` update), nothing is `running`, and `/run` resumes `K`
   (interrupted again to free the slot).
+- **Crash during a tool call (`F05.restart-hard-tool-call`).** A new
+  conversation `X` on its own stub, whose model asks for `terminal`
+  `sleep 120`, is SIGKILLed while that command runs (the slot is free:
+  `K` was interrupted). `T`'s interrupted call is the contrast.
+
+  Requires: `F05.interrupt-tool-call`
+  Needs: `tmux`
+  ```sh
+  control-agent-server api GET "/api/conversations/$T/events/search" --query kind=$AGENT_ERROR_KIND \
+    --check items len-eq 1 --check items.0.recovery_reason missing --save F05.restart-hard-tool-call/interrupt-error
+  CRASH=$(control-agent-server fixture llm-stub --name qa-f05-crash --step 'tool:terminal:{"command":"sleep 120"}' --print-path)
+  CRASH_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CRASH/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  X=$(control-agent-server conversation start --body-json "{\"agent\": $CRASH_AGENT}" --no-autotitle --print-id)
+  control-agent-server conversation send "$X" --text 'hi' --no-run
+  control-agent-server api POST "/api/conversations/$X/run" --expect 200 --check success eq true
+  control-agent-server api GET "/api/conversations/$X/events/count" --query kind=$ACTION_KIND --check . eq 1 --until-ok 30
+  XCALL=$(control-agent-server api GET "/api/conversations/$X/events/search" --query kind=$ACTION_KIND --field items.0.tool_call_id)
+  control-agent-server api GET "/api/conversations/$X" --check execution_status eq running
+  control-agent-server restart --hard
+  control-agent-server api GET "/api/conversations/$X" --check execution_status eq error --save F05.restart-hard-tool-call/get
+  control-agent-server api GET "/api/conversations/$X/events/search" --query kind=$AGENT_ERROR_KIND \
+    --check items len-eq 1 --check items.0.tool_call_id eq "$XCALL" --check items.0.recovery_reason eq server_restart \
+    --check items.0.classification.kind eq internal --check items.0.classification.retryable eq false \
+    --check items.0.error contains 'A restart occurred while this tool was in progress' --save F05.restart-hard-tool-call/agent-error
+  XERR=$(control-agent-server api GET "/api/conversations/$X/events/search" --query kind=$AGENT_ERROR_KIND --field items.0.id)
+  control-agent-server api GET "/api/conversations/$X/events/$XERR" --check recovery_reason eq server_restart --save F05.restart-hard-tool-call/get-one
+  control-agent-server api GET "/api/conversations/$X/events/count" --query kind=$OBSERVATION_KIND --check . eq 0
+  control-agent-server ws listen "/sockets/events/$X" --query resend_mode=all --duration 5 \
+    --until-kind AgentErrorEvent --until recovery_reason=server_restart --save F05.restart-hard-tool-call/replay
+  control-agent-server doctor
+  ```
+  Before the crash `X` is `running` with one `ActionEvent` and no result.
+  After it, `X` is `error` and carries exactly one `AgentErrorEvent`
+  answering `XCALL` ("A restart occurred while this tool was in
+  progress..."), marked `recovery_reason` `server_restart` and classified
+  `internal`, not retryable, the same on search, get-one and the socket
+  replay, and no observation. `T`'s `AgentErrorEvent` from an interrupt has
+  no `recovery_reason` (search omits null fields), so a consumer can tell a
+  crash-synthesized outcome from an interrupted one.
 - **Crash after a mid-call pause (`F05.pause-running-crash`), known bug.**
   `K` runs into the hanging stub again, is paused while the model call is in
   flight, and the server is SIGKILLed. The last bullet, so nothing depends on
@@ -768,7 +808,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
 - Graceful shutdown pauses and cancels running conversations (`PauseEvent`
   then `InterruptEvent`); SIGKILL leaves `running` on disk, and the next start
   turns it into `error` and appends an `AgentErrorEvent` for an unfinished
-  tool call, if any. A lease held by a dead process on the same host is taken
+  tool call, if any, marked `recovery_reason: "server_restart"`
+  (`F05.restart-hard-tool-call`). A lease held by a dead process on the same host is taken
   over immediately; a lease from another host must expire first
   (`OH_LEASE_TTL_SECONDS`, default 45), and until then `/run` answers 404.
 - `F05.run-error-responsive` only means something with the default console

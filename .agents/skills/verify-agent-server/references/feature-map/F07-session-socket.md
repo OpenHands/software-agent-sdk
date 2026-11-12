@@ -26,6 +26,7 @@ Routes: `WS /sockets/session/{conversation_id}`
 - `F07.sync-first`: the first server frame is `{"type": "sync"}`; `from_seq` echoes `after_seq` (absent when live-only) and `through_seq` is the last on-disk `seq` (absent for an empty log).
 - `F07.sync-first-during-run`: while a run holds the conversation's state lock, `sync` is still the first frame; an `error` reply to an invalid frame sent right after connecting comes after it.
 - `F07.snapshot-transient`: every connection gets one `transient` frame with a `full_state` `ConversationStateUpdateEvent` and no `seq`, after `sync` (and after the replay when one ran); it is never persisted.
+- `F07.snapshot-compact-stats`: the `full_state` snapshot carries each LLM's aggregate stats (`accumulated_cost`, `accumulated_token_usage`) but not the per-call `costs`, `response_latencies` and `token_usages` lists, so it stays small however long the conversation runs.
 - `F07.full-replay`: `after_seq=-1` (or any value below it) replays every persisted event as `durable` frames with `seq` 0..`through_seq`, in order, once each, with the same ids REST returns.
 - `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`.
 - `F07.resume-cursor`: `after_seq=k` replays exactly the events with `seq > k`; `after_seq=through_seq` replays nothing.
@@ -447,6 +448,32 @@ Preconditions:
   ```
   The replay carries the durable reply (its id is `ITEM`) and no progress
   frame of any kind.
+- **Compact snapshot stats (`F07.snapshot-compact-stats`), known bug #6741.**
+  Reconnect live-only to the streamed conversation, which has made one
+  model call, and read its snapshot's stats for the agent's LLM (usage id
+  `default`).
+
+  Requires: `F07.progress-frames`
+  ```sh
+  control-agent-server ws listen "/sockets/session/$SID" --count 2 --save "F07.snapshot-compact-stats/live-$SID"
+  control-agent-server state cat "evidence/F07.snapshot-compact-stats/live-$SID.json" \
+    --check frames.2.frame.event.key eq full_state \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt 0
+  control-agent-server state cat "evidence/F07.snapshot-compact-stats/live-$SID.json" \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.accumulated_cost exists \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.response_latencies missing \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.token_usages missing \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.costs missing  # bug: checks.0.ok eq true && checks.1.actual contains latency
+  ```
+  Expected: the snapshot keeps the aggregates (prompt tokens above 0, an
+  `accumulated_cost`) and drops the per-call lists, as the incremental
+  `stats` updates do (`use_snapshot`). Today the `full_state` snapshot is
+  dumped without that context, so it carries one `costs`,
+  `response_latencies` and `token_usages` entry per model call (about
+  2.6 KB each); past roughly 1,550 calls the snapshot exceeds the 4 MiB
+  frame cap and every connection closes with 1013 `frame_too_large`
+  before the client sees anything (#6741). The legacy events socket's
+  snapshot (F06) is built the same way.
 - **Interrupted stream (`F07.item-aborted`).** Start a streamed
   deepseek-flash answer that takes tens of seconds (counting to 3000), wait
   until its `delta` frames flow on a background capture, then interrupt the
