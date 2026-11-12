@@ -102,6 +102,11 @@ async def test_user_reacts_and_unreacts(client, service, tmp_path):
     assert removed.json()["removed"] is True
     saved = await _reactions(service, cid)
     assert [(e.emoji, e.removed) for e in saved] == [("+1", False), ("+1", True)]
+    # The response is the event as stored, parent included.
+    assert [added.json()["parent_id"], removed.json()["parent_id"]] == [
+        e.parent_id for e in saved
+    ]
+    assert added.json()["parent_id"] == answer.id
 
 
 @pytest.mark.asyncio
