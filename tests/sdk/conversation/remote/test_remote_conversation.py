@@ -35,6 +35,49 @@ from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
+@pytest.mark.parametrize("operation", ["confirmation_policy", "interrupt"])
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_mutation_updates_state_before_websocket_delivery(
+    mock_ws_client: Mock, operation: str
+) -> None:
+    server_state = {
+        "id": str(uuid.uuid4()),
+        "execution_status": "idle",
+        "confirmation_policy": {"kind": "NeverConfirm"},
+    }
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events/search"):
+            return httpx.Response(200, json={"items": [], "next_page_id": None})
+        if request.method == "POST":
+            if request.url.path.endswith("/confirmation_policy"):
+                server_state["confirmation_policy"] = {"kind": "AlwaysConfirm"}
+            elif request.url.path.endswith("/interrupt"):
+                server_state["execution_status"] = "paused"
+        return httpx.Response(200, json=server_state)
+
+    workspace = RemoteWorkspace(host="http://test", working_dir="/tmp")
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    with httpx.Client(
+        transport=httpx.MockTransport(handle_request), base_url="http://test"
+    ) as client:
+        workspace._client = client
+        conversation = RemoteConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+        try:
+            assert conversation.state.execution_status.value == "idle"
+            assert conversation.confirmation_policy_active is False
+            if operation == "confirmation_policy":
+                conversation.set_confirmation_policy(AlwaysConfirm())
+                assert conversation.confirmation_policy_active is True
+            else:
+                conversation.interrupt()
+                assert conversation.state.execution_status.value == "paused"
+        finally:
+            conversation.close()
+
+
 class TestRemoteConversation:
     """Test RemoteConversation functionality."""
 
