@@ -1,5 +1,6 @@
 """Versioned, conversation-local MCP catalog and downstream session owner."""
 
+import re
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
@@ -30,7 +31,12 @@ _GATEWAY_STARTUP_TIMEOUT = 30.0
 class MCPToolGateway:
     """Own downstream sessions; expose selected tools without registering them."""
 
-    def __init__(self, selected_tools: Sequence[str] | None = None):
+    def __init__(
+        self,
+        selected_tools: Sequence[str] | None = None,
+        *,
+        filter_tools_regex: str | None = None,
+    ):
         self._lock = threading.RLock()
         self._idle = threading.Condition(self._lock)
         self._active_calls = 0
@@ -39,6 +45,7 @@ class MCPToolGateway:
         self._selected = (
             frozenset(selected_tools) if selected_tools is not None else None
         )
+        self._filter = re.compile(filter_tools_regex) if filter_tools_regex else None
         self._epoch = uuid.uuid4().hex
         self._version = 0
         self._closed = False
@@ -122,9 +129,13 @@ class MCPToolGateway:
                 self._selected = selected
                 self._version += 1
 
+    def _allows(self, name: str) -> bool:
+        return (self._selected is None or name in self._selected) and (
+            self._filter is None or bool(self._filter.match(name))
+        )
+
     def list_tools(self, query: str | None = None) -> dict[str, Any]:
         with self._lock:
-            selected = self._selected
             tools = [
                 {
                     "name": name,
@@ -132,7 +143,7 @@ class MCPToolGateway:
                     "input_schema": tool.mcp_tool.input_schema,
                 }
                 for name, tool in sorted(self._tools.items())
-                if (selected is None or name in selected)
+                if self._allows(name)
                 and (query is None or query.casefold() in name.casefold())
             ]
             return {"revision": self.revision, "tools": tools}
@@ -153,7 +164,7 @@ class MCPToolGateway:
                 return MCPGatewayObservation.from_text(
                     "MCP catalog changed; call list_mcp_tools again.", is_error=True
                 )
-            if self._selected is not None and name not in self._selected:
+            if not self._allows(name):
                 return MCPGatewayObservation.from_text(
                     "MCP tool is not selected", is_error=True
                 )

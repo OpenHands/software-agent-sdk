@@ -1678,16 +1678,13 @@ class LocalConversation(BaseConversation):
             or not getattr(self.agent, "mcp_gateway", False)
         ):
             return
-        if self.agent.filter_tools_regex:
-            raise ValueError(
-                "MCP gateway does not support filter_tools_regex; use "
-                "select_mcp_tools to restrict downstream tools"
-            )
         selected = self._state.mcp_gateway_selected_tools
         if not self._state.events and selected is None:
             selected = getattr(self.agent, "mcp_gateway_initial_tools", None)
             self._state.mcp_gateway_selected_tools = selected
-        gateway = MCPToolGateway(selected)
+        gateway = MCPToolGateway(
+            selected, filter_tools_regex=self.agent.filter_tools_regex
+        )
         gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
         self._mcp_gateway = self._state._mcp_gateway = gateway
 

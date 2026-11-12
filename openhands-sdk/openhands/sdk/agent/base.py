@@ -157,9 +157,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     )
     filter_tools_regex: str | None = Field(
         default=None,
-        description="Optional regex to filter the tools available to the agent by name."
-        " This is applied after any tools provided in `tools` and any MCP tools are"
-        " added.",
+        description=(
+            "Optional regex (re.match) to filter custom and MCP tools by name. "
+            "In gateway mode, MCP names use server.tool; built-in gateway tools "
+            "remain available."
+        ),
         examples=["^(?!repomix)(.*)|^repomix.*pack_codebase.*$"],
     )
     include_default_tools: list[str] = Field(

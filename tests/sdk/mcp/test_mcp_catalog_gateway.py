@@ -244,11 +244,64 @@ def test_gateway_can_include_initial_schemas_in_system_prompt(tmp_path: Path):
         conversation.close()
 
 
-def test_gateway_rejects_incompatible_tool_filter(tmp_path: Path):
-    conversation = gateway_conversation(tmp_path, filter_regex="^alpha")
+def test_gateway_filter_matches_namespaced_tools_and_cannot_be_bypassed(
+    tmp_path: Path,
+):
+    conversation = gateway_conversation(
+        tmp_path, filter_regex=r"^alpha\.fetch$", startup_catalog=True
+    )
     try:
-        with pytest.raises(ValueError, match="filter_tools_regex"):
-            conversation._ensure_agent_ready()
+        conversation._ensure_agent_ready()
+        assert {"list_mcp_tools", "call_mcp_tool"} <= set(conversation.agent.tools_map)
+        prompt = conversation.agent.static_system_message
+        assert '"alpha.fetch"' in prompt
+        assert '"beta.fetch"' not in prompt
+        listing = json.loads(call(conversation, "list_mcp_tools", {}).text)
+        assert [tool["name"] for tool in listing["tools"]] == ["alpha.fetch"]
+        assert (
+            json.loads(call(conversation, "list_mcp_tools", {"query": "beta"}).text)[
+                "tools"
+            ]
+            == []
+        )
+        blocked = call(
+            conversation,
+            "call_mcp_tool",
+            {
+                "name": "beta.fetch",
+                "arguments": {"url": "x"},
+                "revision": listing["revision"],
+            },
+        )
+        assert blocked.is_error
+        assert not call(
+            conversation,
+            "call_mcp_tool",
+            {
+                "name": "alpha.fetch",
+                "arguments": {"url": "x"},
+                "revision": listing["revision"],
+            },
+        ).is_error
+
+        conversation.select_mcp_tools(["beta.fetch"])
+        assert conversation.mcp_gateway.list_tools()["tools"] == []
+        assert conversation.mcp_gateway.call(
+            "beta.fetch", {"url": "x"}, conversation.mcp_gateway.revision, None
+        ).is_error
+        conversation.select_mcp_tools(None)
+        assert [
+            tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
+        ] == ["alpha.fetch"]
+    finally:
+        conversation.close()
+
+
+def test_gateway_filter_uses_prefix_match(tmp_path: Path):
+    conversation = gateway_conversation(tmp_path, filter_regex="fetch")
+    try:
+        conversation._ensure_agent_ready()
+        assert conversation.mcp_gateway.list_tools()["tools"] == []
     finally:
         conversation.close()
 
@@ -305,8 +358,11 @@ def test_selection_changes_revision_without_registering_new_tools(tmp_path: Path
 
 
 def test_gateway_selection_restored_with_fresh_catalog_epoch(tmp_path: Path):
-    first = gateway_conversation(tmp_path, initial_tools=["beta.fetch"])
+    first = gateway_conversation(
+        tmp_path, initial_tools=["beta.fetch"], filter_regex=r"^alpha\."
+    )
     first._ensure_agent_ready()
+    assert first.mcp_gateway.list_tools()["tools"] == []
     initial = first.mcp_gateway.revision
     first.select_mcp_tools(["alpha.fetch"])
     conversation_id = first.state.id
@@ -328,5 +384,9 @@ def test_gateway_selection_restored_with_fresh_catalog_epoch(tmp_path: Path):
         assert resumed.state.mcp_gateway_selected_tools == ["alpha.fetch"]
         assert [tool["name"] for tool in listing["tools"]] == ["alpha.fetch"]
         assert listing["revision"] != initial
+        resumed.select_mcp_tools(None)
+        assert [tool["name"] for tool in resumed.mcp_gateway.list_tools()["tools"]] == [
+            "alpha.fetch"
+        ]
     finally:
         resumed.close()
