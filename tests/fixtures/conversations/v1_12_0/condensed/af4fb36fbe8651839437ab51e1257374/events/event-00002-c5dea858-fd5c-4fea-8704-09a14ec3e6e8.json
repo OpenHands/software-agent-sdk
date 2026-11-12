@@ -1,0 +1,1 @@
+{"id":"c5dea858-fd5c-4fea-8704-09a14ec3e6e8","timestamp":"2026-11-03T16:48:54.048114","source":"agent","llm_message":{"role":"assistant","content":[{"cache_prompt":false,"type":"text","text":"Hi."}],"thinking_blocks":[]},"llm_response_id":"test-response-1","activated_skills":[],"extended_content":[],"kind":"MessageEvent"}

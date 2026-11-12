@@ -1,0 +1,98 @@
+{
+  "scenario": "tool_round_trip",
+  "sdk_version": "1.29.3",
+  "resumed_llm_input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Think about the plan."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_think",
+          "responses_item_id": null,
+          "name": "think",
+          "arguments": "{\"thought\": \"Plan: answer briefly.\"}",
+          "origin": "completion"
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Your thought has been logged."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": "call_think"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Planned."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Anything else?"
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Nothing else."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Follow-up after the upgrade."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    }
+  ]
+}

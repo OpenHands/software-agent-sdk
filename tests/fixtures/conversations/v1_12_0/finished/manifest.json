@@ -1,0 +1,61 @@
+{
+  "scenario": "finished",
+  "sdk_version": "1.12.0",
+  "resumed_llm_input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Say goodbye."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_finish",
+          "name": "finish",
+          "arguments": "{\"message\": \"Goodbye.\"}",
+          "origin": "completion"
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Goodbye."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": "call_finish"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Follow-up after the upgrade."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    }
+  ]
+}
