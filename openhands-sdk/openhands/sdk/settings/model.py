@@ -45,6 +45,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.meta_profile_store import MetaProfile
+from openhands.sdk.llm.utils.model_features import condenser_input_ratio
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
@@ -322,13 +323,26 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             exclude={"enabled", "condenser_kind"},
             exclude_none=True,
         )
-        # If the user didn't explicitly configure a condenser token limit, inherit
-        # the agent LLM's effective max input tokens so condensation can be
-        # triggered by token count, not just event count.
-        if "max_tokens" not in self.model_fields_set:
-            effective_max_input_tokens = llm.effective_max_input_tokens
-            if effective_max_input_tokens is not None:
-                condenser_kwargs["max_tokens"] = effective_max_input_tokens
+        # If the user didn't explicitly configure a condenser token limit, derive
+        # one from the agent LLM's input budget so condensation is triggered by
+        # token count, not just event count. The limit must stay below the budget:
+        # a prompt can never exceed the budget, so inheriting the whole budget
+        # (#3746) produced a threshold that never fires. Explicit values are
+        # clamped to the same ceiling; an explicit None keeps event-count-only
+        # condensation.
+        effective_max_input_tokens = llm.effective_max_input_tokens
+        explicit_no_limit = (
+            "max_tokens" in self.model_fields_set and self.max_tokens is None
+        )
+        if effective_max_input_tokens is not None and not explicit_no_limit:
+            ratio = condenser_input_ratio(llm.model)
+            derived_max_tokens = max(1, int(effective_max_input_tokens * ratio))
+            configured_max_tokens = condenser_kwargs.get("max_tokens")
+            condenser_kwargs["max_tokens"] = (
+                derived_max_tokens
+                if configured_max_tokens is None
+                else min(configured_max_tokens, derived_max_tokens)
+            )
         return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
 
 
