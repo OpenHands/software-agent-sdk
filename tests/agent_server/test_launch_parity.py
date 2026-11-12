@@ -71,7 +71,7 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
             )
         )
     )
-    get_llm_profile_store().save(
+    get_llm_profile_store(None).save(
         "default",
         LLM(model="parity-model", api_key=SecretStr("sk-parity")),
         include_secrets=True,

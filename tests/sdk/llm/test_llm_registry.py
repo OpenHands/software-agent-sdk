@@ -26,6 +26,7 @@ class TestLLMRegistry(unittest.TestCase):
         # Create a mock LLM and add it to trigger notification
         mock_llm = Mock(spec=LLM)
         mock_llm.usage_id = "notify-service"
+        mock_llm.fallback_strategy = None
 
         # Mock the RegistryEvent to avoid LLM attribute access
         with patch(
@@ -85,8 +86,10 @@ def test_llm_registry_list_usage_ids():
     # Create mock LLM objects
     mock_llm1 = Mock(spec=LLM)
     mock_llm1.usage_id = "service1"
+    mock_llm1.fallback_strategy = None
     mock_llm2 = Mock(spec=LLM)
     mock_llm2.usage_id = "service2"
+    mock_llm2.fallback_strategy = None
 
     # Mock the RegistryEvent to avoid LLM attribute access
     with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
@@ -111,6 +114,7 @@ def test_llm_registry_remove_method():
 
     mock_llm = Mock(spec=LLM)
     mock_llm.usage_id = "service1"
+    mock_llm.fallback_strategy = None
 
     with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
         mock_registry_event.return_value = Mock()
@@ -147,6 +151,7 @@ def test_llm_registry_add_method():
     # Create a mock LLM
     mock_llm = Mock(spec=LLM)
     mock_llm.usage_id = "test-service"
+    mock_llm.fallback_strategy = None
     service_id = mock_llm.usage_id
 
     # Mock the RegistryEvent to avoid LLM attribute access
@@ -177,6 +182,7 @@ def test_llm_registry_get_method():
     # Create a mock LLM
     mock_llm = Mock(spec=LLM)
     mock_llm.usage_id = "test-service"
+    mock_llm.fallback_strategy = None
     service_id = mock_llm.usage_id
 
     # Mock the RegistryEvent to avoid LLM attribute access
@@ -204,8 +210,10 @@ def test_llm_registry_add_get_workflow():
     # Create mock LLMs
     llm1 = Mock(spec=LLM)
     llm1.usage_id = "service1"
+    llm1.fallback_strategy = None
     llm2 = Mock(spec=LLM)
     llm2.usage_id = "service2"
+    llm2.fallback_strategy = None
 
     # Mock the RegistryEvent to avoid LLM attribute access
     with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:

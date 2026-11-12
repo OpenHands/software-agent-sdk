@@ -34,7 +34,6 @@ from openhands.sdk.skills import Skill
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_profile_store import LLMProfileLoader
-    from openhands.sdk.utils.cipher import Cipher
 
 
 class AgentProfileLoader(Protocol):
@@ -63,7 +62,6 @@ class LaunchStores:
     agent_profiles: AgentProfileLoader | None = None
     meta_profiles: MetaProfileLoader | None = None
     llm_profile_names: Callable[[], Sequence[str]] | None = None
-    cipher: Cipher | None = None
 
 
 @dataclass(frozen=True)
@@ -220,7 +218,7 @@ def _load_llm(stores: LaunchStores, name: str) -> LLM | None:
     from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 
     try:
-        return stores.llm_profiles.load(name, cipher=stores.cipher)
+        return stores.llm_profiles.load(name)
     except FileNotFoundError:
         return None
     except ProviderConnectionNotFound as exc:

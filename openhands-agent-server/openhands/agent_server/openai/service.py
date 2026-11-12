@@ -104,7 +104,7 @@ def _profile_name_from_model(model: str) -> str:
 
 def _require_llm_profile(profile_name: str, config: Config) -> None:
     try:
-        get_llm_profile_store().load(profile_name, cipher=config.cipher)
+        get_llm_profile_store(config.cipher).load(profile_name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -530,7 +530,9 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models() -> OpenAIModelListResponse:
     try:
-        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
+        # Summaries carry no secret, so no cipher is needed to list them.
+        store = get_llm_profile_store(None)
+        profiles = await asyncio.to_thread(store.list_summaries)
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

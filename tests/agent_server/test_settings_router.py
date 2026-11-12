@@ -643,7 +643,7 @@ def test_patch_settings_updates_llm_config(client_with_settings):
 
 def test_patch_settings_updates_active_profile(client_with_settings):
     """PATCH /api/settings can update and clear the active LLM profile."""
-    get_llm_profile_store().save("fast-profile", LLM(model="gpt-4o-mini"))
+    get_llm_profile_store(None).save("fast-profile", LLM(model="gpt-4o-mini"))
 
     response = client_with_settings.patch(
         "/api/settings",
@@ -682,7 +682,7 @@ def test_patch_settings_rejects_invalid_active_profile(client_with_settings):
 
 def test_patch_settings_active_agent_profile_id_independent(client_with_settings):
     """active_agent_profile_id sets/clears independently of active_profile."""
-    get_llm_profile_store().save("fast-profile", LLM(model="gpt-4o-mini"))
+    get_llm_profile_store(None).save("fast-profile", LLM(model="gpt-4o-mini"))
     profile = OpenHandsAgentProfile(name="mine", llm_profile_ref="fast-profile")
     get_agent_profile_store().save(profile)
 
@@ -713,7 +713,7 @@ def test_patch_settings_active_agent_profile_id_independent(client_with_settings
 
 def test_patch_settings_active_profile_applies_llm(client_with_settings):
     """PATCH active_profile applies that profile's LLM (#4314)."""
-    get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
+    get_llm_profile_store(None).save("fast-profile", LLM(model="claude-haiku"))
 
     response = client_with_settings.patch(
         "/api/settings",
@@ -735,7 +735,7 @@ def test_patch_settings_active_profile_applies_encrypted_api_key(
 ):
     """Applying a profile carries its at-rest-encrypted api_key through PATCH."""
     cipher = Cipher(secret_key)
-    get_llm_profile_store().save(
+    get_llm_profile_store(None).save(
         "secure-profile",
         LLM(model="claude-haiku", api_key=SecretStr("sk-secret")),
         include_secrets=True,
@@ -762,7 +762,7 @@ def test_patch_settings_active_profile_leaves_acp_settings_without_llm(
     monkeypatch.setattr(
         "openhands.sdk.utils.deprecation._current_version", lambda: "1.51.0"
     )
-    get_llm_profile_store().save(
+    get_llm_profile_store(None).save(
         "fast-profile",
         LLM(model="claude-haiku", api_key=SecretStr("sk-secret")),
         include_secrets=True,
@@ -787,7 +787,7 @@ def test_patch_settings_active_profile_leaves_acp_settings_without_llm(
 def test_patch_settings_active_profile_applies_llm_when_switching_to_openhands(
     client_with_settings,
 ):
-    get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
+    get_llm_profile_store(None).save("fast-profile", LLM(model="claude-haiku"))
     client_with_settings.patch(
         "/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}}
     )
@@ -808,8 +808,8 @@ def test_patch_settings_active_profile_applies_llm_when_switching_to_openhands(
 
 def test_patch_settings_switching_active_profile_updates_llm(client_with_settings):
     """Switching active_profile re-applies the new profile's LLM."""
-    get_llm_profile_store().save("profile-a", LLM(model="model-a"))
-    get_llm_profile_store().save("profile-b", LLM(model="model-b"))
+    get_llm_profile_store(None).save("profile-a", LLM(model="model-a"))
+    get_llm_profile_store(None).save("profile-b", LLM(model="model-b"))
 
     client_with_settings.patch("/api/settings", json={"active_profile": "profile-a"})
     response = client_with_settings.patch(
@@ -839,7 +839,7 @@ def test_patch_settings_explicit_llm_diff_overrides_profile_autoload(
     client_with_settings,
 ):
     """An explicit agent_settings_diff.llm overrides profile autoload."""
-    get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
+    get_llm_profile_store(None).save("fast-profile", LLM(model="claude-haiku"))
 
     response = client_with_settings.patch(
         "/api/settings",

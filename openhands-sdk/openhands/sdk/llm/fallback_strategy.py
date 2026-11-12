@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -27,6 +26,7 @@ from openhands.sdk.logger import get_logger
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm_response import LLMResponse
     from openhands.sdk.llm.utils.metrics import Metrics
+    from openhands.sdk.utils.cipher import Cipher
 
 logger = get_logger(__name__)
 
@@ -61,6 +61,25 @@ class FallbackStrategy(BaseModel):
 
     # Private: lazily resolved LLM instances
     _resolved: list[Any] | None = PrivateAttr(default=None)
+    _cipher: Cipher | None = PrivateAttr(default=None)
+    _store: LLMProfileStore | None = PrivateAttr(default=None)
+
+    def with_cipher(self, cipher: Cipher) -> FallbackStrategy:
+        """Return this strategy decrypting its fallback profiles with ``cipher``.
+
+        The conversation's :class:`~openhands.sdk.llm.llm_registry.LLMRegistry`
+        installs it on each LLM it registers, so an encrypted profile resolves
+        to its plaintext key. A copy rather than a mutation: ``model_copy`` of
+        an LLM shares its strategy, and a sub-agent's copy must not rebind the
+        parent's.
+        """
+        if cipher is self._cipher:
+            return self
+        bound = self.model_copy()
+        bound._cipher = cipher
+        bound._store = None
+        bound._resolved = None
+        return bound
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""
@@ -129,9 +148,11 @@ class FallbackStrategy(BaseModel):
             )
         return None
 
-    @cached_property
+    @property
     def _profile_store(self) -> LLMProfileStore:
-        return LLMProfileStore(self.profile_store_dir)
+        if self._store is None:
+            self._store = LLMProfileStore(self.profile_store_dir, cipher=self._cipher)
+        return self._store
 
     def _iter_fallbacks(self) -> Generator[Any]:
         """Yield fallback LLM instances, resolving lazily from profiles.

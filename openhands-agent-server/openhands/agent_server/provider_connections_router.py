@@ -122,7 +122,8 @@ def _to_response(connection: ProviderConnection) -> ProviderConnectionResponse:
 def _linked_profile_names(connection_id: str) -> list[str]:
     return sorted(
         str(summary["name"])
-        for summary in get_llm_profile_store().list_summaries()
+        # Summaries carry no secret, so no cipher is needed to list them.
+        for summary in get_llm_profile_store(None).list_summaries()
         if summary.get("provider_connection_id") == connection_id
     )
 

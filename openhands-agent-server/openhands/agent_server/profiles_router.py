@@ -166,7 +166,7 @@ def list_profiles(request: Request) -> ProfileListResponse:
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(get_cipher(request))
     with store_errors():
         summaries = store.list_summaries()
 
@@ -189,14 +189,12 @@ def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
     expose_mode = parse_expose_secrets_header(request)
     cipher = get_cipher(request)
 
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(cipher)
     try:
         with store_errors():
             # Runtime reads need current provider credentials. Editor reads
             # retain the stored reference, including dangling references.
-            llm = store.load(
-                name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
-            )
+            llm = store.load(name, resolve_provider=expose_mode == "plaintext")
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -239,14 +237,13 @@ def save_profile(
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(cipher)
     try:
         with store_errors():
             store.save(
                 name,
                 llm,
                 include_secrets=body.include_secrets,
-                cipher=cipher,
                 max_profiles=MAX_PROFILES,
             )
     except SecretDecryptionError as e:
@@ -352,7 +349,7 @@ async def validate_profile(
     # credentials, as activation and ``switch_llm`` run it. No-op without
     # ``provider_connection_id``; a dangling link is a 422 naming it.
     with store_errors():
-        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+        llm = get_llm_profile_store(cipher).resolve_provider_connection(llm)
 
     messages = [
         Message(
@@ -430,7 +427,7 @@ def delete_profile(request: Request, name: ProfileName) -> ProfileMutationRespon
     Guarded by the agent-profile FK: returns 409 naming the referrers if any
     ``AgentProfile`` still cites this LLM profile via ``llm_profile_ref``.
     """
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(get_cipher(request))
     agent_store = get_agent_profile_store()
     try:
         with store_errors():
@@ -458,7 +455,7 @@ def rename_profile(
     setting is updated to the new name. Any ``AgentProfile.llm_profile_ref``
     citing the old name is cascaded to the new name in lock-step.
     """
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(get_cipher(request))
     agent_store = get_agent_profile_store()
     try:
         with store_errors():
@@ -519,12 +516,12 @@ def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResp
     # (read-at-use), so the LLM applied to settings already carries the shared
     # api_key / base_url; ``provider_connection_id`` is retained so a later
     # rotation re-resolves on the next activation or launch.
-    profile_store = get_llm_profile_store()
+    profile_store = get_llm_profile_store(cipher)
     # A dangling provider_connection_id raises ProviderConnectionNotFound, which
     # store_errors() maps to 422.
     try:
         with store_errors():
-            llm = profile_store.load(name, cipher=cipher, strict=True)
+            llm = profile_store.load(name, strict=True)
     except SecretDecryptionError as e:
         raise profile_key_mismatch(name, e)
     except FileNotFoundError:

@@ -293,15 +293,14 @@ def _load_active_profile_llm(
     if not profile_name or explicit_llm_diff:
         return None
 
-    cipher = get_cipher(request)
-    profile_store = get_llm_profile_store()
+    profile_store = get_llm_profile_store(get_cipher(request))
     # ``load`` resolves any referenced provider connection (read-at-use); a
     # dangling reference raises ProviderConnectionNotFound, which
     # store_errors() maps to 422. A key the cipher cannot decrypt is refused
     # (409) rather than applied to settings as ``null``.
     try:
         with store_errors():
-            llm = profile_store.load(profile_name, cipher=cipher, strict=True)
+            llm = profile_store.load(profile_name, strict=True)
     except SecretDecryptionError as e:
         raise profile_key_mismatch(profile_name, e)
     except FileNotFoundError:

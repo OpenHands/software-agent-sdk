@@ -55,11 +55,11 @@ def _client(dirs: Path, previous_keys: tuple[str, ...] = ()):
     with (
         patch(
             "openhands.agent_server.profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=dirs / "profiles"),
+            lambda cipher: LLMProfileStore(base_dir=dirs / "profiles", cipher=cipher),
         ),
         patch(
             "openhands.agent_server.settings_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=dirs / "profiles"),
+            lambda cipher: LLMProfileStore(base_dir=dirs / "profiles", cipher=cipher),
         ),
         patch(
             "openhands.agent_server.profiles_router.get_agent_profile_store",

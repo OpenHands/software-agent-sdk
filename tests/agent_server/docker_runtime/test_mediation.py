@@ -184,7 +184,7 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
-    get_llm_profile_store().save(
+    get_llm_profile_store(None).save(
         "docker-test-model",
         LLM(model="test", api_key=SecretStr("model-key")),
         include_secrets=True,
@@ -253,8 +253,8 @@ async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
             )
         )
     )
-    get_llm_profile_store().save("fast", LLM(model="fast-model"))
-    get_llm_profile_store().save("slow", LLM(model="slow-model"))
+    get_llm_profile_store(None).save("fast", LLM(model="fast-model"))
+    get_llm_profile_store(None).save("slow", LLM(model="slow-model"))
     profile = OpenHandsAgentProfile(name="p", llm_profile_ref="slow")
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
