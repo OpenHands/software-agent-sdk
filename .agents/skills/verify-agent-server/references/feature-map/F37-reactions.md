@@ -314,7 +314,7 @@ Preconditions:
   the route's check to the host; without it, the stored (off) flag applies
   again.
 
-- **The response is the stored event (`F37.rest-response-parent`), known bug #6782.**
+- **The response is the stored event (`F37.rest-response-parent`).**
   A reaction on the latest message is stamped with that message as its
   parent; the POST answer carries the same `parent_id` as the stored copy.
   Requires: `F37.flag`
@@ -328,15 +328,12 @@ Preconditions:
     --expect 200 --field id)
   control-agent-server api GET "/api/conversations/$PC/events/$PR" --check parent_id eq "$PM" --save F37.rest-response-parent/stored
   control-agent-server api POST "/api/conversations/$PC/reactions" --json "{\"emoji\": \"+1\", \"target_event_id\": \"$PM\"}" \
-    --expect 200 --check parent_id eq "$PR" --save F37.rest-response-parent/post  # bug: status eq 200 && response.body.kind eq ReactionEvent && response.body.parent_id eq null
+    --expect 200 --check parent_id eq "$PR" --save F37.rest-response-parent/post
   ```
   The first reaction is read back to show the stored `parent_id`; the second
   is stamped with the first as its parent (the active leaf), and its POST
-  answer should say so. Known bug
-  [#6782](https://github.com/OpenHands/software-agent-sdk/issues/6782): the
-  answer has `parent_id: null`, because `LocalConversation.react` returns the
-  event before the log's stamped copy (fix:
-  [#6783](https://github.com/OpenHands/software-agent-sdk/pull/6783)).
+  answer says so: `LocalConversation.react` returns the event as the log
+  stored it.
 
 ## Gotchas
 
