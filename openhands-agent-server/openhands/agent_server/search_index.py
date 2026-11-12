@@ -20,6 +20,11 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from openhands.sdk.utils.redact import (
+    redact_text_secrets,
+    redact_url_credentials_in_text,
+)
+
 
 _EVENTS_DIR = "events"
 _META_FILE = "meta.json"
@@ -92,21 +97,33 @@ def _levenshtein(a: str, b: str, cap: int = 2) -> int:
 _VOCAB_FUZZY_LIMIT = 250_000
 
 
-_SECRET_PATTERNS = [
-    re.compile(r"sk-[A-Za-z0-9]{16,}"),
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+# Secret-literal shapes the SDK's redact utilities do not cover (verified
+# against openhands.sdk.utils.redact._API_KEY_LITERAL_RE): bare classic
+# OpenAI/Anthropic ``sk-`` keys, AWS access key ids, and PEM private key
+# blocks.
+_SUPPLEMENTAL_SECRET_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9]{16,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        re.S,
     ),
 ]
 
-_MASK = "[REDACTED]"
+_MASK = "<redacted>"
 
 
 def mask_secrets(text: str) -> str:
-    for pat in _SECRET_PATTERNS:
+    """Strip secret material from text before it enters the index.
+
+    Delegates to the SDK's standard redaction utilities (the single source of
+    truth for secret detection: provider key literals, ``key=value`` and JSON
+    entries, URL query params, embedded URL credentials) and adds the few
+    shapes they do not match.
+    """
+    text = redact_url_credentials_in_text(text)
+    text = redact_text_secrets(text)
+    for pat in _SUPPLEMENTAL_SECRET_PATTERNS:
         text = pat.sub(_MASK, text)
     return text
 

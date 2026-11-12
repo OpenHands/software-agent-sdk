@@ -55,16 +55,27 @@ def test_secrets_masked_in_index(index, conv_root):
     ).fetchone()[0]
     assert leak == 0
     masked = index._conn.execute(
-        "SELECT COUNT(*) FROM messages_fts WHERE text LIKE '%REDACTED%'"
+        "SELECT COUNT(*) FROM messages_fts WHERE text LIKE '%redacted%'"
     ).fetchone()[0]
     assert masked == 1
 
 
 def test_mask_secrets_patterns():
-    assert mask_secrets("key ghp_1234567890abcdefghij here") == "key [REDACTED] here"
+    assert mask_secrets("key ghp_1234567890abcdefghij here") == "key <redacted> here"
     assert "PRIVATE KEY" not in mask_secrets(
         "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
     )
+    # Shapes the SDK utilities already know (a sample of each family).
+    assert "sk-or-v1-" not in mask_secrets("key sk-or-v1-abcdef0123456789abcdef here")
+    assert "github_pat_" not in mask_secrets("key github_pat_ABCDEFGHIJ0123456789 here")
+    assert "Bearer" not in mask_secrets("auth: Bearer abcdef0123456789abcdef01234")
+    assert "SECRET" not in mask_secrets("url https://user:SECRET@example.com/x.git")
+    assert "topsecret" not in mask_secrets("api_key='topsecret'")
+    # The supplements the SDK utilities miss.
+    assert "sk-ABCDEFGHIJKLMNOPQRSTUV" not in mask_secrets(
+        "store sk-ABCDEFGHIJKLMNOPQRSTUV please"
+    )
+    assert "AKIAIOSFODNN7EXAMPLE" not in mask_secrets("id AKIAIOSFODNN7EXAMPLE")
 
 
 def test_fts_injection_is_neutralized(index, conv_root):
