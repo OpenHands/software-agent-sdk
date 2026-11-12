@@ -343,7 +343,7 @@ def test_a_sub_agent_inherits_plugin_mcp_servers_with_their_secrets(
 
     The workspace's own plugin is also discovered by the sub-agent's
     conversation; were it merged again, its ``${MCP_TOKEN}`` would reach the
-    server unexpanded, since only the parent holds the secret.
+    server unexpanded, without the inherited secret registry.
     """
     _register_declarer(tmp_path)
     plugin = tmp_path / "workspace" / ".agents" / "plugins" / "qa"
@@ -386,5 +386,5 @@ def test_a_sub_agent_inherits_plugin_mcp_servers_with_their_secrets(
     mcp_tools = {"parent.echo", "plugin.plugged"}
     _assert_catalog(llm.requests[1], mcp_tools)
     _assert_catalog(llm.requests[3], mcp_tools)
-    assert f"plugged:hi:token={TOKEN}" in llm.requests[4]["tool_results"]
+    assert "plugged:hi:token=<secret-hidden>" in llm.requests[4]["tool_results"]
     _assert_no_rogue_server_started(tmp_path)
