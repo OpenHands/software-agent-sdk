@@ -104,8 +104,17 @@ counts). Then give one read-only reader per family file (parallel if
 delegation is available). Each reads current source for that family and
 returns: summary, source entry points, likely drift with citations (or none),
 new routes or behaviors missing from the map, consumer changes
-(`RemoteConversation`, `RemoteWorkspace`, TypeScript client), and one live
-recipe. Readers never edit files and never launch servers.
+(`RemoteConversation`, `RemoteWorkspace`, TypeScript client), the
+[scenarios.md](scenarios.md) questions its family has no bullet for, the
+family's Gotchas and notes that describe behavior a user would call wrong
+without an issue or decision linked, and one live recipe. Readers never edit
+files and never launch servers.
+
+Then list every open `bug` issue in this repository, whatever its age, that
+names a mapped route or feature and that no bullet links yet. Reproduce each
+and give it its note, as the daily pass does for new issues: an issue filed
+before a baseline existed, or while a pass was not running, otherwise never
+reaches the map.
 
 Re-check stale harness claims whenever the CLI gained verbs: grep the map for
 `blocked`, `not run`, `harness gap`, `no verb` and `cannot be driven`, and

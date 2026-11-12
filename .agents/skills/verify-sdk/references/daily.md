@@ -57,8 +57,13 @@ the weekly pass.
    (maintenance.md §3). Then the second half: every row whose Gotchas or
    `Known failure` note links an issue that closed since `BASE` is replayed
    and its note updated, and every open `bug` issue opened since `BASE` that
-   names a mapped feature is reproduced and gets its note. Model-backed blocks
-   run only inside the budget; without a key they are `blocked`.
+   names a mapped feature is reproduced and gets its note. Count "opened
+   since `BASE`" as opened or labeled `bug` since the previous pass ran; when
+   no pass ran for days, or `BASE` was set by a first mapping, take every
+   open `bug` issue no row links yet. Ask the [scenarios.md](scenarios.md)
+   questions of each changed behavior, not only whether it does what its PR
+   says. Model-backed blocks run only inside the budget; without a key they
+   are `blocked`.
 
 ## Reading the result
 

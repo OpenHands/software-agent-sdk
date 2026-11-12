@@ -59,6 +59,7 @@ Preconditions:
     --check steps.content_paged.text not-contains "# Home Page" \
     --check steps.scroll.text eq "Scrolled down" \
     --check steps.type.text contains "Typed 'Ada' into element" --check steps.click.text contains "Clicked element" \
+    --check steps.content_right_after_click.text contains "Hello Ada" \
     --check steps.after_click.text contains "Hello Ada" \
     --check steps.state_page2.text contains page2.html --check steps.on_page2.text contains "# Second Page" \
     --check steps.back.text eq "Navigated back" --check steps.state_after_back.text contains index.html \
@@ -158,6 +159,6 @@ Preconditions:
 - The `browser-use` dependency logs heavily; `openhands-tools/openhands/tools/browser_use/logging_fix.py` tames it, so expect fewer logs than browser-use's defaults.
 - The Chromium detector ignores `PLAYWRIGHT_BROWSERS_PATH`: it looks on `PATH`, in system install paths and in `~/.cache/ms-playwright` only. With browsers installed elsewhere (here `/opt/pw-browsers`), link that directory to `~/.cache/ms-playwright` or the tools silently disappear.
 - Browser-use's own failures come back as plain text with `is_error` false: "Element with index 99999 not found", "Error: Not recording. Call browser_start_recording first.", "Error: Unable to start recording. The rrweb library failed to load from CDN." Only timeouts and raised exceptions set `is_error`.
-- `browser_get_content` right after a `browser_click` can show the page from before the click; the browser guidance prescribes `browser_get_state` after each interaction, and with it the content is current.
+- `browser_get_content` reads the live page, also right after a `browser_click` with no `browser_get_state` in between (the recipe checks both orders). Until #6329 (2026-10-30) it reused the DOM cached by the last `browser_get_state` and showed the page from before the click (#6340); this map had recorded that as guidance to follow rather than a bug.
 - A failed `browser_start_recording` still creates an empty `recording-<timestamp>` folder.
 - The shared executor keeps the first conversation's `full_output_save_dir`, so a later conversation's screenshots land in the first one's observation directory.

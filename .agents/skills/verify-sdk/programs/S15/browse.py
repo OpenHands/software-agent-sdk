@@ -8,8 +8,9 @@ storage, and tries recording. The program then switches and closes tabs
 in a third turn. Element indexes and tab ids are only known once the page
 is loaded, so each turn swaps in the next scripted model with
 `conversation.switch_llm`, built from what the previous turn showed. The
-agent follows the flow the browser guidance prescribes: get_state after
-each interaction, then get_content. Reports each named step and what is
+agent follows the flow the browser guidance prescribes (get_state after
+each interaction, then get_content) and also reads the content right after
+the click, the way a model that skips get_state does. Reports each named step and what is
 left running after `conversation.close()`.
 """
 
@@ -88,6 +89,7 @@ def next_turn(steps, text, usage_id):
 turn2 = [
     ("type", "browser_type", {"index": index_map["input"], "text": "Ada"}),
     ("click", "browser_click", {"index": index_map["button"]}),
+    ("content_right_after_click", "browser_get_content", {"extract_links": False}),
     ("state_after_click", "browser_get_state", {}),
     ("after_click", "browser_get_content", {"extract_links": False}),
     ("follow_link", "browser_click", {"index": index_map["a"]}),
