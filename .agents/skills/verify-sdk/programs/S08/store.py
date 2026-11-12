@@ -13,7 +13,7 @@ Usage: store.py MODE
   legacy    a .installed.json with the old `plugins` and `skills` keys.
   resume    an installed plugin (skill and .mcp.json server) loads into a
             persisted conversation; the plugin is disabled and the same
-            conversation is resumed in a new Conversation and sent a message.
+            conversation is resumed with its persisted agent and sent a message.
 """
 
 import json
@@ -25,7 +25,7 @@ from build import claude_code_plugin, commit, git_repo, head, skill_md, write
 from recorder import recording_llm
 from sdk_verify import emit, run_paths
 
-from openhands.sdk import Agent, Conversation
+from openhands.sdk import Agent, Conversation, LocalConversation
 from openhands.sdk.extensions.installation import InstallationManager
 from openhands.sdk.plugin import (
     disable_plugin,
@@ -233,14 +233,17 @@ elif mode == "resume":
     base = run / "conversations"
 
     def open_conv(cid=None):
-        agent = Agent(llm=recording_llm([{"finish": "done"}] * 2), tools=[])
-        return Conversation(
-            agent=agent,
-            workspace=str(workspace),
-            persistence_dir=str(base),
-            conversation_id=cid,
-            visualizer=None,
-        )
+        common = {
+            "workspace": str(workspace),
+            "persistence_dir": str(base),
+            "visualizer": None,
+        }
+        if cid is None:
+            agent = Agent(llm=recording_llm([{"finish": "done"}] * 2), tools=[])
+            return Conversation(agent=agent, **common)
+        # Resume with the persisted agent: passing a new Agent would replace it
+        # and reset the ambient-plugin records, hiding whether the drop works.
+        return LocalConversation(agent=None, conversation_id=cid, **common)
 
     def snapshot(conv) -> dict:
         ctx = conv.agent.agent_context
