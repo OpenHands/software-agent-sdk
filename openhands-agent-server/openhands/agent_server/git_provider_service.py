@@ -1,14 +1,22 @@
-"""Remote git provider repository discovery for Agent Server."""
+"""Remote git provider requests for Agent Server: repository search, PR status."""
 
+import asyncio
 import re
-from typing import Final
+from collections.abc import Coroutine
+from typing import Any, Final
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import get_secrets_store
-from openhands.sdk.git.models import GitProviderRepository, GitProviderRepositoryPage
+from openhands.sdk.git.models import (
+    GitProviderRepository,
+    GitProviderRepositoryPage,
+    GitPullRequestChecks,
+    GitPullRequestState,
+    GitPullRequestStatus,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.repo import PROVIDER_TOKEN_NAMES, GitProvider
 
@@ -35,20 +43,35 @@ _PROVIDER_TOKEN_CANDIDATES: Final[dict[GitProvider, tuple[str, ...]]] = {
 _LINK_PART_RE: Final[re.Pattern[str]] = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
 
 
-class GitProviderRepositorySearchError(Exception):
-    """Base error for remote provider repository discovery."""
+class GitProviderError(Exception):
+    """Base error for remote git provider requests."""
 
 
-class UnsupportedGitProviderError(GitProviderRepositorySearchError):
-    """Raised when repository discovery does not support a provider yet."""
+# Former name, from when repository search was the only provider request.
+GitProviderRepositorySearchError = GitProviderError
 
 
-class GitProviderAPIError(GitProviderRepositorySearchError):
+class UnsupportedGitProviderError(GitProviderError):
+    """Raised when a provider is not supported for a request yet."""
+
+
+class MissingGitProviderTokenError(GitProviderError):
+    """Raised when no token is configured for the provider."""
+
+
+class GitProviderAPIError(GitProviderError):
     """Raised when a provider API request fails."""
 
-    def __init__(self, message: str, *, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 502,
+        retry_after: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after = retry_after
 
 
 async def search_provider_repositories(
@@ -79,6 +102,202 @@ async def search_provider_repositories(
     )
 
 
+_FAILED_CHECK_CONCLUSIONS: Final[frozenset[str]] = frozenset(
+    {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
+)
+_CHECK_RUNS_PAGE_SIZE: Final[int] = 100
+# Pages of check runs read before reporting "pending" instead of a result.
+_CHECK_RUNS_MAX_PAGES: Final[int] = 5
+
+
+async def get_provider_pull_request(
+    config: Config,
+    provider: GitProvider,
+    owner: str,
+    repo: str,
+    number: int,
+) -> GitPullRequestStatus:
+    """Read one pull request's state and the combined CI result of its head."""
+    if provider != GitProvider.GITHUB:
+        raise UnsupportedGitProviderError(
+            f"Pull requests are not supported for provider '{provider.value}'"
+        )
+    token = _resolve_provider_token(config, provider)
+    if token is None:
+        raise MissingGitProviderTokenError(f"No {provider.value} token is configured")
+
+    base = f"/repos/{owner}/{repo}"
+    async with _github_client(token) as client:
+        pr = (
+            await _github_get(client, f"{base}/pulls/{number}", for_badge=True)
+        ).json()
+        head_sha = _optional_str((pr.get("head") or {}).get("sha"))
+        checks = GitPullRequestChecks.NONE
+        if head_sha:
+            check_runs, statuses = await _both(
+                _read_check_runs(client, f"{base}/commits/{head_sha}/check-runs"),
+                _github_get(
+                    client, f"{base}/commits/{head_sha}/status", for_badge=True
+                ),
+            )
+            checks = _combine_checks(check_runs, statuses.json().get("statuses") or [])
+
+    if pr.get("merged") or pr.get("merged_at"):
+        state = GitPullRequestState.MERGED
+    elif pr.get("state") == "closed":
+        state = GitPullRequestState.CLOSED
+    else:
+        state = GitPullRequestState.OPEN
+    return GitPullRequestStatus(
+        git_provider=provider.value,
+        repository=f"{owner}/{repo}",
+        number=number,
+        state=state,
+        draft=bool(pr.get("draft", False)),
+        title=str(pr.get("title", "")),
+        url=str(pr.get("html_url", "")),
+        head_sha=head_sha,
+        checks=checks,
+    )
+
+
+async def _both[A, B](
+    first: Coroutine[Any, Any, A], second: Coroutine[Any, Any, B]
+) -> tuple[A, B]:
+    """Run two reads concurrently; if one fails, cancel the other before raising.
+
+    The reads share a client that closes when the caller's ``async with``
+    ends, so neither may outlive a failure. Unlike a TaskGroup, the first
+    error is raised as itself, not inside an ExceptionGroup.
+    """
+    first_task = asyncio.ensure_future(first)
+    second_task = asyncio.ensure_future(second)
+    try:
+        return await asyncio.gather(first_task, second_task)
+    except BaseException:
+        for task in (first_task, second_task):
+            task.cancel()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+        raise
+
+
+async def _read_check_runs(
+    client: httpx.AsyncClient, path: str
+) -> list[dict[str, object]] | None:
+    """All check runs of a commit, or None when there are too many to read."""
+    runs: list[dict[str, object]] = []
+    for page in range(1, _CHECK_RUNS_MAX_PAGES + 1):
+        body = (
+            await _github_get(
+                client,
+                path,
+                params={"per_page": _CHECK_RUNS_PAGE_SIZE, "page": page},
+                for_badge=True,
+            )
+        ).json()
+        page_runs = body.get("check_runs") or []
+        runs.extend(page_runs)
+        total = body.get("total_count")
+        if not isinstance(total, int) or len(runs) >= total or not page_runs:
+            return runs
+    return None
+
+
+def _combine_checks(
+    check_runs: list[dict[str, object]] | None, statuses: list[dict[str, object]]
+) -> GitPullRequestChecks:
+    """Fold check runs and commit statuses into one badge: failure wins.
+
+    ``check_runs`` is None when there were more runs than were read; then a
+    result short of failure is reported as pending, never as success.
+    """
+    unread = check_runs is None
+    check_runs = check_runs or []
+    if not check_runs and not statuses and not unread:
+        return GitPullRequestChecks.NONE
+    pending = unread
+    for run in check_runs:
+        if run.get("status") != "completed":
+            pending = True
+        elif run.get("conclusion") in _FAILED_CHECK_CONCLUSIONS:
+            return GitPullRequestChecks.FAILURE
+    for item in statuses:
+        state = item.get("state")
+        if state in {"failure", "error"}:
+            return GitPullRequestChecks.FAILURE
+        if state == "pending":
+            pending = True
+    return GitPullRequestChecks.PENDING if pending else GitPullRequestChecks.SUCCESS
+
+
+def _github_client(token: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=_GITHUB_API_URL,
+        headers={
+            "Accept": _GITHUB_ACCEPT_HEADER,
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": _GITHUB_API_VERSION,
+        },
+        timeout=_GITHUB_REQUEST_TIMEOUT_SECS,
+    )
+
+
+async def _github_get(
+    client: httpx.AsyncClient,
+    path: str,
+    params: dict[str, str | int] | None = None,
+    *,
+    for_badge: bool = False,
+) -> httpx.Response:
+    """GET from GitHub, turning failures into GitProviderAPIError.
+
+    With ``for_badge``, GitHub's 404 stays 404, its rate limit stays 429, and a
+    rejected token becomes 502 (a 401 from the agent server would read as the
+    caller's own session key being wrong). Otherwise the search mapping holds.
+    """
+    try:
+        response = await client.get(path, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code
+        logger.warning("GitHub request failed: status=%s", status_code)
+        if for_badge:
+            raise _badge_api_error(e.response) from e
+        raise GitProviderAPIError(
+            "GitHub request failed",
+            status_code=_map_github_status_code(status_code),
+        ) from e
+    except httpx.TimeoutException as e:
+        logger.warning("GitHub request timed out")
+        raise GitProviderAPIError("GitHub request timed out", status_code=504) from e
+    except httpx.HTTPError as e:
+        logger.warning("GitHub request failed: %s", type(e).__name__)
+        raise GitProviderAPIError("GitHub request failed") from e
+    return response
+
+
+def _badge_api_error(response: httpx.Response) -> GitProviderAPIError:
+    status_code = response.status_code
+    if status_code == 404:
+        return GitProviderAPIError("GitHub did not find it", status_code=404)
+    rate_limited = status_code == 429 or (
+        status_code == 403 and response.headers.get("x-ratelimit-remaining") == "0"
+    )
+    if rate_limited:
+        return GitProviderAPIError(
+            "GitHub rate limit reached",
+            status_code=429,
+            retry_after=response.headers.get("retry-after"),
+        )
+    if status_code in {401, 403}:
+        return GitProviderAPIError(
+            "GitHub rejected the configured token", status_code=502
+        )
+    return GitProviderAPIError(
+        "GitHub request failed", status_code=_map_github_status_code(status_code)
+    )
+
+
 def _resolve_provider_token(config: Config, provider: GitProvider) -> str | None:
     store = get_secrets_store(config)
     for name in _PROVIDER_TOKEN_CANDIDATES.get(provider, ()):  # pragma: no branch
@@ -96,19 +315,9 @@ async def _search_github_repositories(
 ) -> GitProviderRepositoryPage:
     page, offset = _parse_github_page_id(page_id)
     normalized_query = query.casefold() if query else None
-    headers = {
-        "Accept": _GITHUB_ACCEPT_HEADER,
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": _GITHUB_API_VERSION,
-    }
-
     items: list[GitProviderRepository] = []
     next_page_id: str | None = None
-    async with httpx.AsyncClient(
-        base_url=_GITHUB_API_URL,
-        headers=headers,
-        timeout=_GITHUB_REQUEST_TIMEOUT_SECS,
-    ) as client:
+    async with _github_client(token) as client:
         while len(items) < limit:
             response = await _get_github_repository_page(client, page)
             page_items = [_github_repository_to_model(item) for item in response.json()]
@@ -153,25 +362,7 @@ async def _get_github_repository_page(
         "sort": _GITHUB_REPOSITORY_SORT,
         "affiliation": _GITHUB_REPOSITORY_AFFILIATION,
     }
-    try:
-        response = await client.get(_GITHUB_USER_REPOS_PATH, params=params)
-        response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code
-        logger.warning("GitHub repository search failed: status=%s", status_code)
-        raise GitProviderAPIError(
-            "GitHub repository search failed",
-            status_code=_map_github_status_code(status_code),
-        ) from e
-    except httpx.TimeoutException as e:
-        logger.warning("GitHub repository search timed out")
-        raise GitProviderAPIError(
-            "GitHub repository search timed out", status_code=504
-        ) from e
-    except httpx.HTTPError as e:
-        logger.warning("GitHub repository search failed: %s", type(e).__name__)
-        raise GitProviderAPIError("GitHub repository search failed") from e
-    return response
+    return await _github_get(client, _GITHUB_USER_REPOS_PATH, params)
 
 
 def _parse_github_page_id(page_id: str | None) -> tuple[int, int]:

@@ -899,6 +899,16 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         usage_error("--keep-previous-secret-key needs an earlier --rotate-secret-key")
     # Per restart: a later restart without the flag drops the previous key.
     run.data["keep_previous_secret_key"] = bool(args.keep_previous_secret_key)
+    if args.checkout:
+        # Upgrade or downgrade: another version of the server on the same state.
+        checkout = Path(args.checkout).resolve()
+        if not (checkout / "openhands-agent-server").is_dir():
+            usage_error(f"{checkout} is not an agent-sdk checkout")
+        run.data["checkout"] = str(checkout)
+        run.data["checkout_sha"] = git("rev-parse", "HEAD", cwd=checkout)
+        run.data["checkout_ref"] = git(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=checkout
+        )
     if args.reset_config:
         run.data["config_overrides"] = {}
         run.data["extra_env"] = {}
@@ -2561,7 +2571,7 @@ def fixture_mcp_server(run: Run, name: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / f"{name}.py"
     script.write_text(
-        "from mcp.server.fastmcp import FastMCP\n\n"
+        "from fastmcp import FastMCP\n\n"
         f"mcp = FastMCP({name!r})\n\n\n"
         "@mcp.tool()\n"
         "def qa_echo(text: str) -> str:\n"
@@ -5506,6 +5516,11 @@ secret key all private to the run. Without --new, an already-live run
         "--hard",
         action="store_true",
         help="SIGKILL instead of a graceful stop (crash recovery)",
+    )
+    p.add_argument(
+        "--checkout",
+        help="restart on another agent-sdk checkout (an upgrade or downgrade "
+        "over the same settings and conversations)",
     )
     p.add_argument("--env", action="append", metavar="K=V")
     p.add_argument("--config-json")

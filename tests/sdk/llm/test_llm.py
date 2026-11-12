@@ -1799,8 +1799,7 @@ def test_llm_reset_metrics():
     llm.reset_metrics()
 
     # Verify new metrics are created
-    assert llm._metrics is not None
-    assert llm._telemetry is not None
+    assert llm.telemetry.metrics is llm.metrics
     assert llm.metrics is not original_metrics
     assert llm.telemetry is not original_telemetry
     assert llm.metrics.accumulated_cost == 0.0
@@ -1867,14 +1866,14 @@ def test_stale_metrics_not_updated(llm):
     assert llm.metrics.accumulated_cost == 2.75
 
 
-def test_restore_metrics_telemetry_none():
-    """restore_metrics() must not crash when telemetry has not been initialized."""
+def test_restore_metrics_session_none():
+    """restore_metrics() must not crash when the session has not been created."""
     llm = LLM(
         model="openai/gpt-4o",
         api_key=SecretStr("test-key"),
         usage_id="test-service",
     )
-    llm._telemetry = None
+    llm._session = None
 
     restored = Metrics(model_name="openai/gpt-4o")
     restored.add_cost(1.00)
@@ -1926,13 +1925,12 @@ def test_telemetry_callback_preserved_across_revalidation():
     )
     fired: list[bool] = []
     llm.telemetry.set_stats_update_callback(lambda: fired.append(True))
-    telemetry_before = llm._telemetry
+    telemetry_before = llm.telemetry
 
     RegistryEvent(llm=llm)
 
-    assert llm._telemetry is telemetry_before
-    assert llm.telemetry._stats_update_callback is not None
-    llm.telemetry._stats_update_callback()
+    assert llm.telemetry is telemetry_before
+    llm.telemetry.notify_stats_update()
     assert fired == [True]
 
 
