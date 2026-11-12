@@ -11,6 +11,7 @@ from openhands.sdk import LLM, Agent, OpenHandsAgentSettings
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, builtin_tool_class
+from openhands.sdk.tool.builtins.mcp_gateway import CallMCPToolAction, JSONValue
 from openhands.sdk.tool.registry import resolve_tool
 from openhands.sdk.tool.spec import Tool
 
@@ -50,6 +51,16 @@ def gateway_conversation(
 def call(conversation: LocalConversation, name: str, args: dict):
     tool = conversation.agent.tools_map[name]
     return tool(tool.action_from_arguments(args), conversation)
+
+
+def test_gateway_arguments_have_typed_json_schema_and_accept_nested_values():
+    schema = CallMCPToolAction.model_json_schema()
+    assert schema["properties"]["arguments"]["additionalProperties"] is not True
+    arguments: dict[str, JSONValue] = {
+        "items": [{"enabled": True, "value": None, "count": 3.5}]
+    }
+    action = CallMCPToolAction(name="docs.fetch", arguments=arguments, revision="v1")
+    assert action.arguments == arguments
 
 
 def test_new_agents_and_settings_use_gateway_by_default(tmp_path: Path):

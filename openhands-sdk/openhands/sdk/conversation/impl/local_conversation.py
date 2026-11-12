@@ -1672,15 +1672,17 @@ class LocalConversation(BaseConversation):
         self.agent._on_mcp_tools_reconciled(client, tools)
 
     def _prepare_mcp_gateway(self) -> None:
+        from openhands.sdk.agent.agent import Agent
+
         if (
-            not self.agent.supports_openhands_tools
+            not isinstance(self.agent, Agent)
             or not self.agent.mcp_config
-            or not getattr(self.agent, "mcp_gateway", False)
+            or not self.agent.mcp_gateway
         ):
             return
         selected = self._state.mcp_gateway_selected_tools
         if not self._state.events and selected is None:
-            selected = getattr(self.agent, "mcp_gateway_initial_tools", None)
+            selected = self.agent.mcp_gateway_initial_tools
             self._state.mcp_gateway_selected_tools = selected
         gateway = MCPToolGateway(
             selected, filter_tools_regex=self.agent.filter_tools_regex
@@ -1689,9 +1691,11 @@ class LocalConversation(BaseConversation):
         self._mcp_gateway = self._state._mcp_gateway = gateway
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+        from openhands.sdk.agent.agent import Agent
+
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
-        if getattr(self.agent, "mcp_gateway", False):
+        if isinstance(self.agent, Agent) and self.agent.mcp_gateway:
             return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
