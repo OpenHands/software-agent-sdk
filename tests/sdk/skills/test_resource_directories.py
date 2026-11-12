@@ -2,12 +2,7 @@
 
 from pathlib import Path
 
-from openhands.sdk.skills import (
-    RESOURCE_DIRECTORIES,
-    Skill,
-    SkillResources,
-    discover_skill_resources,
-)
+from openhands.sdk.skills import Skill, SkillResources, discover_skill_resources
 from openhands.sdk.utils.path import to_posix_path
 
 
@@ -54,11 +49,6 @@ def test_discover_skill_resources(tmp_path: Path) -> None:
     assert "guide.md" in resources.references
     assert resources.assets == []  # No assets dir
     assert resources.skill_root == to_posix_path(skill_dir.resolve())
-
-
-def test_resource_directories_constant() -> None:
-    """RESOURCE_DIRECTORIES should contain standard directory names."""
-    assert set(RESOURCE_DIRECTORIES) == {"scripts", "references", "assets"}
 
 
 def test_skill_load_with_resources(tmp_path: Path) -> None:

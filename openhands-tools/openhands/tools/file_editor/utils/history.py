@@ -88,12 +88,6 @@ class FileHistoryManager:
 
         return content
 
-    def get_metadata(self, file_path: Path):
-        """Get metadata for a file (for testing purposes)."""
-        metadata_key = self._get_metadata_key(file_path)
-        metadata = self.cache.get(metadata_key, {"entries": [], "counter": 0})
-        return metadata  # Return the actual metadata, not a copy
-
     def clear_history(self, file_path: Path):
         """Clear history for a given file."""
         metadata_key = self._get_metadata_key(file_path)
