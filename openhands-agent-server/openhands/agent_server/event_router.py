@@ -274,7 +274,7 @@ async def send_message(
     With ``run``, a conversation waiting for confirmation is normally run, which
     approves its pending actions, and a paused, errored or stuck one is resumed.
     ``refuse_pending_confirmation`` prevents both, for senders other than the
-    person: a conversation already in one of those states answers 409 and
+    user: a conversation already in one of those states answers 409 and
     nothing is saved, and one that reaches one while the message is delivered
     keeps the message and is not run (``run`` is that status, such as
     ``"waiting_for_confirmation"`` or ``"paused"``). The refusal is decided
@@ -283,8 +283,8 @@ async def send_message(
     With ``sender_conversation_id``, the saved message records
     ``sender: "conversation:<id hex>"`` and opens with a line telling the
     receiving agent which conversation sent it and that it approves nothing on
-    the person's behalf, so UIs can show it as instructions rather than the
-    person's words. A sender in a project may only message its own project's
+    the user's behalf, so UIs can show it as instructions rather than the
+    user's words. A sender in a project may only message its own project's
     conversations (422 otherwise). A run asked for by a sender conversation is
     always guarded, as if ``refuse_pending_confirmation`` were set.
     """
@@ -307,18 +307,18 @@ async def send_message(
     message = Message(role=request.role, content=content)
 
     # A message from another conversation never approves or resumes on the
-    # person's behalf, whether or not its sender asked for the guard.
+    # user's behalf, whether or not its sender asked for the guard.
     guarded = request.run and (
         request.refuse_pending_confirmation
         or request.sender_conversation_id is not None
     )
     previous_status: ConversationExecutionStatus | None = None
     if guarded:
-        # An unlocked read: it only spares the person an unrelated message in
+        # An unlocked read: it only spares the user an unrelated message in
         # a conversation already waiting. The guarded run is the safeguard.
         state = await event_service.get_state()
         previous_status = state.execution_status
-        refusal = admission_refusal(state, from_person=False)
+        refusal = admission_refusal(state, from_user=False)
         if refusal in HELD_FOR_PERSON_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

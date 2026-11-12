@@ -1,9 +1,9 @@
 """Live evaluation of the resolution judge on real turns.
 
 Each case is one finished turn of a project conversation and what the board
-should make of it: ``resolved`` (nothing left for the person), ``needs_person``
-(the person owes an answer, a review, a choice or a check), or ``open``
-(neither: work is left, but not the person's).
+should make of it: ``resolved`` (nothing left for the user), ``needs_user``
+(the user owes an answer, a review, a choice or a check), or ``open``
+(neither: work is left, but not the user's).
 
 The cases run only against a real model:
 
@@ -16,7 +16,7 @@ The cases run only against a real model:
 
 Run with ``uv run pytest tests/agent_server/test_resolution_eval.py -v``.
 
-The person's "merged" after a pull request is a case twice. A worker should
+The user's "merged" after a pull request is a case twice. A worker should
 resolve such a conversation itself with ``resolve_conversation``, and then
 the judge does not run at all (``test_project_board`` pins that). The cases
 here are for the worker that only reacts and ends its turn.
@@ -39,7 +39,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.decision import DecisionModel
 
 
-Expected = Literal["resolved", "needs_person", "open"]
+Expected = Literal["resolved", "needs_user", "open"]
 
 _PR_TASK = (
     "The Safari export button does nothing. Fix it and open a PR in acme/web-app."
@@ -51,7 +51,7 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
             task=_PR_TASK,
             request="merged",
             reply="",
-            actions=["react: :tada: on the person's message"],
+            actions=["react: :tada: on the user's message"],
         ),
         "resolved",
     ),
@@ -60,7 +60,7 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
             task=_PR_TASK,
             request="merged",
             reply="Great, thanks for merging! 🎉",
-            actions=["react: :tada: on the person's message"],
+            actions=["react: :tada: on the user's message"],
         ),
         "resolved",
     ),
@@ -97,7 +97,7 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
         ),
         "resolved",
     ),
-    "person takes the merge": (
+    "user takes the merge": (
         ResolutionState(
             task="Split the renderer refactor into branches and open them.",
             earlier=["Should they be merged together?"],
@@ -122,7 +122,7 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
             ),
             actions=["terminal: gh pr create"],
         ),
-        "needs_person",
+        "needs_user",
     ),
     "asks a choice": (
         ResolutionState(
@@ -132,7 +132,7 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
                 "adventurous.\n\nTell me which one you prefer."
             ),
         ),
-        "needs_person",
+        "needs_user",
     ),
     "second haiku still to write": (
         ResolutionState(
@@ -186,8 +186,8 @@ def _model() -> DecisionModel | None:
 
 
 def _outcome(verdict: ResolutionVerdict) -> Expected:
-    if verdict.needs_person:
-        return "needs_person"
+    if verdict.needs_user:
+        return "needs_user"
     return "resolved" if verdict.resolved else "open"
 
 

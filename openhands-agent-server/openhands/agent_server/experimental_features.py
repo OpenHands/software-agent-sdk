@@ -133,7 +133,7 @@ def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[st
 
 
 async def feature_enabled_now(key: str, config: "Config | None" = None) -> bool:
-    """Whether the person has ``key`` on right now (host switches in a runtime).
+    """Whether the user has ``key`` on right now (host switches in a runtime).
 
     For server behavior that follows the switch at once, such as a route or a
     wake-up. An unreadable settings file counts as off.

@@ -67,7 +67,7 @@ PROJECT_MESSAGE_TIMEOUT_SECONDS = 300.0
 
 _NOT_IN_PROJECT = (
     "This conversation is not part of a project: it has no "
-    f"'{PROJECT_TAG_KEY}' tag. Ask the person to add it to a project first."
+    f"'{PROJECT_TAG_KEY}' tag. Ask the user to add it to a project first."
 )
 
 
@@ -256,7 +256,7 @@ def _transcript_line(message: dict[str, Any]) -> str:
     if sender:
         who = f"{source}, from {sender}"
     elif source == "user":
-        who = "the person"
+        who = "the user"
     elif message.get("finish"):
         who = "agent (finish)"
     else:
@@ -272,46 +272,46 @@ _RUN_OUTCOMES = {
     ),
     "waiting_for_confirmation": (
         "It reached a confirmation while the message was being delivered, so "
-        "it was not run: the message waits for the person's decision on the "
+        "it was not run: the message waits for the user's decision on the "
         "pending action."
     ),
     "paused": (
-        "The person paused it while the message was being delivered, so it was "
-        "not run: the message waits until the person resumes it."
+        "The user paused it while the message was being delivered, so it was "
+        "not run: the message waits until the user resumes it."
     ),
     "error": (
         "It stopped on an error while the message was being delivered, so it "
-        "was not run. Tell the person; they decide whether to retry."
+        "was not run. Tell the user; they decide whether to retry."
     ),
     "stuck": (
         "It got stuck while the message was being delivered, so it was not "
-        "run. Tell the person."
+        "run. Tell the user."
     ),
     "not_run": (
         "It was stopped while the message was being delivered, so it was not "
-        "run. Tell the person rather than resending."
+        "run. Tell the user rather than resending."
     ),
 }
 
 _HELD_REFUSALS = {
     "waiting_for_confirmation": (
-        "Conversation {id} is waiting for the person to approve or reject an "
+        "Conversation {id} is waiting for the user to approve or reject an "
         "action. Running it now would approve that action, so nothing was "
-        "sent. Tell the person what it is waiting on."
+        "sent. Tell the user what it is waiting on."
     ),
     "paused": (
-        "The person paused conversation {id}. Sending would resume it, so "
-        "nothing was sent. Tell the person what you wanted it to do; they "
+        "The user paused conversation {id}. Sending would resume it, so "
+        "nothing was sent. Tell the user what you wanted it to do; they "
         "resume it."
     ),
     "error": (
-        "Conversation {id} stopped on an error the person has not dealt with. "
-        "Sending would retry it, so nothing was sent. Tell the person about the "
+        "Conversation {id} stopped on an error the user has not dealt with. "
+        "Sending would retry it, so nothing was sent. Tell the user about the "
         "error; they decide whether to retry."
     ),
     "stuck": (
         "Conversation {id} is stuck. Sending would restart it, so nothing was "
-        "sent. Tell the person."
+        "sent. Tell the user."
     ),
 }
 
@@ -336,8 +336,7 @@ def _held_status(response: httpx.Response) -> str:
 def _held_refusal(conversation_id: str, status: str) -> str:
     template = _HELD_REFUSALS.get(
         status,
-        "Conversation {id} is waiting on the person, so nothing was sent. Tell "
-        "the person.",
+        "Conversation {id} is waiting on the user, so nothing was sent. Tell the user.",
     )
     return template.format(id=conversation_id)
 
@@ -356,7 +355,7 @@ class MessageProjectConversationExecutor(
     never runs a conversation that is waiting for confirmation (that run would
     approve the pending action); the server decides it under the conversation's
     run lock. The same holds for a paused, errored or stuck conversation, which
-    a run would resume: the person owns those. A conversation already in one
+    a run would resume: the user owns those. A conversation already in one
     of these states is refused before anything is sent.
     """
 
@@ -419,7 +418,7 @@ class MessageProjectConversationExecutor(
                         f"{self._client.timeout:.0f} seconds. The message may "
                         "still be delivered. Do not send it again; check the "
                         "conversation with list_project_conversations or tell "
-                        "the person."
+                        "the user."
                     ) from exc
                 if (
                     isinstance(cause, httpx.HTTPStatusError)
@@ -677,14 +676,14 @@ class ResolveConversationExecutor(
         return ResolveConversationObservation.from_text(
             text=(
                 "This conversation is resolved. End your turn now; the "
-                "person's next message reopens it."
+                "user's next message reopens it."
             )
         )
 
 
 def _artifact_line(item: dict[str, Any]) -> str:
     if item["source"] == "user":
-        who = "the person"
+        who = "the user"
     else:
         who = conversation_mention(None, str(item["conversation_id"]))
     return (

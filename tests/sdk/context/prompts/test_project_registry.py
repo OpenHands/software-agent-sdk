@@ -93,7 +93,7 @@ def test_the_coordinator_routes_and_keeps_no_coding_workflow() -> None:
         "SECURITY",
     } <= tags
     assert not tags & CODING_TAGS
-    assert "Only the person approves." in static
+    assert "Only the user approves." in static
     # Live: a coordinator slept in its terminal between list calls, and ran
     # workers' tests in their worktrees through git stash.
     assert "After you dispatch work, end your turn." in static
@@ -109,10 +109,10 @@ def test_the_worker_is_the_coding_agent_with_its_project_sections() -> None:
         "WHO_IS_SPEAKING",
         "YOUR_REPORT",
     }
-    # It asks in its report, where the person reads, not in a chat nobody watches.
+    # It asks in its report, where the user reads, not in a chat nobody watches.
     assert "consult with the user" not in worker
     assert "confirm with the user before proceeding" not in worker
-    assert "unless the person or your brief asks for it" in worker
+    assert "unless the user or your brief asks for it" in worker
     assert "git worktree of a repository other workers share" in worker
     assert "Three memories, three purposes" in worker
     # Live: workers popped each other's stashes across shared worktrees.

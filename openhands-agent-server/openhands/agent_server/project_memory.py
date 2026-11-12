@@ -1,7 +1,7 @@
 """File store for a project's memory.
 
 Project memory is what a later conversation of the project would otherwise
-have to ask the person again: their standing preferences, decisions, where
+have to ask the user again: their standing preferences, decisions, where
 things are. It is a few short Markdown files in
 ``<persistence_dir>/projects/<project id hex>/memory/``:
 

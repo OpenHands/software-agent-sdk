@@ -26,14 +26,14 @@ PROJECT_TAG_KEY = "project"
 belongs to. Child conversations copy their parent's tags, so they join it too."""
 
 RESOLVED_TAG_KEY = "resolved"
-"""Tag marking a conversation's work as done: ``user`` when the person resolved
-it, ``auto`` when the server judged that nothing is left for the person (see
+"""Tag marking a conversation's work as done: ``user`` when the user resolved
+it, ``auto`` when the server judged that nothing is left for the user (see
 :data:`RESOLVE_NOTE_TAG_KEY`). A new user
 message removes it."""
 
 TURN_TAG_KEY = "turn"
 """Tag recording how the agent's last turn ended: ``asked`` when its final
-message asked the person something, ``answered`` otherwise. A new user message
+message asked the user something, ``answered`` otherwise. A new user message
 removes it."""
 
 ASK_TAG_KEY = "ask"
@@ -45,8 +45,8 @@ ASK_MAX_LENGTH = 200
 
 RESOLVE_NOTE_TAG_KEY = "resolvenote"
 """Why the server resolved a conversation (``resolved=auto``), in one short
-line: the judge's probability that nothing is left for the person and what it
-thinks the person owes (``0.93 nothing``), or a critic score
+line: the judge's probability that nothing is left for the user and what it
+thinks the user owes (``0.93 nothing``), or a critic score
 (``0.95 critic``). A new user message removes it."""
 
 BOARD_TAG_KEYS = frozenset(
@@ -58,18 +58,18 @@ CONVERSATION_SENDER_PREFIX = "conversation:"
 """Prefix of a user message's ``sender`` when another conversation sent it: a
 parent delivering a child's task, or a project coordinator steering a member.
 The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
-the person wrote the message."""
+the user wrote the message."""
 
 
 HELD_FOR_PERSON_STATUSES = frozenset(
     {"waiting_for_confirmation", "paused", "error", "stuck"}
 )
-"""Execution statuses in which a conversation waits on the person.
+"""Execution statuses in which a conversation waits on the user.
 
-A message from anyone but the person (a coordinator, another conversation, a
+A message from anyone but the user (a coordinator, another conversation, a
 server wake-up) is saved but never runs a conversation in one of these: running
-it would approve pending actions, resume work the person paused, or retry a
-failure the person has not seen. Project boards show them as needs-you."""
+it would approve pending actions, resume work the user paused, or retry a
+failure the user has not seen. Project boards show them as needs-you."""
 
 
 CONVERSATION_MENTION_SCHEME = "conversation:"
@@ -83,7 +83,7 @@ _MENTION_TITLE_MAX = 80
 def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) -> str:
     """A markdown link that points at a conversation.
 
-    The title is the person's or an agent's text, so it is cut to one line
+    The title is the user's or an agent's text, so it is cut to one line
     without brackets, parentheses, quotes or backslashes: it can neither end
     the link early nor end a bracketed header the link sits in.
     """
@@ -95,8 +95,8 @@ def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) ->
 
 GOAL_LOOP_SENDER = "goal_loop"
 """``sender`` of the messages a ``/goal`` loop sends its own conversation: the
-goal and each round's follow-up. They continue the person's turn; they are not
-the person's words."""
+goal and each round's follow-up. They continue the user's turn; they are not
+the user's words."""
 
 
 def conversation_sender(conversation_id: uuid.UUID) -> str:

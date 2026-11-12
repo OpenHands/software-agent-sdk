@@ -307,8 +307,8 @@ def test_message_timeout_says_not_to_resend(tmp_path):
         ("stuck", "Sending would restart it"),
     ],
 )
-def test_message_refuses_conversation_waiting_on_the_person(tmp_path, status, says):
-    """Review S3: a paused, failed or stuck worker is the person's to resume,
+def test_message_refuses_conversation_waiting_on_the_user(tmp_path, status, says):
+    """Review S3: a paused, failed or stuck worker is the user's to resume,
     so the coordinator's message must not run it (nor approve an action)."""
     conversation = _conversation(status, "needs_you")
     server = _Server([conversation])
@@ -583,7 +583,7 @@ def test_list_artifacts_names_who_added_each(tmp_path):
     assert not observation.is_error
     assert seen[0].url.path == f"/api/projects/{PROJECT_ID}/artifacts"
     assert "2 project artifact(s)" in observation.text
-    assert "brief.pdf (2048 bytes), added by the person" in observation.text
+    assert "brief.pdf (2048 bytes), added by the user" in observation.text
     assert "report.md (12 bytes), added by" in observation.text
     assert saver.hex in observation.text
 
@@ -658,7 +658,7 @@ def test_read_reports_the_latest_messages(tmp_path):
     )
     assert request.url.params["limit"] == "5"
     assert "[user, from conversation:" in observation.text
-    assert "[the person] Also add a test" in observation.text
+    assert "[the user] Also add a test" in observation.text
     assert "[agent (finish)] Done, with a test." in observation.text
 
 
@@ -699,7 +699,7 @@ def test_a_coordinators_system_prompt_states_its_role(tmp_path):
     static = agent.static_system_message
     for tag in ("ROLE", "ROUTING", "BRIEFS", "WHAT_YOU_HEAR", "TALKING_TO_THE_PERSON"):
         assert f"<{tag}>" in static
-    assert "unless the person asks you to do it here" in static
+    assert "unless the user asks you to do it here" in static
     # It routes rather than codes: no coding-workflow sections.
     for tag in ("CODE_QUALITY", "PULL_REQUESTS", "PROBLEM_SOLVING_WORKFLOW"):
         assert f"<{tag}>" not in static

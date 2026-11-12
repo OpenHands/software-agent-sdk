@@ -230,7 +230,7 @@ def _without_agent_context_secret(
     )
 
 
-def admission_refusal(state: ConversationState, *, from_person: bool) -> str | None:
+def admission_refusal(state: ConversationState, *, from_user: bool) -> str | None:
     """Why a message may not start a run of this conversation now, or ``None``.
 
     One rule for every sender that runs a conversation it does not watch:
@@ -239,11 +239,11 @@ def admission_refusal(state: ConversationState, *, from_person: bool) -> str | N
     - Pending actions refuse with ``"waiting_for_confirmation"``: whether the
       conversation waits for confirmation or was paused or interrupted with
       actions unconfirmed, the next run would execute them, which approves
-      them on the person's behalf.
+      them on the user's behalf.
     - Another conversation (the project tools, coordinator updates) may run
       only an idle or finished one; ``paused``, ``error`` and ``stuck`` are
-      the person's to look at, refused with the status value.
-    - The person's own words through another channel (Voice's
+      the user's to look at, refused with the status value.
+    - The user's own words through another channel (Voice's
       ``send_message_if_idle``) may also resume a paused conversation.
 
     The caller holds the state lock, and should hold the run lock so the
@@ -257,7 +257,7 @@ def admission_refusal(state: ConversationState, *, from_person: bool) -> str | N
     ):
         return ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value
     admitted = {ConversationExecutionStatus.IDLE, ConversationExecutionStatus.FINISHED}
-    if from_person:
+    if from_user:
         admitted.add(ConversationExecutionStatus.PAUSED)
     return None if status in admitted else status.value
 
@@ -851,11 +851,11 @@ class EventService:
             timestamp__lt,
         )
 
-    def _admission_refusal_sync(self, *, from_person: bool) -> str | None:
+    def _admission_refusal_sync(self, *, from_user: bool) -> str | None:
         if not self._conversation:
             raise ValueError("inactive_service")
         with self._conversation._state as state:
-            return admission_refusal(state, from_person=from_person)
+            return admission_refusal(state, from_user=from_user)
 
     def _send_keeping_stuck_sync(
         self, send: Callable[[Message], None], message: Message
@@ -863,7 +863,7 @@ class EventService:
         """Save a guarded message without clearing a ``stuck`` status.
 
         A new message resets a stuck conversation to idle, which would let the
-        guarded run that follows retry work the person has not looked at. The
+        guarded run that follows retry work the user has not looked at. The
         state lock is reentrant, so ``send`` can take it again inside.
         """
         if not self._conversation:
@@ -1010,11 +1010,11 @@ class EventService:
         :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
 
         With ``refuse_pending_confirmation`` a conversation that waits on the
-        person keeps the message but is not run, and this raises
+        user keeps the message but is not run, and this raises
         ``ValueError(<status>)``, such as ``"paused"`` (see :meth:`run`).
 
         ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
-        messages the server delivers rather than the person writes.
+        messages the server delivers rather than the user writes.
 
         Returns:
             ``None`` without ``run``. Otherwise ``"started"`` when a run was
@@ -1132,7 +1132,7 @@ class EventService:
         takes the message or is re-armed for it.
 
         Raises ``ValueError(<status>)`` when the conversation now waits on the
-        person; the message stays for its next run.
+        user; the message stays for its next run.
         """
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -1742,16 +1742,16 @@ class EventService:
 
         Args:
             refuse_pending_confirmation: Refuse to run a conversation that
-                waits on the person (:data:`HELD_FOR_PERSON_STATUSES`: waiting
+                waits on the user (:data:`HELD_FOR_PERSON_STATUSES`: waiting
                 for confirmation, paused, error or stuck). Running it would
-                approve pending actions, resume work the person paused, or retry
-                a failure the person has not seen, so callers acting for someone
-                other than the person (a coordinator steering another
+                approve pending actions, resume work the user paused, or retry
+                a failure the user has not seen, so callers acting for someone
+                other than the user (a coordinator steering another
                 conversation, a server wake-up) set this. The check is made
                 under the run lock, where no other run can change the status.
             _resuming_internal_acp_pause: Set by :meth:`send_message` for the
                 run that replaces an ACP prompt it just interrupted. The pause
-                that interrupt left is the server's own, not the person's, so a
+                that interrupt left is the server's own, not the user's, so a
                 guarded run may resume it. Pending actions are still refused.
 
         Returns:
@@ -1761,7 +1761,7 @@ class EventService:
         Raises:
             ValueError: If the service is inactive, the conversation is already
                 running, or (with ``refuse_pending_confirmation``) it waits on
-                the person (the status value, e.g. ``"paused"``).
+                the user (the status value, e.g. ``"paused"``).
             ConversationRunLimitExceeded: If all server run slots are occupied.
         """
         if not self._conversation or self._closing:
@@ -1794,7 +1794,7 @@ class EventService:
                     None,
                     functools.partial(
                         self._admission_refusal_sync,
-                        from_person=_resuming_internal_acp_pause,
+                        from_user=_resuming_internal_acp_pause,
                     ),
                 )
                 if refusal is not None:
@@ -2543,7 +2543,7 @@ class EventService:
         if run_task is not None and not run_task.done():
             if self._conversation is not None:
                 # Recorded first, so whoever sees the pause can tell it apart
-                # from one the person made.
+                # from one the user made.
                 self._mark_paused_by_shutdown(True)
                 loop = asyncio.get_running_loop()
                 try:

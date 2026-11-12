@@ -143,7 +143,7 @@ class StartChildConversationExecutor(
 
         summary = (
             f"Started child conversation {result.conversation_id} "
-            f"(status: {result.status}). To point the person at it, write "
+            f"(status: {result.status}). To point the user at it, write "
             f"{conversation_mention(result.title, result.conversation_id)}.\n"
             f"{json.dumps(result.model_dump(mode='json'), indent=2)}"
         )

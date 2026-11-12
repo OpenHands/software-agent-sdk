@@ -4,8 +4,8 @@ A project's coordinator and its workers are specialized agents. Each one
 runs a built-in system prompt made for its role (the ``project_coordinator``
 and ``project_worker`` prompt presets) and a tool set to match. The server
 creates a profile for each role the first time a project needs it, from the
-person's active agent profile, so both keep the person's model, MCP servers,
-secrets and skills. The person can edit them like any other profile; the
+user's active agent profile, so both keep the user's model, MCP servers,
+secrets and skills. The user can edit them like any other profile; the
 server never overwrites one that exists.
 
 The role itself does not depend on these profiles: the server assigns the
@@ -37,7 +37,7 @@ PROJECT_PROFILE_NAMES: dict[ProjectRole, str] = {
     "worker": "project-worker",
 }
 """Names of the predefined profiles. The server looks them up by name, so a
-person who renames one gets a fresh one on the next project."""
+user who renames one gets a fresh one on the next project."""
 
 PROJECT_ROLE_PRESETS: dict[ProjectRole, PromptPreset] = {
     "coordinator": PromptPreset.PROJECT_COORDINATOR,
@@ -50,7 +50,7 @@ enough to look at a file or a repository when answering a quick question, and
 no browser."""
 
 WORKER_WITHHELD_TOOLS = ("start_child_conversation",)
-"""Tools a worker profile drops from the person's: a worker's own workers would
+"""Tools a worker profile drops from the user's: a worker's own workers would
 report to no one yet."""
 
 
@@ -70,7 +70,7 @@ def _profile(role: ProjectRole, base: OpenHandsAgentProfile) -> OpenHandsAgentPr
             "revision": 0,
             "prompt_preset": PROJECT_ROLE_PRESETS[role],
             "tools": tools,
-            # The role's prompt carries the job; a persona the person wrote for
+            # The role's prompt carries the job; a persona the user wrote for
             # their everyday agent would replace parts of it.
             "persona": None,
         }
@@ -82,7 +82,7 @@ def ensure_project_profile(role: ProjectRole) -> UUID | None:
 
     ``None`` when it cannot be made: no active OpenHands agent profile to build
     it from (an ACP agent builds its own prompt), or the profile store is full.
-    Callers then use the person's active profile, and the role still comes
+    Callers then use the user's active profile, and the role still comes
     from the launch.
     """
     from openhands.agent_server.agent_profiles_router import MAX_AGENT_PROFILES

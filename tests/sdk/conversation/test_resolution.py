@@ -73,9 +73,9 @@ async def test_judge_asks_every_judgment_on_the_turn():
     ("judgments", "owed"),
     [
         ({"handled": 0.95, "task_done": 1, "hands_off_review": 0.9}, "review"),
-        ({"handled": 0.95, "task_done": 1, "asks_person": 0.8}, "answer"),
+        ({"handled": 0.95, "task_done": 1, "asks_user": 0.8}, "answer"),
         (
-            {"handled": 0.95, "task_done": 1, "offers_choice": 0.7, "asks_person": 0.6},
+            {"handled": 0.95, "task_done": 1, "offers_choice": 0.7, "asks_user": 0.6},
             "decide",
         ),
         ({"handled": 0.5, "task_done": 1, "reports_problem": 0.9}, "check"),
@@ -93,7 +93,7 @@ def test_a_hand_off_or_unhandled_request_keeps_it_open(judgments, owed):
 
 def test_resolves_only_when_done_and_no_hand_off_reaches_the_ceiling():
     at = verdict_from_judgments(
-        {"handled": AUTO_RESOLVE_PROBABILITY, "task_done": 1.0, "asks_person": 0.1}
+        {"handled": AUTO_RESOLVE_PROBABILITY, "task_done": 1.0, "asks_user": 0.1}
     )
     weak_hand_off = verdict_from_judgments(
         {"handled": 0.95, "task_done": 1.0, "asks_to_check": HAND_OFF_CEILING}
@@ -151,7 +151,7 @@ async def test_llm_adapter_reads_missing_or_bad_answers_as_no():
         {
             "handled": {"probability": "1.7"},
             "task_done": {"probability": 1},
-            "asks_person": "yes",
+            "asks_user": "yes",
         }
     )
     model = LLMDecisionModel.model_construct(
@@ -162,7 +162,7 @@ async def test_llm_adapter_reads_missing_or_bad_answers_as_no():
     verdict = await judge_resolution(model, ResolutionState(reply="Done."))
 
     assert verdict.judgments["handled"] == 1.0
-    assert verdict.judgments["asks_person"] == 0.0
+    assert verdict.judgments["asks_user"] == 0.0
     assert verdict.resolved
 
 
@@ -180,17 +180,17 @@ async def test_llm_adapter_without_json_fails():
 @pytest.mark.parametrize(
     ("judgments", "needs"),
     [
-        ({"asks_person": 0.9}, True),
+        ({"asks_user": 0.9}, True),
         ({"offers_choice": 0.6}, True),
         ({"hands_off_review": 0.8}, True),
         ({"asks_to_check": 0.5}, True),
         ({"reports_problem": 0.99}, False),
-        ({"asks_person": 0.3}, False),
+        ({"asks_user": 0.3}, False),
     ],
 )
-def test_needs_person_only_when_the_reply_waits_on_them(judgments, needs):
+def test_needs_user_only_when_the_reply_waits_on_them(judgments, needs):
     verdict = verdict_from_judgments({"handled": 0.9, "task_done": 0.9, **judgments})
-    assert verdict.needs_person is needs
+    assert verdict.needs_user is needs
 
 
 def test_state_carries_the_task_and_recent_earlier_requests():

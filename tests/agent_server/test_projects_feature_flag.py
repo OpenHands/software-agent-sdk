@@ -100,7 +100,7 @@ async def test_no_wake_ups_while_off():
         tags=lambda: tags,
         set_tag=set_tag,
         on_finished=tell,
-        on_person_message=tell,
+        on_user_message=tell,
         on_stopped=tell,
         projects_enabled=off,
     )

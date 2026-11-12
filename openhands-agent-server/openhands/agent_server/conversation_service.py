@@ -76,7 +76,7 @@ from openhands.agent_server.project_wake import (
     notify_coordinator,
     notify_coordinator_of_stop,
     reconcile_coordinator_updates,
-    relay_person_message,
+    relay_user_message,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.resolution_judge import make_resolution_judge
@@ -643,7 +643,7 @@ async def _logged_turn_sender(event_service: EventService) -> str | None:
     """``sender`` of the latest message that started a turn, from the log.
 
     For an outcome subscriber that did not see the turn begin (the server
-    restarted in between); ``None`` means the person, or no turn found.
+    restarted in between); ``None`` means the user, or no turn found.
     """
     start = await latest_turn_start(event_service)
     return start.sender if start is not None else None
@@ -673,7 +673,7 @@ def _client_tags(current: Mapping[str, str], requested: Mapping[str, str]) -> di
 
 
 def _coordinator_profile_id() -> UUID | None:
-    """The predefined coordinator profile, or the person's active one."""
+    """The predefined coordinator profile, or the user's active one."""
     return ensure_project_profile("coordinator") or _active_agent_profile_id()
 
 
@@ -2221,9 +2221,9 @@ class ConversationService:
     ) -> dict[str, str] | None:
         """Resolve a conversation, or reopen it.
 
-        The person's resolve (``by="user"``) sets ``resolved=user``; the
+        The user's resolve (``by="user"``) sets ``resolved=user``; the
         conversation's own agent (``by="agent"``) sets ``resolved=auto`` with
-        the note :data:`AGENT_RESOLVE_NOTE`, unless the person already resolved
+        the note :data:`AGENT_RESOLVE_NOTE`, unless the user already resolved
         it. Otherwise the auto-resolve note goes. Returns the tags after the
         change, or ``None`` when the conversation does not exist.
         """
@@ -2511,8 +2511,8 @@ class ConversationService:
         """The agent profile a project member's new conversation starts from.
 
         A conversation a project member starts is a normal conversation of
-        the person's, not a copy of its parent: it runs the project's
-        ``worker_agent_profile_id``, or else the person's active agent
+        the user's, not a copy of its parent: it runs the project's
+        ``worker_agent_profile_id``, or else the user's active agent
         profile. ``None`` (no project, no profile, or a workspace a normal
         start cannot take) keeps the copy of the parent's agent.
         """
@@ -2569,7 +2569,7 @@ class ConversationService:
 
         It keeps what makes it part of the project: the ``project`` tag, the
         parent's workspace (in a worktree when asked), the parent link, the
-        person's confirmation policy, plugins, hooks and secrets, the parent
+        user's confirmation policy, plugins, hooks and secrets, the parent
         as sender of the task (with a header saying so), the worker's prompt
         and project context, and the project tools a worker uses.
         It does not take the parent's agent, launch additions or client tools.
@@ -2652,10 +2652,10 @@ class ConversationService:
         """Start an idle coordinator conversation for a new project.
 
         It runs ``agent_profile_id``, or else the predefined coordinator
-        profile (or the person's active one when that cannot be made), with
+        profile (or the user's active one when that cannot be made), with
         the coordinator's prompt, project context and project tools added by
         the server, and joins the project through its ``project`` tag. It gets no first
-        message: it waits for the person. ``options`` are more
+        message: it waits for the user. ``options`` are more
         ``StartConversationRequest`` fields from the client (its own tags,
         a reserved ``conversation_id``, launch additions, policies).
 
@@ -2731,7 +2731,7 @@ class ConversationService:
         shares the parent's directory. The link is recorded via
         ``parent_conversation_id``.
 
-        A project member's child is a normal conversation of the person's
+        A project member's child is a normal conversation of the user's
         instead (see :meth:`_start_project_worker`): it runs an agent profile,
         not a copy of its parent's agent.
 
@@ -3230,8 +3230,8 @@ class ConversationService:
                     tags=lambda: event_service.stored.tags,
                     set_tag=self.set_conversation_tag,
                     on_finished=functools.partial(notify_coordinator, self, stored.id),
-                    on_person_message=functools.partial(
-                        relay_person_message, self, stored.id
+                    on_user_message=functools.partial(
+                        relay_user_message, self, stored.id
                     ),
                     on_stopped=functools.partial(
                         notify_coordinator_of_stop, self, stored.id

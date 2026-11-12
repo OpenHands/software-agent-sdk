@@ -54,7 +54,7 @@ def decision_model_from_env() -> DecisionModel | None:
 
 
 ConversationContext = Callable[[], Awaitable[tuple[str | None, list[str]]]]
-"""Reads a conversation's first message and the person's requests since,
+"""Reads a conversation's first message and the user's requests since,
 oldest first, for :attr:`ResolutionState.task` and ``earlier``."""
 
 

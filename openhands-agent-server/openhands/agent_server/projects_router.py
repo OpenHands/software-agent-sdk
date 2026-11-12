@@ -1,6 +1,6 @@
 """HTTP endpoints for projects.
 
-A project groups the conversations that work toward one goal. The person
+A project groups the conversations that work toward one goal. The user
 mainly talks to one of them, the coordinator, which starts and steers the
 others.
 Projects are persisted on the agent-server (file-backed JSON) so that every
@@ -97,7 +97,7 @@ logger = get_logger(__name__)
 
 
 async def _require_projects(request: Request) -> None:
-    """Answer 404 while the person has the Projects feature off.
+    """Answer 404 while the user has the Projects feature off.
 
     404 reads as "this server has no projects", which clients already handle;
     the projects on disk are kept and come back when it is turned on again.
@@ -118,11 +118,11 @@ AUTOMATION_ID_TAG_KEY = "automationid"
 
 
 class ProjectAttention(str, Enum):
-    """What a conversation needs from the person.
+    """What a conversation needs from the user.
 
     Derived from the execution status, then refined by the conversation's tags: a
     finished conversation whose last message asked something needs input, and a
-    resolved conversation is resolved unless it is blocked on the person.
+    resolved conversation is resolved unless it is blocked on the user.
     """
 
     NEEDS_YOU = "needs_you"
@@ -154,7 +154,7 @@ class NewProjectCoordinator(BaseModel):
     )
     agent_profile_id: UUID | None = Field(
         default=None,
-        description="Agent profile to run. Unset, the person's active profile.",
+        description="Agent profile to run. Unset, the user's active profile.",
     )
     title: str | None = Field(
         default=None,
@@ -234,7 +234,7 @@ class CreateProjectRequest(BaseModel):
         default=None,
         description=(
             "Agent profile for the conversations project members start. "
-            "Unset, they start from the person's active agent profile."
+            "Unset, they start from the user's active agent profile."
         ),
     )
 
@@ -254,7 +254,7 @@ class UpdateProjectRequest(BaseModel):
         default=None,
         description=(
             "Agent profile for the conversations project members start. An "
-            "explicit null goes back to the person's active agent profile."
+            "explicit null goes back to the user's active agent profile."
         ),
     )
 
@@ -264,7 +264,7 @@ class ProjectsListResponse(BaseModel):
 
 
 class ProjectConversation(BaseModel):
-    """A conversation in a project, with what it needs from the person."""
+    """A conversation in a project, with what it needs from the user."""
 
     conversation_id: OpenHandsUUID
     title: str | None = None
@@ -273,8 +273,8 @@ class ProjectConversation(BaseModel):
     resolved: ResolvedBy | None = Field(
         default=None,
         description=(
-            "`user` when the person resolved the conversation, `auto` when its "
-            "own agent or the server's judge found nothing left for the person "
+            "`user` when the user resolved the conversation, `auto` when its "
+            "own agent or the server's judge found nothing left for the user "
             "(see `resolve_note`). Backed by the `resolved` tag; a new user message "
             "clears it."
         ),
@@ -284,8 +284,8 @@ class ProjectConversation(BaseModel):
         description=(
             "While `resolved` is `auto`: why, in one short line. "
             f"`{AGENT_RESOLVE_NOTE}` when the conversation's agent resolved it, "
-            "the judge's probability that nothing is left for the person and "
-            "what it thinks the person owes (`0.93 nothing`), or a critic "
+            "the judge's probability that nothing is left for the user and "
+            "what it thinks the user owes (`0.93 nothing`), or a critic "
             "score (`0.95 critic`). Backed by the `resolvenote` tag."
         ),
     )
@@ -293,7 +293,7 @@ class ProjectConversation(BaseModel):
         default=None,
         description=(
             "How the agent's last run ended: `asked` when its final message "
-            "asked the person something, `answered` otherwise. Backed by the "
+            "asked the user something, `answered` otherwise. Backed by the "
             "`turn` tag; a new user message clears it."
         ),
     )
@@ -750,12 +750,12 @@ async def list_project_conversations(
     request: Request,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectConversationsResponse:
-    """List a project's conversations, grouped by what they need from the person.
+    """List a project's conversations, grouped by what they need from the user.
 
     ``attention`` is derived from ``execution_status``: waiting for
     confirmation, paused, error and stuck are ``needs_you``; running is
     ``working``; finished and idle are ``idle``: nothing runs and nothing
-    waits on the person, but it is not resolved either.
+    waits on the user, but it is not resolved either.
     """
     project = _find(await _load(_store(request)), project_id)
     members = await service.list_tagged_conversations(PROJECT_TAG, project_id.hex)
@@ -845,10 +845,10 @@ class ResolveConversationRequest(BaseModel):
     by: Literal["user", "agent"] = Field(
         default="user",
         description=(
-            "Who resolves. `user` (the person) sets `resolved=user`. `agent` is "
+            "Who resolves. `user` (the user) sets `resolved=user`. `agent` is "
             "the conversation's own agent, through its resolve_conversation "
             f"tool: `resolved=auto` with the note `{AGENT_RESOLVE_NOTE}`, and "
-            "never over the person's own resolve."
+            "never over the user's own resolve."
         ),
     )
 
@@ -890,12 +890,12 @@ async def resolve_project_conversation(
     body: ResolveConversationRequest | None = None,
     service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
-    """Resolve a member: for the person (``resolved=user``) by default, or for
+    """Resolve a member: for the user (``resolved=user``) by default, or for
     its own agent (``by=agent``: ``resolved=auto``, note ``agent``). Idempotent.
 
-    The person's resolve replaces an automatic one and its note; the agent's
-    never replaces the person's, and answers 202 without waiting, because the
-    agent calls it from inside its own tool call. The person's next message in
+    The user's resolve replaces an automatic one and its note; the agent's
+    never replaces the user's, and answers 202 without waiting, because the
+    agent calls it from inside its own tool call. The user's next message in
     the conversation reopens it, as before.
     """
     by = body.by if body is not None else "user"
@@ -990,7 +990,7 @@ async def read_project_conversation(
 ) -> ProjectTranscriptResponse:
     """The latest messages of a project member, without its tool calls.
 
-    Lists the person's, the agent's and other conversations' messages and the
+    Lists the user's, the agent's and other conversations' messages and the
     agent's `finish` on the active branch, oldest first, so a coordinator can
     catch up on a conversation without reading every event.
     """
@@ -1089,7 +1089,7 @@ async def _save_artifact(
 async def list_project_artifacts(
     project_id: UUID, request: Request
 ) -> ProjectArtifactsResponse:
-    """List the files the person uploaded to the project or its agents saved."""
+    """List the files the user uploaded to the project or its agents saved."""
     _find(await _load(_store(request)), project_id)
     artifacts = await asyncio.to_thread(_artifacts(request).list, project_id)
     return ProjectArtifactsResponse(artifacts=artifacts)

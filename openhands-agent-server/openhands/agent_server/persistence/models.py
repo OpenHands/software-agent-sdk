@@ -696,7 +696,7 @@ class ProjectItem(BaseModel):
     coordinator_conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
-            "The conversation the person mainly talks to about this project. "
+            "The conversation the user mainly talks to about this project. "
             "It is also a member of the project."
         ),
     )
@@ -704,7 +704,7 @@ class ProjectItem(BaseModel):
         default=None,
         description=(
             "Agent profile for the conversations project members start. "
-            "Unset, they start from the person's active agent profile."
+            "Unset, they start from the user's active agent profile."
         ),
     )
     created_at: datetime = Field(default_factory=utc_now)

@@ -8,11 +8,11 @@ conversations finishes a run the coordinator asked for.
 The coordinator gets the member's final message, not its events: one user
 message that records the member as ``sender`` and opens with
 :func:`~openhands.agent_server.project_prompts.update_header`. A member the
-coordinator started that stops on the person instead (confirmation, error,
+coordinator started that stops on the user instead (confirmation, error,
 stuck) sends :func:`~openhands.agent_server.project_prompts.stop_header`, and a
 pause is saved for awareness (:func:`notify_coordinator_of_stop`). Updates are
 delivered like a message sent with ``refuse_pending_confirmation``, so they
-never run a coordinator that waits on the person (the message is kept and seen
+never run a coordinator that waits on the user (the message is kept and seen
 on its next run). The coordinator reads more with ``read_project_conversation``.
 
 :func:`reconcile_coordinator_updates` catches up after a restart: a member
@@ -42,12 +42,12 @@ from openhands.agent_server.project_prompts import (
     RESTART_STOP,
     SenderRole,
     paused_header,
-    person_message_header,
-    person_turn_header,
     sender_header,
     stop_header,
     update_header,
     update_text,
+    user_message_header,
+    user_turn_header,
 )
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.resolution import EARLIER_REQUESTS_KEPT
@@ -151,8 +151,8 @@ async def _deliver(
 ) -> None:
     """Save a message in the coordinator and, with ``run``, run it.
 
-    The run is guarded like any message not from the person: a coordinator
-    that waits on the person keeps the message for its next run. When every
+    The run is guarded like any message not from the user: a coordinator
+    that waits on the user keeps the message for its next run. When every
     run slot is taken, a background task waits for one instead of leaving the
     update unread. A failed save is retried before the update is given up.
     """
@@ -226,8 +226,8 @@ async def notify_coordinator(
 
     A turn the coordinator started (its message, or the task message of a
     child it started) wakes the coordinator: it waits for that reply. A turn
-    the person started in the member is delivered without a run, for the
-    coordinator to know on its next turn; the person already saw the reply.
+    the user started in the member is delivered without a run, for the
+    coordinator to know on its next turn; the user already saw the reply.
     A turn another conversation started is not delivered, so an update the
     coordinator answered never starts another round.
 
@@ -235,21 +235,21 @@ async def notify_coordinator(
     its coordinator is gone, when the coordinator is the member itself, or
     when the coordinator left the project.
     """
-    by_person = turn_sender is None
-    if not by_person and not str(turn_sender).startswith(CONVERSATION_SENDER_PREFIX):
+    by_user = turn_sender is None
+    if not by_user and not str(turn_sender).startswith(CONVERSATION_SENDER_PREFIX):
         return False
     found = await _coordinator(service, member_id, project_hex)
     if found is None:
         return False
     coordinator_id, coordinator = found
-    if not by_person and turn_sender != conversation_sender(coordinator_id):
+    if not by_user and turn_sender != conversation_sender(coordinator_id):
         return False
     member = await service.get_conversation(member_id)
     title = member.title if member else None
     asked = turn == "asked"
     header = (
-        person_turn_header(title, member_id, asked=asked)
-        if by_person
+        user_turn_header(title, member_id, asked=asked)
+        if by_user
         else update_header(title, member_id, asked=asked)
     )
     await _deliver(
@@ -257,7 +257,7 @@ async def notify_coordinator(
         coordinator,
         member_id,
         [TextContent(text=header), TextContent(text=update_text(text))],
-        run=not by_person,
+        run=not by_user,
     )
     return True
 
@@ -270,11 +270,11 @@ async def notify_coordinator_of_stop(
     text: str | None,
     turn_sender: str | None,
 ) -> bool:
-    """Tell the coordinator that a member it started stopped on the person.
+    """Tell the coordinator that a member it started stopped on the user.
 
-    Only for a turn the coordinator started; the person sees their own turns
+    Only for a turn the coordinator started; the user sees their own turns
     stop. Waiting for confirmation, an error or stuck wakes the coordinator so
-    it can tell the person what the member waits on. A pause is the person's
+    it can tell the user what the member waits on. A pause is the user's
     own act, so it is saved for the coordinator's awareness without a run;
     a pause a server shutdown made wakes the coordinator with that cause,
     once the server is back (the shutdown itself sends nothing).
@@ -315,16 +315,16 @@ async def notify_coordinator_of_stop(
     return True
 
 
-async def relay_person_message(
+async def relay_user_message(
     service: "ConversationService",
     member_id: UUID,
     project_hex: str,
     text: str,
 ) -> bool:
-    """Copy a message the person wrote in a member to the project's coordinator.
+    """Copy a message the user wrote in a member to the project's coordinator.
 
     The copy is saved without running the coordinator: it is for the
-    coordinator to know what the person asked where, on its next turn, and
+    coordinator to know what the user asked where, on its next turn, and
     waking it for every message would only tempt it to forward the message
     back. Returns whether a copy was saved.
     """
@@ -341,7 +341,7 @@ async def relay_person_message(
         member_id,
         [
             TextContent(
-                text=person_message_header(member.title if member else None, member_id)
+                text=user_message_header(member.title if member else None, member_id)
             ),
             TextContent(text=update_text(text)),
         ],
@@ -486,10 +486,10 @@ async def reconcile_coordinator_updates(service: "ConversationService") -> int:
     """Deliver updates a coordinator should have had but never got.
 
     For each project member whose latest turn the coordinator started and
-    that has ended (finished, or stopped on the person) with no message from
+    that has ended (finished, or stopped on the user) with no message from
     it in the coordinator since its last output, the update is delivered now,
-    as it would have been when the turn ended. Turns the person started are
-    not replayed: the person saw those. Returns how many were delivered.
+    as it would have been when the turn ended. Turns the user started are
+    not replayed: the user saw those. Returns how many were delivered.
     """
     if not await feature_enabled_now("projects"):
         return 0

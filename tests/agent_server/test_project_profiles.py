@@ -22,7 +22,7 @@ def _activate(profile: OpenHandsAgentProfile) -> None:
     store.save(settings.model_copy(update={"active_agent_profile_id": profile.id}))
 
 
-def _person_profile() -> OpenHandsAgentProfile:
+def _user_profile() -> OpenHandsAgentProfile:
     return OpenHandsAgentProfile(
         name="mine",
         llm_profile_ref="strong-model",
@@ -42,8 +42,8 @@ def test_without_an_active_profile_there_is_nothing_to_build_from():
     assert ensure_project_profile("worker") is None
 
 
-def test_the_profiles_are_built_from_the_persons_active_profile():
-    _activate(_person_profile())
+def test_the_profiles_are_built_from_the_users_active_profile():
+    _activate(_user_profile())
 
     coordinator_id = ensure_project_profile("coordinator")
     worker_id = ensure_project_profile("worker")
@@ -56,7 +56,7 @@ def test_the_profiles_are_built_from_the_persons_active_profile():
     assert (coordinator.id, worker.id) == (coordinator_id, worker_id)
     assert coordinator.prompt_preset == PromptPreset.PROJECT_COORDINATOR
     assert worker.prompt_preset == PromptPreset.PROJECT_WORKER
-    # The person's model, servers and suffix carry over; their persona does not.
+    # The user's model, servers and suffix carry over; their persona does not.
     for profile in (coordinator, worker):
         assert profile.llm_profile_ref == "strong-model"
         assert profile.mcp_server_refs == ["github"]
@@ -67,8 +67,8 @@ def test_the_profiles_are_built_from_the_persons_active_profile():
     assert [t.name for t in worker.tools or []] == ["terminal", "file_editor"]
 
 
-def test_an_existing_profile_is_kept_as_the_person_edited_it():
-    _activate(_person_profile())
+def test_an_existing_profile_is_kept_as_the_user_edited_it():
+    _activate(_user_profile())
     first = ensure_project_profile("worker")
     store = get_agent_profile_store()
     edited = store.load(PROJECT_PROFILE_NAMES["worker"]).model_copy(
@@ -82,8 +82,8 @@ def test_an_existing_profile_is_kept_as_the_person_edited_it():
     assert kept.llm_profile_ref == "cheap-model"
 
 
-def test_a_person_on_the_standard_tool_set_keeps_it_for_workers():
-    _activate(_person_profile().model_copy(update={"tools": None}))
+def test_a_user_on_the_standard_tool_set_keeps_it_for_workers():
+    _activate(_user_profile().model_copy(update={"tools": None}))
 
     ensure_project_profile("worker")
 

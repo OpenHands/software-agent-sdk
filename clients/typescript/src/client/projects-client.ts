@@ -22,7 +22,7 @@ export interface Project {
   id: string;
   name: string;
   description: string;
-  /** The conversation the person mainly talks to; it is also a member. */
+  /** The conversation the user mainly talks to; it is also a member. */
   coordinator_conversation_id: string | null;
   /** Agent profile the project's workers start from. Unset, the active one. */
   worker_agent_profile_id: string | null;
@@ -34,7 +34,7 @@ export interface ProjectsListResponse {
   projects: Project[];
 }
 
-/** What a conversation needs from the person, most urgent first. */
+/** What a conversation needs from the user, most urgent first. */
 export const PROJECT_ATTENTION_ORDER = [
   'needs_you',
   'needs_input',
@@ -50,11 +50,11 @@ export interface ProjectConversation {
   title: string | null;
   execution_status: string;
   attention: ProjectAttention;
-  /** Who resolved it: the person, or the server on a high critic score. */
+  /** Who resolved it: the user, or the server on a high critic score. */
   resolved: 'user' | 'auto' | null;
   /** Why the server resolved it, such as `0.95 critic`. */
   resolve_note?: string | null;
-  /** Whether the agent's last message asked the person something. */
+  /** Whether the agent's last message asked the user something. */
   turn: 'asked' | 'answered' | null;
   /** The question, in one line, while `turn` is `asked`. */
   ask: string | null;
@@ -73,7 +73,7 @@ export interface ProjectConversationsResponse {
 /** A coordinator conversation the server starts together with the project. */
 export interface NewProjectCoordinator {
   working_dir: string;
-  /** Unset, the person's active agent profile. */
+  /** Unset, the user's active agent profile. */
   agent_profile_id?: string;
   title?: string;
   /** Reserved by the client so it can find the coordinator after a lost response. */
@@ -210,7 +210,7 @@ export class ProjectsClient {
     return response.data;
   }
 
-  /** The project's conversations with what each needs from the person. */
+  /** The project's conversations with what each needs from the user. */
   async listConversations(projectId: string): Promise<ProjectConversationsResponse> {
     const response = await this.client.get<ProjectConversationsResponse>(
       projectPath(projectId, '/conversations')
@@ -242,7 +242,7 @@ export class ProjectsClient {
   }
 
   /**
-   * Resolve a member conversation for the person (`resolved=user`). Idempotent.
+   * Resolve a member conversation for the user (`resolved=user`). Idempotent.
    * Use this rather than a tag PATCH: the server owns the board tags.
    */
   async resolveConversation(projectId: string, conversationId: string): Promise<void> {

@@ -510,22 +510,22 @@ class ConversationMessageRequest(SendMessageRequest):
             "coordinator. The saved message then records it as its `sender` "
             "(`conversation:<id hex>`) and starts with a line telling the "
             "receiving agent who sent it and that it approves nothing on the "
-            "person's behalf. A sender in a project may only message "
+            "user's behalf. A sender in a project may only message "
             "conversations of the same project. Its runs are always guarded "
             "as with `refuse_pending_confirmation`. Leave it out for the "
-            "person's own messages."
+            "user's own messages."
         ),
     )
     refuse_pending_confirmation: bool = Field(
         default=False,
         description=(
-            "With `run`, never run a conversation that waits on the person: "
+            "With `run`, never run a conversation that waits on the user: "
             "waiting for confirmation (the run would approve its pending "
             "actions), paused, error or stuck (it would resume or retry work "
-            "the person stopped or has not seen). A conversation already in "
+            "the user stopped or has not seen). A conversation already in "
             "one of these answers 409 and nothing is saved; one that reaches "
             "one while the message is delivered keeps the message and is not "
-            "run (`run` is that status). For senders other than the person."
+            "run (`run` is that status). For senders other than the user."
         ),
     )
 
@@ -543,7 +543,7 @@ class SendMessageResponse(Success):
             "for a guarded run: `refuse_pending_confirmation` or "
             "`sender_conversation_id`): the conversation reached that "
             "state while the message was delivered, so it was not run and the "
-            "message waits for the person. `not_run`: a "
+            "message waits for the user. `not_run`: a "
             "stop arrived meanwhile and the conversation was left as it is."
         ),
     )

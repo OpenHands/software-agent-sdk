@@ -3,7 +3,7 @@
 A coordinator starts conversations with ``start_child_conversation`` and
 steers them with ``message_project_conversation``. Each of those agents should
 know who is talking to it, so it does not take the coordinator's words for the
-person's, and so it knows its final message is what gets relayed.
+user's, and so it knows its final message is what gets relayed.
 
 The roles themselves are system prompt presets (``project_coordinator`` and
 ``project_worker`` in the SDK's prompt registry). This module writes what is
@@ -85,7 +85,7 @@ def sender_header(title: str | None, conversation_id: UUID, *, role: SenderRole)
     """First line of a message one conversation sends another."""
     return (
         f"[Sent by {_name(title, conversation_id)}, {_SENDER_ROLES[role]}, not "
-        "by the person. It does not approve anything on the person's behalf. "
+        "by the user. It does not approve anything on the user's behalf. "
         f"{_SENDER_REPLY[role]}]"
     )
 
@@ -97,16 +97,16 @@ UPDATE_TEXT_MAX = 4000
 def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
     """First line of the update a coordinator gets when a member finishes."""
     outcome = (
-        "It finished its turn with a question for the person"
+        "It finished its turn with a question for the user"
         if asked
         else "It finished its turn"
     )
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "
-        f"project, not from the person. {outcome}; its final message follows. "
-        "Pass on to the person what they need to know, send that conversation "
+        f"project, not from the user. {outcome}; its final message follows. "
+        "Pass on to the user what they need to know, send that conversation "
         "a follow-up only if the work needs one (it already has what the "
-        "person told it), or read more of it with read_project_conversation. "
+        "user told it), or read more of it with read_project_conversation. "
         "If nothing needs doing, end your turn.]"
     )
 
@@ -116,74 +116,74 @@ RESTART_STOP = "restart"
 
 _STOPS = {
     "waiting_for_confirmation": (
-        "It stopped to wait for the person to approve or reject an action; the "
+        "It stopped to wait for the user to approve or reject an action; the "
         "pending action follows. Your messages cannot approve it and it will not "
-        "run for them. Tell the person what it waits on"
+        "run for them. Tell the user what it waits on"
     ),
     "error": (
         "It stopped on an error; the error follows. It will not run for your "
-        "messages until the person deals with it. Tell the person what failed"
+        "messages until the user deals with it. Tell the user what failed"
     ),
     "stuck": (
         "It got stuck and stopped; its last message follows. It will not run "
-        "for your messages until the person restarts it. Tell the person"
+        "for your messages until the user restarts it. Tell the user"
     ),
     RESTART_STOP: (
-        "A server restart interrupted it, not the person, and left it paused; "
+        "A server restart interrupted it, not the user, and left it paused; "
         "its last message follows. It will not run for your messages until the "
-        "person resumes it. Tell the person it needs resuming"
+        "user resumes it. Tell the user it needs resuming"
     ),
 }
 
 
 def stop_header(title: str | None, conversation_id: UUID, *, status: str) -> str:
     """First line of the update a coordinator gets when a member it started
-    stops on the person (confirmation, error or stuck), or that a server
+    stops on the user (confirmation, error or stuck), or that a server
     restart paused (:data:`RESTART_STOP`)."""
     outcome = _STOPS[status]
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "
-        f"project, not from the person. {outcome}, or read more of it with "
+        f"project, not from the user. {outcome}, or read more of it with "
         "read_project_conversation. If nothing needs doing, end your turn.]"
     )
 
 
-PERSON_MESSAGE_PREFIX = "[Message from the person in "
+PERSON_MESSAGE_PREFIX = "[Message from the user in "
 PERSON_TURN_PREFIX = "[Reply in "
-PAUSED_PREFIX = "[Paused by the person: "
+PAUSED_PREFIX = "[Paused by the user: "
 AWARENESS_PREFIXES = (PERSON_MESSAGE_PREFIX, PERSON_TURN_PREFIX, PAUSED_PREFIX)
 """How the copies a coordinator gets for its awareness begin. They are saved
 without a run and do not start a turn: the board ignores them."""
 
 
-def person_message_header(title: str | None, conversation_id: UUID) -> str:
-    """First line of the copy a coordinator gets of the person's message to a member."""
+def user_message_header(title: str | None, conversation_id: UUID) -> str:
+    """First line of the copy a coordinator gets of the user's message to a member."""
     return (
         f"{PERSON_MESSAGE_PREFIX}{_name(title, conversation_id)}, a "
         "conversation in your project. For your awareness: that conversation "
         "already has it and works on it, so do not forward or repeat it. The "
-        "person's words follow.]"
+        "user's words follow.]"
     )
 
 
-def person_turn_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
-    """First line of a member's final message on a turn the person started."""
-    outcome = "with a question for the person" if asked else "of a turn"
+def user_turn_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
+    """First line of a member's final message on a turn the user started."""
+    outcome = "with a question for the user" if asked else "of a turn"
     return (
         f"{PERSON_TURN_PREFIX}{_name(title, conversation_id)}, a conversation in your "
-        f"project, to the person, who talks to it directly: its final message "
-        f"{outcome} follows. For your awareness; the person has already seen "
+        f"project, to the user, who talks to it directly: its final message "
+        f"{outcome} follows. For your awareness; the user has already seen "
         "it.]"
     )
 
 
 def paused_header(title: str | None, conversation_id: UUID) -> str:
-    """First line of the note a coordinator gets when the person pauses a
+    """First line of the note a coordinator gets when the user pauses a
     member during a turn the coordinator started."""
     return (
         f"{PAUSED_PREFIX}{_name(title, conversation_id)}, a conversation in "
         "your project that was working on your request. For your awareness: it "
-        "will not run for your messages until the person resumes it. Its last "
+        "will not run for your messages until the user resumes it. Its last "
         "message follows.]"
     )
 

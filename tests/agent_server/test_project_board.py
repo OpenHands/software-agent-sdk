@@ -167,7 +167,7 @@ async def test_finished_run_records_a_question():
 
 
 @pytest.mark.asyncio
-async def test_confident_critic_resolves_without_overriding_the_person():
+async def test_confident_critic_resolves_without_overriding_the_user():
     store = _Tags({"project": "p1"})
     subscriber = _subscriber(store)
 
@@ -602,12 +602,12 @@ async def test_an_answered_turn_drops_a_stale_ask():
 
 
 @pytest.mark.asyncio
-async def test_the_persons_messages_are_passed_on_in_order():
+async def test_the_users_messages_are_passed_on_in_order():
     store = _Tags({"project": "p1"})
     calls: list[tuple] = []
 
-    async def on_person_message(project, text):
-        calls.append(("person", project, text))
+    async def on_user_message(project, text):
+        calls.append(("user", project, text))
 
     async def on_finished(project, turn, text, sender):
         calls.append(("finished", project, text, sender))
@@ -617,7 +617,7 @@ async def test_the_persons_messages_are_passed_on_in_order():
         tags=lambda: store.tags,
         set_tag=store.set_tag,
         on_finished=on_finished,
-        on_person_message=on_person_message,
+        on_user_message=on_user_message,
     )
 
     await _feed(
@@ -629,7 +629,7 @@ async def test_the_persons_messages_are_passed_on_in_order():
     )
 
     assert calls == [
-        ("person", "p1", "Use Postgres"),
+        ("user", "p1", "Use Postgres"),
         ("finished", "p1", "Done.", None),
     ]
 
@@ -648,7 +648,7 @@ async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
         set_tag=store.set_tag,
         on_finished=on_finished,
     )
-    note = _message("user", "[Message from the person in x]", sender="conversation:abc")
+    note = _message("user", "[Message from the user in x]", sender="conversation:abc")
 
     await _feed(subscriber, note)
 
@@ -664,15 +664,15 @@ async def test_a_goal_loop_nudge_keeps_the_turn_starter_and_is_not_relayed():
     async def on_finished(project, turn, text, sender):
         calls.append(("finished", sender))
 
-    async def on_person_message(project, text):
-        calls.append(("person", text))
+    async def on_user_message(project, text):
+        calls.append(("user", text))
 
     subscriber = ConversationOutcomeSubscriber(
         conversation_id=uuid4(),
         tags=lambda: store.tags,
         set_tag=store.set_tag,
         on_finished=on_finished,
-        on_person_message=on_person_message,
+        on_user_message=on_user_message,
     )
 
     await _feed(
@@ -715,7 +715,7 @@ def _stop_subscriber(store: _Tags, stops: list, lookup=None):
 
 
 @pytest.mark.asyncio
-async def test_a_member_that_stops_on_the_person_reports_each_stop_once():
+async def test_a_member_that_stops_on_the_user_reports_each_stop_once():
     """Review S1: the coordinator heard only about finished runs, so a worker
     waiting for approval or failing was invisible to it."""
     store = _Tags({"project": "p1"})
@@ -760,7 +760,7 @@ async def test_a_conversation_already_stopped_when_watched_reports_nothing():
 @pytest.mark.asyncio
 async def test_after_a_restart_the_turn_starter_is_read_from_the_log():
     """Review S2: a subscriber that did not see the turn begin took the turn
-    for the person's, so the coordinator was never woken."""
+    for the user's, so the coordinator was never woken."""
     store = _Tags({"project": "p1"})
     stops: list = []
     finishes: list = []
@@ -801,7 +801,7 @@ def _judging(store: _Tags, verdict: ResolutionVerdict | None, seen: list):
 
 
 @pytest.mark.asyncio
-async def test_judge_resolves_when_nothing_is_left_for_the_person():
+async def test_judge_resolves_when_nothing_is_left_for_the_user():
     store = _Tags({"project": "p1"})
     seen: list[ResolutionState] = []
     verdict = ResolutionVerdict(probability=0.93, owed="nothing")
@@ -834,7 +834,7 @@ async def test_judge_resolves_when_nothing_is_left_for_the_person():
     ],
 )
 @pytest.mark.asyncio
-async def test_judge_leaves_open_when_the_person_owes_something(verdict):
+async def test_judge_leaves_open_when_the_user_owes_something(verdict):
     store = _Tags({"project": "p1"})
 
     # A confident critic does not override a judge that says no.
@@ -856,7 +856,7 @@ async def test_the_turn_shows_while_the_judge_thinks():
     store = _Tags({"project": "p1"})
     release = asyncio.Event()
     verdict = verdict_from_judgments(
-        {"handled": 0.99, "task_done": 0.9, "asks_person": 0.97, "offers_choice": 0.9}
+        {"handled": 0.99, "task_done": 0.9, "asks_user": 0.97, "offers_choice": 0.9}
     )
 
     async def slow_judge(state: ResolutionState) -> ResolutionVerdict | None:
@@ -892,10 +892,10 @@ async def test_the_turn_shows_while_the_judge_thinks():
 
 
 @pytest.mark.asyncio
-async def test_judge_sends_a_question_without_a_question_mark_to_the_person():
+async def test_judge_sends_a_question_without_a_question_mark_to_the_user():
     store = _Tags({"project": "p1"})
     verdict = verdict_from_judgments(
-        {"handled": 0.99, "task_done": 0.9, "asks_person": 0.97, "offers_choice": 0.9}
+        {"handled": 0.99, "task_done": 0.9, "asks_user": 0.97, "offers_choice": 0.9}
     )
 
     await _feed(
@@ -986,7 +986,7 @@ async def test_without_a_verdict_a_confident_critic_still_resolves():
 
 
 @pytest.mark.asyncio
-async def test_a_person_message_clears_the_resolve_note():
+async def test_a_user_message_clears_the_resolve_note():
     store = _Tags(
         {"project": "p1", "turn": "answered", "resolved": "auto", "resolvenote": "x"}
     )
@@ -1079,7 +1079,7 @@ async def test_a_needs_you_reply_without_a_request_line_has_no_ask():
 @pytest.mark.asyncio
 async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
     store = _Tags({"project": "p1"})
-    verdict = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_person": 0.9})
+    verdict = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
 
     await _feed(
         _judging(store, verdict, []),
@@ -1098,7 +1098,7 @@ async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
 
 @pytest.mark.asyncio
 async def test_a_worker_that_resolved_itself_is_not_judged():
-    """The person says "merged", the worker reacts and resolves its own
+    """The user says "merged", the worker reacts and resolves its own
     conversation with resolve_conversation: no judge call, and its resolve
     stands."""
     store = _Tags({"project": "p1", "turn": "asked", "ask": "Merge it?"})

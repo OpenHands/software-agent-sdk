@@ -251,7 +251,7 @@ def test_a_deployment_role_sets_the_preset_and_the_project_block():
     context = launched.agent.agent_context
     assert context is not None
     assert context.project_context == "Project: Docs"
-    # The person's suffix stays theirs.
+    # The user's suffix stays theirs.
     assert context.system_message_suffix == "PROFILE"
 
 

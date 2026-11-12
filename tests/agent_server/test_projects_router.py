@@ -35,7 +35,7 @@ from openhands.agent_server.project_wake import (
     notify_coordinator,
     notify_coordinator_of_stop,
     reconcile_coordinator_updates,
-    relay_person_message,
+    relay_user_message,
 )
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent, Message, TextContent
@@ -582,7 +582,7 @@ async def test_sender_outside_any_project_is_named_as_a_conversation(
     event = await _last_user_message(service, target)
     assert event.sender == f"conversation:{sender.hex}"
     header = event.llm_message.content[0].text  # type: ignore[union-attr]
-    assert "another conversation, not by the person" in header
+    assert "another conversation, not by the user" in header
 
 
 @pytest.mark.asyncio
@@ -671,7 +671,7 @@ async def test_message_records_its_sender(
     assert event.sender == f"conversation:{cat.hex}"
     header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
     assert text == "Also add docs"
-    assert cat.hex in header and "not by the person" in header
+    assert cat.hex in header and "not by the user" in header
     role = "the coordinator of your project"
     assert (role in header) is from_coordinator
 
@@ -788,7 +788,7 @@ def test_sender_fields_belong_to_the_events_route_only():
 @pytest.mark.asyncio
 async def test_a_guarded_message_leaves_a_stuck_conversation_stuck(service, tmp_path):
     """Review: saving a message resets stuck to idle, which would let the
-    guarded run retry work the person has not looked at."""
+    guarded run retry work the user has not looked at."""
     worker = await _start(service, tmp_path)
     await _set_status(service, worker, ConversationExecutionStatus.STUCK)
     event_service = await service.get_event_service(worker)
@@ -839,7 +839,7 @@ async def test_send_reports_not_run_when_a_stop_lands_first(
 async def test_a_guarded_acp_follow_up_resumes_its_own_interrupt(service, tmp_path):
     """Review: a follow-up to a running ACP conversation interrupts the prompt
     (paused) and starts a replacement run, which the guard must not refuse.
-    A pause the person made, or pending actions, still refuse."""
+    A pause the user made, or pending actions, still refuse."""
     worker = await _start(service, tmp_path)
     event_service = await service.get_event_service(worker)
     assert event_service is not None
@@ -1184,7 +1184,7 @@ async def test_a_finished_member_wakes_its_coordinator(
     event = await _last_user_message(service, cat)
     assert event.sender == f"conversation:{worker.hex}"
     header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
-    assert "with a question for the person" in header and worker.hex in header
+    assert "with a question for the user" in header and worker.hex in header
     assert text == "Which database should I use?"
 
 
@@ -1215,7 +1215,7 @@ async def test_no_update_without_a_coordinator_or_to_itself(
 async def test_only_the_coordinators_turns_wake_it(
     client, service, tmp_path, monkeypatch
 ):
-    """The coordinator runs on replies to its own messages. A turn the person
+    """The coordinator runs on replies to its own messages. A turn the user
     started is passed on without a run, and a turn another member started (or
     an update the coordinator answered) is not passed on at all."""
     cat = await _start(service, tmp_path)
@@ -1263,7 +1263,7 @@ def _record_runs(monkeypatch) -> list[bool]:
 
 
 @pytest.mark.asyncio
-async def test_the_persons_message_in_a_member_reaches_the_coordinator(
+async def test_the_users_message_in_a_member_reaches_the_coordinator(
     client, service, tmp_path, monkeypatch
 ):
     cat = await _start(service, tmp_path)
@@ -1276,12 +1276,12 @@ async def test_the_persons_message_in_a_member_reaches_the_coordinator(
     await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
     runs = _record_runs(monkeypatch)
 
-    assert await relay_person_message(service, worker, project["id"], "Use Postgres")
-    assert not await relay_person_message(service, cat, project["id"], "Hi Cat")
+    assert await relay_user_message(service, worker, project["id"], "Use Postgres")
+    assert not await relay_user_message(service, cat, project["id"], "Hi Cat")
 
     event = await _last_user_message(service, cat)
     header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
-    assert header.startswith("[Message from the person in ")
+    assert header.startswith("[Message from the user in ")
     assert worker.hex in header and "do not forward or repeat it" in header
     assert text == "Use Postgres"
     assert event.sender == f"conversation:{worker.hex}"
@@ -1509,7 +1509,7 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
     assert await notify_coordinator(
         service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
     )
-    assert await relay_person_message(service, worker, project["id"], "Use Postgres")
+    assert await relay_user_message(service, worker, project["id"], "Use Postgres")
 
     assert stopped == []
 
@@ -1639,7 +1639,7 @@ async def test_a_coordinator_that_cannot_start_leaves_no_project(
         ConversationExecutionStatus.STUCK,
     ],
 )
-async def test_message_does_not_resume_work_the_person_stopped(
+async def test_message_does_not_resume_work_the_user_stopped(
     client, service, tmp_path, held
 ):
     """Review S3: a coordinator's follow-up used to resume a paused worker
@@ -1681,11 +1681,11 @@ async def test_guarded_send_keeps_the_message_of_a_paused_conversation(
 
 
 @pytest.mark.asyncio
-async def test_a_member_stopped_on_the_person_wakes_its_coordinator(
+async def test_a_member_stopped_on_the_user_wakes_its_coordinator(
     client, service, tmp_path, monkeypatch
 ):
     """Review S1: the coordinator learns that a worker it started waits on the
-    person, and runs to tell them; a pause is only noted."""
+    user, and runs to tell them; a pause is only noted."""
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
     project = (
@@ -1714,10 +1714,10 @@ async def test_a_member_stopped_on_the_person_wakes_its_coordinator(
         service, worker, project["id"], "paused", "Halfway.", by_cat
     )
     event = await _last_user_message(service, cat)
-    assert event.llm_message.content[0].text.startswith("[Paused by the person: ")  # type: ignore[union-attr]
+    assert event.llm_message.content[0].text.startswith("[Paused by the user: ")  # type: ignore[union-attr]
     assert runs == [True, False]
 
-    # The person's own turns, and stops that are not on the person, stay quiet.
+    # The user's own turns, and stops that are not on the user, stay quiet.
     assert not await notify_coordinator_of_stop(
         service, worker, project["id"], "error", "boom", None
     )
@@ -1802,7 +1802,7 @@ async def test_a_restart_delivers_the_updates_it_missed(
 ):
     """Review S2/F3: a turn the coordinator started that ended while no update
     reached it (the server stopped first) is delivered on the next start,
-    once; turns the person started are not replayed."""
+    once; turns the user started are not replayed."""
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
     project = (
@@ -1859,7 +1859,7 @@ async def test_a_restart_delivers_the_updates_it_missed(
     assert header.startswith("[Update from ") and "error" in header
     assert runs == [True]
 
-    # The person's own turn is theirs; it is not replayed to the coordinator.
+    # The user's own turn is theirs; it is not replayed to the coordinator.
     await worker_service.send_message(
         Message(role="user", content=[TextContent(text="Thanks, I'll take it.")])
     )
@@ -1870,12 +1870,12 @@ async def test_a_restart_delivers_the_updates_it_missed(
 
 
 @pytest.mark.asyncio
-async def test_a_pause_from_a_restart_is_not_the_persons(
+async def test_a_pause_from_a_restart_is_not_the_users(
     client, service, tmp_path, monkeypatch
 ):
     """E2E finding: a worker the shutdown paused was reported as paused by the
-    person. The shutdown sends nothing; the catch-up names the restart and
-    wakes the coordinator. A later pause by the person reads as theirs."""
+    user. The shutdown sends nothing; the catch-up names the restart and
+    wakes the coordinator. A later pause by the user reads as theirs."""
     from openhands.agent_server.event_service import PAUSED_BY_SHUTDOWN_MARKER
     from openhands.agent_server.project_wake import notify_coordinator_of_stop
 
@@ -1927,7 +1927,7 @@ async def test_a_pause_from_a_restart_is_not_the_persons(
     assert await reconcile_coordinator_updates(service) == 1
     header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
     assert header.startswith("[Update from ") and "server restart" in header
-    assert "Paused by the person" not in header
+    assert "Paused by the user" not in header
     assert runs == [True]
 
     # An error status read while the mark is set is the same restart.
@@ -1937,7 +1937,7 @@ async def test_a_pause_from_a_restart_is_not_the_persons(
     header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
     assert "server restart" in header
 
-    # A run clears the mark, so the person's own pause later reads as theirs.
+    # A run clears the mark, so the user's own pause later reads as theirs.
     worker_service._mark_paused_by_shutdown(False)
     assert not worker_service.paused_by_shutdown
     runs.clear()
@@ -1950,7 +1950,7 @@ async def test_a_pause_from_a_restart_is_not_the_persons(
         f"conversation:{cat.hex}",
     )
     header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
-    assert header.startswith("[Paused by the person: ")
+    assert header.startswith("[Paused by the user: ")
     assert runs == [False]
 
 
@@ -2030,7 +2030,7 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resolve_by_the_agent_is_auto_and_never_over_the_person(
+async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     client, service, tmp_path
 ):
     """resolve_conversation: the worker resolves its own conversation."""
@@ -2105,7 +2105,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "status, unconfirmed, from_person, refusal",
+    "status, unconfirmed, from_user, refusal",
     [
         ("idle", False, False, None),
         ("finished", False, False, None),
@@ -2117,13 +2117,13 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
         # Actions left unconfirmed would run, which approves them.
         ("paused", True, True, "waiting_for_confirmation"),
         ("idle", True, False, "waiting_for_confirmation"),
-        # The person's own words (Voice) may resume their paused conversation.
+        # The user's own words (Voice) may resume their paused conversation.
         ("paused", False, True, None),
         ("error", False, True, "error"),
     ],
 )
 def test_one_admission_rule_for_senders_that_are_not_watching(
-    tmp_path, status, unconfirmed, from_person, refusal
+    tmp_path, status, unconfirmed, from_user, refusal
 ):
     """Review S3/F2: the guard for other conversations and Voice's
     send_message_if_idle are one rule, differing only in who may resume."""
@@ -2155,7 +2155,7 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
             )
         )
 
-    assert admission_refusal(state, from_person=from_person) == refusal
+    assert admission_refusal(state, from_user=from_user) == refusal
 
 
 @pytest.mark.asyncio

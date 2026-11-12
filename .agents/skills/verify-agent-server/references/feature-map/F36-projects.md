@@ -1,7 +1,7 @@
 # Projects and coordinator tools
 
 A project groups the conversations that work toward one goal: one coordinator
-conversation that the person mainly talks to, and the conversations it starts or is
+conversation that the user mainly talks to, and the conversations it starts or is
 given. Project records (`id`, `name`, `description`,
 `coordinator_conversation_id`, timestamps) live in one JSON document,
 `projects.json` in the persistence directory, rewritten atomically under a
@@ -9,7 +9,7 @@ file lock. Membership is not stored there: a conversation belongs to a project
 when its `project` tag holds the project's id (hex), so a child started with
 `start_child_conversation` joins its parent's project with the rest of the
 copied tags. `GET /api/projects/{id}/conversations` lists the members grouped by
-what they need from the person (`attention`: `needs_you`, `needs_input`,
+what they need from the user (`attention`: `needs_you`, `needs_input`,
 `working`, `idle`, `resolved`, derived from `execution_status` and tags). Two server-executed
 tools, `list_project_conversations` and `message_project_conversation`, give a
 coordinator agent typed access to the same list and a way to steer a conversation.
@@ -26,7 +26,7 @@ first with `PATCH /api/settings/experimental/projects {"enabled": true}`. While
 it is off, every `/api/projects` route answers 404, new conversations get no
 project tools (they are withheld even when the agent spec lists them) and no
 worker guidance, a member's child is an ordinary child without the `project`
-tag, and no update or person copy reaches a coordinator. Projects on disk are
+tag, and no update or user copy reaches a coordinator. Projects on disk are
 kept, and conversations started while it was on keep their tools.
 
 Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
@@ -69,7 +69,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`), and an `asked` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask`, `resolved` or `resolvenote`.
-- `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the person's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the person's `resolved=user`, and the resolution judge does not run on that turn.
+- `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the user's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the user's `resolved=user`, and the resolution judge does not run on that turn.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
 - `F36.artifacts-tool`: a member with `write_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused. With `list_artifacts` and `read_artifact` it sees the project's files and reads one: small UTF-8 text inline, anything else copied into its workspace (`.agent_tmp/artifacts/<name>` unless it names a path inside the workspace).
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
@@ -78,9 +78,9 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
 - `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
-- `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the person writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the person in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
+- `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the user writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the user in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
 - `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_project_conversation` tool reads it.
-- `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the person), and runs again.
+- `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the user), and runs again.
 - `F36.mention`: tools and headers name conversations as mentions, `[Title](conversation:<id hex>)`: `list_project_conversations` lists each conversation that way, and a coordinator asked which conversation handles a task answers with that mention.
 - `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
 
@@ -99,7 +99,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   `idle` (finished or never run, not resolved) or `resolved`.
 - Tags the server sets on project members (`openhands.agent_server.project_board`):
   `turn=asked|answered` when a run finishes, and `resolved=auto` plus
-  `resolvenote` when an answered turn leaves nothing for the person (never
+  `resolvenote` when an answered turn leaves nothing for the user (never
   over `resolved=user`, never on an `asked` turn). The resolution judge
   (`openhands.sdk.conversation.resolution`, `resolution_judge.py`) asks typed
   questions of `OH_RESOLUTION_MODEL` (a LiteLLM decision model such as
@@ -107,7 +107,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   `OH_RESOLUTION_API_KEY` or `JEV_API_KEY`), else of the conversation's own
   LLM. It sees the turn plus the conversation's first message and earlier
   requests. The model answers seven narrow yes/no judgments (handled,
-  task_done, asks_person, hands_off_review, offers_choice, asks_to_check,
+  task_done, asks_user, hands_off_review, offers_choice, asks_to_check,
   reports_problem) and code decides: resolved when handled and task_done are
   >= 0.85 and every hand-off < 0.2 (`resolvenote` like `0.93 nothing`). A
   substantive question, choice, review or check (>= 0.5) makes the turn
@@ -338,7 +338,7 @@ Preconditions:
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
   control-agent-server api POST "/api/conversations/$W1/events" --json "{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"hi\"}], \"sender_conversation_id\": \"$W2\"}" --expect 422 \
     --check detail eq 'Sender is not a conversation of this project'
-  control-agent-server conversation events "$W1" --kinds MessageEvent --contains 'not by the person' --expect-count 0
+  control-agent-server conversation events "$W1" --kinds MessageEvent --contains 'not by the user' --expect-count 0
   ```
   The member runs and finishes; a member cannot message `W1`, which left the
   project earlier.
@@ -358,18 +358,18 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 60 --save F36.turn/answered
   W2_HEX=$(printf %s "$W2" | tr -d -)
   for _ in $(seq 30); do
-    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the person" --expect-min 2 >/dev/null 2>&1 && break
+    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the user" --expect-min 2 >/dev/null 2>&1 && break
     sleep 2
   done
   control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project. For your awareness" --expect-min 2 \
     --save F36.turn/coordinator-copies
-  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the person" --expect-min 2
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the user" --expect-min 2
   control-agent-server api GET "/api/conversations/$CAT" --check execution_status eq idle
   ```
   A question finishes as `asked` with the question as `ask` and lists as
   `needs_input`; the answer reopens the conversation and the next run
   finishes as `answered`, without an `ask`. The coordinator gets a copy of
-  each of the person's messages and of each reply, and is not run.
+  each of the user's messages and of each reply, and is not run.
 - **Resolved (`F36.resolved`).**
   Requires: `F36.turn`
   Needs: `llm`
@@ -387,7 +387,7 @@ Preconditions:
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
   ```
   A client's tag `PATCH` keeps the membership and the `turn` the server set.
-  The person's resolve shows as `resolved: "user"`; a new message reopens the
+  The user's resolve shows as `resolved: "user"`; a new message reopens the
   conversation. The reply to that message is judged again, so a trivial turn
   may come back as `resolved: "auto"`, never `user`.
 - **Resolved automatically (`F36.auto-resolve`).**
@@ -444,9 +444,9 @@ Preconditions:
   control-agent-server api POST "/api/projects/$P2/conversations/$SR/resolve" --json '{"by": "agent"}' --expect 202
   control-agent-server api GET "/api/conversations/$SR" --check tags.resolved eq user --check tags not-contains resolvenote
   ```
-  The person's "merged" leaves nothing to do: the agent calls
+  The user's "merged" leaves nothing to do: the agent calls
   `resolve_conversation` and ends its turn, and the note is `agent`, not a
-  judge's probability. An agent's resolve never replaces the person's.
+  judge's probability. An agent's resolve never replaces the user's.
 - **Artifacts over REST (`F36.artifacts-rest`).**
   Requires: `F36.coordinator`
   ```sh
@@ -482,7 +482,7 @@ Preconditions:
   Requires: `F36.coordinator`
   ```sh
   control-agent-server api GET "/api/projects/$P2/memory" --expect 200 --check files len-eq 0
-  REV=$(control-agent-server api PUT "/api/projects/$P2/memory/MEMORY.md" --json '{"content": "- The person prefers short answers.\n"}' \
+  REV=$(control-agent-server api PUT "/api/projects/$P2/memory/MEMORY.md" --json '{"content": "- The user prefers short answers.\n"}' \
     --expect 200 --check revision matches '^[0-9a-f]{16}$' --field revision)
   control-agent-server api PUT "/api/projects/$P2/memory/MEMORY.md" --json '{"content": "clobber"}' --expect 409 \
     --check detail.current.revision eq "$REV" --save F36.memory-rest/stale-create
@@ -521,7 +521,7 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
   control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
   ```
-  Nothing is saved and the conversation keeps waiting for the person.
+  Nothing is saved and the conversation keeps waiting for the user.
 - **Restart (`F36.persist-restart`).**
   Requires: `F36.create`, `F36.coordinator`
   ```sh
@@ -593,7 +593,7 @@ Preconditions:
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'Message saved to conversation' --expect-min 1 --save F36.tool-message/events
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
-  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains 'the coordinator of your project, not by the person' --expect-count 2
+  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains 'the coordinator of your project, not by the user' --expect-count 2
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 2
   control-agent-server conversation events "$CHILD" --kinds ActionEvent,MessageEvent --contains '"source": "agent"' --expect-min 2
   ```
@@ -624,7 +624,7 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
   control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
   ```
-  The tool reports an error, the conversation keeps waiting for the person, and it
+  The tool reports an error, the conversation keeps waiting for the user, and it
   has only its original message.
 - **Corrupted file (`F36.corrupted-file`).** Run last: it replaces the file.
   ```sh
@@ -658,7 +658,7 @@ Preconditions:
   after the run's final state update, so poll (`--until-ok`) rather than read
   once. There is no per-conversation "ask" text or task progress yet.
 - A `resolved` conversation is listed as `resolved` unless it is running
-  (`working`) or blocked on the person (`needs_you`).
+  (`working`) or blocked on the user (`needs_you`).
 - `automation_id` comes from the `automationid` tag that OpenHands
   automations set; children of an automation's conversation copy it, so they group
   with that automation. An automation's conversations join a project only when
@@ -670,10 +670,10 @@ Preconditions:
   delivered, the message is kept and `run` is `waiting_for_confirmation`;
   a run that was already active answers `queued`. The same guard keeps a
   `paused`, `error` or `stuck` conversation from running (409, or `run` is
-  that status): those are the person's to resume. Actions left unconfirmed
+  that status): those are the user's to resume. Actions left unconfirmed
   (say, a pause during a confirmation) count as `waiting_for_confirmation`.
   The rule is `admission_refusal()` in `event_service.py`, shared with
-  Voice, which differs only in letting the person resume a pause. Delivery to a running conversation waits for its state lock,
+  Voice, which differs only in letting the user resume a pause. Delivery to a running conversation waits for its state lock,
   which a long tool call holds, so the tool waits up to 300 seconds and, on a
   timeout, tells the agent not to resend.
 - The tools read the project from the caller's tags on every call, so adding

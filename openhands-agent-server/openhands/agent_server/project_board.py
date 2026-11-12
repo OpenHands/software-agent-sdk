@@ -2,15 +2,15 @@
 
 When a conversation in a project finishes a run, :class:`ConversationOutcomeSubscriber`
 tags it with how the agent's last message ended (``turn=asked`` or
-``turn=answered``) and, when a turn leaves nothing for the person to do, marks
+``turn=answered``) and, when a turn leaves nothing for the user to do, marks
 it resolved (``resolved=auto``). Two signals can resolve a turn: the resolution
 judge (:mod:`openhands.sdk.conversation.resolution`), which asks whether
-anything is left for the person, and a confident critic score. A turn that
-asked the person something is never resolved automatically. When the agent
+anything is left for the user, and a confident critic score. A turn that
+asked the user something is never resolved automatically. When the agent
 stopped on a question, the question itself is saved, in one short line, as
 ``ask``. A new user message
 removes these tags, since the conversation is open again. Once the agent stops
-on a question, the turn (and its ``ask``) stays until the person answers, even
+on a question, the turn (and its ``ask``) stays until the user answers, even
 if a Stop hook made it go on to a ``finish`` that does not repeat the question.
 
 The board reads these tags from the conversation catalog, so listing a project
@@ -83,19 +83,19 @@ SetTag = Callable[..., Awaitable[Any]]
 OnFinished = Callable[[str, TurnOutcome, str | None, str | None], Awaitable[object]]
 """Called after a project member's outcome is recorded, with the project id
 (hex), the turn outcome, the agent's final message and the ``sender`` of the
-user message that started the turn (None when the person sent it)."""
+user message that started the turn (None when the user sent it)."""
 
 
-OnPersonMessage = Callable[[str, str], Awaitable[object]]
+OnUserMessage = Callable[[str, str], Awaitable[object]]
 
 OnStopped = Callable[[str, str, str | None, str | None], Awaitable[object]]
-"""``(project, status, text, turn_sender)`` when a run stops on the person:
+"""``(project, status, text, turn_sender)`` when a run stops on the user:
 waiting for confirmation, paused, error or stuck (see
 :data:`~openhands.sdk.conversation.types.HELD_FOR_PERSON_STATUSES`). ``text``
 says what it waits on: the pending action, the error, or the last message."""
 
 ResolutionJudge = Callable[[ResolutionState], Awaitable[ResolutionVerdict | None]]
-"""Judges whether an answered turn leaves anything for the person; ``None``
+"""Judges whether an answered turn leaves anything for the user; ``None``
 when no judge model is available or the call failed."""
 
 _TURN_ACTIONS_KEPT: Final[int] = 20
@@ -103,19 +103,19 @@ _TURN_ACTIONS_KEPT: Final[int] = 20
 TurnSenderLookup = Callable[[], Awaitable[str | None]]
 
 ProjectsEnabled = Callable[[], Awaitable[bool]]
-"""Whether the person has the ``projects`` experimental feature on right now.
+"""Whether the user has the ``projects`` experimental feature on right now.
 
 The subscriber is Projects' one hook into a conversation's events, so this is
 its one check: while it is off the board is left as it is (no outcome, judge or
 reopen) and the coordinator hears nothing."""
 """Reads who started the current turn from the event log, for a subscriber
 that did not see the turn's first message (a server restart in between)."""
-"""Called when the person writes in a project member, with the project id
+"""Called when the user writes in a project member, with the project id
 (hex) and the message text."""
 
 
 def classify_turn(text: str | None) -> TurnOutcome:
-    """Say whether an agent's final message asks the person something.
+    """Say whether an agent's final message asks the user something.
 
     Looks at the last paragraph outside code blocks: it asks when a sentence
     there ends with a question mark. This is a heuristic; it errs towards
@@ -270,7 +270,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     tags: Callable[[], dict[str, str]]
     set_tag: SetTag
     on_finished: OnFinished | None = None
-    on_person_message: OnPersonMessage | None = None
+    on_user_message: OnUserMessage | None = None
     on_stopped: OnStopped | None = None
     turn_sender_lookup: TurnSenderLookup | None = None
     judge: ResolutionJudge | None = None
@@ -284,18 +284,18 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     _seen_agent_output: bool = field(default=False, init=False)
     # The agent stopped on a question since the last user message. A Stop
     # hook that refuses to let it stop on a plain message pushes it on to a
-    # ``finish`` whose text may not repeat the question; the person still
+    # ``finish`` whose text may not repeat the question; the user still
     # owes an answer.
     _asked_since_user: bool = field(default=False, init=False)
     # The question that made the turn ``asked``, kept for the same reason.
     _ask: str | None = field(default=None, init=False)
     # ``sender`` of the latest user message: who started the current turn and
-    # so who waits for its final message (None for the person).
+    # so who waits for its final message (None for the user).
     _turn_sender: str | None = field(default=None, init=False)
     # Whether this subscriber saw the current turn's first message. After a
     # server restart it did not, and the starter is read from the event log.
     _turn_known: bool = field(default=False, init=False)
-    # A run that may stop on the person: set by a user message or by agent
+    # A run that may stop on the user: set by a user message or by agent
     # output, cleared once a stop or a finish is reported.
     _turn_open: bool = field(default=False, init=False)
     # The held status last reported for this turn, so repeated state pushes
@@ -337,13 +337,13 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 self._reported_hold = None
                 self._last_action = None
                 self._last_error = None
-                if event.sender is None and self.on_person_message is not None:
+                if event.sender is None and self.on_user_message is not None:
                     project = self.tags().get(PROJECT_TAG_KEY)
                     text = extract_message_text(event)
                     if project and text:
-                        callback = self.on_person_message
+                        callback = self.on_user_message
                         self._notify_later(lambda: callback(project, text))
-                # Reopen a member the person resolved (checked when it runs).
+                # Reopen a member the user resolved (checked when it runs).
                 # An outcome still being written is not visible in the tags
                 # yet, so queue the reopen behind it as well.
                 pending = self._tail is not None and not self._tail.done()
@@ -418,7 +418,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 )
 
     def _stopped(self, status: str) -> None:
-        """Tell the coordinator, once, that a turn stopped on the person."""
+        """Tell the coordinator, once, that a turn stopped on the user."""
         if not self._turn_open or self._reported_hold == status:
             return
         self._reported_hold = status
@@ -513,16 +513,16 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             verdict = await self._judge(judged)
         heuristic = (turn, ask)
         if verdict is not None:
-            # The judge decides whether the reply waits on the person, also
+            # The judge decides whether the reply waits on the user, also
             # when it asks without a question mark or ends on a pleasantry.
             starter = sender if sender_known else await self._logged_turn_sender()
-            if verdict.needs_person and _from_conversation(starter):
+            if verdict.needs_user and _from_conversation(starter):
                 # Asks in a turn another conversation started (a coordinator)
                 # are for that conversation, which gets the reply; the turn
-                # is neither the person's to answer nor resolved.
+                # is neither the user's to answer nor resolved.
                 turn = "answered"
                 ask = None
-            elif verdict.needs_person:
+            elif verdict.needs_user:
                 turn = "asked"
                 ask = ask or extract_request(text)
             else:
@@ -531,11 +531,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if not shown or (turn, ask) != heuristic:
             await self._set_turn(turn, ask)
         self._notify_finished(project, turn, text, sender, sender_known)
-        # A turn that asked the person something is theirs to answer, and a
-        # conversation already resolved (by the person or before) stays so.
+        # A turn that asked the user something is theirs to answer, and a
+        # conversation already resolved (by the user or before) stays so.
         if turn == "asked" or RESOLVED_TAG_KEY in self.tags():
             return
-        if verdict is not None and verdict.needs_person:
+        if verdict is not None and verdict.needs_user:
             return
         note: str | None = None
         if verdict is not None and verdict.resolved:
@@ -549,7 +549,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             )
         if note is None:
             return
-        # Never overwrite the person's own resolve.
+        # Never overwrite the user's own resolve.
         await self.set_tag(
             self.conversation_id, RESOLVED_TAG_KEY, "auto", only_if_absent=True
         )

@@ -960,7 +960,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
     # The role is the server's to give, whatever profile the coordinator runs.
     assert agent.prompt_preset == "project_coordinator"
     assert "<ROUTING>" in agent.static_system_message
-    # Idle: it waits for the person, with no first message.
+    # Idle: it waits for the user, with no first message.
     services[info.id].send_message.assert_not_awaited()
 
 
