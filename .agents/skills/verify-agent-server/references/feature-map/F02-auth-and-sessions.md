@@ -553,8 +553,8 @@ Preconditions:
   at import and startup crashes most of the time with an `ImportError`
   (`LoggerContext` from a partially initialized
   `litellm.rust_bridge.catalog`) or a `_DeadlockError` (#6749, also hit by
-  `F24.offline-safe`), so `F02.default-bind` failed for a reason unrelated
-  to the bind address.
+  `F24.offline-safe`), so `F02.default-bind` would fail for a reason
+  unrelated to the bind address.
 - With keys configured and no `--host`, the server binds `0.0.0.0`; without
   keys, `127.0.0.1` (`F02.default-bind`). The launcher always passes
   `--host 127.0.0.1`, so only `F02.default-bind` sees the default.
