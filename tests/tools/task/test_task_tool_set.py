@@ -408,3 +408,16 @@ class TestTaskToolExamples:
         description = tools[0].description
         assert TASK_TOOL_EXAMPLES[included_name].strip() in description
         assert TASK_TOOL_EXAMPLES[excluded_name].strip() not in description
+
+    def test_every_builtin_agent_has_its_example(self, tmp_path):
+        """Example keys match the built-in agents' registered names (#6656)."""
+        from openhands.tools.preset import register_builtins_agents
+
+        registered = register_builtins_agents()
+        assert sorted(registered) == sorted(TASK_TOOL_EXAMPLES)
+
+        description = TaskToolSet.create(
+            conv_state=None,  # type: ignore[arg-type]
+        )[0].description
+        for name in registered:
+            assert TASK_TOOL_EXAMPLES[name].strip() in description

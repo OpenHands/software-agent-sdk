@@ -11,13 +11,13 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import HTTPException
 from pydantic import SecretStr
 
 from openhands.agent_server import event_router
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.hybrid import HybridConversationRegistry
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.errors import GatewayTimeout, status_for
 from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.openai import service as gateway
@@ -25,6 +25,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import DomainError
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.workspace import LocalWorkspace
@@ -296,7 +297,7 @@ async def test_docker_gateway_keeps_container_attached_until_inner_error(
         on_request=check_attached,
     )
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(DomainError) as error:
         await _run_gateway(
             config,
             registry,
@@ -306,7 +307,7 @@ async def test_docker_gateway_keeps_container_attached_until_inner_error(
             conversation_id=conversation_id,
         )
 
-    assert error.value.status_code == 503
+    assert status_for(error.value) == 503
     assert len(requests) == 1
     assert not registry.has_attached_sessions(conversation_id)
     outer_service.get_event_service.assert_not_awaited()
@@ -345,7 +346,7 @@ async def test_docker_gateway_timeout_retry_signal(
         ),
     )
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(DomainError) as error:
         await _run_gateway(
             config,
             registry,
@@ -355,15 +356,15 @@ async def test_docker_gateway_timeout_retry_signal(
             conversation_id=conversation_id,
         )
 
-    assert error.value.status_code == 504
+    assert status_for(error.value) == 504
     if retry_unsafe:
-        assert error.value.headers == {
-            "x-should-retry": "false",
-            "X-OpenHands-ServerConversation-ID": str(conversation_id),
-        }
+        assert isinstance(error.value, GatewayTimeout)
+        assert error.value.retry_safe is False
+        assert error.value.conversation_id == conversation_id
         assert error.value.detail == "Conversation runtime timed out"
     else:
-        assert error.value.headers is None
+        assert not isinstance(error.value, GatewayTimeout)
+
     assert not registry.has_attached_sessions(conversation_id)
 
 
@@ -384,7 +385,7 @@ async def test_docker_gateway_classifies_inner_timeout_retry_signal(
         error_headers={"x-should-retry": retry_signal} if retry_signal else None,
     )
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(GatewayTimeout) as error:
         await _run_gateway(
             config,
             registry,
@@ -394,15 +395,14 @@ async def test_docker_gateway_classifies_inner_timeout_retry_signal(
             conversation_id=conversation_id,
         )
 
-    assert error.value.status_code == 504
+    assert status_for(error.value) == 504
     assert len(requests) == 1
     if retry_signal != "true":
-        assert error.value.headers == {
-            "x-should-retry": "false",
-            "X-OpenHands-ServerConversation-ID": str(conversation_id),
-        }
+        assert isinstance(error.value, GatewayTimeout)
+        assert error.value.retry_safe is False
+        assert error.value.conversation_id == conversation_id
     else:
-        assert error.value.headers == {"x-should-retry": "true"}
+        assert error.value.retry_safe is True
 
 
 @pytest.mark.asyncio
@@ -427,7 +427,7 @@ async def test_docker_gateway_maps_inner_404(
         error_detail=missing_detail if missing_conversation else "Inner run failed",
     )
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(DomainError) as error:
         await _run_gateway(
             config,
             registry,
@@ -439,11 +439,11 @@ async def test_docker_gateway_maps_inner_404(
 
     assert len(requests) == 1
     if missing_conversation:
-        assert error.value.status_code == 404
+        assert status_for(error.value) == 404
         assert error.value.detail == missing_detail
     else:
-        assert error.value.status_code == 502
-        assert "gateway route" in error.value.detail
+        assert status_for(error.value) == 502
+        assert "gateway route" in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -455,10 +455,10 @@ async def test_docker_gateway_stops_after_docker_start_error(tmp_path, monkeypat
     monkeypatch.setattr(gateway, "start_docker_conversation", start)
     monkeypatch.setattr(gateway, "_container", inner)
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(DomainError) as error:
         await _run_gateway(config, registry, outer_service, start_request, "Do not run")
 
-    assert error.value.status_code == 503
+    assert status_for(error.value) == 503
     start.assert_awaited_once()
     inner.assert_not_awaited()
     outer_service.start_conversation.assert_not_awaited()
@@ -468,12 +468,12 @@ async def test_docker_gateway_stops_after_docker_start_error(tmp_path, monkeypat
 async def test_docker_gateway_refuses_outer_launch_without_registry(tmp_path):
     config, _, outer_service, start_request = _setup(tmp_path)
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(DomainError) as error:
         await _run_gateway(
             config, None, outer_service, start_request, "Do not run on host"
         )
 
-    assert error.value.status_code == 503
+    assert status_for(error.value) == 503
     outer_service.start_conversation.assert_not_awaited()
 
 
@@ -485,7 +485,7 @@ async def test_docker_gateway_rejects_id_owned_by_local_conversation(tmp_path):
     conversation_dir.mkdir(parents=True)
     conversation_dir.joinpath("meta.json").write_text("{}")
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(DomainError) as error:
         await _run_gateway(
             config,
             registry,
@@ -495,7 +495,7 @@ async def test_docker_gateway_rejects_id_owned_by_local_conversation(tmp_path):
             conversation_id=conversation_id,
         )
 
-    assert error.value.status_code == 404
+    assert status_for(error.value) == 404
     outer_service.get_event_service.assert_not_awaited()
     outer_service.start_conversation.assert_not_awaited()
 
@@ -720,11 +720,13 @@ async def test_gateway_lock_wait_expires_before_saving_message(monkeypatch):
     event_service = _gateway_event_service()
 
     async with event_service._gateway_run_lock:
-        with pytest.raises(HTTPException) as error:
+        with pytest.raises(DomainError) as error:
             await run_gateway_message(SendMessageRequest(), event_service)
 
-    assert error.value.status_code == 504
-    assert error.value.headers == {"x-should-retry": "true"}
+    assert status_for(error.value) == 504
+    assert isinstance(error.value, GatewayTimeout)
+    assert error.value.retry_safe is True
+
     event_service.send_message.assert_not_awaited()
 
 
@@ -737,14 +739,14 @@ async def test_gateway_post_send_timeout_keeps_run_and_disables_retry():
     )
     event_service.wait_for_run_completion.side_effect = TimeoutError("slow run")
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(GatewayTimeout) as error:
         await run_gateway_message(
             SendMessageRequest(content=[TextContent(text="Slow turn")]),
             event_service,
             deadline=time.monotonic() + 1,
         )
 
-    assert error.value.status_code == 504
-    assert error.value.headers == {"x-should-retry": "false"}
+    assert status_for(error.value) == 504
+    assert error.value.retry_safe is False
     event_service.send_message.assert_awaited_once()
     event_service.interrupt.assert_not_awaited()

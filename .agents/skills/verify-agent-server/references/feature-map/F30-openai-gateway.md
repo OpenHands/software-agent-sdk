@@ -220,16 +220,19 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 - **Inner gateway run (`F30.inner-gateway-run`).** Send a new turn to the
   route that the outer gateway uses for a Docker conversation.
 
-  Requires: `F30.chat-basic`
   ```sh
-  control-agent-server api POST "/api/conversations/$CID/events/_gateway/run" --timeout 180 \
+  ICID=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$ICID/events/_gateway/run" --timeout 180 \
     --json '{"role":"user","content":[{"type":"text","text":"QA_F30_INNER: reply with one short word and use no tools."}],"run":true}' \
     --expect 200 --check status eq finished --check final_response len-ge 1 \
     --check usage.prompt_tokens gt 0 --save F30.inner-gateway-run/turn
-  control-agent-server api GET "/api/conversations/$CID/events/search" \
-    --query source=user --query body=QA_F30_INNER --check items len-eq 1 --quiet
+  control-agent-server api GET "/api/conversations/$ICID/events/search" \
+    --query source=user --check items len-eq 1 --check items.0.llm_message.content.0.text contains QA_F30_INNER --quiet
+  control-agent-server api DELETE "/api/conversations/$ICID" --expect 200
   ```
-  The response comes from the new turn. The route adds one user message.
+  The response comes from the new turn. The route adds one user message. It
+  runs on its own conversation, not on `CID`: a turn added to `CID` would
+  break the user-message counts of the bullets after it.
 - **Active Agent Profile (`F30.active-agent-profile`).** Select a profile
   with no tools and its own system suffix, while the gateway request selects
   a different LLM profile. The named model overrides only the LLM for this

@@ -795,7 +795,7 @@ Preconditions:
   'QaF27EchoObservation'`. Only `GET /api/conversations/{id}`, which reads
   the metadata without loading, still answers. A deployment that drops or
   renames a custom tool module loses every conversation that used it.
-- **Playwright browsers directory (`F27.browser-playwright-path`).**
+- **Playwright browsers directory (`F27.browser-playwright-path`), blocked on a machine with Chromium at a standard path (needs Chromium only in a Playwright directory).**
   Point the server at the run-owned Playwright directory through
   `PLAYWRIGHT_BROWSERS_PATH` only.
   ```sh
@@ -812,7 +812,7 @@ Preconditions:
   catalog reports `usable: true` and the browser tool can start with that
   binary. Playwright's special value `0` (browsers inside the installed
   package) is not a directory and is not probed.
-- **Browser probe (`F27.browser-probe`).** Restart without the earlier
+- **Browser probe (`F27.browser-probe`), blocked on a machine with Chromium at a standard path (needs Chromium only in a Playwright directory).** Restart without the earlier
   overrides and see the browser unusable, then put the same Chromium where
   the probe looks (the server's `HOME`) and restart again.
   ```sh
