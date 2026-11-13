@@ -67,10 +67,30 @@ class _StreamGuardLLM(TestLLM):
         ),
         # unparseable -> conservative (keeps the caller working)
         ("I cannot decide.", 0.0, False, "Judge verdict could not be parsed."),
+        # non-boolean complete values fall back to the score threshold
+        (
+            '{"score": 0.2, "complete": "false", "missing": "tests not run"}',
+            0.2,
+            False,
+            "tests not run",
+        ),
+        ('{"score": 1.0, "complete": "no", "missing": ""}', 1.0, True, ""),
+        ('{"score": 0.9, "complete": [], "missing": "lint"}', 0.9, False, "lint"),
+        ('{"score": 1.0, "complete": null, "missing": ""}', 1.0, True, ""),
         # out-of-range score is clamped into [0, 1]
         ('{"score": 1.5, "complete": true, "missing": ""}', 1.0, True, ""),
     ],
-    ids=["complete", "incomplete", "json-in-fence", "unparseable", "clamped-score"],
+    ids=[
+        "complete",
+        "incomplete",
+        "json-in-fence",
+        "unparseable",
+        "string-false",
+        "string-no-high-score",
+        "list-low-score",
+        "null-high-score",
+        "clamped-score",
+    ],
 )
 def test_judge_goal_parses_verdict(response, score, complete, missing):
     verdict = judge_goal(_judge(response), "build it", [])
