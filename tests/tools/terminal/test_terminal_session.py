@@ -1189,7 +1189,7 @@ def test_long_output_from_nested_directories(terminal_type):
             assert obs.metadata.exit_code == 0
 
             # List the directory structure recursively
-            obs = _run_bash_action(session, "ls -R test_dir", timeout=60)
+            obs = _run_bash_action(session, "ls -R .", timeout=60)
             assert obs.metadata.exit_code == 0
 
             # Verify output contains expected files
