@@ -9,11 +9,13 @@ without fixture indirection.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+import anyio
 import httpx
 import psutil
 from pydantic import PrivateAttr, SecretStr
@@ -24,7 +26,7 @@ from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.llm_response import LLMResponse
-from openhands.sdk.llm.streaming import TokenCallbackType
+from openhands.sdk.llm.streaming import AnyTokenCallbackType, TokenCallbackType
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
@@ -37,10 +39,14 @@ if TYPE_CHECKING:
 class SlowTestLLM(TestLLM):
     """TestLLM with synthetic per-call latency.
 
-    Latency applied via ``time.sleep`` so it blocks the worker thread the LLM
-    runs on. This makes parallelism observable: when 8 sub-agents (or 16
-    conversations) execute concurrently, each gets its own thread and the
-    sleeps overlap; if execution serializes, they don't.
+    Latency applied via ``anyio.sleep`` on the event loop in the async
+    ``acompletion`` path (which is what the async agent run actually uses):
+    cloud runners' default ``asyncio`` executor is bounded and shared with
+    every other ``to_thread``/``run_in_executor`` call in the run path, so a
+    blocking ``time.sleep`` here makes N synthetic calls queue behind a fixed
+    worker pool instead of overlapping — serializing the benchmark and
+    tripping its wall-clock budget even though the code under test is not
+    serial.
     """
 
     _latency_s: float = PrivateAttr(default=0.0)
@@ -67,6 +73,34 @@ class SlowTestLLM(TestLLM):
             on_token,
             call_context=call_context,
             **kwargs,
+        )
+
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        if self._latency_s > 0:
+            await anyio.sleep(self._latency_s)
+        # Consume the scripted response without re-entering our own
+        # ``completion`` override (which would re-apply the latency as a
+        # blocking ``time.sleep`` on the executor).
+        parent_completion = super().completion
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                parent_completion,
+                messages,
+                tools,
+                add_security_risk_prediction,
+                on_token,
+                call_context,
+                **kwargs,
+            ),
         )
 
 
