@@ -177,10 +177,19 @@ def test_terminal_query_reply_does_not_reach_the_next_command(pool_executor):
     assert failing.exit_code == 7  # the prompt keeps the command's exit code
 
 
-def test_echoed_cursor_report_is_removed_from_output():
-    from openhands.tools.terminal.terminal.terminal_session import (
-        _ECHOED_CURSOR_REPORT,
-    )
 
-    assert _ECHOED_CURSOR_REPORT.sub("", "ab\n^[[13;2R\nnext") == "ab\nnext"
-    assert _ECHOED_CURSOR_REPORT.sub("", "a ^[[1;1 b") == "a ^[[1;1 b"
+@pytest.mark.parametrize("terminal_type", ["tmux", "subprocess"])
+def test_literal_caret_text_is_kept(terminal_type):
+    """Output that merely looks like an echoed cursor report is real output."""
+    with tempfile.TemporaryDirectory() as work_dir:
+        executor = TerminalExecutor(working_dir=work_dir, terminal_type=terminal_type)
+        try:
+            obs = executor(
+                TerminalAction(
+                    command="printf '%s\\n' before '^[[13;2R' 'log ^[[1;1R end' after"
+                )
+            )
+        finally:
+            executor.close()
+
+    assert "before\n^[[13;2R\nlog ^[[1;1R end\nafter" in obs.text, obs.text

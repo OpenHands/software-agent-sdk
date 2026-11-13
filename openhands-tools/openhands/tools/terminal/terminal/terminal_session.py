@@ -35,10 +35,6 @@ from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 logger = get_logger(__name__)
 
-# The tty's caret echo of a cursor-position report (reply to ``ESC [ 6 n``).
-_ECHOED_CURSOR_REPORT = re.compile(r"\^\[\[\d+;\d+R\n?")
-
-
 class TerminalCommandStatus(Enum):
     """Status of a terminal command execution."""
 
@@ -238,10 +234,6 @@ class TerminalSession(TerminalSessionBase):
         if is_final:
             # Flush any pending bytes when command completes
             command_output += self._query_filter.flush()
-        # A terminal emulator (tmux) answers a cursor-position query by typing
-        # ``ESC [ row ; col R`` into the pty; while the command still runs, the
-        # tty echoes that reply into the output as ``^[[row;colR``.
-        command_output = _ECHOED_CURSOR_REPORT.sub("", command_output)
 
         return command_output.rstrip()
 
