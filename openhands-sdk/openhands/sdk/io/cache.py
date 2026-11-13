@@ -21,12 +21,22 @@ class MemoryLRUCache(LRUCache):
     For non-string values, sys.getsizeof is used as a rough approximation.
     """
 
-    def __init__(self, max_memory: int, max_size: int, *args, **kwargs):
+    def __init__(
+        self,
+        max_memory: int,
+        max_size: int,
+        *args,
+        keep_oversize: bool = False,
+        **kwargs,
+    ):
         # Ensure minimum maxsize of 1 to avoid LRUCache issues
         maxsize = max(1, max_size)
         super().__init__(maxsize=maxsize, *args, **kwargs)
         self.max_memory = max_memory
         self.current_memory = 0
+        # A store whose only copy lives here must keep an item larger than
+        # max_memory (evicting everything else) rather than drop the write.
+        self.keep_oversize = keep_oversize
 
     def _get_size(self, value: Any) -> int:
         """Calculate size of value for memory tracking.
@@ -55,24 +65,20 @@ class MemoryLRUCache(LRUCache):
     def __setitem__(self, key: Any, value: Any) -> None:
         new_size = self._get_size(value)
 
+        # The key's previous entry is stale either way: dropping it first keeps
+        # a skipped write from serving what it replaced, and keeps the memory
+        # accounting right if eviction below reaches this key.
+        if key in self:
+            del self[key]
+
         # Don't cache items that are larger than max_memory
         # This prevents cache thrashing where one huge item evicts everything
-        if new_size > self.max_memory:
+        if new_size > self.max_memory and not self.keep_oversize:
             logger.debug(
                 f"Item too large for cache ({new_size} bytes > "
                 f"{self.max_memory} bytes), skipping cache"
             )
-            # The store now holds this value, so the key's previous entry is
-            # stale: dropping it makes a read fall through to the store
-            # instead of returning what the write replaced.
-            if key in self:
-                del self[key]
             return
-
-        # Update memory accounting if key exists
-        if key in self:
-            old_value = self[key]
-            self.current_memory -= self._get_size(old_value)
 
         self.current_memory += new_size
 
