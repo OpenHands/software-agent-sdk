@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final
 
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
-from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.section import Platform, PromptContext, SecretInfo
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
 
 
@@ -94,7 +94,7 @@ def test_planning_dynamic_tier_is_shared_with_default() -> None:
     ctx = PromptContext(
         now="2025-01-01T00:00:00+00:00",
         custom_suffix="Follow conventions.",
-        secret_infos=(("GITHUB_TOKEN", None),),
+        secret_infos=(SecretInfo("GITHUB_TOKEN"),),
         template_kwargs={"plan_structure": PLAN_STRUCTURE},
     )
     planning = create_registry(PromptPreset.PLANNING).build(ctx).dynamic

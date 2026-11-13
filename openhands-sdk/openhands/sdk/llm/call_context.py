@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm_session import LLMSession
 
 
 @dataclass(frozen=True)
@@ -21,23 +25,33 @@ class LLMCallContext:
 
     prompt_cache_key: str | None = None
     session_id: str | None = None
+    # The conversation's LLM sessions by role (``usage_id``). A call records its
+    # usage in the session of the calling LLM's role, when the conversation has
+    # one. It is a live view owned by the conversation's ``LLMRegistry``, so it
+    # takes no part in equality or hashing.
+    sessions: Mapping[str, LLMSession] | None = field(
+        default=None, compare=False, repr=False
+    )
 
     def for_conversation(
         self,
         conversation_id: str,
         *,
         prompt_cache_key: str | None = None,
+        sessions: Mapping[str, LLMSession] | None = None,
     ) -> LLMCallContext:
         """Derive context for a conversation while preserving inheritable fields.
 
-        Conversation identity is always replaced. Any additional fields added to
-        this dataclass are inherited automatically unless this method explicitly
-        gives them conversation-local semantics.
+        Conversation identity is always replaced, and so are the sessions: a
+        child conversation never records into its parent's. Any additional
+        fields added to this dataclass are inherited automatically unless this
+        method explicitly gives them conversation-local semantics.
         """
         return replace(
             self,
             prompt_cache_key=prompt_cache_key or conversation_id,
             session_id=conversation_id,
+            sessions=sessions,
         )
 
 
@@ -70,6 +84,7 @@ def apply_llm_call_context(
     *,
     supports_prompt_cache_key: bool = False,
     openrouter: bool = False,
+    codex_subscription: bool = False,
 ) -> None:
     """Apply SDK-owned call context to provider request options in one place.
 
@@ -82,6 +97,10 @@ def apply_llm_call_context(
     to the endpoint holding the warm prompt cache. Without it OpenRouter derives
     the routing key by hashing the opening messages, which agent conversations
     rewrite as they compact, so affinity is lost mid-run.
+
+    ``codex_subscription`` sends the ``session-id`` and ``thread-id`` headers the
+    Codex CLI sends. The ChatGPT Codex backend needs them to hold a conversation
+    on one cache: with ``prompt_cache_key`` alone most calls start cold.
     """
     if context.prompt_cache_key and supports_prompt_cache_key:
         options["prompt_cache_key"] = context.prompt_cache_key
@@ -91,6 +110,9 @@ def apply_llm_call_context(
             **existing,
             "x-litellm-session-id": context.session_id,
         }
+        if codex_subscription:
+            options["extra_headers"]["session-id"] = context.session_id
+            options["extra_headers"]["thread-id"] = context.session_id
         if openrouter:
             # Merge rather than replace: extra_body may already carry caller
             # routing (e.g. provider.only) that must survive. An explicit

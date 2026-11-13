@@ -20,6 +20,7 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
 from openhands.agent_server.profiles_router import MAX_PROFILES
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
@@ -854,6 +855,65 @@ def test_delete_active_acp_profile_keeps_mcp_registry(client, store):
     assert agent_settings["mcp_config"].keys() == {"github"}
 
 
+def test_delete_active_acp_profile_keeps_server_wide_settings(client, store):
+    store.save(ACPAgentProfile(name="codex-test", acp_server="codex"))
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+    seeded = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    assert client.delete("/api/agent-profiles/codex-test").status_code == 200
+
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert settings["agent_kind"] == "openhands"
+    assert settings["agent_context"]["load_memory"] is True
+    assert settings["verification"]["critic_api_key"] == "critic-key"
+
+
+def test_openhands_profile_keeps_server_wide_settings_while_settings_are_acp(
+    client, store
+):
+    seeded = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+    switched = client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert switched.status_code == 200
+    client.post(
+        "/api/profiles/qa-llm",
+        json={"llm": {"model": "openai/qa", "api_key": "llm-key"}},
+    )
+    store.save(OpenHandsAgentProfile(name="qa-oh", llm_profile_ref="qa-llm"))
+
+    resolved = client.post("/api/agent-profiles/qa-oh/materialize").json()[
+        "resolved_settings"
+    ]
+
+    assert resolved["verification"]["critic_api_key"] == "**********"
+    assert resolved["agent_context"]["load_memory"] is True
+
+
 def test_delete_active_openhands_profile_clears_stale_acp_settings(client, store):
     """The reset keys off ``agent_settings``, not the deleted profile's kind."""
     store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))
@@ -1072,7 +1132,7 @@ def test_seed_preserves_acp_fields(client):
 
 def test_list_timeout_returns_503(client, monkeypatch):
     def boom(self, timeout=0):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(AgentProfileStore, "lock", boom)
     response = client.get("/api/agent-profiles")
@@ -1081,7 +1141,7 @@ def test_list_timeout_returns_503(client, monkeypatch):
 
 def test_save_timeout_returns_503(client, monkeypatch):
     def boom(self, profile, *, max_profiles=None):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(AgentProfileStore, "save", boom)
     response = client.post("/api/agent-profiles/x", json={"llm_profile_ref": "y"})

@@ -238,6 +238,8 @@ class SecretItemResponse(BaseModel):
 
     name: str
     description: str | None = None
+    scope: str | None = None
+    scope_description: str | None = None
 
 
 class SecretsListResponse(BaseModel):

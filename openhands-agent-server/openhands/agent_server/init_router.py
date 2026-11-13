@@ -21,7 +21,6 @@ from fastapi import (
     APIRouter,
     Depends,
     FastAPI,
-    HTTPException,
     Request,
     WebSocketException,
     status,
@@ -51,6 +50,14 @@ from openhands.agent_server.telemetry import (
     shutdown_telemetry_sink,
 )
 from openhands.agent_server.vscode_service import get_vscode_service
+from openhands.sdk.errors import (
+    Invalid,
+    NotFound,
+    OperationFailed,
+    Unauthenticated,
+    Unavailable,
+    Unprocessable,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability import maybe_init_laminar
 
@@ -252,17 +259,11 @@ class InitService:
     async def initialize(self, req: InitRequest) -> InitStatus:
         async with self._lock:
             if self._state != "dormant":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"server already in state: {self._state}",
-                )
+                raise Invalid(f"server already in state: {self._state}")
             if req.session_api_keys is not None and any(
                 not key for key in req.session_api_keys
             ):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="session_api_keys cannot contain empty keys",
-                )
+                raise Unprocessable("session_api_keys cannot contain empty keys")
             self._state = "initializing"
             self._error = None
         try:
@@ -305,7 +306,9 @@ class InitService:
             conversation_registry = create_conversation_registry(new_config)
             conversation_registry.configure_service(service)
 
-            bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
+            bash_svc = BashEventService(
+                bash_events_dir=new_config.bash_events_dir, cipher=new_config.cipher
+            )
             await bash_svc.__aenter__()
             self._entered_bash_service = bash_svc
 
@@ -345,10 +348,7 @@ class InitService:
             self._restore_session_api_key_env()
             self._error = f"{type(exc).__name__}: {exc}"
             self._state = "dormant"
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=self._error,
-            ) from exc
+            raise OperationFailed(self._error) from exc
 
     async def teardown(self) -> None:
         """Tear down the conversation service if /api/init succeeded.
@@ -382,12 +382,9 @@ class InitService:
 def get_init_service(request: Request) -> InitService:
     init_service = getattr(request.app.state, "init_service", None)
     if init_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                "server is not running with deferred_init=True; the /api/init "
-                "endpoint is not available"
-            ),
+        raise NotFound(
+            "server is not running with deferred_init=True; the /api/init "
+            "endpoint is not available"
         )
     return init_service
 
@@ -405,12 +402,12 @@ def check_init_api_key(
         if config is not None and config.secret_key_was_blank:
             # A blank key was configured but no usable key remains → fail
             # closed, since no client can present a blank key.
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+            raise Unauthenticated()
         # No key configured → endpoint is open. Acceptable for dev.
         return
     expected = config.secret_key.get_secret_value()
     if init_api_key != expected:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        raise Unauthenticated()
 
 
 def require_initialized(connection: HTTPConnection) -> None:
@@ -432,7 +429,7 @@ def require_initialized(connection: HTTPConnection) -> None:
     )
     if connection.scope["type"] == "websocket":
         raise WebSocketException(code=status.WS_1013_TRY_AGAIN_LATER, reason=reason)
-    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=reason)
+    raise Unavailable(reason)
 
 
 init_router = APIRouter(prefix="/init", tags=["Init"])

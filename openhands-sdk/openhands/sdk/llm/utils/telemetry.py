@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 import traceback
@@ -21,6 +22,17 @@ from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanit
 
 
 logger = get_logger(__name__)
+
+
+def _reported_cost(value: object) -> float | None:
+    """Accept finite nonnegative charges, including numeric HTTP header strings."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        cost = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return cost if math.isfinite(cost) and cost >= 0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +199,15 @@ class Telemetry(BaseModel):
         """
         self._stats_update_callback = callback
 
+    def notify_stats_update(self) -> None:
+        """Tell the stats-update callback, if any, that the metrics changed."""
+        if self._stats_update_callback is None:
+            return
+        try:
+            self._stats_update_callback()
+        except Exception:
+            logger.exception("Stats update callback failed", exc_info=True)
+
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
@@ -206,14 +227,15 @@ class Telemetry(BaseModel):
         # 1) latency
         self._last_latency = time.time() - (self._req_start or time.time())
         response_id = resp.id
-        self.metrics.add_response_latency(self._last_latency, response_id)
+        self.metrics.add_response_latency(
+            self._last_latency, response_id, model_name=self.model_name
+        )
 
         # 2) cost
         cost = self._compute_cost(resp, provider_info=provider_info)
-        # Intentionally skip logging zero-cost (0.0) responses; only record
-        # positive cost
-        if cost:
-            self.metrics.add_cost(cost)
+        # A confirmed zero charge is different from unavailable pricing.
+        if cost is not None:
+            self.metrics.add_cost(cost, model_name=self.model_name)
 
         # 3) tokens - normalize the provider's usage shape exactly once
         usage = normalize_usage(_response_usage(resp))
@@ -232,11 +254,7 @@ class Telemetry(BaseModel):
         self._close_span()
 
         # 6) notify about stats update
-        if self._stats_update_callback is not None:
-            try:
-                self._stats_update_callback()
-            except Exception:
-                logger.exception("Stats update callback failed", exc_info=True)
+        self.notify_stats_update()
 
         return self.metrics.deep_copy()
 
@@ -299,6 +317,7 @@ class Telemetry(BaseModel):
             reasoning_tokens=usage.reasoning_tokens,
             context_window=context_window,
             response_id=response_id,
+            model_name=self.model_name,
         )
 
     # ---------- Observability span ----------
@@ -324,7 +343,7 @@ class Telemetry(BaseModel):
         if span is None:
             return
         try:
-            if cost:
+            if cost is not None:
                 # Authoritative: _compute_cost prefers the proxy's
                 # x-litellm-response-cost header, which is already cache-aware
                 # and priced by the real backend rather than by a name lookup.
@@ -360,7 +379,7 @@ class Telemetry(BaseModel):
         resp: ModelResponse | ResponsesAPIResponse,
         provider_info: LLMProvider | None = None,
     ) -> float | None:
-        """Try provider header → litellm direct. Return None on failure."""
+        """Try provider header, reported usage, then pricing; None is unavailable."""
         extra_kwargs = {}
         if (
             self.input_cost_per_token is not None
@@ -375,13 +394,35 @@ class Telemetry(BaseModel):
 
         try:
             hidden = resp._hidden_params or {}
-            cost = hidden.get("additional_headers", {}).get(
-                "llm_provider-x-litellm-response-cost"
-            )
-            if cost is not None:
-                return float(cost)
+            headers = hidden.get("additional_headers", {})
+            header_name = "llm_provider-x-litellm-response-cost"
+            if header_name in headers:
+                cost = _reported_cost(headers[header_name])
+                if cost is not None:
+                    return cost
+                logger.debug(
+                    "Failed to get cost from LiteLLM headers: "
+                    "invalid response cost value"
+                )
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
+
+        # Final usage can contain a charge for an alias absent from the static
+        # price map. Select one total, never add header and usage copies. Explicit
+        # token rates remain an intentional pricing override when no header exists.
+        if "custom_cost_per_token" not in extra_kwargs:
+            usage = _response_usage(resp)
+            # Read the typed field directly, without serializing all token details.
+            # LiteLLM deletes absent optional Usage attributes after construction.
+            try:
+                cost = _reported_cost(usage.cost) if usage is not None else None
+            except AttributeError:
+                cost = None
+            # Zero usage can be a gateway's unavailable-price placeholder. Keep
+            # existing static pricing in that case; explicit zero headers above
+            # remain authoritative. This fallback repairs positive charges only.
+            if cost is not None and cost > 0:
+                return cost
 
         if provider_info is None:
             call_kwargs = litellm_call_kwargs(self.model_name, None)
