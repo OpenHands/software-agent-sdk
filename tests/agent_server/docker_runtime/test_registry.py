@@ -20,6 +20,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.storage import trash as trash_module
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import ConversationContainerOptions
@@ -596,7 +597,10 @@ async def test_shutdown_cancels_eviction_and_stops_containers(tmp_path, monkeypa
 
 
 def _build_container(runtime, monkeypatch, conversation_id):
-    runtime.provisioning.create(conversation_id)
+    """Run ``_build_container`` with docker mocked out; return the result and
+    the recorded ``docker run`` command with its environment."""
+    if runtime.provisioning.load_optional(conversation_id) is None:
+        runtime.provisioning.create(conversation_id)
     commands = []
 
     def run(command, **kwargs):
@@ -626,7 +630,6 @@ def _build_container(runtime, monkeypatch, conversation_id):
 def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
-
     result, command, env = _build_container(runtime, monkeypatch, conversation_id)
     assert result.host == "http://127.0.0.1:32123"
     assert ["--cap-drop", "ALL"] == command[
@@ -636,7 +639,7 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
     assert "host.docker.internal:host-gateway" in command
     assert "127.0.0.1::8000" in command
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
-    assert len(mounts) == 3
+    assert len(mounts) == 4
     assert all(
         conversation_id.hex in mount or mount.endswith(":/workspace")
         for mount in mounts
@@ -646,6 +649,104 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("HOME") - 1 : command.index("HOME") + 1
     ]
     assert env["OH_SECRET_KEY"] != "outer-key"
+
+
+def test_container_gets_the_hosts_experimental_feature_switches(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+
+    def turn_on(settings: PersistedSettings) -> PersistedSettings:
+        settings.experimental_features = {"conversation_reactions": True}
+        return settings
+
+    get_settings_store(runtime.config).update(turn_on)
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert json.loads(env["OH_RUNTIME_EXPERIMENTAL_FEATURES"]) == {
+        "conversation_reactions": True
+    }
+    assert "OH_RUNTIME_EXPERIMENTAL_FEATURES" in command
+
+
+def test_worktree_root_resolves_identically_on_host_and_in_container(
+    tmp_path, monkeypatch
+):
+    """Regression test for #5307: git worktrees link the repository and the
+    worktree with absolute paths, so the conversation worktree root must be a
+    host directory mounted into the container at its own host path — otherwise
+    the host repository sees the live worktree as prunable."""
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    runtime.provisioning.save(identity)
+
+    _, command, env = _build_container(runtime, monkeypatch, conversation_id)
+
+    worktree_root = env["OH_CONVERSATION_WORKTREE_ROOT"]
+    runtime_dir = runtime.provisioning.runtime_dir(conversation_id)
+    assert Path(worktree_root) == runtime_dir / "worktrees"
+    assert Path(worktree_root).is_dir()
+    assert ["-e", "OH_CONVERSATION_WORKTREE_ROOT"] == command[
+        command.index("OH_CONVERSATION_WORKTREE_ROOT") - 1 : command.index(
+            "OH_CONVERSATION_WORKTREE_ROOT"
+        )
+        + 1
+    ]
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{repository}:/workspace" in mounts
+    assert f"{repository}:{repository}" in mounts
+    assert f"{worktree_root}:{worktree_root}" in mounts
+
+
+def test_nested_worktree_workspace_mounts_repository_at_its_host_path(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "repository"
+    workspace = repository / "src" / "package"
+    workspace.mkdir(parents=True)
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=workspace
+    ).model_copy(update={"worktree_repository_path": repository})
+    runtime.provisioning.save(identity)
+
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{workspace}:/workspace" in mounts
+    assert f"{repository}:{repository}" in mounts
+    assert f"{workspace}:{workspace}" not in mounts
+
+
+def test_linked_source_worktree_mounts_its_external_git_common_dir(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "source-worktree"
+    repository.mkdir()
+    git_common_dir = tmp_path / "primary" / ".git"
+    git_common_dir.mkdir(parents=True)
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(
+        update={
+            "worktree_repository_path": repository,
+            "worktree_git_common_dir_path": git_common_dir,
+        }
+    )
+    runtime.provisioning.save(identity)
+
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{repository}:{repository}" in mounts
+    assert f"{git_common_dir}:{git_common_dir}" in mounts
 
 
 def test_container_command_does_not_forward_unset_observability_vars(

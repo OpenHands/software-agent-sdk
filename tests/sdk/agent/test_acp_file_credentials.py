@@ -442,3 +442,77 @@ def test_runtime_state_does_not_serialize_binding_values() -> None:
         assert secret not in json.dumps(lifecycle.__dict__, default=str)
     finally:
         lifecycle.close()
+
+
+def _codex_style_replace(link, value: str) -> None:
+    """Write like codex-rs ``FileAuthStorage::save``: resolve the link, then
+    atomically replace its target from a sibling temp file."""
+    import os
+
+    target = link.resolve()
+    tmp = target.with_name(".auth.json.tmp")
+    tmp.write_text(value, encoding="utf-8")
+    os.replace(tmp, target)
+
+
+def _home_lifecycle(binding: MemoryBinding, registry: SecretRegistry, home):
+    lifecycle = create_file_credential_lifecycle(CODEX_AUTH_SECRET_NAME, binding, _run)
+    assert lifecycle is not None
+    env: dict[str, str] = {}
+    lifecycle.materialize(registry, env, home=home)
+    return lifecycle, env
+
+
+def test_codex_home_survives_restart_while_auth_stays_ephemeral(tmp_path) -> None:
+    home = tmp_path / "acp" / "codex"
+    binding = MemoryBinding(_auth("refresh-r0"))
+
+    first, env = _home_lifecycle(binding, SecretRegistry(), home)
+    link = home / "auth.json"
+    assert env["CODEX_HOME"] == str(home)
+    assert link.is_symlink()
+    runtime_file = link.resolve()
+    assert not runtime_file.is_relative_to(home)
+    (home / "sessions").mkdir()
+    (home / "sessions" / "rollout.jsonl").write_text("thread", encoding="utf-8")
+    first.close()
+
+    assert not link.exists() and not link.is_symlink()
+    assert not runtime_file.exists()
+    assert (home / "sessions" / "rollout.jsonl").read_text() == "thread"
+
+    second, env = _home_lifecycle(binding, SecretRegistry(), home)
+    try:
+        assert env["CODEX_HOME"] == str(home)
+        assert (home / "sessions" / "rollout.jsonl").read_text() == "thread"
+        assert json.loads(link.read_text())["tokens"]["refresh_token"] == "refresh-r0"
+    finally:
+        second.close()
+
+
+def test_codex_home_rotation_through_link_writes_back(tmp_path) -> None:
+    home = tmp_path / "acp" / "codex"
+    rotated = _auth("refresh-r1", "access-r1")
+    binding = MemoryBinding(_auth("refresh-r0"))
+    lifecycle, _ = _home_lifecycle(binding, SecretRegistry(), home)
+    try:
+        _codex_style_replace(home / "auth.json", rotated)
+        lifecycle.flush()
+        assert binding.value == rotated
+        assert (home / "auth.json").is_symlink()
+    finally:
+        lifecycle.close()
+
+
+def test_codex_home_replaces_a_stale_durable_auth_copy(tmp_path) -> None:
+    home = tmp_path / "acp" / "codex"
+    home.mkdir(parents=True)
+    (home / "auth.json").write_text(_auth("refresh-stale"), encoding="utf-8")
+    binding = MemoryBinding(_auth("refresh-r0"))
+    lifecycle, _ = _home_lifecycle(binding, SecretRegistry(), home)
+    try:
+        link = home / "auth.json"
+        assert link.is_symlink()
+        assert json.loads(link.read_text())["tokens"]["refresh_token"] == "refresh-r0"
+    finally:
+        lifecycle.close()

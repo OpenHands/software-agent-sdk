@@ -12,6 +12,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_script_module(name: str):
     repo_root = Path(__file__).resolve().parents[2]
@@ -36,17 +38,35 @@ _registry_host = _dep._registry_host
 _source_label = _dep._source_label
 
 
-# --- trusted sources ------------------------------------------------------
+# --- trusted and blocking sources -----------------------------------------
 
 
-def test_canonical_pypi_registry_is_trusted():
-    assert _is_trusted_registry({"registry": "https://pypi.org/simple"}) is True
-
-
-def test_files_pythonhosted_is_trusted():
-    assert (
-        _is_trusted_registry({"registry": "https://files.pythonhosted.org/x"}) is True
-    )
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            {"registry": "https://pypi.org/simple"}, True, id="canonical_pypi_registry"
+        ),
+        pytest.param(
+            {"registry": "https://files.pythonhosted.org/x"},
+            True,
+            id="files_pythonhosted",
+        ),
+        pytest.param(
+            {"registry": "https://mirror.internal/simple"}, False, id="mirror_registry"
+        ),
+        # The classic substring-match bypass must not slip through.
+        pytest.param(
+            {"registry": "https://pypi.org.evil.example/simple"},
+            False,
+            id="lookalike_host",
+        ),
+        pytest.param({"git": "https://github.com/foo/bar"}, False, id="git_source"),
+        pytest.param({"url": "https://example.com/pkg.whl"}, False, id="url_source"),
+    ],
+)
+def test_is_trusted_registry_classifies_source(source, expected):
+    assert _is_trusted_registry(source) is expected
 
 
 def test_first_party_workspace_members_are_trusted():
@@ -55,27 +75,6 @@ def test_first_party_workspace_members_are_trusted():
 
 
 # --- sources that must block ----------------------------------------------
-
-
-def test_mirror_registry_blocks():
-    # An alternate index / mirror is not the canonical host -> not trusted.
-    assert _is_trusted_registry({"registry": "https://mirror.internal/simple"}) is False
-
-
-def test_lookalike_host_is_not_trusted():
-    # The classic substring-match bypass must not slip through.
-    assert (
-        _is_trusted_registry({"registry": "https://pypi.org.evil.example/simple"})
-        is False
-    )
-
-
-def test_git_source_blocks():
-    assert _is_trusted_registry({"git": "https://github.com/foo/bar"}) is False
-
-
-def test_url_source_blocks():
-    assert _is_trusted_registry({"url": "https://example.com/pkg.whl"}) is False
 
 
 def test_missing_or_empty_source_is_not_trusted():

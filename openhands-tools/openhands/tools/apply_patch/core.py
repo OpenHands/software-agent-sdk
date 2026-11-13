@@ -442,8 +442,9 @@ def load_files(paths: list[str], open_fn: Callable[[str], str]) -> dict[str, str
     """Load original file contents used as the patch base.
 
     This wraps the reference implementation's behavior from the OpenAI
-    cookbook apply_patch.py, but converts missing files into DiffError so
-    callers can surface a structured tool error instead of FileNotFoundError.
+    cookbook apply_patch.py, but skips missing files instead of raising
+    FileNotFoundError, so the parser reports each one as a DiffError under the
+    action (Update File or Delete File) that references it.
     See:
     https://github.com/openai/openai-cookbook/blob/main/examples/gpt-5/apply_patch.py
     """
@@ -451,10 +452,10 @@ def load_files(paths: list[str], open_fn: Callable[[str], str]) -> dict[str, str
     for path in paths:
         try:
             orig[path] = open_fn(path)
-        except (
-            FileNotFoundError
-        ) as exc:  # pragma: no cover - exercised via higher-level tests
-            raise DiffError(f"Delete File Error: Missing File: {path}") from exc
+        except FileNotFoundError:
+            # The parser reports the missing path under the action that
+            # references it; see load_files' docstring.
+            continue
         except (OSError, UnicodeDecodeError) as exc:
             # An unreadable path (a directory, a denied file, bytes that are not
             # UTF-8 text) must surface as a tool error, not escape the executor.

@@ -9,7 +9,7 @@ from subprocess import CompletedProcess
 import pytest
 
 from openhands.tools.glob import GlobAction
-from openhands.tools.glob.impl import GlobExecutor
+from openhands.tools.glob.impl import GlobExecutor, _expand_braces
 
 
 def test_glob_executor_initialization():
@@ -314,48 +314,51 @@ def test_glob_executor_empty_directory():
         assert not observation.truncated
 
 
-def test_extract_search_path_from_pattern_absolute_with_recursive():
-    """Test _extract_search_path_from_pattern with absolute path and **."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
-        "/path/to/dir/**/*.py"
-    )
+@pytest.mark.parametrize(
+    ("full_pattern", "expected_path", "expected_pattern"),
+    [
+        pytest.param(
+            "/path/to/dir/**/*.py", "/path/to/dir", "**/*.py", id="with_recursive"
+        ),
+        pytest.param(
+            "/path/to/dir/*.py", "/path/to/dir", "*.py", id="without_recursive"
+        ),
+        pytest.param("/*/*.py", "/", "*/*.py", id="root_glob"),
+        pytest.param(
+            "/path/to/*/subdir/*.py", "/path/to", "*/subdir/*.py", id="nested_glob"
+        ),
+        pytest.param(
+            "/usr/local/lib/python3.13/**/*.so",
+            "/usr/local/lib/python3.13",
+            "**/*.so",
+            id="deep_nesting",
+        ),
+    ],
+)
+def test_extract_search_path_from_pattern_absolute(
+    full_pattern, expected_path, expected_pattern
+):
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(full_pattern)
 
-    assert search_path == Path("/path/to/dir").resolve()
-    assert pattern == "**/*.py"
+    assert search_path == Path(expected_path).resolve()
+    assert pattern == expected_pattern
 
 
-def test_extract_search_path_from_pattern_absolute_without_recursive():
-    """Test _extract_search_path_from_pattern with absolute path without **."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
-        "/path/to/dir/*.py"
-    )
-
-    assert search_path == Path("/path/to/dir").resolve()
-    assert pattern == "*.py"
-
-
-def test_extract_search_path_from_pattern_relative():
-    """Test _extract_search_path_from_pattern with relative pattern."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("**/*.py")
+@pytest.mark.parametrize(
+    ("full_pattern", "expected_pattern"),
+    [
+        pytest.param("**/*.py", "**/*.py", id="relative"),
+        pytest.param("*.py", "*.py", id="relative_simple"),
+        pytest.param("", "**/*", id="empty"),
+    ],
+)
+def test_extract_search_path_from_pattern_without_search_path(
+    full_pattern, expected_pattern
+):
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(full_pattern)
 
     assert search_path is None
-    assert pattern == "**/*.py"
-
-
-def test_extract_search_path_from_pattern_relative_simple():
-    """Test _extract_search_path_from_pattern with simple relative pattern."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("*.py")
-
-    assert search_path is None
-    assert pattern == "*.py"
-
-
-def test_extract_search_path_from_pattern_empty():
-    """Test _extract_search_path_from_pattern with empty pattern."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("")
-
-    assert search_path is None
-    assert pattern == "**/*"
+    assert pattern == expected_pattern
 
 
 def test_extract_search_path_from_pattern_home_directory():
@@ -367,34 +370,6 @@ def test_extract_search_path_from_pattern_home_directory():
 
     assert search_path == (home / "documents").resolve()
     assert pattern == "**/*.txt"
-
-
-def test_extract_search_path_from_pattern_root_glob():
-    """Test _extract_search_path_from_pattern with glob at root level."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("/*/*.py")
-
-    assert search_path == Path("/").resolve()
-    assert pattern == "*/*.py"
-
-
-def test_extract_search_path_from_pattern_nested_glob():
-    """Test _extract_search_path_from_pattern with glob in middle of path."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
-        "/path/to/*/subdir/*.py"
-    )
-
-    assert search_path == Path("/path/to").resolve()
-    assert pattern == "*/subdir/*.py"
-
-
-def test_extract_search_path_from_pattern_deep_nesting():
-    """Test _extract_search_path_from_pattern with deeply nested absolute path."""
-    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
-        "/usr/local/lib/python3.13/**/*.so"
-    )
-
-    assert search_path == Path("/usr/local/lib/python3.13").resolve()
-    assert pattern == "**/*.so"
 
 
 def test_glob_executor_concurrent_with_ripgrep():
@@ -452,3 +427,30 @@ def test_glob_executor_concurrent_with_ripgrep():
         assert all(len(files) == 5 for files in results_b)
         assert all(all("alpha_" in Path(f).name for f in files) for files in results_a)
         assert all(all("beta_" in Path(f).name for f in files) for files in results_b)
+
+
+def test_python_fallback_expands_brace_patterns(tmp_path):
+    # The tool description advertises "**/*.{json,yaml,yml,toml}".
+    (tmp_path / "a.json").write_text("{}")
+    (tmp_path / "b.yaml").write_text("")
+    (tmp_path / "c.py").write_text("")
+    executor = GlobExecutor(working_dir=str(tmp_path))
+
+    files, _ = executor._execute_with_glob("**/*.{json,yaml}", tmp_path)
+
+    assert {Path(f).name for f in files} == {"a.json", "b.yaml"}
+
+
+@pytest.mark.parametrize(
+    "pattern, expected",
+    [
+        ("*.py", ["*.py"]),
+        ("*.{json,yaml}", ["*.json", "*.yaml"]),
+        ("{a,b}/{c,d}", ["a/c", "a/d", "b/c", "b/d"]),
+        ("{a,b{c,d}}", ["a", "bc", "bd"]),
+        ("{{a,b},{c,d}}", ["a", "b", "c", "d"]),
+        ("{a,b", ["{a,b"]),
+    ],
+)
+def test_expand_braces(pattern, expected):
+    assert _expand_braces(pattern) == expected

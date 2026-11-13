@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
@@ -47,6 +48,7 @@ from openhands.sdk.workspace import LocalWorkspace
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
     # switch_llm reads request.app.state.config to get the optional cipher;
     # populate it with a no-cipher config so unrelated tests don't 503.
@@ -1327,8 +1329,8 @@ def test_start_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1350,8 +1352,8 @@ def test_start_goal_in_conversation_not_found(
     """/goal returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1370,8 +1372,8 @@ def test_start_goal_in_conversation_rejects_busy_loop(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1390,8 +1392,8 @@ def test_stop_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.stop_goal_loop.return_value = True
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1408,8 +1410,8 @@ def test_stop_goal_in_conversation_not_found(
     """/goal/stop returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1425,8 +1427,8 @@ def test_resume_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1445,8 +1447,8 @@ def test_resume_goal_in_conversation_not_found(
     """/goal/resume returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1464,8 +1466,8 @@ def test_resume_goal_in_conversation_no_resumable(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.side_effect = ValueError("no_resumable_goal")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1498,6 +1500,35 @@ def test_switch_acp_model_success(
         client.app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize(
+    ("side_effect", "status_code"),
+    [(None, 200), (ValueError("not offered"), 400), (TimeoutError("slow"), 504)],
+)
+def test_switch_acp_effort(
+    client,
+    mock_conversation_service,
+    mock_event_service,
+    sample_conversation_id,
+    side_effect,
+    status_code,
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_effort.side_effect = side_effect
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_effort",
+            json={"effort": "high"},
+        )
+        assert response.status_code == status_code
+        mock_event_service.switch_acp_effort.assert_awaited_once_with("high")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_switch_acp_model_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
@@ -1517,14 +1548,38 @@ def test_switch_acp_model_not_found(
         client.app.dependency_overrides.clear()
 
 
-def test_switch_acp_model_non_acp_returns_400(
-    client, mock_conversation_service, mock_event_service, sample_conversation_id
+@pytest.mark.parametrize(
+    ("model", "error_message"),
+    [
+        pytest.param(
+            "haiku",
+            "switch_acp_model is only supported for ACP conversations.",
+            id="non_acp",
+        ),
+        # The event service raises the shared ``inactive_service`` ValueError for
+        # a closed or never-started conversation.
+        pytest.param("haiku", "inactive_service", id="inactive_service"),
+        # ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError``
+        # (e.g. method-not-found, invalid model id) into a ValueError, so a
+        # protocol-level rejection is a 400 rather than an opaque 500.
+        pytest.param(
+            "bogus",
+            "ACP server rejected model switch to 'bogus': method not found",
+            id="protocol_error",
+        ),
+    ],
+)
+def test_switch_acp_model_value_error_returns_400(
+    client,
+    mock_conversation_service,
+    mock_event_service,
+    sample_conversation_id,
+    model,
+    error_message,
 ):
-    """A ValueError (e.g. non-ACP agent / unsupported provider) maps to 400."""
+    """A ValueError from the event service maps to 400."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = ValueError(
-        "switch_acp_model is only supported for ACP conversations."
-    )
+    mock_event_service.switch_acp_model.side_effect = ValueError(error_message)
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1532,7 +1587,7 @@ def test_switch_acp_model_non_acp_returns_400(
     try:
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/switch_acp_model",
-            json={"model": "haiku"},
+            json={"model": model},
         )
         assert response.status_code == 400
     finally:
@@ -1562,59 +1617,6 @@ def test_switch_acp_model_pre_session_returns_200(
         )
         assert response.status_code == 200
         mock_event_service.switch_acp_model.assert_awaited_once_with("haiku")
-    finally:
-        client.app.dependency_overrides.clear()
-
-
-def test_switch_acp_model_inactive_service_returns_400(
-    client, mock_conversation_service, mock_event_service, sample_conversation_id
-):
-    """An inactive service (closed/never-started) maps to 400.
-
-    The event service raises the shared ``inactive_service`` ValueError for a
-    missing live conversation, consistent with its other methods; the router's
-    generic ValueError handler turns it into a 400.
-    """
-    mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = ValueError("inactive_service")
-
-    client.app.dependency_overrides[get_conversation_service] = lambda: (
-        mock_conversation_service
-    )
-    try:
-        response = client.post(
-            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
-            json={"model": "haiku"},
-        )
-        assert response.status_code == 400
-    finally:
-        client.app.dependency_overrides.clear()
-
-
-def test_switch_acp_model_protocol_error_returns_400(
-    client, mock_conversation_service, mock_event_service, sample_conversation_id
-):
-    """A rejected ACP model-selection call maps to 400, not 500.
-
-    ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError`` (e.g.
-    method-not-found on a custom server, or an invalid model id) into a
-    ValueError, so a protocol-level rejection surfaces as a 400 client error
-    rather than an opaque 500.
-    """
-    mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = ValueError(
-        "ACP server rejected model switch to 'bogus': method not found"
-    )
-
-    client.app.dependency_overrides[get_conversation_service] = lambda: (
-        mock_conversation_service
-    )
-    try:
-        response = client.post(
-            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
-            json={"model": "bogus"},
-        )
-        assert response.status_code == 400
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2704,6 +2706,40 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
         assert isinstance(forwarded_llm.api_key, SecretStr)
         assert forwarded_llm.api_key.get_secret_value() == "sk-plaintext"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_acp_agent_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A refused switch_llm (an ACP conversation, #4158) is a 400, not a 500."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_llm.side_effect = ValueError(
+        "switch_llm and switch_profile are not supported for ACP conversations; "
+        "use switch_acp_model instead."
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "usage_id": "x",
+                }
+            },
+        )
+
+        assert response.status_code == 400
+        assert "switch_acp_model" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 

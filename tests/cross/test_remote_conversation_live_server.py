@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import io
 import json
 import os
 import sys
@@ -11,6 +12,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import zipfile
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -29,10 +31,15 @@ from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
+from openhands.agent_server import (
+    config as config_module,
+    conversation_service as service_module,
+)
 from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -47,6 +54,7 @@ from openhands.sdk.event import (
     SecurityAnalysisEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
@@ -77,6 +85,71 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value.get_secret_value() == expected
     else:
         assert value == expected
+
+
+@pytest.mark.parametrize("skill_mib", [2, 17])
+def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, skill_mib):
+    monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "5")
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+        agent_context=AgentContext(
+            skills=[
+                Skill(name="large-context", content="x" * (skill_mib * 1024 * 1024))
+            ]
+        ),
+    )
+    received = []
+    message_received = threading.Event()
+
+    def on_event(event):
+        received.append(event)
+        if isinstance(event, MessageEvent) and event.source == "user":
+            message_received.set()
+
+    with live_server_env(tmp_path, monkeypatch) as environment:
+        workspace = RemoteWorkspace(
+            host=environment["host"], working_dir=str(tmp_path / "workspace")
+        )
+        response = workspace.client.post(
+            "/api/conversations",
+            json={
+                "agent": agent.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
+                "workspace": {"working_dir": workspace.working_dir},
+            },
+        )
+        response.raise_for_status()
+        conversation_id = UUID(response.json()["id"])
+        try:
+            if skill_mib == 17:
+                with pytest.raises(
+                    WebSocketConnectionError, match="message too big.*1009"
+                ):
+                    RemoteConversation.attach(
+                        workspace, conversation_id, visualizer=None
+                    )
+                return
+            conversation = RemoteConversation.attach(
+                workspace, conversation_id, callbacks=[on_event], visualizer=None
+            )
+            try:
+                snapshots = [
+                    event
+                    for event in received
+                    if isinstance(event, ConversationStateUpdateEvent)
+                ]
+                assert any(
+                    len(event.model_dump_json()) > 1024 * 1024 for event in snapshots
+                )
+                conversation.send_message("Verify event delivery after attaching.")
+                assert message_received.wait(5)
+            finally:
+                conversation.close()
+        finally:
+            workspace.client.delete(f"/api/conversations/{conversation_id}")
+            workspace.client.close()
 
 
 def test_deferred_websocket_initialization_lifecycle(
@@ -260,6 +333,91 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_recovery_provenance_served_over_http_and_websocket(server_env):
+    recovery = AgentErrorEvent(
+        error="Interrupted execution",
+        tool_name="terminal",
+        tool_call_id="interrupted_call",
+        recovery_reason="server_restart",
+        classification=ErrorClassification(kind=FailureKind.INTERNAL, retryable=False),
+    )
+    received: list[Event] = []
+    delivered = threading.Event()
+
+    def on_event(event: Event) -> None:
+        if event.id == recovery.id:
+            received.append(event)
+            delivered.set()
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    conversation: RemoteConversation = Conversation(
+        agent=agent, workspace=workspace, callbacks=[on_event], visualizer=None
+    )
+    try:
+        event_service = server_env["conversation_service"]._event_services[
+            conversation.id
+        ]
+        event_service.get_conversation()._on_event(recovery)
+        assert delivered.wait(5)
+        websocket_event = received[0]
+        assert isinstance(websocket_event, AgentErrorEvent)
+        assert websocket_event.recovery_reason == "server_restart"
+
+        event_path = f"/api/conversations/{conversation.id}/events"
+        with httpx.Client(base_url=server_env["host"]) as client:
+            single = client.get(f"{event_path}/{recovery.id}")
+            single.raise_for_status()
+            search = client.get(
+                f"{event_path}/search", params={"kind": "AgentErrorEvent"}
+            )
+            search.raise_for_status()
+
+        assert single.json()["recovery_reason"] == "server_restart"
+        assert [Event.model_validate(item) for item in search.json()["items"]] == [
+            websocket_event
+        ]
+        assert Event.model_validate(single.json()) == websocket_event
+    finally:
+        conversation.close()
+
+
+def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    with live_server_env(tmp_path, monkeypatch) as server_env:
+        agent = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+            tools=[],
+        )
+        payload = {
+            "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+            "workspace": {"working_dir": str(server_env["workspace_path"])},
+        }
+        with httpx.Client(base_url=server_env["host"]) as client:
+            start = client.post("/api/conversations", json=payload, timeout=10.0)
+            start.raise_for_status()
+            conversation_id = UUID(start.json()["id"])
+            download_path = f"/api/file/download-trajectory/{conversation_id}"
+            downloads = [client.get(download_path) for _ in range(5)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                downloads.extend(
+                    pool.map(lambda _: client.get(download_path), range(24))
+                )
+            for download in downloads:
+                download.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+                    assert archive.testzip() is None
+                    assert (
+                        f"{conversation_id.hex}/base_state.json" in archive.namelist()
+                    )
+            assert not list(
+                (server_env["workspace_path"].parent / "conversations").glob("*.zip*")
+            )
+
+
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
 def test_live_server_does_not_use_inherited_tmux_namespace(tmp_path, monkeypatch):
     with tempfile.TemporaryDirectory(prefix="oh-host-tmux-", dir="/tmp") as shared:
@@ -305,6 +463,69 @@ def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     assert response.status_code == 204
     assert conversation_id not in server_env["conversation_service"]._event_services
     assert conversation_id in server_env["conversation_service"]._conversation_records
+
+
+def _start_idle_conversation(client: httpx.Client) -> str:
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": "/tmp/workspace/project"},
+    }
+    start = client.post("/api/conversations", json=payload, timeout=10.0)
+    start.raise_for_status()
+    return start.json()["id"]
+
+
+def _assert_closed_by_server(websocket) -> int:
+    """Read until the server's close frame; fail if the socket stays open."""
+    with pytest.raises(ConnectionClosed) as closed:
+        while True:
+            websocket.recv(timeout=10)
+    assert closed.value.rcvd is not None, "socket closed without a server frame"
+    return closed.value.rcvd.code
+
+
+@pytest.mark.parametrize("socket_kind", ["events", "session"])
+def test_delete_closes_open_conversation_sockets(server_env, socket_kind):
+    """Deleting a conversation closes the sockets attached to it (#5635)."""
+    ws_host = server_env["host"].replace("http://", "ws://")
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        with connect(f"{ws_host}/sockets/{socket_kind}/{conversation_id}") as ws:
+            ws.recv(timeout=10)  # subscribed: snapshot (events) or sync (session)
+
+            response = client.delete(f"/api/conversations/{conversation_id}")
+            assert response.status_code == 200
+
+            code = _assert_closed_by_server(ws)
+        assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
+
+    assert code == 4004  # final for clients: no reconnect
+    with connect(f"{ws_host}/sockets/{socket_kind}/{conversation_id}") as ws:
+        assert _assert_closed_by_server(ws) == 4004
+
+
+@pytest.mark.parametrize("socket_kind", ["events", "session"])
+def test_sandbox_pause_leaves_open_sockets_attached(server_env, socket_kind):
+    """A pause does not close sockets: today's clients reconnect on any close,
+    and the reconnect would load the conversation again before the freeze."""
+    ws_host = server_env["host"].replace("http://", "ws://")
+    service = server_env["conversation_service"]
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        with connect(f"{ws_host}/sockets/{socket_kind}/{conversation_id}") as before:
+            before.recv(timeout=10)
+
+            response = client.post(
+                "/api/conversations/prepare-for-sandbox-pause", timeout=10.0
+            )
+            assert response.status_code == 204
+
+            # Leftover initial frames may still arrive; a close would raise.
+            with pytest.raises(TimeoutError):
+                while True:
+                    before.recv(timeout=2)
+            assert UUID(conversation_id) not in service._event_services
 
 
 @pytest.fixture
@@ -636,6 +857,12 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         snapshot_started.set()
         return original_snapshot()
 
+    original_initial_state = event_service._create_initial_state_sync
+
+    def traced_initial_state() -> tuple[ConversationStateUpdateEvent, int]:
+        snapshot_started.set()
+        return original_initial_state()
+
     def traced_compose_info_sync(*args, **kwargs):
         conversation_info_started.set()
         return original_compose_info_sync(*args, **kwargs)
@@ -660,6 +887,7 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
             attach_error.append(exc)
 
     event_service._create_state_update_event_sync = traced_snapshot
+    event_service._create_initial_state_sync = traced_initial_state
     conversation_service_module._compose_conversation_info_sync = (
         traced_compose_info_sync
     )
@@ -699,6 +927,7 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         )
     finally:
         event_service._create_state_update_event_sync = original_snapshot
+        event_service._create_initial_state_sync = original_initial_state
         conversation_service_module._compose_conversation_info_sync = (
             original_compose_info_sync
         )
@@ -1020,6 +1249,13 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "role": "assistant",
                     "content": "Hello from patched LLM",
                 }
+                # A continued turn reports only its own model call, not the
+                # conversation's running total (7/5 per call, two calls so far).
+                assert reused_response.json()["usage"] == {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 5,
+                    "total_tokens": 12,
+                }
 
                 from openai import BadRequestError, OpenAI
 
@@ -1028,6 +1264,21 @@ def test_openai_chat_completions_gateway_over_real_server(
                     base_url=f"{env['host']}/v1",
                     timeout=10,
                 )
+                reused_stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[{"role": "user", "content": "Say hello a third time."}],
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_headers={
+                        "X-OpenHands-ServerConversation-ID": conversation_id
+                    },
+                )
+                reused_usage = [chunk.usage for chunk in reused_stream if chunk.usage]
+                assert len(reused_usage) == 1
+                assert reused_usage[0].prompt_tokens == 7
+                assert reused_usage[0].completion_tokens == 5
+                assert reused_usage[0].total_tokens == 12
+
                 stream = openai_client.chat.completions.create(
                     model="openhands_smoke",
                     messages=[
