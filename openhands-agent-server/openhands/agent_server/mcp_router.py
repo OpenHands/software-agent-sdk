@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 import httpx
 import mcp.types
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -79,6 +79,10 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 
 _DEFAULT_SERVER_NAME = "test-server"
 _OAUTH_PROBE_JOB_TTL_SECONDS = 15 * 60
+_MCP_LEGACY_DEPRECATION = (
+    "MCP legacy protocol/session mode is deprecated; use "
+    "protocol_mode=auto or protocol_mode=2026-07-28."
+)
 
 
 class _StdioMCPServerSpec(BaseModel):
@@ -232,6 +236,14 @@ class MCPTestRequest(BaseModel):
 
     def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
         return {self.name: self.resolved_server.with_decrypted_secrets(cipher=cipher)}
+
+
+def _set_mcp_deprecation_headers(response: Response, request: MCPTestRequest) -> None:
+    server = request.resolved_server
+    if server.protocol_mode != "legacy" and server.transport != "sse":
+        return
+    response.headers["Deprecation"] = "true"
+    response.headers["X-OpenHands-Deprecation"] = _MCP_LEGACY_DEPRECATION
 
 
 class MCPToolCallResult(BaseModel):
@@ -827,9 +839,10 @@ def _probe_with_secret_references(
     ),
 )
 async def test_mcp_server(
-    request: MCPTestRequest, http_request: Request
+    request: MCPTestRequest, http_request: Request, http_response: Response
 ) -> MCPTestResponse:
     """Probe a single MCP server config and report whether it works."""
+    _set_mcp_deprecation_headers(http_response, request)
     # Resolve the cipher and store here: the threadpool function below must
     # not reach back into ``http_request.app.state``.
     cipher = get_cipher(http_request)
@@ -887,9 +900,10 @@ def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
     summary="Start an MCP OAuth install probe",
 )
 async def start_mcp_oauth(
-    request: MCPTestRequest, http_request: Request
+    request: MCPTestRequest, http_request: Request, http_response: Response
 ) -> MCPOAuthStartResponse:
     """Start OAuth for a candidate MCP server and return the authorization URL."""
+    _set_mcp_deprecation_headers(http_response, request)
     if request.resolved_server.oauth_auth is None:
         raise Invalid("MCP OAuth start requires auth.strategy='oauth2'")
 
@@ -944,8 +958,12 @@ async def start_mcp_oauth(
     response_model_exclude_none=True,
     summary="Get an MCP OAuth install probe status",
 )
-async def get_mcp_oauth_status(job_id: str) -> MCPOAuthStatusResponse:
-    return _get_oauth_job(job_id).to_status_response()
+async def get_mcp_oauth_status(
+    job_id: str, http_response: Response
+) -> MCPOAuthStatusResponse:
+    job = _get_oauth_job(job_id)
+    _set_mcp_deprecation_headers(http_response, job.request)
+    return job.to_status_response()
 
 
 def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
@@ -981,9 +999,10 @@ def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
     summary="Submit an MCP OAuth callback URL",
 )
 async def submit_mcp_oauth_callback(
-    job_id: str, request: MCPOAuthCallbackRequest
+    job_id: str, request: MCPOAuthCallbackRequest, http_response: Response
 ) -> MCPOAuthStatusResponse:
     job = _get_oauth_job(job_id)
+    _set_mcp_deprecation_headers(http_response, job.request)
     _validate_callback_url(request.callback_url, job)
     if job.done.is_set():
         # A replayed or late callback: the probe finished and its callback

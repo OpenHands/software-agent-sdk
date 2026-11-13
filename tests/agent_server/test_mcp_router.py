@@ -143,6 +143,55 @@ def test_mcp_test_request_preserves_protocol_mode():
     assert fastmcp_config["mcpServers"]["test-server"]["mode"] == "legacy"
 
 
+@pytest.mark.parametrize(
+    "server",
+    [
+        {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "protocol_mode": "legacy",
+        },
+        {"transport": "sse", "url": "https://mcp.example.com/sse"},
+    ],
+)
+def test_mcp_test_adds_deprecation_headers_for_legacy_mcp_config(
+    client: TestClient, fake_mcp_tools: FakeMCPTools, server: dict[str, str]
+):
+    response = client.post(
+        "/api/mcp/test",
+        json={"server": server, "timeout": 5.0},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert response.headers["deprecation"] == "true"
+    assert (
+        "MCP legacy protocol/session mode"
+        in response.headers["x-openhands-deprecation"]
+    )
+
+
+def test_mcp_test_omits_deprecation_headers_for_auto_protocol(
+    client: TestClient, fake_mcp_tools: FakeMCPTools
+):
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "protocol_mode": "auto",
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert "deprecation" not in response.headers
+    assert "x-openhands-deprecation" not in response.headers
+
+
 def test_mcp_test_http_transport_is_accepted(
     client: TestClient, http_mcp_server: MCPTestServer
 ):
