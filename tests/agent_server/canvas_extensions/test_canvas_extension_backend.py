@@ -871,8 +871,11 @@ async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path)
     manager = CanvasExtensionBackendManager(installed_dir, state_dir)
     try:
         await manager.reap_orphans()
-        assert not _alive(backend_pid)
-        assert not _alive(child_pid)
+        # Kernel group removal can precede visibility in process-status queries.
+        deadline = time.monotonic() + 3
+        while _alive(backend_pid) or _alive(child_pid):
+            assert time.monotonic() < deadline, "orphaned backend tree survived reaping"
+            await asyncio.sleep(0.01)
         assert bystander.returncode is None and _alive(bystander.pid)
         assert list((state_dir / "run").iterdir()) == []
         assert (await manager.status("my-extension")).state == "stopped"
