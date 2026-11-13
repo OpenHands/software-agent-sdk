@@ -72,7 +72,6 @@ class TestSessionPersistence:
                 "test": {
                     "transport": "http",
                     "url": f"http://127.0.0.1:{live_server}/mcp",
-                    "protocol_mode": "legacy",
                 }
             }
         }
@@ -110,7 +109,6 @@ class TestSessionPersistence:
                 "test": {
                     "transport": "http",
                     "url": f"http://127.0.0.1:{live_server}/mcp",
-                    "protocol_mode": "legacy",
                 }
             }
         }

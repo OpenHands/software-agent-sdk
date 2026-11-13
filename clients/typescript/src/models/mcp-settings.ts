@@ -16,10 +16,7 @@ type GeneratedMCPServer = McpServerInputWritable;
 type GeneratedMCPTransport = NonNullable<GeneratedMCPServer['transport']>;
 type GeneratedMCPAuthCredential = NonNullable<GeneratedMCPServer['auth']>;
 
-export type MCPProtocolMode = 'legacy' | 'auto' | '2026-07-28';
-type MCPCommonFields = Pick<GeneratedMCPServer, 'description' | 'icon' | 'timeout'> & {
-  protocol_mode?: MCPProtocolMode | null;
-};
+type MCPCommonFields = Pick<GeneratedMCPServer, 'description' | 'icon' | 'timeout'>;
 type MCPStdioFields = Pick<GeneratedMCPServer, 'args' | 'env' | 'cwd'>;
 type MCPRemoteFields = Pick<
   GeneratedMCPServer,
@@ -48,7 +45,5 @@ export type RemoteMCPServer = MCPCommonFields &
 
 export type MCPServer = StdioMCPServer | RemoteMCPServer;
 export type MCPConfig = Record<string, MCPServer>;
-export type MCPServerPatch = McpServerPatchWritable & {
-  protocol_mode?: MCPProtocolMode | null;
-};
+export type MCPServerPatch = McpServerPatchWritable;
 export type MCPConfigPatch = Record<string, MCPServerPatch | null>;

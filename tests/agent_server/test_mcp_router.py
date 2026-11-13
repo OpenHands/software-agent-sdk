@@ -129,63 +129,35 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
     assert body.get("tool_result") is None
 
 
-def test_mcp_test_request_preserves_protocol_mode():
+def test_mcp_test_uses_automatic_negotiation_without_exposing_mode():
     request = MCPTestRequest.model_validate(
-        {
-            "server": {
-                "transport": "http",
-                "url": "https://mcp.example.com/mcp",
-                "protocol_mode": "legacy",
-            }
-        }
+        {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
     )
 
-    assert request.resolved_server.protocol_mode == "legacy"
     fastmcp_config = to_fastmcp_mcp_config(request.to_mcp_config())
-    assert fastmcp_config["mcpServers"]["test-server"]["mode"] == "legacy"
+    assert "mode" not in fastmcp_config["mcpServers"]["test-server"]
 
 
-@pytest.mark.parametrize(
-    "server",
-    [
-        {
-            "transport": "http",
-            "url": "https://mcp.example.com/mcp",
-            "protocol_mode": "legacy",
-        },
-        {"transport": "sse", "url": "https://mcp.example.com/sse"},
-    ],
-)
-def test_mcp_test_adds_deprecation_headers_for_legacy_mcp_config(
-    client: TestClient, fake_mcp_tools: FakeMCPTools, server: dict[str, str]
+def test_mcp_test_adds_deprecation_headers_for_sse_transport(
+    client: TestClient, fake_mcp_tools: FakeMCPTools
 ):
     response = client.post(
         "/api/mcp/test",
-        json={"server": server, "timeout": 5.0},
+        json={"server": {"transport": "sse", "url": "https://mcp.example.com/sse"}},
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
     assert response.headers["deprecation"] == "true"
-    assert (
-        "MCP legacy protocol/session mode"
-        in response.headers["x-openhands-deprecation"]
-    )
+    assert "SSE MCP transport" in response.headers["x-openhands-deprecation"]
 
 
-def test_mcp_test_omits_deprecation_headers_for_auto_protocol(
+def test_mcp_test_omits_deprecation_headers_for_http_transport(
     client: TestClient, fake_mcp_tools: FakeMCPTools
 ):
     response = client.post(
         "/api/mcp/test",
-        json={
-            "server": {
-                "transport": "http",
-                "url": "https://mcp.example.com/mcp",
-                "protocol_mode": "auto",
-            },
-            "timeout": 5.0,
-        },
+        json={"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}},
     )
 
     assert response.status_code == 200, response.text

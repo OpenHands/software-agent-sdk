@@ -9,7 +9,6 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthentication,
     MCPOAuthState,
     MCPOAuthStateResponse,
-    MCPProtocolMode,
     MCPServer,
     to_fastmcp_mcp_config,
 )
@@ -48,7 +47,6 @@ __all__ = [
     "MCPOAuthAuthentication",
     "MCPOAuthState",
     "MCPOAuthStateResponse",
-    "MCPProtocolMode",
     "MCPServer",
     "MCPToolDefinition",
     "MCPToolAction",

@@ -18,7 +18,7 @@ from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 
@@ -36,7 +36,7 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
-from openhands.sdk.mcp.utils import _client_protocol_mode, _prepare_mcp_config
+from openhands.sdk.mcp.utils import _prepare_mcp_config
 
 
 logger = logging.getLogger(__name__)
@@ -307,65 +307,19 @@ def test_to_fastmcp_mcp_config_strips_enabled():
     assert "enabled" not in prepared["mcpServers"]["switched_off"]
 
 
-def test_to_fastmcp_mcp_config_maps_protocol_mode_to_fastmcp_mode():
-    config = native_mcp_config(
-        {
-            "mcpServers": {
-                "legacy_server": {
-                    "url": "https://mcp.example.com/mcp",
-                    "protocol_mode": "legacy",
-                }
-            }
-        }
-    )
-
-    prepared = to_fastmcp_mcp_config(config)
-
-    server = prepared["mcpServers"]["legacy_server"]
-    assert server["mode"] == "legacy"
-    assert "protocol_mode" not in server
-
-
-def test_client_protocol_mode_defaults_to_auto():
+def test_to_fastmcp_mcp_config_does_not_expose_protocol_mode():
     config = native_mcp_config(
         {"mcpServers": {"remote": {"url": "https://mcp.example.com/mcp"}}}
     )
 
-    assert _client_protocol_mode(config) == "auto"
+    server = to_fastmcp_mcp_config(config)["mcpServers"]["remote"]
+    assert "mode" not in server
+    assert "protocol_mode" not in server
 
-
-def test_client_protocol_mode_uses_single_explicit_mode():
-    config = native_mcp_config(
-        {
-            "mcpServers": {
-                "remote": {
-                    "url": "https://mcp.example.com/mcp",
-                    "protocol_mode": "legacy",
-                }
-            }
-        }
-    )
-
-    assert _client_protocol_mode(config) == "legacy"
-
-
-def test_client_protocol_mode_falls_back_to_auto_for_mixed_modes():
-    config = native_mcp_config(
-        {
-            "mcpServers": {
-                "legacy_server": {
-                    "url": "https://legacy.example.com/mcp",
-                    "protocol_mode": "legacy",
-                },
-                "auto_server": {
-                    "url": "https://auto.example.com/mcp",
-                    "protocol_mode": "auto",
-                },
-            }
-        }
-    )
-
-    assert _client_protocol_mode(config) == "auto"
+    with pytest.raises(ValidationError, match="protocol_mode"):
+        MCPServer.model_validate(
+            {"url": "https://mcp.example.com/mcp", "protocol_mode": "legacy"}
+        )
 
 
 def test_prepare_mcp_config_converts_bare_oauth_credential():

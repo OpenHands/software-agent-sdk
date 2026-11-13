@@ -54,7 +54,6 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPOAuthStateResponse,
-    MCPProtocolMode,
     MCPServer,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -79,10 +78,7 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 
 _DEFAULT_SERVER_NAME = "test-server"
 _OAUTH_PROBE_JOB_TTL_SECONDS = 15 * 60
-_MCP_LEGACY_DEPRECATION = (
-    "MCP legacy protocol/session mode is deprecated; use "
-    "protocol_mode=auto or protocol_mode=2026-07-28."
-)
+_SSE_DEPRECATION = "SSE MCP transport is deprecated; use streamable HTTP."
 
 
 class _StdioMCPServerSpec(BaseModel):
@@ -93,7 +89,6 @@ class _StdioMCPServerSpec(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
-    protocol_mode: MCPProtocolMode | None = None
 
     def to_mcp_server(self) -> MCPServer:
         return MCPServer.model_validate(
@@ -103,7 +98,6 @@ class _StdioMCPServerSpec(BaseModel):
                 "args": self.args,
                 "env": self.env,
                 "cwd": self.cwd,
-                "protocol_mode": self.protocol_mode,
             }
         )
 
@@ -118,7 +112,6 @@ class _RemoteMCPServerSpec(BaseModel):
     timeout: float | None = None
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
-    protocol_mode: MCPProtocolMode | None = None
 
     @model_validator(mode="after")
     def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
@@ -140,7 +133,6 @@ class _RemoteMCPServerSpec(BaseModel):
             "timeout": self.timeout,
             "sse_read_timeout": self.sse_read_timeout,
             "keep_alive": self.keep_alive,
-            "protocol_mode": self.protocol_mode,
         }
         if self.auth is not None:
             data["auth"] = self.auth
@@ -240,10 +232,10 @@ class MCPTestRequest(BaseModel):
 
 def _set_mcp_deprecation_headers(response: Response, request: MCPTestRequest) -> None:
     server = request.resolved_server
-    if server.protocol_mode != "legacy" and server.transport != "sse":
+    if server.transport != "sse":
         return
     response.headers["Deprecation"] = "true"
-    response.headers["X-OpenHands-Deprecation"] = _MCP_LEGACY_DEPRECATION
+    response.headers["X-OpenHands-Deprecation"] = _SSE_DEPRECATION
 
 
 class MCPToolCallResult(BaseModel):
