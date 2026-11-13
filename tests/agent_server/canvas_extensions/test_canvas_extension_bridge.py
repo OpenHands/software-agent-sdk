@@ -36,6 +36,7 @@ from openhands.agent_server.canvas_extensions_bridge_router import (
     app_backend_bridge_router,
 )
 from openhands.agent_server.config import Config
+from tests.agent_server.conftest import install_test_context
 
 
 CONTROL_KEY = "control-key"
@@ -206,11 +207,14 @@ async def _live_bridge(
         public_url = f"https://127.0.0.1:{bridge_port}"
         app = FastAPI()
         add_domain_error_handler(app)
-        app.state.config = Config(
-            session_api_keys=[CONTROL_KEY],
-            allow_cors_origins=[CANVAS_ORIGIN],
-            app_backend_public_url=public_url,
-            trust_forwarded_headers=trust_forwarded_headers,
+        install_test_context(
+            app,
+            Config(
+                session_api_keys=[CONTROL_KEY],
+                allow_cors_origins=[CANVAS_ORIGIN],
+                app_backend_public_url=public_url,
+                trust_forwarded_headers=trust_forwarded_headers,
+            ),
         )
         app.state.app_backend_session_store = AppBackendSessionStore(
             ttl_seconds=ttl_seconds
@@ -584,10 +588,13 @@ async def test_untrusted_forwarded_proto_does_not_change_origin_on_launch_config
         public_url = f"{public_scheme}://127.0.0.1:{bridge_port}"
         app = FastAPI()
         add_domain_error_handler(app)
-        app.state.config = Config(
-            session_api_keys=[CONTROL_KEY],
-            allow_cors_origins=[CANVAS_ORIGIN],
-            app_backend_public_url=public_url,
+        install_test_context(
+            app,
+            Config(
+                session_api_keys=[CONTROL_KEY],
+                allow_cors_origins=[CANVAS_ORIGIN],
+                app_backend_public_url=public_url,
+            ),
         )
         app.state.app_backend_session_store = AppBackendSessionStore()
         app.state.canvas_extension_backend_manager = _ReadyBackendManager(

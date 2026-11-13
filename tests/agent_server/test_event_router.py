@@ -26,6 +26,7 @@ from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
+from tests.agent_server.conftest import install_test_context, update_test_context
 
 
 def test_normalize_datetime_naive_passthrough():
@@ -72,6 +73,7 @@ def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
     add_domain_error_handler(app)
+    install_test_context(app)
     app.include_router(event_router, prefix="/api")
     return TestClient(app)
 
@@ -101,8 +103,10 @@ def test_gateway_deadline_includes_cold_conversation_load(client, monkeypatch):
         await asyncio.sleep(0.04)
         return event_service
 
-    client.app.state.conversation_service = SimpleNamespace(get_event_service=slow_load)
-    client.app.state.conversation_registry = None
+    update_test_context(
+        client.app,
+        conversation_service=SimpleNamespace(get_event_service=slow_load),
+    )
 
     response = client.post(
         f"/api/conversations/{uuid4()}/events/_gateway/run",

@@ -35,15 +35,15 @@ from urllib.parse import urlparse
 
 import httpx
 import mcp.types
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from openhands.agent_server._secrets_exposure import get_cipher, get_config
+from openhands.agent_server.dependencies import get_cipher, get_secrets_store
 from openhands.agent_server.mcp_oauth_store import (
     InMemoryMCPOAuthTokenStore,
 )
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.errors import Conflict, Invalid, NotFound
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
@@ -822,13 +822,11 @@ def _probe_with_secret_references(
     ),
 )
 async def test_mcp_server(
-    request: MCPTestRequest, http_request: Request
+    request: MCPTestRequest,
+    cipher: Cipher | None = Depends(get_cipher),
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> MCPTestResponse:
     """Probe a single MCP server config and report whether it works."""
-    # Resolve the cipher and store here: the threadpool function below must
-    # not reach back into ``http_request.app.state``.
-    cipher = get_cipher(http_request)
-    secrets_store = get_secrets_store(get_config(http_request))
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
@@ -882,13 +880,13 @@ def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
     summary="Start an MCP OAuth install probe",
 )
 async def start_mcp_oauth(
-    request: MCPTestRequest, http_request: Request
+    request: MCPTestRequest, cipher: Cipher | None = Depends(get_cipher)
 ) -> MCPOAuthStartResponse:
     """Start OAuth for a candidate MCP server and return the authorization URL."""
     if request.resolved_server.oauth_auth is None:
         raise Invalid("MCP OAuth start requires auth.strategy='oauth2'")
 
-    job = _MCPOAuthProbeJob(request=request, cipher=get_cipher(http_request))
+    job = _MCPOAuthProbeJob(request=request, cipher=cipher)
     _register_oauth_job(job)
     thread = threading.Thread(
         target=_run_oauth_probe_job,

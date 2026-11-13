@@ -17,8 +17,9 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import SecretStr
 
@@ -239,10 +240,6 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         except OSError:
             pass
         raise
-
-
-# Default storage directory (relative to working directory)
-DEFAULT_PERSISTENCE_DIR = Path("workspace/.openhands")
 
 
 # Appended to the "different key" refusals of read-modify-write paths.
@@ -886,32 +883,19 @@ class FileWorkspacesStore(WorkspacesStore):
             return updated
 
 
-# ── Global Store Access ──────────────────────────────────────────────────
-
-_settings_store: FileSettingsStore | None = None
-_secrets_store: FileSecretsStore | None = None
-_provider_connections_store: ProviderConnectionStore | None = None
-_workspaces_store: FileWorkspacesStore | None = None
-_llm_profile_store: LLMProfileStore | None = None
-_agent_profile_store: AgentProfileStore | None = None
-_store_lock = threading.Lock()
+# ── Per-server stores ────────────────────────────────────────────────────
 
 
-def _get_persistence_dir(config: Config | None = None) -> Path:
-    """Get the persistence directory from config or default."""
+def _get_persistence_dir(config: Config) -> Path:
+    """Get the workspace-relative persistence directory for ``config``."""
     # Absent OH_PERSISTENCE_DIR, fall back to config's conversations_path parent.
-    default = (
-        config.conversations_path.parent / ".openhands"
-        if config is not None
-        else DEFAULT_PERSISTENCE_DIR
-    )
-    return get_user_persistence_dir(default)
+    return get_user_persistence_dir(config.conversations_path.parent / ".openhands")
 
 
 def _get_profile_persistence_dir() -> Path:
-    """Get the base dir for LLM/agent profile stores.
+    """Get the base dir for the settings, secrets and profile stores.
 
-    Profiles can hold credentials (LLM API keys), so absent
+    These can hold credentials (LLM API keys), so absent
     ``OH_PERSISTENCE_DIR`` they fall back to the user's ``~/.openhands``
     rather than the workspace-relative agent-server default, keeping bare
     local profile secrets in the expected user config directory.
@@ -919,191 +903,129 @@ def _get_profile_persistence_dir() -> Path:
     return get_user_persistence_dir()
 
 
-def _get_cipher(config: Config | None = None) -> Cipher | None:
-    """Get cipher from config for encrypting secrets."""
-    if config is not None:
-        return config.cipher
-    return None
+@dataclass(frozen=True)
+class ServerStores:
+    """The persistent stores of one server (re)initialisation.
 
+    A server builds one instance per :class:`Config` it runs with (at start-up
+    and again on ``POST /api/init``) and reaches every store through it, so all
+    of them agree on the cipher and the directories resolved when it was built.
+    There is no process-wide store: code that needs one is handed the instance
+    (or the store) it should use.
 
-def get_settings_store(config: Config | None = None) -> FileSettingsStore:
-    """Get the global settings store instance (thread-safe).
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
-
-    Warning:
-        The cipher key (OH_SECRET_KEY) must NOT change during runtime.
-        The store singleton caches the cipher from first initialization.
-        If the cipher key changes:
-        - New data may be encrypted with a stale key
-        - Existing data may fail to decrypt
-        - This could trigger data loss protection in update operations
-
-        To use a new cipher key, restart the server process.
-        For testing, use :func:`reset_stores` to clear the singletons.
-    """
-    global _settings_store
-    if _settings_store is not None:
-        return _settings_store
-
-    with _store_lock:
-        # Double-check after acquiring lock
-        if _settings_store is None:
-            _settings_store = FileSettingsStore(
-                persistence_dir=_get_profile_persistence_dir(),
-                cipher=_get_cipher(config),
-            )
-        return _settings_store
-
-
-def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
-    """Get the global secrets store instance (thread-safe).
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
+    Building the instance touches no file. Each store is created on first use
+    and then reused; several of their constructors create their directory.
 
     Warning:
-        The cipher key (OH_SECRET_KEY) must NOT change during runtime.
-        The store singleton caches the cipher from first initialization.
-        If the cipher key changes:
-        - New data may be encrypted with a stale key
-        - Existing data may fail to decrypt
-        - This could trigger data loss protection in update operations
-
-        To use a new cipher key, restart the server process.
-        For testing, use :func:`reset_stores` to clear the singletons.
+        The cipher key is fixed for the lifetime of the instance. To use a new
+        key, build a new instance from the new config.
     """
-    global _secrets_store
-    if _secrets_store is not None:
-        return _secrets_store
 
-    with _store_lock:
-        # Double-check after acquiring lock
-        if _secrets_store is None:
-            _secrets_store = FileSecretsStore(
-                persistence_dir=_get_profile_persistence_dir(),
-                cipher=_get_cipher(config),
-            )
-        return _secrets_store
+    cipher: Cipher | None
+    """Encrypts the settings and secrets stores at rest."""
+    profile_dir: Path
+    """Base of the settings, secrets, provider-connection and profile stores:
+    ``OH_PERSISTENCE_DIR`` when set, else ``~/.openhands``."""
+    workspace_dir: Path
+    """Base of the workspaces store: ``OH_PERSISTENCE_DIR`` when set, else
+    ``.openhands`` next to the config's conversations directory."""
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False, compare=False
+    )
+    _built: dict[str, object] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    @classmethod
+    def from_config(cls, config: Config) -> ServerStores:
+        """Resolve the cipher and directories ``config`` selects."""
+        return cls(
+            cipher=config.cipher,
+            profile_dir=_get_profile_persistence_dir(),
+            workspace_dir=_get_persistence_dir(config),
+        )
+
+    def _once[StoreT](self, name: str, build: Callable[[], StoreT]) -> StoreT:
+        with self._lock:
+            if name not in self._built:
+                self._built[name] = build()
+            return cast(StoreT, self._built[name])
+
+    @property
+    def settings(self) -> FileSettingsStore:
+        return self._once(
+            "settings",
+            lambda: FileSettingsStore(
+                persistence_dir=self.profile_dir, cipher=self.cipher
+            ),
+        )
+
+    @property
+    def secrets(self) -> FileSecretsStore:
+        return self._once(
+            "secrets",
+            lambda: FileSecretsStore(
+                persistence_dir=self.profile_dir, cipher=self.cipher
+            ),
+        )
+
+    @property
+    def provider_connections(self) -> ProviderConnectionStore:
+        """Stored at ``<profile_dir>/provider-connections``.
+
+        The store itself is cipher-agnostic; callers pass the cipher per call
+        so keys are encrypted at rest.
+        """
+        return self._once(
+            "provider_connections",
+            lambda: ProviderConnectionStore(
+                base_dir=self.profile_dir / "provider-connections"
+            ),
+        )
+
+    @property
+    def workspaces(self) -> FileWorkspacesStore:
+        return self._once(
+            "workspaces",
+            lambda: FileWorkspacesStore(persistence_dir=self.workspace_dir),
+        )
+
+    @property
+    def llm_profiles(self) -> LLMProfileStore:
+        """Stored at ``<profile_dir>/profiles``, never workspace-relative."""
+        return self._once(
+            "llm_profiles",
+            lambda: LLMProfileStore(
+                base_dir=self.profile_dir / "profiles",
+                provider_store=self.provider_connections,
+            ),
+        )
+
+    @property
+    def agent_profiles(self) -> AgentProfileStore:
+        """Stored at ``<profile_dir>/agent-profiles``."""
+        return self._once(
+            "agent_profiles",
+            lambda: AgentProfileStore(base_dir=self.profile_dir / "agent-profiles"),
+        )
 
 
-def reencrypt_stale_stores(config: Config) -> None:
+def reencrypt_stale_stores(stores: ServerStores) -> None:
     """Re-encrypt the settings and secrets stores under the current key.
 
     Runs at startup when ``previous_secret_keys`` is configured, so a rotated
     key does not wait for the next write. Failures are logged, never raised:
     the stores stay readable through the previous keys either way.
     """
-    cipher = config.cipher
+    cipher = stores.cipher
     if cipher is None or not cipher.previous_keys:
         return
     for name, store in (
-        ("settings", get_settings_store(config)),
-        ("secrets", get_secrets_store(config)),
+        ("settings", stores.settings),
+        ("secrets", stores.secrets),
     ):
         try:
             if store.reencrypt():
                 logger.info(f"Re-encrypted the {name} store under the current key")
         except Exception:
             logger.error(f"Could not re-encrypt the {name} store", exc_info=True)
-
-
-def get_provider_connections_store(
-    config: Config | None = None,  # noqa: ARG001
-) -> ProviderConnectionStore:
-    """Get the global provider connections store instance (thread-safe).
-
-    Stored at ``<dir>/provider-connections`` alongside ``profiles`` /
-    ``agent-profiles``. The store itself is cipher-agnostic; callers pass the
-    request cipher per call so keys are encrypted at rest.
-    """
-    global _provider_connections_store
-    if _provider_connections_store is not None:
-        return _provider_connections_store
-
-    with _store_lock:
-        if _provider_connections_store is None:
-            _provider_connections_store = ProviderConnectionStore(
-                base_dir=_get_profile_persistence_dir() / "provider-connections",
-            )
-        return _provider_connections_store
-
-
-def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
-    """Get the global workspaces store instance (thread-safe).
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
-    """
-    global _workspaces_store
-    if _workspaces_store is not None:
-        return _workspaces_store
-
-    with _store_lock:
-        if _workspaces_store is None:
-            _workspaces_store = FileWorkspacesStore(
-                persistence_dir=_get_persistence_dir(config),
-            )
-        return _workspaces_store
-
-
-def get_llm_profile_store() -> LLMProfileStore:
-    """Get the global ``LLMProfileStore`` instance (thread-safe).
-
-    Stored at ``<dir>/profiles`` where ``<dir>`` is ``OH_PERSISTENCE_DIR``
-    when set, else ``~/.openhands``. This honors isolated agent-server
-    instances while keeping bare local profile secrets in the user's
-    config directory (never workspace-relative). See
-    :func:`_get_profile_persistence_dir`.
-    """
-    global _llm_profile_store
-    if _llm_profile_store is not None:
-        return _llm_profile_store
-
-    # Resolve the provider store first: it takes ``_store_lock`` itself, and
-    # ``_store_lock`` is non-reentrant, so calling it while already holding the
-    # lock below would deadlock.
-    provider_store = get_provider_connections_store()
-    with _store_lock:
-        if _llm_profile_store is None:
-            _llm_profile_store = LLMProfileStore(
-                base_dir=_get_profile_persistence_dir() / "profiles",
-                provider_store=provider_store,
-            )
-        return _llm_profile_store
-
-
-def get_agent_profile_store() -> AgentProfileStore:
-    """Get the global ``AgentProfileStore`` instance (thread-safe).
-
-    Stored at ``<dir>/agent-profiles`` where ``<dir>`` is resolved by
-    :func:`_get_profile_persistence_dir`, for the same reason as
-    :func:`get_llm_profile_store`.
-    """
-    global _agent_profile_store
-    if _agent_profile_store is not None:
-        return _agent_profile_store
-
-    with _store_lock:
-        if _agent_profile_store is None:
-            _agent_profile_store = AgentProfileStore(
-                base_dir=_get_profile_persistence_dir() / "agent-profiles",
-            )
-        return _agent_profile_store
-
-
-def reset_stores() -> None:
-    """Reset global store instances (for testing)."""
-    global _settings_store, _secrets_store, _provider_connections_store
-    global _workspaces_store, _llm_profile_store, _agent_profile_store
-    with _store_lock:
-        _settings_store = None
-        _secrets_store = None
-        _provider_connections_store = None
-        _workspaces_store = None
-        _llm_profile_store = None
-        _agent_profile_store = None

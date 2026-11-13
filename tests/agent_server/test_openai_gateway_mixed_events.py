@@ -29,6 +29,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 
 
 class _InterleavedEventService:
@@ -95,11 +96,10 @@ async def test_direct_event_cannot_change_gateway_reply_and_usage(
 
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.config = Config()
     conversation_service = cast(
         ConversationService, SimpleNamespace(get_event_service=get_event_service)
     )
-    app.state.conversation_service = conversation_service
+    install_test_context(app, conversation_service=conversation_service)
     app.include_router(event_router, prefix="/api")
     conversation_id = uuid4()
 
