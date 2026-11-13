@@ -254,7 +254,9 @@ async def start_docker_conversation(
             forwarded["workspace"] = LocalWorkspace(
                 working_dir=identity.workspace_path
             ).model_dump(mode="json")
-        async with httpx.AsyncClient(timeout=60) as client:
+        # ``container.host`` is always a loopback port; env proxies must not
+        # be consulted for it.
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
                 params={"include_skills": include_skills},
