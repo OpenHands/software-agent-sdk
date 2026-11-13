@@ -694,6 +694,9 @@ def generate_baseline_payloads(
                 "--python",
                 str(python),
                 "--quiet",
+                # Resolve the release as published; this workspace's
+                # constraint-dependencies may exclude its pinned versions.
+                "--no-config",
                 # PyPI JSON can see a release before uv's cached package index does.
                 "--refresh-package",
                 "openhands-sdk",
