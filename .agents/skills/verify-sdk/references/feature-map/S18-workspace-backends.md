@@ -10,7 +10,7 @@ Examples: `examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server
 
 ## Sub-features
 
-- `S18.workspace-factory`: `Workspace(working_dir=...)` returns a `LocalWorkspace` and `Workspace(host=..., api_key=...)` a `RemoteWorkspace`; `working_dir` accepts `str` or `Path`. Unit: **none (untested)**; nothing calls the `Workspace` factory. Example: none. Real-LLM: none.
+- `S18.workspace-factory`: `Workspace(working_dir=...)` returns a `LocalWorkspace` and `Workspace(host=..., api_key=...)` a `RemoteWorkspace`; `working_dir` accepts `str` or `Path`. Unit: `tests/sdk/workspace/remote/test_working_dir_path.py` (remote, through the factory too). Example: none. Real-LLM: none.
 - `S18.local-ops`: `LocalWorkspace.execute_command(cmd, cwd=None, timeout=...)` returns a `CommandResult` (`exit_code`, `stdout`, `stderr`, `timeout_occurred`), `file_upload`/`file_download` copy files (creating parent directories) and return a `FileOperationResult`, and `git_changes`/`git_diff` report the repository state. Unit: **none (untested)** for the workspace methods; the git helpers they call are covered by `tests/sdk/git/test_git_changes.py` and `tests/sdk/git/test_git_diff.py`. Example: none. Real-LLM: none.
 - `S18.local-pause-resume`: `LocalWorkspace.pause()` and `resume()` do nothing and do not raise. Unit: `tests/workspace/test_workspace_pause_resume.py` (`test_local_workspace_pause_is_noop`, `test_local_workspace_resume_is_noop`). Example: none. Real-LLM: none.
 - `S18.conversation-binding`: `Conversation(workspace=<path or LocalWorkspace>)` builds a `LocalConversation`, `Conversation(workspace=<RemoteWorkspace subclass>)` a `RemoteConversation`, with parameters forwarded to each. Unit: `tests/sdk/conversation/test_conversation_factory.py`. Example: `examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py`. Real-LLM: none.
@@ -96,7 +96,7 @@ Preconditions:
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S18/remote_workspace --arg ops --check path_working_dir_error missing --check type eq RemoteWorkspace
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): `Workspace(host=..., working_dir=Path(...))` (and `RemoteWorkspace(working_dir=Path(...))`) raises `pydantic_core.ValidationError: 1 validation error for RemoteWorkspace working_dir Input should be a valid string [type=string_type, input_type=PosixPath]`. `RemoteWorkspaceMixin` redeclares `working_dir: str` without the `BeforeValidator` that `BaseWorkspace` uses to accept a `Path`; the local branch accepts one.
+  Expected: the `Path` is accepted and stored as a string, as for local workspaces. Before #6654, `RemoteWorkspaceMixin` redeclared `working_dir: str` without `BaseWorkspace`'s `Path` converter, so `Workspace(host=..., working_dir=Path(...))` and `RemoteWorkspace(working_dir=Path(...))` raised a pydantic `ValidationError` ("Input should be a valid string").
 - **Settings from the server (`S18.remote-settings`).** LLM settings, an LLM profile, two secrets and an MCP server are stored through the server's settings API; the workspace reads them back.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
