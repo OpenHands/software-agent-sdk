@@ -147,7 +147,7 @@ The programs build every plugin, marketplace and git repository inside the run (
   - The git source is fetched through the secret.
   - `TOKEN` comes from the conversation secret (`nekot-terces`), never from the host.
 
-  Known failure (reproduced 2026-10-13, not yet filed): the server receives the host's `TOKEN` (`nekot-tsoh` is `host-token` reversed) instead of the conversation secret `secret-token`. A placeholder with no host variable (`${PLUGIN_KEY}`) correctly takes the secret. The cause is that `Plugin.load` reads `.mcp.json` through `load_mcp_config` with no secret lookup. `expand_mcp_variables` uses `check_env=True`, so at load time `${TOKEN}` is replaced from `os.environ`. When the conversation later applies its secrets, the placeholder is already gone. Any variable a plugin names that also exists in the agent process's environment leaks that value into the plugin's MCP server, and the user's secret is ignored.
+  Before #6643, plugin loading expanded `${TOKEN}` from the host environment, so the server got `host-token` and the secret was ignored. Loading now leaves every `${VAR}` for the conversation's pass, which tries secrets first, then the environment, then the default.
 - **A plugin source that cannot be fetched (`S08.conversation-attach`, `S08.fetch-cache`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

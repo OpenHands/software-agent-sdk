@@ -1002,6 +1002,47 @@ class TestPluginMcpConfigLoading:
         assert str(plugin_dir) in command
         assert "${SKILL_ROOT}" not in command
 
+    def test_plugin_mcp_config_secret_wins_over_host_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A host variable must not pre-empt the conversation secret (#6643).
+
+        Plugin loading used to expand ${TOKEN} from os.environ, so the later pass
+        with the conversation's secrets found no placeholder left.
+        """
+        import json
+
+        from openhands.sdk.skills.utils import expand_mcp_servers
+
+        plugin_dir = tmp_path / "test-plugin"
+        (plugin_dir / ".plugin").mkdir(parents=True)
+        (plugin_dir / ".plugin" / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+        (plugin_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "command": "server",
+                            "env": {"TOKEN": "${TOKEN}", "HOME_ONLY": "${HOME_ONLY}"},
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("TOKEN", "host-token")
+        monkeypatch.setenv("HOME_ONLY", "host-only")
+
+        plugin = Plugin.load(plugin_dir)
+        env = dump_mcp_config(plugin.mcp_config)["test-server"]["env"]
+        assert env == {"TOKEN": "${TOKEN}", "HOME_ONLY": "${HOME_ONLY}"}
+
+        expanded = expand_mcp_servers(plugin.mcp_config, {"TOKEN": "secret"}.get)
+        env = dump_mcp_config(expanded)["test-server"]["env"]
+        # The secret wins; a variable with no secret still comes from the host.
+        assert env == {"TOKEN": "secret", "HOME_ONLY": "host-only"}
+
 
 class TestRootSkillMcpHandling:
     """Tests for proper MCP config handling in root SKILL.md plugins.

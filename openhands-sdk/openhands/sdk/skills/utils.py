@@ -184,6 +184,7 @@ def expand_mcp_variables(
     get_secret: SecretLookup | None = None,
     *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
+    expand_env: bool = True,
     on_unresolved: Callable[[str], None] | None = None,
 ) -> dict:
     """Expand variables in MCP configuration.
@@ -207,19 +208,22 @@ def expand_mcp_variables(
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             This allows deferred expansion when secrets are not yet available.
+        expand_env: If True, resolve variables from the process environment.
+            If False, leave them for a later pass that has the secrets, so a
+            host variable cannot pre-empt a conversation secret of that name.
         on_unresolved: See ``expand_variable_references``.
 
     Returns:
         Configuration with variables expanded.
     """
     # Use the shared expansion function with MCP config settings:
-    # - check_env=True (check environment variables)
+    # - check_env (environment variables, unless deferred)
     # - support_unbraced=False (only ${VAR} syntax for config files)
     expanded_config = expand_variable_references(
         config,
         variables=variables,
         get_secret=get_secret,
-        check_env=True,
+        check_env=expand_env,
         expand_defaults=expand_defaults,
         support_unbraced=False,
         on_unresolved=on_unresolved,
@@ -234,9 +238,13 @@ def expand_mcp_servers(
     servers: Mapping[str, MCPServer],
     get_secret: SecretLookup | None = None,
     *,
+    expand_defaults: bool = True,
     on_unresolved: Callable[[str], None] | None = None,
 ) -> dict[str, MCPServer]:
     """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
+
+    With ``expand_defaults=False``, ``${VAR:-default}`` stays as it is when
+    nothing resolves it, for a later pass that has the conversation's secrets.
 
     Servers with ``literal_values`` are returned untouched: they come from an
     Agent Plugins package, whose loader has already expanded the only two
@@ -253,7 +261,7 @@ def expand_mcp_servers(
         {"mcpServers": dump_mcp_config(expandable)},
         {},
         get_secret=get_secret,
-        expand_defaults=True,
+        expand_defaults=expand_defaults,
         on_unresolved=on_unresolved,
     )
     return {**servers, **coerce_mcp_config(expanded["mcpServers"])}
@@ -265,6 +273,7 @@ def load_mcp_config(
     get_secret: SecretLookup | None = None,
     *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
+    expand_env: bool = True,
 ) -> dict:
     """Load and parse .mcp.json with variable expansion.
 
@@ -276,6 +285,8 @@ def load_mcp_config(
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             Use False during plugin loading to defer until secrets are available.
+        expand_env: If False, leave environment variables unexpanded too, for
+            the same reason: secrets take precedence over the host environment.
 
     Returns:
         Parsed MCP configuration dictionary.
@@ -305,7 +316,11 @@ def load_mcp_config(
 
     # Expand variables (includes secrets if provided)
     config = expand_mcp_variables(
-        config, variables, get_secret=get_secret, expand_defaults=expand_defaults
+        config,
+        variables,
+        get_secret=get_secret,
+        expand_defaults=expand_defaults,
+        expand_env=expand_env,
     )
 
     # Validate the external .mcp.json shape using FastMCP's config model.
