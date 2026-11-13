@@ -711,6 +711,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 url=f"{self._settings_base_url}/secrets/{name}",
                 headers={"X-Session-API-Key": self._session_api_key or ""},
                 description=item.get("description"),
+                scope=item.get("scope"),
+                scope_description=item.get("scope_description"),
             )
 
         return result
@@ -909,7 +911,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Retries up to 3 times on transient failures.
 
         Args:
-            name: Name of the secret to fetch (e.g., "github_token", "gitlab_token")
+            name: Name of the secret to fetch (e.g., "GITHUB_TOKEN", "GITLAB_TOKEN")
 
         Returns:
             The secret value as a string, or None if not found or an error occurred.
@@ -922,20 +924,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             logger.warning(f"Invalid secret name: {name}")
             return None
 
-        # Use retry logic for transient failures
-        @tenacity.retry(
-            stop=tenacity.stop_after_attempt(_MAX_RETRIES),
-            wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
-            retry=tenacity.retry_if_exception(_is_retryable_error),
-            reraise=True,
-        )
-        def _fetch_secret() -> httpx.Response:
-            return self._send_settings_request(
+        try:
+            # _send_settings_request already retries transient failures.
+            resp = self._send_settings_request(
                 "GET", f"{self._settings_base_url}/secrets/{name}"
             )
-
-        try:
-            resp = _fetch_secret()
             return resp.text
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:

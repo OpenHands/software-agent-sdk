@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
@@ -41,17 +42,19 @@ from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import client_context, install_test_context
 
 
 @pytest.fixture
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
-    # switch_llm reads request.app.state.config to get the optional cipher;
-    # populate it with a no-cipher config so unrelated tests don't 503.
-    app.state.config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=None
+    # switch_llm reads the server context's config to get the optional cipher;
+    # install a no-cipher one.
+    install_test_context(
+        app, Config(static_files_path=None, session_api_keys=[], secret_key=None)
     )
     return TestClient(app)
 
@@ -170,8 +173,11 @@ def test_search_conversations_includes_runtime_info(
                 can_resume=False,
             )
 
-    registry = MissingRuntimeRegistry(client.app.state.config)
-    client.app.state.conversation_registry = registry
+    context = client_context(client)
+    install_test_context(
+        client.app,
+        conversation_registry=MissingRuntimeRegistry(context.config, context.stores),
+    )
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
     )
@@ -180,7 +186,6 @@ def test_search_conversations_includes_runtime_info(
         response = client.get("/api/conversations/search")
     finally:
         client.app.dependency_overrides.clear()
-        del client.app.state.conversation_registry
 
     assert response.status_code == 200
     assert response.json()["items"][0]["runtime_info"] == {
@@ -1327,8 +1332,8 @@ def test_start_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1350,8 +1355,8 @@ def test_start_goal_in_conversation_not_found(
     """/goal returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1370,8 +1375,8 @@ def test_start_goal_in_conversation_rejects_busy_loop(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1390,8 +1395,8 @@ def test_stop_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.stop_goal_loop.return_value = True
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1408,8 +1413,8 @@ def test_stop_goal_in_conversation_not_found(
     """/goal/stop returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/goal/stop")
@@ -1425,8 +1430,8 @@ def test_resume_goal_in_conversation_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1445,8 +1450,8 @@ def test_resume_goal_in_conversation_not_found(
     """/goal/resume returns 404 when the conversation is unknown."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1464,8 +1469,8 @@ def test_resume_goal_in_conversation_no_resumable(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.resume_goal_loop.side_effect = ValueError("no_resumable_goal")
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
     try:
         response = client.post(
@@ -1494,6 +1499,35 @@ def test_switch_acp_model_success(
         assert response.status_code == 200
         assert response.json()["success"] is True
         mock_event_service.switch_acp_model.assert_awaited_once_with("haiku")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "status_code"),
+    [(None, 200), (ValueError("not offered"), 400), (TimeoutError("slow"), 504)],
+)
+def test_switch_acp_effort(
+    client,
+    mock_conversation_service,
+    mock_event_service,
+    sample_conversation_id,
+    side_effect,
+    status_code,
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_effort.side_effect = side_effect
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_effort",
+            json={"effort": "high"},
+        )
+        assert response.status_code == status_code
+        mock_event_service.switch_acp_effort.assert_awaited_once_with("high")
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2599,10 +2633,13 @@ def test_switch_conversation_llm_decrypts_encrypted_api_key(
     assert encrypted_api_key is not None
 
     # Install a cipher-enabled config on the test app for this test.
-    client.app.state.config = Config(
-        static_files_path=None,
-        session_api_keys=[],
-        secret_key=SecretStr(secret_key),
+    install_test_context(
+        client.app,
+        Config(
+            static_files_path=None,
+            session_api_keys=[],
+            secret_key=SecretStr(secret_key),
+        ),
     )
 
     mock_conversation = MagicMock()
@@ -2645,10 +2682,13 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
     from base64 import urlsafe_b64encode
 
     secret_key = urlsafe_b64encode(b"a" * 32).decode("ascii")
-    client.app.state.config = Config(
-        static_files_path=None,
-        session_api_keys=[],
-        secret_key=SecretStr(secret_key),
+    install_test_context(
+        client.app,
+        Config(
+            static_files_path=None,
+            session_api_keys=[],
+            secret_key=SecretStr(secret_key),
+        ),
     )
 
     mock_conversation = MagicMock()
@@ -2675,6 +2715,40 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
         assert isinstance(forwarded_llm.api_key, SecretStr)
         assert forwarded_llm.api_key.get_secret_value() == "sk-plaintext"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_acp_agent_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A refused switch_llm (an ACP conversation, #4158) is a 400, not a 500."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_llm.side_effect = ValueError(
+        "switch_llm and switch_profile are not supported for ACP conversations; "
+        "use switch_acp_model instead."
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "usage_id": "x",
+                }
+            },
+        )
+
+        assert response.status_code == 400
+        assert "switch_acp_model" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2712,54 +2786,40 @@ def test_switch_conversation_llm_resolves_provider_connection(
     """A provider_connection_id is resolved into the connection's api_key /
     base_url before the LLM is installed — regression for OpenHands/OpenHands#17206
     (switching to a linked OpenRouter profile lost credentials)."""
-    import tempfile
-    from pathlib import Path
+    # The server's own connection store; its profile store resolves from it.
+    client_context(client).stores.provider_connections.create(
+        _provider_connection("or-conn", api_key="or-secret", base_url=None),
+        cipher=None,
+    )
 
-    from openhands.agent_server.persistence import store as store_module
-    from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base = Path(tmpdir)
-        provider_store = ProviderConnectionStore(base_dir=base / "connections")
-        provider_store.create(
-            _provider_connection("or-conn", api_key="or-secret", base_url=None),
-            cipher=None,
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/z-ai/glm-5.3-flash",
+                    "provider_connection_id": "or-conn",
+                    "usage_id": "caller-supplied-id",
+                }
+            },
         )
-        profile_store = LLMProfileStore(
-            base_dir=base / "profiles", provider_store=provider_store
-        )
 
-        mock_conversation = MagicMock()
-        mock_conversation_service.get_event_service.return_value = mock_event_service
-        mock_event_service.get_conversation.return_value = mock_conversation
-        client.app.dependency_overrides[get_conversation_service] = lambda: (
-            mock_conversation_service
-        )
-
-        old_store = store_module._llm_profile_store
-        store_module._llm_profile_store = profile_store
-        try:
-            response = client.post(
-                f"/api/conversations/{sample_conversation_id}/switch_llm",
-                json={
-                    "llm": {
-                        "model": "openrouter/z-ai/glm-5.3-flash",
-                        "provider_connection_id": "or-conn",
-                        "usage_id": "caller-supplied-id",
-                    }
-                },
-            )
-
-            assert response.status_code == 200
-            mock_conversation.switch_llm.assert_called_once()
-            forwarded = mock_conversation.switch_llm.call_args.args[0]
-            assert isinstance(forwarded, LLM)
-            assert forwarded.provider_connection_id == "or-conn"
-            assert isinstance(forwarded.api_key, SecretStr)
-            assert forwarded.api_key.get_secret_value() == "or-secret"
-        finally:
-            store_module._llm_profile_store = old_store
-            client.app.dependency_overrides.clear()
+        assert response.status_code == 200
+        mock_conversation.switch_llm.assert_called_once()
+        forwarded = mock_conversation.switch_llm.call_args.args[0]
+        assert isinstance(forwarded, LLM)
+        assert forwarded.provider_connection_id == "or-conn"
+        assert isinstance(forwarded.api_key, SecretStr)
+        assert forwarded.api_key.get_secret_value() == "or-secret"
+    finally:
+        client.app.dependency_overrides.clear()
 
 
 def test_switch_conversation_llm_resolves_encrypted_provider_connection(
@@ -2767,66 +2827,57 @@ def test_switch_conversation_llm_resolves_encrypted_provider_connection(
 ):
     """Encrypted-at-rest provider credentials are decrypted with the server's
     cipher before the LLM is installed."""
-    import tempfile
     from base64 import urlsafe_b64encode
-    from pathlib import Path
 
-    from openhands.agent_server.persistence import store as store_module
-    from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
     from openhands.sdk.utils.cipher import Cipher
 
     secret_key = urlsafe_b64encode(b"a" * 32).decode("ascii")
     cipher = Cipher(secret_key)
-    client.app.state.config = Config(
-        static_files_path=None,
-        session_api_keys=[],
-        secret_key=SecretStr(secret_key),
+    context = install_test_context(
+        client.app,
+        Config(
+            static_files_path=None,
+            session_api_keys=[],
+            secret_key=SecretStr(secret_key),
+        ),
     )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base = Path(tmpdir)
-        provider_store = ProviderConnectionStore(base_dir=base / "connections")
-        provider_store.create(
-            _provider_connection(
-                "or-conn",
-                api_key="plaintext-or-secret",
-                base_url="https://openrouter.ai/api/v1",
-            ),
-            cipher=cipher,
-        )
-        profile_store = LLMProfileStore(
-            base_dir=base / "profiles", provider_store=provider_store
+    # The server's own connection store; its profile store resolves from it.
+    context.stores.provider_connections.create(
+        _provider_connection(
+            "or-conn",
+            api_key="plaintext-or-secret",
+            base_url="https://openrouter.ai/api/v1",
+        ),
+        cipher=cipher,
+    )
+
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/z-ai/glm-5.3-flash",
+                    "provider_connection_id": "or-conn",
+                    "usage_id": "caller-supplied-id",
+                }
+            },
         )
 
-        mock_conversation = MagicMock()
-        mock_conversation_service.get_event_service.return_value = mock_event_service
-        mock_event_service.get_conversation.return_value = mock_conversation
-        client.app.dependency_overrides[get_conversation_service] = lambda: (
-            mock_conversation_service
-        )
-
-        old_store = store_module._llm_profile_store
-        store_module._llm_profile_store = profile_store
-        try:
-            response = client.post(
-                f"/api/conversations/{sample_conversation_id}/switch_llm",
-                json={
-                    "llm": {
-                        "model": "openrouter/z-ai/glm-5.3-flash",
-                        "provider_connection_id": "or-conn",
-                        "usage_id": "caller-supplied-id",
-                    }
-                },
-            )
-
-            assert response.status_code == 200
-            forwarded = mock_conversation.switch_llm.call_args.args[0]
-            assert isinstance(forwarded.api_key, SecretStr)
-            assert forwarded.api_key.get_secret_value() == "plaintext-or-secret"
-            assert forwarded.base_url == "https://openrouter.ai/api/v1"
-        finally:
-            store_module._llm_profile_store = old_store
-            client.app.dependency_overrides.clear()
+        assert response.status_code == 200
+        forwarded = mock_conversation.switch_llm.call_args.args[0]
+        assert isinstance(forwarded.api_key, SecretStr)
+        assert forwarded.api_key.get_secret_value() == "plaintext-or-secret"
+        assert forwarded.base_url == "https://openrouter.ai/api/v1"
+    finally:
+        client.app.dependency_overrides.clear()
 
 
 def test_switch_conversation_llm_inline_key_without_provider_connection(
@@ -2866,46 +2917,31 @@ def test_switch_conversation_llm_missing_provider_connection_rejects_before_swit
 ):
     """A dangling provider_connection_id (and no inline key) surfaces 422 before
     the working LLM is replaced."""
-    import tempfile
-    from pathlib import Path
+    # The server's connection store is empty: nothing named ``ghost-conn``.
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
 
-    from openhands.agent_server.persistence import store as store_module
-    from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base = Path(tmpdir)
-        provider_store = ProviderConnectionStore(base_dir=base / "connections")
-        profile_store = LLMProfileStore(
-            base_dir=base / "profiles", provider_store=provider_store
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/z-ai/glm-5.3-flash",
+                    "provider_connection_id": "ghost-conn",
+                    "usage_id": "caller-supplied-id",
+                }
+            },
         )
 
-        mock_conversation = MagicMock()
-        mock_conversation_service.get_event_service.return_value = mock_event_service
-        mock_event_service.get_conversation.return_value = mock_conversation
-        client.app.dependency_overrides[get_conversation_service] = lambda: (
-            mock_conversation_service
-        )
-
-        old_store = store_module._llm_profile_store
-        store_module._llm_profile_store = profile_store
-        try:
-            response = client.post(
-                f"/api/conversations/{sample_conversation_id}/switch_llm",
-                json={
-                    "llm": {
-                        "model": "openrouter/z-ai/glm-5.3-flash",
-                        "provider_connection_id": "ghost-conn",
-                        "usage_id": "caller-supplied-id",
-                    }
-                },
-            )
-
-            assert response.status_code == 422
-            assert "ghost-conn" in response.json()["detail"]
-            mock_conversation.switch_llm.assert_not_called()
-        finally:
-            store_module._llm_profile_store = old_store
-            client.app.dependency_overrides.clear()
+        assert response.status_code == 422
+        assert "ghost-conn" in response.json()["detail"]
+        mock_conversation.switch_llm.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
 
 
 def _provider_connection(connection_id: str, *, api_key: str, base_url: str | None):

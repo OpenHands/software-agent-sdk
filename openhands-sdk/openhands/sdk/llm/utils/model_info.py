@@ -22,8 +22,8 @@ def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     key = model_info.get("key")
     raw = model_cost.get(key) if isinstance(key, str) else None
     if not isinstance(raw, dict):
-        return dict(model_info)
-    return {**raw, **model_info}
+        return {**model_info, "_capability_source": "litellm"}
+    return {**raw, **model_info, "_capability_source": "litellm"}
 
 
 # Pricing fields copied from the underlying model so a custom proxy alias
@@ -132,18 +132,22 @@ def _get_model_info_from_litellm_proxy(
         ]
         if matches:
             current = matches[0]
-            model_info = current.get("model_info")
+            raw_model_info = current.get("model_info")
+            model_info = (
+                dict(raw_model_info) if isinstance(raw_model_info, Mapping) else {}
+            )
             logger.debug(f"Got model info from litellm proxy: {model_info}")
             # The proxy may route to any matching deployment, so only params
-            # every one of them forwards are safe to send.
-            allowed_params = set.intersection(
-                *(_allowed_openai_params(info) for info in matches)
-            )
-            if allowed_params and isinstance(model_info, dict):
-                model_info = {
-                    **model_info,
-                    ALLOWED_OPENAI_PARAMS_KEY: sorted(allowed_params),
-                }
+            # every one of them forwards are safe to send. An explicit
+            # ``allowed_openai_params`` already on ``model_info`` wins.
+            if ALLOWED_OPENAI_PARAMS_KEY not in model_info:
+                allowed_params = set.intersection(
+                    *(_allowed_openai_params(info) for info in matches)
+                )
+                if allowed_params:
+                    model_info[ALLOWED_OPENAI_PARAMS_KEY] = sorted(allowed_params)
+            if model_info:
+                model_info["_capability_source"] = "proxy"
 
             # Make custom proxy aliases priceable so cost instrumentation does
             # not silently record $0 (#4816).
@@ -162,7 +166,7 @@ def _get_model_info_from_litellm_proxy(
                 proxy_model_info=model_info,
             )
 
-            return model_info
+            return model_info or None
     except Exception as e:
         logger.debug(
             f"Error fetching model info from proxy: {e}",

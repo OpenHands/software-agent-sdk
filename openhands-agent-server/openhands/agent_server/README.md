@@ -112,10 +112,22 @@ It is **disabled by default** and does nothing unless a deployment opts in.
 | Feature | What it collects | Where it goes |
 |---|---|---|
 | **Telemetry** (this section) | Allowlisted lifecycle/failure events. Never prompts, messages, file contents, paths, secrets, request/response bodies, or tracebacks. | PostHog, when configured |
-| **LLM completion logging** (`log_completions`) | Full prompts, responses, and raw provider payloads — deliberately high fidelity for debugging. | Local disk only |
-| **Laminar / OpenTelemetry tracing** | Distributed traces and spans for latency analysis. | Your OTel/Laminar backend |
+| **LLM completion logging** (`LLM.log_completions_to_file`) | Full prompts, responses, and raw provider payloads for debugging. | The configured folder or completion-log callback. Agent-server can stream these records through completion-log events. |
+| **Laminar / OpenTelemetry tracing** | Model/tool spans, timing, usage and SDK LLM message content when tracing is configured. | Your configured OTel/Laminar backend |
 
 Nothing from completion logging or tracing is ever forwarded to telemetry.
+
+The completion-logging option belongs to the SDK and also works in standalone
+SDK programs. Its default is `false`. Tracing is enabled separately through
+observability configuration, such as an OTLP endpoint or Laminar initialization.
+Completion logging remains useful for debugging with a folder or callback.
+
+`log_completions` is a deprecated alias for `log_completions_to_file`. Internally,
+`Telemetry.completion_logging_enabled` replaces `Telemetry.log_enabled`. Both old
+names remain accepted during the deprecation period. The SDK keeps old and new
+values synchronized and includes the old keys in serialized settings for older
+SDK/server consumers. Supplying conflicting values for both names raises an
+error. Deprecation begins in v1.63.0, with removal scheduled for v1.68.0.
 
 #### Consent
 

@@ -294,6 +294,60 @@ def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
             )
 
 
+def test_agent_server_runtime_pins_cannot_drift_between_sites() -> None:
+    """Duplicated hand pins are validated, not assumed to agree.
+
+    npm already has a scheduled refresher, and code-server now has one too;
+    Node and uv are still refreshed by hand, and each lives in more than one
+    Dockerfile site. Fail here when the copies disagree instead of letting
+    one half of the image quietly lag behind the other.
+    """
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    node_image = re.findall(
+        r"(?m)^FROM node:(\d+\.\d+\.\d+)-trixie-slim", dockerfile_text
+    )
+    node_tarballs = re.findall(r"node-v(\d+\.\d+\.\d+)-linux-", dockerfile_text)
+    assert len(node_image) == 1 and len(node_tarballs) >= 1
+    assert set(node_tarballs) == {node_image[0]}, (
+        f"Node pin drift: image stage has {node_image}, "
+        f"tarball sites have {sorted(set(node_tarballs))}"
+    )
+
+    uv_tags = re.findall(r"ghcr\.io/astral-sh/uv:(\d+\.\d+\.\d+)", dockerfile_text)
+    assert len(uv_tags) >= 2 and len(set(uv_tags)) == 1, (
+        f"uv pin drift across Dockerfile stages: {uv_tags}"
+    )
+
+
+def test_agent_server_code_server_block_uses_floors_not_exact_pins() -> None:
+    """The editor block must stay forward-compatible as upstream moves.
+
+    The bundled Node and bundled undici checks are minimum-version floors:
+    a future code-server release that ships something newer must pass
+    without a Dockerfile edit, while anything older fails the build. The
+    release refresher owns CODE_SERVER_VERSION and both arch digests.
+    """
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    for pattern in (
+        r'(?m)^ARG CODE_SERVER_VERSION="\d+\.\d+\.\d+"$',
+        r"(?m)^ARG CODE_SERVER_AMD64_SHA256=[0-9a-f]{64}$",
+        r"(?m)^ARG CODE_SERVER_ARM64_SHA256=[0-9a-f]{64}$",
+        r"(?m)^ARG CODE_SERVER_NODE_MIN_VERSION=\d+\.\d+\.\d+$",
+        r"(?m)^ARG CODE_SERVER_UNDICI_MIN_VERSION=\d+\.\d+\.\d+$",
+        r"(?m)^ARG CODE_SERVER_UNDICI_SHA256=[0-9a-f]{64}$",
+    ):
+        assert re.search(pattern, dockerfile_text), pattern
+    assert dockerfile_text.count("ARG CODE_SERVER_VERSION=") == 1
+    # Exact-equality assertions on bundled versions would break on the
+    # next upstream release; the block must compare against the floors.
+    assert 'test "$("${CODE_SERVER_ROOT}/lib/node" --version)"' not in dockerfile_text
+    assert dockerfile_text.count("sort -V") >= 3
+    assert dockerfile_text.count("CODE_SERVER_NODE_MIN_VERSION") >= 3
+    assert dockerfile_text.count("CODE_SERVER_UNDICI_MIN_VERSION") >= 4
+
+
 def test_agent_server_node_pin_clears_every_declared_engine_floor() -> None:
     """The acp-providers stage installs every selected provider under one Node,
     so its pin must satisfy the highest `engines.node` any of them declares.

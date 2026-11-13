@@ -13,6 +13,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import LLM, Agent
+from openhands.sdk.context.view import View, get_observation_dispositions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
@@ -22,6 +23,7 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.error_classification import FailureKind
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
@@ -233,6 +235,10 @@ async def test_crash_recovery_error_is_on_active_branch_for_next_turn(tmp_path):
                 event for event in disk_events if isinstance(event, AgentErrorEvent)
             )
             assert recovery_error.tool_call_id == running_action.tool_call_id
+            assert recovery_error.recovery_reason == "server_restart"
+            assert recovery_error.classification is not None
+            assert recovery_error.classification.kind == FailureKind.INTERNAL
+            assert recovery_error.classification.retryable is False
 
             # Resume exactly as a follow-up automation does.
             await recovered.send_message(
@@ -242,6 +248,22 @@ async def test_crash_recovery_error_is_on_active_branch_for_next_turn(tmp_path):
                 ),
                 run=False,
             )
+
+            late_result = _terminal_observation(running_action, "late completion")
+            recovered.get_conversation()._on_event(late_result)
+            event_files = list((conversation_dir / "events").glob("event-*.json"))
+            original_bytes = {path: path.read_bytes() for path in event_files}
+            disk_events = _load_disk_events(conversation_dir)
+
+            dispositions = get_observation_dispositions(disk_events)
+
+            assert len(dispositions) == 1
+            assert dispositions[0].canonical_event_id == recovery_error.id
+            assert dispositions[0].out_of_view_event_ids == (late_result.id,)
+            view_ids = {event.id for event in View.from_events(disk_events).events}
+            assert recovery_error.id in view_ids
+            assert late_result.id not in view_ids
+            assert {path: path.read_bytes() for path in event_files} == original_bytes
 
             # Must not raise: the next turn/condenser needs a valid tool-call
             # boundary in the active branch.

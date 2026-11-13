@@ -15,28 +15,30 @@ authentication.  Three auth methods are supported (highest to lowest precedence)
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     Query,
     WebSocket,
     WebSocketDisconnect,
 )
 from starlette.websockets import WebSocketState
 
-from openhands.agent_server.bash_service import (
-    BashEventService,
-    get_default_bash_event_service,
-)
-from openhands.agent_server.config import Config, get_default_config
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import (
     ConversationService,
     CredentialBindingActivationRequired,
-    get_default_conversation_service,
+)
+from openhands.agent_server.dependencies import (
+    get_config,
+    get_conversation_service,
+    get_server_bash_event_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
@@ -48,59 +50,17 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.sdk import Event, Message
+from openhands.sdk.event import StreamingDeltaEvent
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.utils.paging import page_iterator
 
 
 conversation_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 bash_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
-conversation_service = get_default_conversation_service()
-bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
-
-
-def _get_config(websocket: WebSocket) -> Config:
-    """Return the Config associated with this FastAPI app instance.
-
-    This ensures WebSocket auth follows the same configuration as the REST API
-    when the agent server is used as a library (e.g., tests or when mounted into
-    another FastAPI app), rather than always reading environment defaults.
-    """
-    config = getattr(websocket.app.state, "config", None)
-    if isinstance(config, Config):
-        return config
-    return get_default_config()
-
-
-def _get_conversation_service(websocket: WebSocket) -> ConversationService:
-    """Return the ConversationService for this FastAPI app instance.
-
-    Looks up ``app.state.conversation_service`` at request time so that the
-    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
-    is used instead of the module-level default captured at import. When
-    ``app.state`` is not configured (e.g. when sockets.py is imported as a
-    library without a lifespan), falls back to the module-level singleton,
-    which keeps the behaviour of existing tests that patch the module-level
-    variable.
-    """
-    service = getattr(websocket.app.state, "conversation_service", None)
-    if isinstance(service, ConversationService):
-        return service
-    return conversation_service
-
-
-def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
-    """Return the BashEventService for this FastAPI app instance.
-
-    Looks up ``app.state.bash_event_service`` at request time so that the
-    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
-    is used instead of the module-level default captured at import. When
-    ``app.state`` is not configured (e.g. when sockets.py is imported as a
-    library without a lifespan), falls back to the module-level singleton.
-    """
-    service = getattr(websocket.app.state, "bash_event_service", None)
-    if isinstance(service, BashEventService):
-        return service
-    return bash_event_service
 
 
 def _resolve_websocket_session_api_key(
@@ -134,6 +94,7 @@ _FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
 async def _accept_authenticated_websocket(
     websocket: WebSocket,
     session_api_key: str | None,
+    config: Config,
 ) -> bool:
     """Authenticate and accept the socket, or close with an auth error.
 
@@ -146,7 +107,6 @@ async def _accept_authenticated_websocket(
     The WebSocket is always *accepted* before first-message auth is attempted
     because raw WebSocket requires ``accept()`` before any frames can be read.
     """
-    config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
 
     # No auth configured — accept unconditionally.
@@ -258,6 +218,8 @@ async def events_socket(
             deprecated=True,
         ),
     ] = False,
+    config: Config = Depends(get_config),
+    conv_service: ConversationService = Depends(get_conversation_service),
 ):
     """WebSocket endpoint for conversation events.
 
@@ -278,11 +240,10 @@ async def events_socket(
             backward compatibility - if True and resend_mode is None, behaves
             as resend_mode='all'.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    conv_service = _get_conversation_service(websocket)
     try:
         event_service = await conv_service.get_event_service(conversation_id)
     except CredentialBindingActivationRequired:
@@ -296,10 +257,11 @@ async def events_socket(
         await websocket.close(code=4004, reason="Conversation not found")
         return
 
+    subscriber = _WebSocketSubscriber(
+        websocket, buffering=resend_mode is not None or resend_all
+    )
     try:
-        subscriber_id = await event_service.subscribe_to_events(
-            _WebSocketSubscriber(websocket)
-        )
+        subscriber_id = await event_service.subscribe_to_events(subscriber)
     except MaxSubscribersError:
         logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
         await websocket.close(
@@ -328,7 +290,7 @@ async def events_socket(
         if effective_mode == "all":
             logger.info(f"Resending all events: {conversation_id}")
             async for event in page_iterator(event_service.search_events):
-                await _send_event(event, websocket)
+                await subscriber.send_replayed(event)
         elif effective_mode == "since":
             if not normalized_after_timestamp:
                 logger.warning(
@@ -344,7 +306,8 @@ async def events_socket(
                     event_service.search_events,
                     timestamp__gte=normalized_after_timestamp,
                 ):
-                    await _send_event(event, websocket)
+                    await subscriber.send_replayed(event)
+        await subscriber.go_live()
 
         # Listen for messages over the socket
         while True:
@@ -406,6 +369,8 @@ async def bash_events_socket(
             deprecated=True,
         ),
     ] = False,
+    config: Config = Depends(get_config),
+    bash_service: BashEventService = Depends(get_server_bash_event_service),
 ):
     """WebSocket endpoint for bash events.
 
@@ -417,10 +382,9 @@ async def bash_events_socket(
             - None: Don't resend, just subscribe to new events
         resend_all: DEPRECATED. Use resend_mode='all' instead.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
-    bash_service = _get_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
     try:
         subscriber_id = await bash_service.subscribe_to_events(
@@ -517,6 +481,22 @@ async def _safe_close_websocket(
         logger.debug("WebSocket close failed (may already be closed)")
 
 
+# A peer that stopped reading must not hold up the DELETE or the shutdown.
+SUBSCRIBER_CLOSE_TIMEOUT_SECONDS = 5.0
+
+
+async def _close_subscribed_websocket(
+    websocket: WebSocket, code: int, reason: str
+) -> None:
+    try:
+        await asyncio.wait_for(
+            _safe_close_websocket(websocket, code=code, reason=reason),
+            timeout=SUBSCRIBER_CLOSE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.info("WebSocket close timed out; peer is not reading")
+
+
 def _is_websocket_connected(websocket: WebSocket) -> bool:
     """Best-effort check that the websocket is still in the CONNECTED state.
 
@@ -545,9 +525,41 @@ class _WebSocketSubscriber(Subscriber):
     receives_streaming_deltas = True
 
     websocket: WebSocket
+    buffering: bool = False
+    _buffer: list[Event] = field(default_factory=list)
+    _replayed_ids: set[str] = field(default_factory=set)
 
     async def __call__(self, event: Event):
+        if self.buffering and not (
+            isinstance(event, StreamingDeltaEvent)
+            or (
+                isinstance(event, ConversationStateUpdateEvent)
+                and event.key == FULL_STATE_KEY
+            )
+        ):
+            self._buffer.append(event)
+            return
+        if event.id in self._replayed_ids:
+            return
         await _send_event(event, self.websocket)
+
+    async def close_connection(self, code: int, reason: str) -> None:
+        # The handler is parked in receive_json(); closing ends it too.
+        await _close_subscribed_websocket(self.websocket, code, reason)
+
+    async def on_initial_state(self, event: Event, log_length: int | None) -> None:  # noqa: ARG002
+        await _send_event(event, self.websocket)
+
+    async def send_replayed(self, event: Event) -> None:
+        self._replayed_ids.add(event.id)
+        await _send_event(event, self.websocket)
+
+    async def go_live(self) -> None:
+        while self._buffer:
+            event = self._buffer.pop(0)
+            if event.id not in self._replayed_ids:
+                await _send_event(event, self.websocket)
+        self.buffering = False
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):

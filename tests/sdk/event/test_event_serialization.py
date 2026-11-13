@@ -2,10 +2,12 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -16,6 +18,8 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.error_classification import FailureKind
+from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
@@ -151,6 +155,38 @@ def test_agent_error_event_serialization() -> None:
     json_data = event.model_dump_json()
     deserialized = AgentErrorEvent.model_validate_json(json_data)
     assert deserialized == event
+
+
+@pytest.mark.parametrize("recovery_reason", [None, "server_restart"])
+def test_agent_error_provenance_survives_event_log_round_trip(
+    tmp_path: Path, recovery_reason: str | None
+) -> None:
+    payload = {
+        "kind": "AgentErrorEvent",
+        "source": "agent",
+        "error": "Interrupted execution",
+        "tool_call_id": "call_001",
+        "tool_name": "test_tool",
+        "classification": {"kind": "internal", "retryable": False},
+    }
+    if recovery_reason is not None:
+        payload["recovery_reason"] = recovery_reason
+    event = Event.model_validate_json(json.dumps(payload))
+    assert isinstance(event, AgentErrorEvent)
+    assert event.recovery_reason == recovery_reason
+
+    store = LocalFileStore(str(tmp_path))
+    log = EventLog(store)
+    log.append(event)
+    del log
+    restored = EventLog(store)[0]
+
+    assert isinstance(restored, AgentErrorEvent)
+    assert restored == event
+    assert restored.recovery_reason == recovery_reason
+    assert restored.classification is not None
+    assert restored.classification.kind == FailureKind.INTERNAL
+    assert restored.classification.retryable is False
 
 
 def test_condensation_serialization() -> None:

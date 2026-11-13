@@ -1,0 +1,19 @@
+[
+  {"tool": "task_tracker", "args": {"command": "view"}},
+  {"tool": "task_tracker", "args": {"command": "plan", "task_list": [
+    {"title": "Read the spec", "notes": "docs/spec.md", "status": "done"},
+    {"title": "Write the parser", "notes": "", "status": "in_progress"},
+    {"title": "Add tests", "notes": "cover the edge cases", "status": "todo"}
+  ]}},
+  {"finish": "Planned three tasks."},
+  {"tool": "task_tracker", "args": {"command": "view"}},
+  {"tool": "task_tracker", "args": {"command": "plan", "task_list": [
+    {"title": "Read the spec", "notes": "docs/spec.md", "status": "done"},
+    {"title": "Write the parser", "notes": "", "status": "done"},
+    {"title": "Add tests", "notes": "cover the edge cases", "status": "in_progress"}
+  ]}},
+  {"tool": "task_tracker", "args": {"command": "plan", "task_list": [
+    {"title": "Bad status", "status": "finished"}
+  ]}},
+  {"finish": "Parser done, tests in progress."}
+]

@@ -10,7 +10,13 @@ from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
     search_provider_repositories,
 )
+from openhands.agent_server.persistence import SecretsStore, ServerStores
 from openhands.sdk.workspace.repo import GitProvider
+
+
+def _secrets_store() -> SecretsStore:
+    """The secrets store of a server with the default config."""
+    return ServerStores.from_config(Config()).secrets
 
 
 class FakeResponse:
@@ -95,7 +101,7 @@ def _patch_github_client(monkeypatch, responses: list[FakeResponse]):
 async def test_search_provider_repositories_reports_missing_token(monkeypatch):
     _patch_provider_token(monkeypatch, None)
 
-    result = await search_provider_repositories(Config(), GitProvider.GITHUB)
+    result = await search_provider_repositories(_secrets_store(), GitProvider.GITHUB)
 
     assert result.items == []
     assert result.next_page_id is None
@@ -123,7 +129,7 @@ async def test_search_provider_repositories_maps_github_repositories(monkeypatch
     )
 
     result = await search_provider_repositories(
-        Config(),
+        _secrets_store(),
         GitProvider.GITHUB,
         limit=30,
         page_id="2",
@@ -171,7 +177,7 @@ async def test_search_provider_repositories_filters_across_pages(monkeypatch):
     )
 
     result = await search_provider_repositories(
-        Config(), GitProvider.GITHUB, query="software", limit=2
+        _secrets_store(), GitProvider.GITHUB, query="software", limit=2
     )
 
     assert captured["calls"] == [
@@ -218,7 +224,7 @@ async def test_search_provider_repositories_continues_from_offset_cursor(monkeyp
     )
 
     result = await search_provider_repositories(
-        Config(), GitProvider.GITHUB, query="software", limit=1, page_id="2:1"
+        _secrets_store(), GitProvider.GITHUB, query="software", limit=1, page_id="2:1"
     )
 
     assert [item.full_name for item in result.items] == ["OpenHands/software-agents"]
@@ -231,7 +237,7 @@ async def test_search_provider_repositories_rejects_invalid_page_id(monkeypatch)
 
     with pytest.raises(GitProviderAPIError) as exc_info:
         await search_provider_repositories(
-            Config(), GitProvider.GITHUB, page_id="not-a-page"
+            _secrets_store(), GitProvider.GITHUB, page_id="not-a-page"
         )
 
     assert exc_info.value.status_code == 400
@@ -249,10 +255,10 @@ async def test_search_provider_repositories_cursor_survives_limit_changes(
     )
 
     first = await search_provider_repositories(
-        Config(), GitProvider.GITHUB, query="OpenHands/r", limit=4
+        _secrets_store(), GitProvider.GITHUB, query="OpenHands/r", limit=4
     )
     second = await search_provider_repositories(
-        Config(),
+        _secrets_store(),
         GitProvider.GITHUB,
         query="OpenHands/r",
         limit=2,
@@ -286,7 +292,7 @@ async def test_search_provider_repositories_maps_provider_status(
     _patch_github_client(monkeypatch, [FakeResponse(status_code=provider_status)])
 
     with pytest.raises(GitProviderAPIError) as exc_info:
-        await search_provider_repositories(Config(), GitProvider.GITHUB)
+        await search_provider_repositories(_secrets_store(), GitProvider.GITHUB)
 
     assert exc_info.value.status_code == expected_status
 
@@ -314,6 +320,286 @@ async def test_search_provider_repositories_maps_timeout(monkeypatch):
     )
 
     with pytest.raises(GitProviderAPIError) as exc_info:
-        await search_provider_repositories(Config(), GitProvider.GITHUB)
+        await search_provider_repositories(_secrets_store(), GitProvider.GITHUB)
 
     assert exc_info.value.status_code == 504
+
+
+class _JSONResponse:
+    def __init__(
+        self,
+        body: dict[str, object],
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._body = body
+        self.status_code = status_code
+        self.headers: dict[str, str] = headers or {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://api.github.com/repos")
+            response = httpx.Response(
+                self.status_code, request=request, headers=self.headers
+            )
+            raise httpx.HTTPStatusError(
+                "GitHub error", request=request, response=response
+            )
+
+    def json(self) -> dict[str, object]:
+        return self._body
+
+
+class _RoutedClient:
+    """Answers by path; a list of responses is served one per call."""
+
+    def __init__(self, routes: dict[str, Any], calls: list[tuple[str, Any]]):
+        self._routes = routes
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, path, params=None):
+        self._calls.append((path, params))
+        route = self._routes[path]
+        return route.pop(0) if isinstance(route, list) else route
+
+
+def _patch_pr_client(
+    monkeypatch, routes, token: str | None = "tok"
+) -> list[tuple[str, Any]]:
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        "openhands.agent_server.git_provider_service._resolve_provider_token",
+        lambda secrets_store, provider: token,
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.git_provider_service.httpx.AsyncClient",
+        lambda **kwargs: _RoutedClient(routes, calls),
+    )
+    return calls
+
+
+def _pr_routes(pr: dict[str, object], runs: list, statuses: list) -> dict[str, Any]:
+    base = "/repos/o/r"
+    return {
+        f"{base}/pulls/7": _JSONResponse(pr),
+        f"{base}/commits/abc/check-runs": _JSONResponse(
+            {"total_count": len(runs), "check_runs": runs}
+        ),
+        f"{base}/commits/abc/status": _JSONResponse({"statuses": statuses}),
+    }
+
+
+_OPEN_PR: dict[str, object] = {
+    "state": "open",
+    "draft": True,
+    "merged": False,
+    "title": "Add projects",
+    "html_url": "https://github.com/o/r/pull/7",
+    "head": {"sha": "abc"},
+}
+
+
+async def _get_pr():
+    from openhands.agent_server.git_provider_service import get_provider_pull_request
+
+    return await get_provider_pull_request(
+        _secrets_store(), GitProvider.GITHUB, "o", "r", 7
+    )
+
+
+@pytest.mark.asyncio
+async def test_pull_request_open_with_green_checks(monkeypatch):
+    _patch_pr_client(
+        monkeypatch,
+        _pr_routes(
+            _OPEN_PR,
+            [{"status": "completed", "conclusion": "success"}],
+            [{"state": "success"}],
+        ),
+    )
+    result = await _get_pr()
+    assert result.model_dump(mode="json") == {
+        "git_provider": "github",
+        "repository": "o/r",
+        "number": 7,
+        "state": "open",
+        "draft": True,
+        "title": "Add projects",
+        "url": "https://github.com/o/r/pull/7",
+        "head_sha": "abc",
+        "checks": "success",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runs", "statuses", "expected"),
+    [
+        ([], [], "none"),
+        ([{"status": "in_progress", "conclusion": None}], [], "pending"),
+        ([], [{"state": "pending"}], "pending"),
+        (
+            [
+                {"status": "in_progress", "conclusion": None},
+                {"status": "completed", "conclusion": "failure"},
+            ],
+            [],
+            "failure",
+        ),
+        (
+            [{"status": "completed", "conclusion": "skipped"}],
+            [{"state": "error"}],
+            "failure",
+        ),
+        ([{"status": "completed", "conclusion": "neutral"}], [], "success"),
+    ],
+)
+async def test_pull_request_checks_are_combined(monkeypatch, runs, statuses, expected):
+    _patch_pr_client(monkeypatch, _pr_routes(_OPEN_PR, runs, statuses))
+    assert (await _get_pr()).checks == expected
+
+
+@pytest.mark.asyncio
+async def test_pull_request_reads_every_page_of_check_runs(monkeypatch):
+    """A failure on the second page of check runs is not hidden."""
+    routes = _pr_routes(_OPEN_PR, [], [])
+    green = {"status": "completed", "conclusion": "success"}
+    routes["/repos/o/r/commits/abc/check-runs"] = [
+        _JSONResponse({"total_count": 101, "check_runs": [green] * 100}),
+        _JSONResponse(
+            {
+                "total_count": 101,
+                "check_runs": [{"status": "completed", "conclusion": "failure"}],
+            }
+        ),
+    ]
+    calls = _patch_pr_client(monkeypatch, routes)
+    assert (await _get_pr()).checks == "failure"
+    pages = [
+        params["page"]
+        for path, params in calls
+        if path == "/repos/o/r/commits/abc/check-runs"
+    ]
+    assert pages == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_with_too_many_check_runs_is_pending(monkeypatch):
+    from openhands.agent_server import git_provider_service
+
+    monkeypatch.setattr(git_provider_service, "_CHECK_RUNS_MAX_PAGES", 1)
+    routes = _pr_routes(_OPEN_PR, [], [])
+    green = {"status": "completed", "conclusion": "success"}
+    routes["/repos/o/r/commits/abc/check-runs"] = _JSONResponse(
+        {"total_count": 500, "check_runs": [green] * 100}
+    )
+    _patch_pr_client(monkeypatch, routes)
+    assert (await _get_pr()).checks == "pending"
+
+
+@pytest.mark.asyncio
+async def test_pull_request_merged_state(monkeypatch):
+    merged = {**_OPEN_PR, "state": "closed", "merged": True, "draft": False}
+    _patch_pr_client(monkeypatch, _pr_routes(merged, [], []))
+    result = await _get_pr()
+    assert (result.state, result.draft) == ("merged", False)
+
+
+@pytest.mark.asyncio
+async def test_pull_request_without_token_raises(monkeypatch):
+    from openhands.agent_server.git_provider_service import (
+        MissingGitProviderTokenError,
+    )
+
+    calls = _patch_pr_client(monkeypatch, {}, token=None)
+    with pytest.raises(MissingGitProviderTokenError):
+        await _get_pr()
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "headers", "expected_status", "retry_after"),
+    [
+        (404, {}, 404, None),
+        (401, {}, 502, None),
+        (403, {}, 502, None),
+        (403, {"x-ratelimit-remaining": "0"}, 429, None),
+        (429, {"retry-after": "30"}, 429, "30"),
+        (500, {}, 502, None),
+    ],
+)
+async def test_pull_request_provider_errors_are_mapped(
+    monkeypatch, status_code, headers, expected_status, retry_after
+):
+    _patch_pr_client(
+        monkeypatch,
+        {
+            "/repos/o/r/pulls/7": _JSONResponse(
+                {}, status_code=status_code, headers=headers
+            )
+        },
+    )
+    with pytest.raises(GitProviderAPIError) as excinfo:
+        await _get_pr()
+    assert excinfo.value.status_code == expected_status
+    assert excinfo.value.retry_after == retry_after
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_stops_its_sibling_before_the_client_closes(monkeypatch):
+    """A 404 on the status read cancels the check-runs read still paging."""
+    import asyncio
+
+    from openhands.agent_server.git_provider_service import get_provider_pull_request
+
+    events: list[str] = []
+    green = {"status": "completed", "conclusion": "success"}
+
+    class _ClosingClient:
+        closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.closed = True
+            events.append("closed")
+            return False
+
+        async def get(self, path, params=None):
+            if self.closed:
+                events.append(f"after close: {path}")
+                raise RuntimeError("client closed")
+            if path == "/repos/o/r/pulls/7":
+                return _JSONResponse(_OPEN_PR)
+            if path.endswith("/status"):
+                await asyncio.sleep(0)
+                return _JSONResponse({}, status_code=404)
+            events.append(f"check-runs page {(params or {})['page']}")
+            await asyncio.sleep(0.05)
+            return _JSONResponse({"total_count": 300, "check_runs": [green] * 100})
+
+    monkeypatch.setattr(
+        "openhands.agent_server.git_provider_service._resolve_provider_token",
+        lambda secrets_store, provider: "tok",
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.git_provider_service.httpx.AsyncClient",
+        lambda **kwargs: _ClosingClient(),
+    )
+
+    with pytest.raises(GitProviderAPIError) as excinfo:
+        await get_provider_pull_request(
+            _secrets_store(), GitProvider.GITHUB, "o", "r", 7
+        )
+    await asyncio.sleep(0.2)
+
+    assert excinfo.value.status_code == 404
+    assert events == ["check-runs page 1", "closed"]

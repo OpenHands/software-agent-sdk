@@ -58,7 +58,7 @@ def _wait_for_port(port: int, timeout: float = 10.0) -> None:
     import httpx
 
     deadline = time.time() + timeout
-    url = f"http://127.0.0.1:{port}/mcp"
+    url = f"http://127.0.0.1:{port}/"
     last_error: Exception | None = None
     while time.time() < deadline:
         try:
@@ -75,7 +75,7 @@ def _make_mcp_tool(name: str) -> mcp_types.Tool:
     return mcp_types.Tool(
         name=name,
         description=f"tool {name}",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     )
 
 
@@ -160,7 +160,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     old_tool = mcp_types.Tool(
         name="changing",
         description="old schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"old": {"type": "string"}},
             "required": ["old"],
@@ -169,7 +169,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     new_tool = mcp_types.Tool(
         name="changing",
         description="new schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"new": {"type": "integer"}},
             "required": ["new"],
@@ -268,14 +268,19 @@ def progressive_server():
 
     Calling ``register_extra_tool`` adds a second tool and sends a
     ``notifications/tools/list_changed`` notification to the current session,
-    mimicking Datadog's progressive-disclosure behavior.
+    mimicking Datadog's progressive-disclosure behavior. Legacy-only SSE makes
+    auto negotiation retain the notification stream for this test.
     """
     mcp = FastMCP("progressive-test-server")
 
     async def notify_list_changed() -> None:
         notification = mcp_types.ToolListChangedNotification()
+        # Context.send_notification is bound to the in-flight request, and
+        # mcp 2 drops it once that request has answered. Sending on the
+        # session without a related request uses the standalone stream.
+        session = get_context().session
         loop = asyncio.get_running_loop()
-        loop.create_task(get_context().send_notification(notification))
+        loop.create_task(session.send_notification(notification))
 
     @mcp.tool()
     async def gateway() -> str:
@@ -313,9 +318,9 @@ def progressive_server():
             mcp.run_http_async(
                 host="127.0.0.1",
                 port=port,
-                transport="http",
+                transport="sse",
                 show_banner=False,
-                path="/mcp",
+                path="/sse",
             )
         )
 
@@ -332,8 +337,8 @@ def test_no_callback_still_connects(progressive_server: int):
         {
             "mcpServers": {
                 "progressive": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -359,8 +364,8 @@ def test_default_provider_wires_on_tools_reconciled_before_connect(
         {
             "mcpServers": {
                 "progressive": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -387,8 +392,8 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
         {
             "mcpServers": {
                 "progressive": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -492,8 +497,8 @@ def test_list_changed_in_multi_server_conversation_keeps_server_prefix(
             mcp_config=_native_config(
                 {
                     "progressive": {
-                        "transport": "http",
-                        "url": f"http://127.0.0.1:{progressive_server}/mcp",
+                        "transport": "sse",
+                        "url": f"http://127.0.0.1:{progressive_server}/sse",
                     },
                     "docs": {
                         "command": sys.executable,
