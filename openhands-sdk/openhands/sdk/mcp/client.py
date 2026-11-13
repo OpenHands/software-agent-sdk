@@ -88,6 +88,19 @@ class MCPClient(AsyncMCPClient):
         except RuntimeError as exc:
             raise MCPError("MCP Connection Failure") from exc
 
+    async def drop_session(self) -> None:
+        """Stop the current session so the next ``connect()`` starts a new one.
+
+        Used when the server has lost the session (an HTTP server restarted)
+        or the transport is gone (a stdio server exited) while
+        ``is_connected()`` still reports true. Unlike ``close()``, the client
+        stays usable. Errors while stopping are logged and ignored.
+        """
+        try:
+            await self._disconnect(force=True)
+        except Exception:
+            logger.debug("Error dropping lost MCP session", exc_info=True)
+
     def call_async_from_sync(
         self,
         awaitable_or_fn: Callable[..., Any] | Any,

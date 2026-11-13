@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
 
+import anyio
 import mcp.types
 from litellm import ChatCompletionToolParam
+from mcp.shared.exceptions import MCPError as MCPProtocolError
 from openai.types.responses import FunctionToolParam
 from pydantic import (
     Field,
@@ -97,6 +99,57 @@ def to_camel_case(s: str) -> str:
     return "".join(word.capitalize() for word in parts if word)
 
 
+# What the MCP client reports when its transport is gone (a stdio server that
+# exited). Only this message: the same code also covers an SSE stream that
+# ended without a response, and some servers use it for ordinary errors.
+_MCP_CONNECTION_CLOSED: Final[int] = -32000
+_MCP_CONNECTION_CLOSED_MESSAGE: Final[str] = "Connection closed"
+# Wording for a session the server no longer knows (e.g. after a restart):
+# the Python SDK's "Session terminated" / "Session not found", the TypeScript
+# SDK's "Session not found" (code -32001), and other servers' variants.
+_LOST_SESSION_PHRASES: Final[tuple[str, ...]] = (
+    "session not found",
+    "session terminated",
+    "session expired",
+    "unknown session",
+    "invalid session",
+)
+# fastmcp raises this when a call starts while the session is being replaced;
+# the request was never sent.
+_NOT_CONNECTED_MESSAGE: Final[str] = "Client is not connected"
+
+
+def _is_session_lost(exc: BaseException) -> bool:
+    """Whether ``exc`` means the MCP session or its transport is gone for good.
+
+    An HTTP server that restarts forgets its sessions, and a stdio server that
+    exits closes its pipes. ``client.is_connected()`` stays true in both
+    cases, so the caller has to drop the session to get a new one.
+    """
+    seen: set[int] = set()  # a cause chain can loop back on itself
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (anyio.ClosedResourceError, anyio.BrokenResourceError)):
+            return True
+        if isinstance(current, MCPProtocolError):
+            message = current.error.message
+            if (
+                current.code == _MCP_CONNECTION_CLOSED
+                and message == _MCP_CONNECTION_CLOSED_MESSAGE
+            ):
+                return True
+            lowered = message.lower()
+            if any(phrase in lowered for phrase in _LOST_SESSION_PHRASES):
+                return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_not_connected(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and str(exc).startswith(_NOT_CONNECTED_MESSAGE)
+
+
 class MCPToolExecutor(ToolExecutor):
     """Executor for MCP tools."""
 
@@ -118,6 +171,26 @@ class MCPToolExecutor(ToolExecutor):
         # The name the server knows the tool by, when the agent sees it under
         # a server prefix.
         self.server_tool_name = server_tool_name or tool_name
+
+    async def _reconnect(self) -> None:
+        """Connect again and re-list the tools.
+
+        A new session (an HTTP server that restarted, a stdio server started
+        again) may offer different tools; the agent learns about them the same
+        way as after ``notifications/tools/list_changed``.
+        """
+        await self.client.connect()
+        from openhands.sdk.mcp.utils import _refresh_tools
+
+        try:
+            await _refresh_tools(
+                self.client,
+                on_tools_reconciled=self.client._tools_reconciled_callback,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to re-list MCP tools after reconnecting", exc_info=True
+            )
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
@@ -143,7 +216,7 @@ class MCPToolExecutor(ToolExecutor):
                 "attempting reconnection before failing."
             )
             try:
-                await self.client.connect()
+                await self._reconnect()
             except Exception as exc:
                 return MCPToolObservation.from_text(
                     text=(
@@ -157,15 +230,34 @@ class MCPToolExecutor(ToolExecutor):
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
             )
-            result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
-                name=self.server_tool_name, arguments=action.to_mcp_arguments()
-            )
+            try:
+                result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
+                    name=self.server_tool_name, arguments=action.to_mcp_arguments()
+                )
+            except RuntimeError as e:
+                if not _is_not_connected(e) or self.client._closed:
+                    raise
+                # A parallel call is replacing a lost session. Nothing was
+                # sent, so connect (this waits for the drop) and send once.
+                await self._reconnect()
+                result = await self.client.call_tool_mcp(
+                    name=self.server_tool_name, arguments=action.to_mcp_arguments()
+                )
             return MCPToolObservation.from_call_tool_result(
                 tool_name=self.tool_name, result=result
             )
         except Exception as e:
             error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
             logger.error(error_msg, exc_info=True)
+            if _is_session_lost(e):
+                # Don't retry here: the call may have run before the session
+                # was lost. Dropping the session makes the next call connect
+                # again (a new HTTP session or a new stdio process).
+                logger.info(
+                    f"MCP session for tool '{self.tool_name}' is gone; "
+                    "the next call will reconnect."
+                )
+                await self.client.drop_session()
             return MCPToolObservation.from_text(
                 text=error_msg,
                 is_error=True,
