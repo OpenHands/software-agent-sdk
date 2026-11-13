@@ -1,5 +1,6 @@
 """Tests for RemoteEventsList."""
 
+import time
 from datetime import datetime
 from unittest.mock import Mock
 
@@ -238,6 +239,38 @@ def test_remote_events_list_maintains_timestamp_order(mock_client, conversation_
     assert events_list[0].id == "event-1"  # 10:00:00
     assert events_list[1].id == "event-3"  # 10:00:01
     assert events_list[2].id == "event-2"  # 10:00:02
+
+
+def test_remote_events_list_orders_mixed_naive_and_utc_timestamps(
+    mock_client, conversation_id, monkeypatch
+):
+    """A legacy naive (server-local) timestamp and a UTC one sort by instant."""
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        mock_client.request.return_value = create_mock_api_response([])
+        events_list = RemoteEventsList(mock_client, conversation_id)
+
+        def message(event_id: str, timestamp: str) -> MessageEvent:
+            return MessageEvent(
+                id=event_id,
+                timestamp=timestamp,
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="x")]),
+            )
+
+        events_list.add_event(message("utc-12:30", "2024-01-01T12:30:00+00:00"))
+        events_list.add_event(message("legacy-12:45", "2024-01-01T07:45:00"))
+        events_list.add_event(message("legacy-12:00", "2024-01-01T07:00:00"))
+
+        assert [e.id for e in events_list] == [
+            "legacy-12:00",
+            "utc-12:30",
+            "legacy-12:45",
+        ]
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_remote_events_list_timestamp_order_with_existing_events(

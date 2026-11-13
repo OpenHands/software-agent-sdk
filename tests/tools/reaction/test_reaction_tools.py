@@ -1,6 +1,7 @@
 """Tests for emoji reactions: the event, the tools and LocalConversation.react."""
 
 import json
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -356,6 +357,7 @@ def test_a_reaction_during_a_pending_tool_call_waits_for_its_result(conversation
     first, second = conversation.state.events[-2:]
     assert (first.id, first.removed, second.removed) == (held.id, False, True)
     assert first.timestamp >= conversation.state.events[-3].timestamp
+    assert datetime.fromisoformat(first.timestamp).tzinfo is not None
     assert (
         kinds(conversation.state.view.events)[-4:]
         == kinds(conversation.state.events)[-4:]

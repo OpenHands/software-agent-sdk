@@ -72,6 +72,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
+from openhands.sdk.utils.datetime import timestamp_instant
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -506,7 +507,9 @@ class RemoteEventsList(EventsListBase):
         # This ensures events are always ordered correctly even if
         # WebSocket delivers them out of order
         insert_pos = bisect.bisect_right(
-            self._cached_events, event.timestamp, key=lambda e: e.timestamp
+            self._cached_events,
+            timestamp_instant(event.timestamp),
+            key=lambda e: timestamp_instant(e.timestamp),
         )
         self._cached_events.insert(insert_pos, event)
         self._cached_event_ids.add(event.id)
