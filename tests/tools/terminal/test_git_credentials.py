@@ -1,5 +1,6 @@
 """Saved git-provider token secrets authenticate git/gh without naming the secret."""
 
+import os
 import shutil
 import tempfile
 
@@ -13,6 +14,13 @@ from openhands.sdk.llm import LLM
 from openhands.tools.terminal import TerminalAction
 from openhands.tools.terminal.git_credentials import git_credential_env
 from openhands.tools.terminal.impl import TerminalExecutor
+
+
+# These run a real POSIX shell command line, which PowerShell cannot parse.
+requires_posix_git = pytest.mark.skipif(
+    os.name != "posix" or shutil.which("git") is None,
+    reason="needs a POSIX shell with git",
+)
 
 
 TOKEN = "ghp_SavedTokenValue123"
@@ -82,7 +90,7 @@ def test_exported_token_is_tracked_for_masking():
     assert TOKEN not in registry.mask_secrets_in_output(f"token {TOKEN}")
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@requires_posix_git
 @pytest.mark.parametrize(
     ("secrets", "host", "username"),
     [
@@ -115,7 +123,7 @@ def test_git_receives_saved_token_without_naming_it(secrets, host, username):
             conversation.close()
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@requires_posix_git
 def test_git_without_provider_token_is_unchanged():
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(model="gpt-4o-mini", api_key=SecretStr("k"), usage_id="test-llm")
