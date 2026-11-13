@@ -15,6 +15,8 @@ from openhands.agent_server.canvas_extensions_router import (
     CANVAS_EXTENSION_NAME_PATTERN,
 )
 from openhands.agent_server.dependencies import check_session_api_key
+from openhands.agent_server.errors import error_responses
+from openhands.sdk.errors import Conflict, Forbidden, Unauthenticated, Unavailable
 
 
 app_backend_bridge_router = APIRouter(tags=["Canvas App Backends"])
@@ -33,12 +35,14 @@ AppBackendNamePath = Annotated[
     "/app-backends/{extension_name}/session",
     response_model=AppBackendSessionResponse,
     dependencies=[Depends(check_session_api_key)],
-    responses={
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
-        403: {"description": "Origin is not allowed"},
-        409: {"description": "Ingress does not use a separate browser origin"},
-        503: {"description": "Backend is unavailable or ingress is not configured"},
-    },
+    responses=error_responses(
+        {
+            Unauthenticated: "Missing or invalid X-Session-API-Key header",
+            Forbidden: "Origin is not allowed",
+            Conflict: "Ingress does not use a separate browser origin",
+            Unavailable: "Backend is unavailable or ingress is not configured",
+        }
+    ),
 )
 async def create_app_backend_session_endpoint(
     extension_name: AppBackendNamePath,
@@ -62,8 +66,12 @@ async def create_app_backend_session_endpoint(
     dependencies=[Depends(check_session_api_key)],
     responses={
         204: {"description": "Browser session revoked and cookie cleared"},
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
-        403: {"description": "Origin is not allowed"},
+        **error_responses(
+            {
+                Unauthenticated: "Missing or invalid X-Session-API-Key header",
+                Forbidden: "Origin is not allowed",
+            }
+        ),
     },
 )
 async def delete_app_backend_session_endpoint(

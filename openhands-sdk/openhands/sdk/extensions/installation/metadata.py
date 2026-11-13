@@ -41,7 +41,7 @@ class MetadataSession:
     def extensions(self) -> dict[str, InstallationInfo]:
         return self.metadata.extensions
 
-    def sync(self) -> list[InstallationInfo]:
+    def sync(self, *, strict: bool = False) -> list[InstallationInfo]:
         """Reconcile metadata with what is actually on disk.
 
         Prunes stale tracked entries whose directories are missing and
@@ -60,7 +60,7 @@ class MetadataSession:
         )
         valid = self.metadata.validate_tracked(self.installed_dir)
         discovered = self.metadata.discover_untracked(
-            self.installed_dir, self.interface
+            self.installed_dir, self.interface, strict=strict
         )
         return valid + discovered
 
@@ -125,6 +125,7 @@ class InstallationMetadata(BaseModel):
         installed_dir: Path,
         *,
         interface: InstallationInterface | None = None,
+        strict: bool = False,
     ) -> MetadataSession:
         """Load metadata and return a session that auto-saves on exit.
 
@@ -132,9 +133,10 @@ class InstallationMetadata(BaseModel):
             installed_dir: Root directory where extensions are installed.
             interface: Optional installation interface, required if the
                 session will call ``sync()``.
+            strict: Raise on invalid metadata instead of treating it as empty.
         """
         return MetadataSession(
-            installed_dir, cls.load_from_dir(installed_dir), interface
+            installed_dir, cls.load_from_dir(installed_dir, strict=strict), interface
         )
 
     @classmethod
@@ -143,7 +145,9 @@ class InstallationMetadata(BaseModel):
         return installed_dir / cls.metadata_filename
 
     @classmethod
-    def load_from_dir(cls, installed_dir: Path) -> InstallationMetadata:
+    def load_from_dir(
+        cls, installed_dir: Path, *, strict: bool = False
+    ) -> InstallationMetadata:
         """Load metadata from the installed extensions directory."""
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
@@ -152,6 +156,8 @@ class InstallationMetadata(BaseModel):
         try:
             return cls.model_validate_json(metadata_path.read_text(encoding="utf-8"))
         except Exception as e:
+            if strict:
+                raise
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
 
@@ -198,6 +204,8 @@ class InstallationMetadata(BaseModel):
         self,
         installed_dir: Path,
         installation_interface: InstallationInterface,
+        *,
+        strict: bool = False,
     ) -> list[InstallationInfo]:
         """Discover extension directories not tracked by the metadata.
 
@@ -224,6 +232,8 @@ class InstallationMetadata(BaseModel):
             try:
                 extension = installation_interface.load_from_dir(item)
             except Exception as e:
+                if strict:
+                    raise
                 logger.debug(f"Skipping directory {item}: {e}")
                 continue
 

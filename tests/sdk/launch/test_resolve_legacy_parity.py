@@ -638,7 +638,8 @@ def test_acp_resolves_to_settings_without_credentials(
     profile = ACPAgentProfile(
         name="acp",
         acp_server="codex",
-        acp_model="gpt-5.5/medium",
+        acp_model="gpt-5.5",
+        acp_effort="medium",
         acp_session_mode="full-access",
         acp_command="codex-acp --foo",
         acp_args=["--flag"],
@@ -647,7 +648,8 @@ def test_acp_resolves_to_settings_without_credentials(
     settings = _stores(llm_store, mcp_config=mcp_config, skills=None).settings(profile)
     assert isinstance(settings, ACPAgentSettings)
     assert settings.acp_server == "codex"
-    assert settings.acp_model == "gpt-5.5/medium"
+    assert settings.acp_model == "gpt-5.5"
+    assert settings.acp_effort == "medium"
     assert settings.acp_session_mode == "full-access"
     # str command is tokenized into the settings' list[str] field.
     assert settings.acp_command == ["codex-acp", "--foo"]
@@ -655,7 +657,9 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.mcp_config != {}
     assert list(settings.mcp_config.keys()) == ["fetch"]
     assert "llm" not in settings.model_dump()
-    assert isinstance(settings.create_agent(), ACPAgent)
+    agent = settings.create_agent()
+    assert isinstance(agent, ACPAgent)
+    assert agent.acp_effort == "medium"
 
 
 def test_acp_blank_command_resolves_empty_list(

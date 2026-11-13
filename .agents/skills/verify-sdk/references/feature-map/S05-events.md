@@ -93,7 +93,7 @@ Preconditions:
   CID=$(control-sdk conversation new --script S05/write_and_read.json --field id)
   control-sdk conversation send "$CID" --text "Write notes.txt" --run --check execution_status eq finished
   control-sdk program S05/damaged_log --arg "$CID" --arg corrupt \
-    --check reopen_error missing --check lost_beyond_damaged eq 0
+    --check reopen_error missing --check lost_beyond_damaged eq 0 --check stand_ins eq 1
   ```
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -102,7 +102,7 @@ Preconditions:
   control-sdk program S05/damaged_log --arg "$CID" --arg delete \
     --check reopen_error missing --check lost_beyond_damaged eq 0
   ```
-  Expected: the conversation reopens with every readable event. Known failure (reproduced 2026-10-13 and 2026-11-03, not yet filed): reopening over a corrupted file fails with a pydantic `ValidationError` ("Invalid JSON"), and an empty file with `FileNotFoundError: Missing event file`. A deleted file has recovered since #6197 (the second block passes). The unit tests cover an `EventLog` read in isolation, not a conversation resumed over it.
+  Expected: the conversation reopens with every readable event, and the damaged file is reported once in the log. Before #6649, reopening over a corrupted file failed with a pydantic `ValidationError` ("Invalid JSON"), and over an empty file with `FileNotFoundError: Missing event file`; a deleted file has recovered since #6197. The event log now reads an unreadable file as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) with the same id and place, so the event count is unchanged.
 - **The same, live (`S05.json-roundtrip`, `S05.events-to-messages`, `S05.openai-format`).** A real model does the task its own way; the reload must hold for whatever it produced.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

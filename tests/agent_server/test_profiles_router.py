@@ -15,6 +15,7 @@ from openhands.agent_server import profiles_router as profiles_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.llm import LLM, Message
 from openhands.sdk.llm.auth.credentials import OAuthCredentials
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -934,10 +935,10 @@ def test_save_profile_at_limit_overwrite_allowed(client, store, monkeypatch):
 
 
 def test_list_profiles_timeout_returns_503(client, monkeypatch):
-    """List endpoint surfaces TimeoutError as 503."""
+    """List endpoint surfaces the store's LockTimeout as 503."""
 
     def boom(self):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "list_summaries", boom)
 
@@ -946,11 +947,11 @@ def test_list_profiles_timeout_returns_503(client, monkeypatch):
 
 
 def test_get_profile_timeout_returns_503(client, store, monkeypatch):
-    """Get endpoint surfaces TimeoutError as 503."""
+    """Get endpoint surfaces the store's LockTimeout as 503."""
     store.save("present", LLM(model="gpt-4o"))
 
     def boom(self, name, *, cipher=None, resolve_provider=True):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "load", boom)
 
@@ -959,10 +960,10 @@ def test_get_profile_timeout_returns_503(client, store, monkeypatch):
 
 
 def test_delete_profile_invalid_internal_name_returns_400(client, store, monkeypatch):
-    """If the store raises ValueError, delete responds 400 instead of 500."""
+    """If the store raises Invalid, delete responds 400 instead of 500."""
 
     def boom(self, name):
-        raise ValueError("Invalid profile name: 'x'.")
+        raise Invalid("Invalid profile name: 'x'.")
 
     monkeypatch.setattr(LLMProfileStore, "delete", boom)
 
@@ -1035,10 +1036,10 @@ def test_get_profile_corrupted_returns_400(client, temp_profiles_dir):
 
 
 def test_save_profile_timeout_returns_503(client, monkeypatch):
-    """Save endpoint surfaces TimeoutError as 503."""
+    """Save endpoint surfaces the store's LockTimeout as 503."""
 
     def boom(self, name, llm, include_secrets=False, *, cipher=None, max_profiles=None):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "save", boom)
 
@@ -1050,11 +1051,11 @@ def test_save_profile_timeout_returns_503(client, monkeypatch):
 
 
 def test_rename_profile_timeout_returns_503(client, store, monkeypatch):
-    """Rename endpoint surfaces TimeoutError as 503."""
+    """Rename endpoint surfaces the store's LockTimeout as 503."""
     store.save("src", LLM(model="gpt-4o"))
 
     def boom(self, old, new):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "rename", boom)
 
@@ -1063,11 +1064,11 @@ def test_rename_profile_timeout_returns_503(client, store, monkeypatch):
 
 
 def test_delete_profile_timeout_returns_503(client, store, monkeypatch):
-    """Delete endpoint surfaces TimeoutError as 503."""
+    """Delete endpoint surfaces the store's LockTimeout as 503."""
     store.save("present", LLM(model="gpt-4o"))
 
     def boom(self, name):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "delete", boom)
 

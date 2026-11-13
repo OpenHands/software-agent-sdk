@@ -19,6 +19,8 @@ cookie auth would otherwise add.
 from fastapi import APIRouter, Request, Response, status
 
 from openhands.agent_server.dependencies import WORKSPACE_SESSION_COOKIE_NAME
+from openhands.agent_server.errors import error_responses
+from openhands.sdk.errors import Unauthenticated
 
 
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -138,7 +140,9 @@ def _append_partitioned_to_last_set_cookie(
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         204: {"description": "Cookie set"},
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
+        **error_responses(
+            {Unauthenticated: "Missing or invalid X-Session-API-Key header"}
+        ),
     },
 )
 async def create_workspace_session(request: Request, response: Response) -> Response:

@@ -3,15 +3,16 @@
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.vscode_router import (
     get_vscode_status,
     get_vscode_url,
 )
+from openhands.sdk.errors import DomainError
 
 
 @pytest.fixture
@@ -68,10 +69,10 @@ async def test_get_vscode_url_error(mock_vscode_service):
     """Test getting VSCode URL with service error."""
     mock_vscode_service.get_connection_token.side_effect = Exception("Service error")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await get_vscode_url()
 
-    assert exc_info.value.status_code == 500
+    assert status_for(exc_info.value) == 500
     assert "Failed to get VSCode URL" in str(exc_info.value.detail)
 
 
@@ -101,10 +102,10 @@ async def test_get_vscode_status_error(mock_vscode_service):
     """Test getting VSCode status with service error."""
     mock_vscode_service.is_running.side_effect = Exception("Service error")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await get_vscode_status()
 
-    assert exc_info.value.status_code == 500
+    assert status_for(exc_info.value) == 500
     assert "Failed to get VSCode status" in str(exc_info.value.detail)
 
 
@@ -181,10 +182,10 @@ async def test_get_vscode_url_disabled():
     ) as mock_service:
         mock_service.return_value = None
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(DomainError) as exc_info:
             await get_vscode_url()
 
-        assert exc_info.value.status_code == 503
+        assert status_for(exc_info.value) == 503
         assert "VSCode is disabled in configuration" in str(exc_info.value.detail)
 
 

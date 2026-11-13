@@ -11,7 +11,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
+from fastapi import APIRouter, Query, Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from openhands.agent_server.dependencies import get_conversation_service
@@ -26,9 +26,10 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RuntimeArchivedError,
 )
+from openhands.agent_server.event_router import require_reactions_enabled
 from openhands.agent_server.launch import (
     forward_to_runtime,
-    launch_http_exception,
+    launch_error,
     launch_source,
     request_secrets,
     server_launch_stores,
@@ -42,6 +43,17 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.conversation.request import ConversationContainerOptions
+from openhands.sdk.errors import (
+    Conflict,
+    DomainError,
+    Gone,
+    Invalid,
+    NotFound,
+    NotSupported,
+    Unavailable,
+    Unprocessable,
+    UpstreamFailed,
+)
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, ResolvedLaunch
@@ -58,7 +70,7 @@ logger = get_logger(__name__)
 def get_registry(request: Request) -> DockerConversationRegistry:
     registry = request.app.state.conversation_registry
     if not isinstance(registry, DockerConversationRegistry):
-        raise HTTPException(503, "Docker conversation runtime is unavailable")
+        raise Unavailable("Docker conversation runtime is unavailable")
     return registry
 
 
@@ -66,16 +78,16 @@ async def _container(
     registry: DockerConversationRegistry, conversation_id: UUID
 ) -> ConversationContainer:
     if not registry.provisioning.manifest_path(conversation_id).is_file():
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
     try:
         return await registry.get_or_create(conversation_id)
     except RuntimeArchivedError as exc:
-        raise HTTPException(
-            410, "Conversation runtime was archived; its history is read-only"
+        raise Gone(
+            "Conversation runtime was archived; its history is read-only"
         ) from exc
     except Exception as exc:
         logger.exception("Could not start conversation container %s", conversation_id)
-        raise HTTPException(502, "Could not start conversation container") from exc
+        raise UpstreamFailed("Could not start conversation container") from exc
 
 
 def _upstream_path(request: Request, path: str) -> str:
@@ -136,9 +148,9 @@ async def start_conversation(
     try:
         body = json.loads(await request.body())
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise HTTPException(400, "Invalid JSON body") from exc
+        raise Invalid("Invalid JSON body") from exc
     if not isinstance(body, dict):
-        raise HTTPException(422, "Expected a JSON object")
+        raise Unprocessable("Expected a JSON object")
     status_code, content, conversation_id = await start_docker_conversation(
         body,
         get_registry(request),
@@ -160,14 +172,14 @@ async def start_docker_conversation(
     """Start a Docker conversation through the same path as the REST route."""
     body = body.copy()
     if body.pop("conversation_runtime", None) not in (None, "docker"):
-        raise HTTPException(422, "This server only runs docker conversations")
+        raise Unprocessable("This server only runs docker conversations")
 
     workspace = body.get("workspace")
     if workspace is not None and (
         not isinstance(workspace, dict)
         or workspace.get("kind", "LocalWorkspace") != "LocalWorkspace"
     ):
-        raise HTTPException(422, "Docker conversations require a local workspace")
+        raise Unprocessable("Docker conversations require a local workspace")
     working_dir = (workspace or {}).get("working_dir", "/workspace")
     host_workspace = None if working_dir == "/workspace" else Path(working_dir)
 
@@ -176,7 +188,7 @@ async def start_docker_conversation(
             UUID(body["conversation_id"]) if body.get("conversation_id") else uuid4()
         )
     except (TypeError, ValueError) as exc:
-        raise HTTPException(400, "Invalid conversation_id") from exc
+        raise Invalid("Invalid conversation_id") from exc
     body["conversation_id"] = str(conversation_id)
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
@@ -187,7 +199,7 @@ async def start_docker_conversation(
             registry.conversation_dir(conversation_id).joinpath("meta.json").is_file()
         )
     except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        raise Unprocessable(str(exc)) from exc
     release = None
     try:
         payload, launched, options, worktree = await _prepare_forward(
@@ -244,20 +256,20 @@ async def start_docker_conversation(
                 json=forwarded,
             )
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
-        raise launch_http_exception(exc) from exc
+        raise launch_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        raise Unprocessable(str(exc)) from exc
     except httpx.HTTPError as exc:
         if not existing:
             await registry.stop(conversation_id)
-        raise HTTPException(
-            502, "Conversation container did not accept the request"
+        raise UpstreamFailed(
+            "Conversation container did not accept the request"
         ) from exc
     except Exception as exc:
         if not existing:
             await registry.stop(conversation_id)
         logger.exception("Could not create conversation container")
-        raise HTTPException(502, "Could not create conversation container") from exc
+        raise UpstreamFailed("Could not create conversation container") from exc
     finally:
         if release is not None:
             release()
@@ -324,7 +336,7 @@ async def runtime_info(
 ) -> ConversationRuntimeInfo:
     registry = get_registry(request)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
     return registry.runtime_info(conversation_id)
 
 
@@ -333,7 +345,7 @@ async def runtime_credentials(conversation_id: UUID, request: Request) -> JSONRe
     """Return the key for an authenticated client attached to this runtime."""
     registry = get_registry(request)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
     identity = registry.provisioning.load(conversation_id)
     return JSONResponse({"session_api_key": identity.api_key.get_secret_value()})
 
@@ -343,7 +355,7 @@ async def release_runtime(conversation_id: UUID, request: Request) -> Response:
     """Stop the container while retaining conversation and workspace state."""
     registry = get_registry(request)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
     try:
         await registry.stop(conversation_id)
         await get_conversation_service(request).refresh_persisted_conversation(
@@ -351,7 +363,7 @@ async def release_runtime(conversation_id: UUID, request: Request) -> Response:
         )
     except Exception as exc:
         logger.exception("Could not release conversation runtime %s", conversation_id)
-        raise HTTPException(502, "Could not release conversation runtime") from exc
+        raise UpstreamFailed("Could not release conversation runtime") from exc
     return Response(status_code=204)
 
 
@@ -372,10 +384,10 @@ async def reprovision_runtime(
 async def delete_conversation(conversation_id: UUID, request: Request) -> Response:
     registry = get_registry(request)
     if not registry.provisioning.manifest_path(conversation_id).is_file():
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
 
     if not await registry.begin_delete(conversation_id):
-        raise HTTPException(409, "Conversation deletion is already in progress")
+        raise Conflict("Conversation deletion is already in progress")
 
     # Stopping the container closes its conversation service. The outer server
     # owns the bind-mounted state and removes it after Docker has unmounted it;
@@ -426,8 +438,12 @@ async def proxy_conversation(
         "switch_llm",
         "switch_profile",
     }:
-        raise HTTPException(501, "This operation is unavailable in Docker runtime mode")
+        raise NotSupported("This operation is unavailable in Docker runtime mode")
     registry = get_registry(request)
+    if tail == "reactions" and request.method == "POST":
+        # The runtime's server has no settings of its own to check: the
+        # user's switch lives here and follows the switch at once.
+        await require_reactions_enabled(registry.config)
     container = await _container(registry, conversation_id)
     upstream_path = _upstream_path(
         request,
@@ -437,7 +453,7 @@ async def proxy_conversation(
         try:
             update = UpdateSecretsRequest.model_validate_json(await request.body())
         except ValueError as exc:
-            raise HTTPException(422, "Invalid secrets payload") from exc
+            raise Unprocessable("Invalid secrets payload") from exc
         profile = registry.provisioning.load(conversation_id).launched_agent_profile
         secrets = update.secrets
         if profile is not None:
@@ -513,8 +529,8 @@ async def _proxy_socket(
         return
     try:
         container = await _container(registry, conversation_id)
-    except HTTPException as exc:
-        await websocket.close(code=1008 if exc.status_code == 404 else 1011)
+    except DomainError as exc:
+        await websocket.close(code=1008 if isinstance(exc, NotFound) else 1011)
         return
     release = registry.acquire_lease(conversation_id)
     query = strip_auth_query("?" + websocket.url.query).lstrip("?")

@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Request, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -28,7 +28,6 @@ from pydantic import (
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
-    store_errors,
 )
 from openhands.agent_server.persistence import (
     ProviderConnection,
@@ -36,6 +35,7 @@ from openhands.agent_server.persistence import (
     get_provider_connections_store,
     get_settings_store,
 )
+from openhands.sdk.errors import Conflict, NotFound, Unprocessable
 from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionLimitExceeded,
     ProviderConnectionNotFound,
@@ -153,13 +153,10 @@ def _raise_if_connection_is_referenced(config, connection_id: str) -> None:
         reasons.append(f"referenced by LLM profile(s): {', '.join(profile_names)}")
     if active_reference:
         reasons.append("referenced by the active agent settings")
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=(
-            "Provider connection cannot be deleted while it is "
-            + " and ".join(reasons)
-            + ". Update those references before deleting it."
-        ),
+    raise Conflict(
+        "Provider connection cannot be deleted while it is "
+        + " and ".join(reasons)
+        + ". Update those references before deleting it."
     )
 
 
@@ -169,8 +166,7 @@ def list_provider_connections(
 ) -> list[ProviderConnectionResponse]:
     cipher = get_cipher(request)
     store = get_provider_connections_store(get_config(request))
-    with store_errors():
-        connections = store.list(cipher=cipher)
+    connections = store.list(cipher=cipher)
     return [_to_response(c) for c in connections]
 
 
@@ -193,13 +189,9 @@ def create_provider_connection(
         updated_at=now,
     )
     try:
-        with store_errors():
-            store.create(connection, cipher=cipher)
+        store.create(connection, cipher=cipher)
     except ProviderConnectionLimitExceeded as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"{e} Delete one before adding another.",
-        )
+        raise Conflict(f"{e} Delete one before adding another.")
     logger.info(
         "Created LLM provider connection", extra={"connection_id": connection.id}
     )
@@ -214,28 +206,18 @@ def update_provider_connection(
 ) -> ProviderConnectionResponse:
     fields = body.model_fields_set
     if not fields:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide at least one provider connection field to update",
-        )
+        raise Unprocessable("Provide at least one provider connection field to update")
 
     cipher = get_cipher(request)
     store = get_provider_connections_store(get_config(request))
-    with store_errors():
-        connection = store.get(connection_id, cipher=cipher)
+    connection = store.get(connection_id, cipher=cipher)
     if connection is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider connection '{connection_id}' not found",
-        )
+        raise NotFound(f"Provider connection '{connection_id}' not found")
 
     # A connection must always have a key, so clearing it is not a valid
     # update. Reject api_key: null explicitly instead of silently dropping it.
     if "api_key" in fields and body.api_key is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="api_key cannot be cleared; provide a new key to rotate it",
-        )
+        raise Unprocessable("api_key cannot be cleared; provide a new key to rotate it")
 
     updates: dict[str, Any] = {"updated_at": _now()}
     for field in ("display_name", "provider", "base_url"):
@@ -245,18 +227,14 @@ def update_provider_connection(
         updates["api_key"] = body.api_key
     updated = connection.model_copy(update=updates)
 
-    # store_errors() maps infra failures (lock timeout -> 503, corrupted/
-    # wrong-cipher file -> 4xx); the inner except keeps the deleted-between-
-    # get-and-update race as a 404 rather than the 422 store_errors would give
-    # ProviderConnectionNotFound.
-    with store_errors():
-        try:
-            store.update(updated, cipher=cipher)
-        except ProviderConnectionNotFound:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Provider connection '{connection_id}' not found",
-            )
+    # The store raises domain errors for infra failures (lock timeout -> 503,
+    # corrupted/wrong-cipher file -> 4xx); the except keeps the deleted-between-
+    # get-and-update race as a 404 rather than the 422 ProviderConnectionNotFound
+    # maps to.
+    try:
+        store.update(updated, cipher=cipher)
+    except ProviderConnectionNotFound:
+        raise NotFound(f"Provider connection '{connection_id}' not found")
     logger.info(
         "Updated LLM provider connection", extra={"connection_id": connection_id}
     )
@@ -272,24 +250,16 @@ def delete_provider_connection(
     config = get_config(request)
     cipher = get_cipher(request)
     store = get_provider_connections_store(config)
-    with store_errors():
-        connection = store.get(connection_id, cipher=cipher)
+    connection = store.get(connection_id, cipher=cipher)
     if connection is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider connection '{connection_id}' not found",
-        )
+        raise NotFound(f"Provider connection '{connection_id}' not found")
     _raise_if_connection_is_referenced(config, connection_id)
 
     # See update handler: keep the delete-race as 404, map infra errors.
-    with store_errors():
-        try:
-            store.delete(connection_id, cipher=cipher)
-        except ProviderConnectionNotFound:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Provider connection '{connection_id}' not found",
-            )
+    try:
+        store.delete(connection_id, cipher=cipher)
+    except ProviderConnectionNotFound:
+        raise NotFound(f"Provider connection '{connection_id}' not found")
     logger.info(
         "Deleted LLM provider connection", extra={"connection_id": connection_id}
     )
