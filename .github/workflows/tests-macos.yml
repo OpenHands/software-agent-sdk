@@ -58,6 +58,9 @@ jobs:
                   enable-cache: true
                   python-version: '3.13'
 
+            - name: Install terminal prerequisite
+              run: brew install tmux
+
             - name: Install deps
               run: uv sync --frozen --group dev
 

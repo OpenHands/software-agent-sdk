@@ -5,6 +5,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import tarfile
 import threading
@@ -42,7 +43,9 @@ from openhands.agent_server.persistence.store import FileSecretsStore
 from .conftest import write_extension
 
 
-_SERVER = """#!/usr/bin/python3
+_SERVER = (
+    f"#!{sys.executable}\n"
+    + """
 import http.server
 import json
 import os
@@ -76,6 +79,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 print(\"backend-ready\", flush=True)
 http.server.HTTPServer((\"127.0.0.1\", port), Handler).serve_forever()
 """
+)
 
 
 def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
@@ -555,7 +559,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     assert (await manager.delete_data("my-extension")).state == "stopped"
 
 
-_SLOW_HEALTH_SERVER = """#!/usr/bin/python3
+_SLOW_HEALTH_SERVER = (
+    f"#!{sys.executable}\n"
+    + """
 import http.server
 import sys
 import time
@@ -576,6 +582,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
 server.serve_forever()
 """
+)
 
 
 @requires_linux_backend
@@ -1267,3 +1274,18 @@ def test_archive_links_are_materialized_only_within_artifact(tmp_path, link_targ
     else:
         with pytest.raises(ValueError, match="unsafe archive"):
             CanvasExtensionBackendManager._extract_archive(archive, destination, 1)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS zombie group semantics")
+def test_exited_unreaped_backend_group_can_be_stopped():
+    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10
+        while psutil.Process(process.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        assert not CanvasExtensionBackendManager._group_alive(process.pid)
+        CanvasExtensionBackendManager._signal_group(process.pid, signal.SIGTERM)
+    finally:
+        process.wait(timeout=10)

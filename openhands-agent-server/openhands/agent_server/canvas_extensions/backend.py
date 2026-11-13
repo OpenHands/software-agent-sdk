@@ -935,12 +935,15 @@ class CanvasExtensionBackendManager:
             await asyncio.gather(*runtime.drain_tasks, return_exceptions=True)
         runtime.drain_tasks = []
 
-    @staticmethod
-    def _signal_group(pgid: int, sig: int) -> None:
+    @classmethod
+    def _signal_group(cls, pgid: int, sig: int) -> None:
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            if cls._group_alive(pgid):
+                raise
 
     @staticmethod
     def _group_alive(pgid: int) -> bool:
@@ -948,6 +951,20 @@ class CanvasExtensionBackendManager:
             os.killpg(pgid, 0)
             return True
         except ProcessLookupError:
+            return False
+        except PermissionError:
+            if platform.system() != "Darwin":
+                raise
+            # XNU excludes zombies from killpg's eligible targets and returns
+            # EPERM when none remain. Confirm that there are no live members;
+            # preserve a genuine permission failure instead of hiding it.
+            for pid in psutil.pids():
+                try:
+                    if os.getpgid(pid) == pgid:
+                        if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                            raise PermissionError(f"Cannot signal process group {pgid}")
+                except (ProcessLookupError, psutil.NoSuchProcess):
+                    continue
             return False
 
     def _runtime_group_alive(self, runtime: _Runtime) -> bool:
