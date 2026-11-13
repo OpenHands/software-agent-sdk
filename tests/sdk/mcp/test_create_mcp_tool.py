@@ -751,6 +751,23 @@ def test_create_mcp_tools_connection_failure_says_why(
     # The agent-server MCP test endpoint reads the root cause from here.
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert str(exc_info.value.__cause__) in message
+    assert "MCP servers configured: broken (" in message
+    assert "Possible solutions:" in message
+
+
+def test_create_mcp_tools_connection_failure_names_origin_not_path():
+    """The server's origin is named; a path or query that may hold a token is not."""
+    port = _find_free_port()
+    url = f"http://user:pw@127.0.0.1:{port}/s/path-token/mcp?api_key=query-token"
+    config = {"mcpServers": {"hosted": {"transport": "http", "url": url}}}
+
+    with pytest.raises(MCPError) as exc_info:
+        create_mcp_tools(native_mcp_config(config), timeout=10.0)
+
+    message = str(exc_info.value)
+    assert f"hosted (http://127.0.0.1:{port})" in message
+    for secret in ("pw", "path-token", "query-token"):
+        assert secret not in message
 
 
 def test_create_mcp_tools_stdio_server():
