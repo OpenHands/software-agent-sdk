@@ -8,8 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import SecretsStore
 from openhands.sdk.git.models import (
     GitProviderRepository,
     GitProviderRepositoryPage,
@@ -75,7 +74,7 @@ class GitProviderAPIError(GitProviderError):
 
 
 async def search_provider_repositories(
-    config: Config,
+    secrets_store: SecretsStore,
     provider: GitProvider,
     *,
     query: str | None = None,
@@ -88,7 +87,7 @@ async def search_provider_repositories(
             f"Repository discovery is not supported for provider '{provider.value}'"
         )
 
-    token = _resolve_provider_token(config, provider)
+    token = _resolve_provider_token(secrets_store, provider)
     if token is None:
         return GitProviderRepositoryPage(
             items=[], next_page_id=None, missing_token=True
@@ -111,7 +110,7 @@ _CHECK_RUNS_MAX_PAGES: Final[int] = 5
 
 
 async def get_provider_pull_request(
-    config: Config,
+    secrets_store: SecretsStore,
     provider: GitProvider,
     owner: str,
     repo: str,
@@ -122,7 +121,7 @@ async def get_provider_pull_request(
         raise UnsupportedGitProviderError(
             f"Pull requests are not supported for provider '{provider.value}'"
         )
-    token = _resolve_provider_token(config, provider)
+    token = _resolve_provider_token(secrets_store, provider)
     if token is None:
         raise MissingGitProviderTokenError(f"No {provider.value} token is configured")
 
@@ -298,10 +297,11 @@ def _badge_api_error(response: httpx.Response) -> GitProviderAPIError:
     )
 
 
-def _resolve_provider_token(config: Config, provider: GitProvider) -> str | None:
-    store = get_secrets_store(config)
+def _resolve_provider_token(
+    secrets_store: SecretsStore, provider: GitProvider
+) -> str | None:
     for name in _PROVIDER_TOKEN_CANDIDATES.get(provider, ()):  # pragma: no branch
-        if value := store.get_secret(name):
+        if value := secrets_store.get_secret(name):
             return value
     return None
 

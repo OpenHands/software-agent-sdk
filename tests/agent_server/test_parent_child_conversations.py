@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     ConversationService,
@@ -240,6 +241,7 @@ async def test_top_level_conversation_has_no_relationships(tmp_path, workspace_d
 
 def test_router_maps_invalid_parent_to_422(tmp_path):
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
     service = AsyncMock(spec=ConversationService)
     service.start_conversation.side_effect = InvalidParentConversation(
@@ -636,6 +638,7 @@ async def test_start_child_conversation_unknown_parent_returns_none(tmp_path):
 
 def _child_client(service: ConversationService) -> TestClient:
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
     app.dependency_overrides[get_conversation_service] = lambda: service
     return TestClient(app)

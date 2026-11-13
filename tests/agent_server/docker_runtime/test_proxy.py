@@ -5,6 +5,7 @@ import pytest
 from starlette.websockets import WebSocket
 
 from openhands.agent_server.docker_runtime.proxy import _bridge_websocket_loop
+from openhands.agent_server.persistence import ServerStores
 
 
 class Upstream:
@@ -89,9 +90,9 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
     monkeypatch, failure
 ):
     import httpx
-    from fastapi import HTTPException
 
     from openhands.agent_server.docker_runtime import proxy
+    from openhands.sdk.errors import UpstreamFailed
 
     errors = {
         "ReadTimeout": httpx.ReadTimeout,
@@ -105,11 +106,9 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
-    expected = asyncio.CancelledError if failure == "cancel" else HTTPException
-    with pytest.raises(expected) as raised:
+    expected = asyncio.CancelledError if failure == "cancel" else UpstreamFailed
+    with pytest.raises(expected):
         await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
-    if isinstance(raised.value, HTTPException):
-        assert raised.value.status_code == 502
     assert client.is_closed
 
 
@@ -197,12 +196,11 @@ async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     )
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    registry = DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("outer-key"),
-        )
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
     )
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     request, target = request_and_target()
     conversation_id = uuid4()
 

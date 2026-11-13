@@ -4,6 +4,7 @@ import threading
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import AsyncMock, call, patch
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import openhands.agent_server.event_service as event_service_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_service import (
     ConversationService,
     CredentialBindingActivationRequired,
@@ -31,6 +33,7 @@ from openhands.agent_server.persistence import (
     CustomSecret,
     FileSecretsStore,
     Secrets,
+    ServerStores,
 )
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent import ACPAgent
@@ -43,6 +46,7 @@ from openhands.sdk.credential import (
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 
 
 @dataclass
@@ -76,6 +80,11 @@ def credential_callback() -> Generator[tuple[str, _CallbackState]]:
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def _server_stores(directory: Path) -> ServerStores:
+    """The stores of a keyless server that persists under ``directory``."""
+    return ServerStores(cipher=None, profile_dir=directory, workspace_dir=directory)
 
 
 @pytest.mark.asyncio
@@ -200,7 +209,8 @@ def test_activation_route_installs_http_binding(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
-    app.state.conversation_service = service
+    add_domain_error_handler(app)
+    install_test_context(app, conversation_service=service)
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
     callback_url, callback = credential_callback
@@ -230,7 +240,8 @@ def test_activation_route_rejects_unavailable_binding(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
-    app.state.conversation_service = service
+    add_domain_error_handler(app)
+    install_test_context(app, conversation_service=service)
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
     callback_url, callback = credential_callback
@@ -258,7 +269,8 @@ def test_activation_route_retries_transient_binding_failure(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
-    app.state.conversation_service = service
+    add_domain_error_handler(app)
+    install_test_context(app, conversation_service=service)
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
     callback_url, callback = credential_callback
@@ -304,7 +316,8 @@ def test_activation_route_rejects_terminal_binding_failure(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
-    app.state.conversation_service = service
+    add_domain_error_handler(app)
+    install_test_context(app, conversation_service=service)
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
     callback_url, callback = credential_callback
@@ -337,7 +350,8 @@ def test_activation_route_rejects_invalid_binding_url(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
-    app.state.conversation_service = service
+    add_domain_error_handler(app)
+    install_test_context(app, conversation_service=service)
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
 
@@ -358,11 +372,12 @@ def test_activation_route_rejects_invalid_binding_url(
 
 @pytest.mark.asyncio
 async def test_direct_conversations_share_rotated_canonical_value(tmp_path) -> None:
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
+    store = stores.secrets
     store.set_secret("CODEX_AUTH_JSON", "r0")
     service = ConversationService(
         conversations_dir=tmp_path / "conversations",
-        secrets_store=store,
+        stores=stores,
     )
     agent = ACPAgent(acp_command=["codex-acp"], acp_server="codex")
     workspace = LocalWorkspace(working_dir=tmp_path / "workspace")
@@ -382,7 +397,8 @@ async def test_direct_conversations_share_rotated_canonical_value(tmp_path) -> N
 
 @pytest.mark.asyncio
 async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> None:
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
+    store = stores.secrets
     store.set_secret("CODEX_AUTH_JSON", "canonical")
     request = StartConversationRequest(
         agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
@@ -392,7 +408,7 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
 
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
-        secrets_store=store,
+        stores=stores,
     ) as service:
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
@@ -588,7 +604,8 @@ async def test_one_off_credential_survives_cold_restart_without_binding(
 
 @pytest.mark.asyncio
 async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> None:
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
+    store = stores.secrets
     store.set_secret("CODEX_AUTH_JSON", "canonical")
     agent = ACPAgent(
         acp_command=["codex-acp"],
@@ -611,7 +628,7 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
 
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
-        secrets_store=store,
+        stores=stores,
     ) as service:
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
@@ -929,7 +946,8 @@ async def test_live_plaintext_fallback_restarts_initialized_acp(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
+    store = stores.secrets
     store.set_secret("CODEX_AUTH_JSON", "canonical")
     request = StartConversationRequest(
         agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
@@ -939,7 +957,7 @@ async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
 
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
-        secrets_store=store,
+        stores=stores,
     ) as service:
         info, _ = await service.start_conversation(request)
         assert service._event_services is not None
@@ -1106,11 +1124,12 @@ async def test_non_owner_does_not_scrub_persisted_credential(tmp_path) -> None:
         before_meta = (conversation_dir / "meta.json").read_bytes()
         before_state = (conversation_dir / "base_state.json").read_bytes()
 
-        canonical = FileSecretsStore(tmp_path / "settings")
+        canonical_stores = _server_stores(tmp_path / "settings")
+        canonical = canonical_stores.secrets
         canonical.set_secret("CODEX_AUTH_JSON", "canonical")
         async with ConversationService(
             conversations_dir=conversations_dir,
-            secrets_store=canonical,
+            stores=canonical_stores,
         ) as non_owner:
             _, started = await non_owner.start_conversation(
                 request.model_copy(update={"conversation_id": info.id, "secrets": {}})
@@ -1123,7 +1142,8 @@ async def test_non_owner_does_not_scrub_persisted_credential(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_resume_removes_legacy_persisted_credential(tmp_path) -> None:
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
+    store = stores.secrets
     agent = ACPAgent(
         acp_command=["codex-acp"],
         acp_server="codex",
@@ -1143,7 +1163,7 @@ async def test_resume_removes_legacy_persisted_credential(tmp_path) -> None:
 
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
-        secrets_store=store,
+        stores=stores,
     ) as service:
         info, _ = await service.start_conversation(request)
         assert service._event_services is not None
@@ -1187,7 +1207,8 @@ async def test_resume_removes_legacy_persisted_credential(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_failed_canonical_preflight_preserves_legacy_auth_file(tmp_path) -> None:
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
+    store = stores.secrets
     request = StartConversationRequest(
         agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
         workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
@@ -1195,7 +1216,7 @@ async def test_failed_canonical_preflight_preserves_legacy_auth_file(tmp_path) -
 
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
-        secrets_store=store,
+        stores=stores,
     ) as service:
         info, _ = await service.start_conversation(request)
         assert service._event_services is not None

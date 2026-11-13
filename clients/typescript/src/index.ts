@@ -69,6 +69,7 @@ export {
   isConversationErrorEvent,
   isCondensationEvent,
   isHookExecutionEvent,
+  isReactionEvent,
 } from './events/types';
 export type {
   EventID,
@@ -98,6 +99,8 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  ReactionEmoji,
+  ReactionEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
