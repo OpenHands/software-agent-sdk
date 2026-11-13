@@ -450,7 +450,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 ),
             )
 
-            config = api.state.config
             content_search_service = getattr(api.state, "content_search_service", None)
             if content_search_service is not None:
                 try:

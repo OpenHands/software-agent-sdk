@@ -339,3 +339,22 @@ def test_backfill_prunes_orphaned_conversations(conv_root, tmp_path):
     stats = backfill(index, conv_root)
     assert stats["pruned_orphans"] == 1
     assert index.conversation_ids() == before - {conv_id}
+
+
+def test_lifespan_initial_sync_with_content_search_enabled(client_factory):
+    """Entering the app lifespan with the feature on must not crash startup.
+
+    Guards a merge casualty from the ServerContext refactor: the search
+    startup block once read ``api.state.config``, an attribute that no
+    longer exists, crashing every non-deferred startup when the flag was
+    on. Plain ``TestClient(app)`` never runs the lifespan, so only a
+    ``with`` block exercises this path.
+    """
+    app = client_factory(content_search_enabled=True).app
+    with TestClient(app) as client:
+        probe = client.get(
+            "/api/conversations/search/enabled",
+            headers={"X-Session-API-Key": "test-key"},
+        )
+        assert probe.status_code == 200
+        assert probe.json() == {"enabled": True}
