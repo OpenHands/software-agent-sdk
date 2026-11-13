@@ -270,6 +270,7 @@ class EventService:
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _active_gateway_runs: int = field(default=0, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -1136,7 +1137,8 @@ class EventService:
 
         Set on the conversation's registry, so it covers every LLM session of
         the conversation, including those opened by a later ``switch_llm`` /
-        ``switch_profile``. Only LLMs with ``log_completions`` on produce logs.
+        ``switch_profile``. Only LLMs with ``log_completions_to_file`` on
+        produce logs.
         """
 
         def log_callback(
