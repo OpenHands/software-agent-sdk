@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
-from openhands.agent_server.persistence.store import get_settings_store
+from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.telemetry.policy import TelemetryDecision, resolve
 
 
@@ -60,19 +60,19 @@ def test_consent_is_written_and_read_through_misc_settings(client, config_factor
 
     assert body["misc_settings"]["telemetry"]["consent"] == "granted"
 
-    settings = get_settings_store(config_factory()).load()
+    settings = ServerStores.from_config(config_factory()).settings.load()
     assert settings is not None
     assert resolve(settings.misc_settings, env={}).enabled is True
 
 
-def test_consent_survives_a_store_reset(client, config_factory, temp_persistence_dir):
-    from openhands.agent_server.persistence.store import reset_stores
-
+def test_consent_survives_a_server_restart(
+    client, config_factory, temp_persistence_dir
+):
     with client as c:
         c.patch(SETTINGS_URL, json=diff("granted"))
 
-    reset_stores()
-    settings = get_settings_store(config_factory()).load()
+    # Freshly built stores, as the next server process would have.
+    settings = ServerStores.from_config(config_factory()).settings.load()
     assert settings is not None
     assert resolve(settings.misc_settings, env={}).enabled is True
 

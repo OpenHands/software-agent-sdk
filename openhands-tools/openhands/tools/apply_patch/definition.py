@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -88,25 +89,38 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
     ) -> ApplyPatchObservation:
         """Execute the patch application and return an observation."""
 
+        # Writes and removals are queued and only run once the whole patch has
+        # been parsed and every path validated, so a rejected patch changes
+        # nothing.
+        pending: list[Callable[[], None]] = []
+        crlf_paths: set[str] = set()
+
         def open_file(path: str) -> str:
             fp = self._resolve_path(path)
             with open(fp, encoding="utf-8") as f:
-                return f.read()
+                content = f.read()
+                if f.newlines == "\r\n":
+                    crlf_paths.add(path)
+                return content
 
-        def write_file(path: str, content: str) -> None:
-            fp = self._resolve_path(path)
+        def write(fp: Path, content: str, newline: str | None) -> None:
             fp.parent.mkdir(parents=True, exist_ok=True)
-            with open(fp, "w", encoding="utf-8") as f:
+            with open(fp, "w", encoding="utf-8", newline=newline) as f:
                 f.write(content)
 
+        def write_file(path: str, content: str) -> None:
+            newline = "\r\n" if path in crlf_paths else None
+            pending.append(partial(write, self._resolve_path(path), content, newline))
+
         def remove_file(path: str) -> None:
-            fp = self._resolve_path(path)
-            fp.unlink(missing_ok=False)
+            pending.append(self._resolve_path(path).unlink)
 
         try:
             msg, fuzz, commit = process_patch(
                 action.patch, open_file, write_file, remove_file
             )
+            for operation in pending:
+                operation()
             # Include a human-readable summary in content so Responses API sees
             # a function_call_output payload paired with the function_call.
             obs = ApplyPatchObservation(message=msg, fuzz=fuzz, commit=commit)
