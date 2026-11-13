@@ -26,6 +26,8 @@ class SettingsFieldMetadata(BaseModel):
     label: str | None = None
     prominence: SettingProminence = SettingProminence.MINOR
     depends_on: tuple[str, ...] = ()
+    """Fields that must be on for this one to show. ``"field=value"`` instead
+    requires that field to hold that value (for choice fields)."""
     variant: str | None = None
     """When set, the field only applies to the named ``AgentSettings``
     variant (``"openhands"`` or ``"acp"``). Fields with ``variant=None`` are

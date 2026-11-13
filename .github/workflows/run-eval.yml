@@ -85,7 +85,7 @@ jobs:
 
         steps:
             - name: Checkout SDK code
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
                   fetch-depth: 0

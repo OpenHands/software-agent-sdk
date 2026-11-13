@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from openhands.sdk.agent.utils import make_llm_completion
 from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.types import HookDecision, HookEvent
@@ -25,6 +24,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.llm import LLM
+    from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.llm.utils.metrics import Metrics
 
 
@@ -167,6 +167,7 @@ class HookExecutor:
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
+        llm_call_context: "LLMCallContext | None" = None,
         persistence_dir: str | None = None,
         visualizer: type[ConversationVisualizerBase]
         | ConversationVisualizerBase
@@ -180,6 +181,7 @@ class HookExecutor:
         # LLM: switch_llm()/switch_profile() replace agent.llm after the executor
         # is built, and a captured instance would go stale.
         self._llm_getter = llm_getter
+        self.llm_call_context = llm_call_context
         self.persistence_dir = persistence_dir
         self.visualizer = visualizer
         self.conversation_stats = conversation_stats
@@ -242,8 +244,8 @@ class HookExecutor:
                 "timeout": hook.timeout,
             }
         )
-        # Isolate Metrics so hook spend doesn't accrue to the parent's bucket.
-        hook_llm.reset_metrics()
+        # Its own usage_id gives the copy its own session, so hook spend
+        # doesn't accrue to the parent's bucket.
 
         # Never hand the parent's already-initialized visualizer instance to the
         # sub-conversation: LocalConversation.__init__ calls initialize() on it,
@@ -273,6 +275,7 @@ class HookExecutor:
                 persistence_dir=self.persistence_dir,
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
+                _parent_llm_call_context=self.llm_call_context,
             )
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"
@@ -325,7 +328,6 @@ class HookExecutor:
                 "stream": False,
             }
         )
-        hook_llm.reset_metrics()
 
         messages = [
             Message(
@@ -359,7 +361,11 @@ class HookExecutor:
         ]
 
         try:
-            response = make_llm_completion(hook_llm, messages)
+            response = hook_llm.generate(
+                messages=messages,
+                store=False,
+                call_context=self.llm_call_context,
+            )
             raw = "\n".join(content_to_str(response.message.content))
         except Exception as e:
             logger.warning(
@@ -414,7 +420,9 @@ class HookExecutor:
             )
 
         decision_str = str(data.get("decision", "")).lower()
-        reason = str(data.get("reason", ""))
+        # A JSON null reason means the hook gave none; str(None) would turn it
+        # into the literal "None" and show that to the model.
+        reason = None if (raw_reason := data.get("reason")) is None else str(raw_reason)
         if decision_str == "deny":
             return HookResult(
                 success=True,
@@ -476,6 +484,10 @@ class HookExecutor:
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
             hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
+        if hook.plugin_root:
+            # Set after the inherited environment so a parent-process value
+            # cannot shadow the owning plugin's root.
+            hook_env["PLUGIN_ROOT"] = hook.plugin_root
 
         if env:
             hook_env.update(env)
@@ -541,16 +553,28 @@ class HookExecutor:
                 )
 
         try:
-            # Execute the hook command synchronously
-            result = subprocess.run(
+            # Execute the hook command synchronously, in its own session so a
+            # timeout stops the commands the shell started, not just the shell.
+            with subprocess.Popen(
                 command,
                 shell=True,
                 cwd=self.working_dir,
                 env=hook_env,
-                input=event_json,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=hook.timeout,
+                start_new_session=os.name != "nt",
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(
+                        event_json, timeout=hook.timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    self.async_process_manager._terminate_process(process)
+                    raise
+            result = subprocess.CompletedProcess(
+                command, process.returncode, stdout, stderr
             )
 
             # Parse the result
@@ -567,9 +591,10 @@ class HookExecutor:
                 try:
                     output_data = json.loads(result.stdout)
                     if isinstance(output_data, dict):
-                        # Parse decision
-                        if "decision" in output_data:
-                            decision_str = output_data["decision"].lower()
+                        # Non-string values represent no decision.
+                        decision_value = output_data.get("decision")
+                        if isinstance(decision_value, str):
+                            decision_str = decision_value.lower()
                             if decision_str == "allow":
                                 hook_result.decision = HookDecision.ALLOW
                             elif decision_str == "deny":
@@ -578,7 +603,10 @@ class HookExecutor:
 
                         # Parse other fields
                         if "reason" in output_data:
-                            hook_result.reason = str(output_data["reason"])
+                            raw_reason = output_data["reason"]
+                            hook_result.reason = (
+                                None if raw_reason is None else str(raw_reason)
+                            )
                         if "additionalContext" in output_data:
                             hook_result.additional_context = str(
                                 output_data["additionalContext"]

@@ -53,6 +53,7 @@ describe('Test Utilities', () => {
     it('should return config when required env vars are set', () => {
       process.env.LLM_API_KEY = 'test-api-key';
       process.env.LLM_MODEL = 'test/model';
+      delete process.env.AGENT_SERVER_URL;
 
       const config = getTestConfig();
 

@@ -8,7 +8,11 @@ text to verify multimodal (vision) input support.
 
 Prerequisites:
     - Node.js / npx available
-    - ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set (can point to LiteLLM proxy)
+    - ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set. When pointing at the
+      OpenHands LiteLLM proxy, use the dedicated ACP key (ACP_LLM_API_KEY)
+      whose LiteLLM alias bypasses the proxy's identity guardrail — Claude
+      Code sends its own system prompt, which the guardrail would 403.
+      Against api.anthropic.com directly, any Anthropic API key works.
 
 Usage:
     uv run python examples/01_standalone_sdk/40_acp_agent_example.py
@@ -19,11 +23,12 @@ import os
 from openhands.sdk import ImageContent, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 
 
 IMAGE_URL = "https://www.python.org/static/opengraph-icon-200x200.png"
 
-agent = ACPAgent(acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+agent = ACPAgent(acp_command=list(ACP_PROVIDERS["claude-code"].default_command))
 
 try:
     cwd = os.getcwd()

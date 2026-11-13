@@ -32,7 +32,6 @@ from openhands.sdk.agent.acp_agent import (
     _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
-    _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -42,12 +41,14 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _NewSessionResponse,
     _npx_packages,
     _OpenHandsACPBridge,
     _preconfigured_credentials,
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _split_effort_suffix,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
     _warn_auth_selection_failure,
@@ -60,6 +61,11 @@ from openhands.sdk.agent.acp_file_credentials import (
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.stream_context import (
+    StreamAborted,
+    StreamDelta,
+    StreamStarted,
+)
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
@@ -171,11 +177,11 @@ def _make_state(tmp_path) -> ConversationState:
 
 def test_logs_matching_acp_provider_version(caplog):
     with caplog.at_level("INFO"):
-        _log_acp_provider_version("codex-acp", "1.10.0")
+        _log_acp_provider_version("codex-acp", "2.2.2")
 
     assert "provider=codex" in caplog.text
-    assert "pinned_version='1.10.0'" in caplog.text
-    assert "reported_version='1.10.0'" in caplog.text
+    assert "pinned_version='2.2.2'" in caplog.text
+    assert "reported_version='2.2.2'" in caplog.text
     assert "mismatch" not in caplog.text
 
 
@@ -2234,10 +2240,77 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None, on_token=on_token)
 
-        # Verify on_token was wired during the turn.
-        assert wired_during_prompt == [on_token]
+        # The bridge is wired with StreamContext's stamping wrapper, which
+        # forwards to the caller's callback unchanged.
+        assert len(wired_during_prompt) == 1
+        wired = wired_during_prompt[0]
+        assert wired is not None and wired is not on_token
+        wired("chunk")
+        on_token.assert_called_once_with("chunk")
         # And unwired afterward so a late token chunk is a no-op.
         assert mock_client.on_token is None
+
+    def test_step_retires_its_stream_on_the_turn_finish_action(self, tmp_path):
+        """An ACP turn's streamed text lands in the FinishAction, not a message.
+
+        See https://github.com/OpenHands/software-agent-sdk/issues/4682.
+        """
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        frames: list = []
+        conversation.on_stream = frames.append
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            mock_client.on_token("streamed ")
+            mock_client.on_token("text")
+            mock_client.accumulated_text.append("streamed text")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        events: list = []
+        agent.step(conversation, on_event=events.append)
+
+        started = [f for f in frames if isinstance(f, StreamStarted)]
+        deltas = [f for f in frames if isinstance(f, StreamDelta)]
+        assert len(started) == 1
+        assert [d.content for d in deltas] == ["streamed ", "text"]
+
+        action = next(e for e in events if isinstance(e, ActionEvent))
+        assert action.id == started[0].item_id
+        assert not any(isinstance(f, StreamAborted) for f in frames)
+        # The context is released with the turn.
+        assert agent._stream is None
+
+    @pytest.mark.asyncio
+    async def test_astep_opens_and_retires_the_same_slot(self, tmp_path):
+        """The async entry point gets the same guarantee as the sync one."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        frames: list = []
+        conversation.on_stream = frames.append
+
+        async def _fake_astep(_self, _conv, _on_event, on_token=None, _prompt=None):
+            assert on_token is not None
+            on_token("streamed text")
+            raise RuntimeError("the prompt died after streaming")
+
+        with patch.object(ACPAgent, "_astep", _fake_astep):
+            with pytest.raises(RuntimeError):
+                await agent.astep(conversation, on_event=lambda _: None)
+
+        started = [f for f in frames if isinstance(f, StreamStarted)]
+        aborted = [f for f in frames if isinstance(f, StreamAborted)]
+        assert len(started) == len(aborted) == 1
+        assert aborted[0].item_id == started[0].item_id
+        assert aborted[0].reason == "RuntimeError"
+        assert agent._stream is None
 
 
 # ---------------------------------------------------------------------------
@@ -2756,7 +2829,10 @@ class TestACPAgentAstep:
                     autospec=True,
                     side_effect=lambda _agent: threading.Event().wait(0.05),
                 ),
-                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 0.01),
+                # Must exceed the 0.05s credential-sync delay above: with
+                # 0.01s the drain window expires before the released prompt
+                # can complete on loaded runners, flaking to `idle`.
+                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 5.0),
             ):
                 task = asyncio.create_task(
                     agent.astep(conversation, on_event=emitted.append)
@@ -3363,8 +3439,10 @@ class TestACPAgentCleanup:
         env: dict[str, str] = {}
         agent._materialise_file_secrets(state, env)
         assert Path(env["CODEX_HOME"], "auth.json").read_text() == valid
-        assert not durable_auth.exists()
+        # The legacy durable copy is replaced by a link to the temporary file.
+        assert durable_auth.is_symlink()
         agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
 
     def test_failed_init_keeps_agent_reusable(self, tmp_path):
         agent = _make_agent()
@@ -5313,18 +5391,41 @@ class TestWithCodexBaseUrl:
         assert _with_codex_base_url("codex-acp", [], env) == env
 
 
-class TestCodexModelConfigOptions:
-    def test_splits_combined_model_and_reasoning_effort(self):
-        assert _codex_model_config_options("gpt-5.5/high") == (
-            ("model", "gpt-5.5"),
-            ("reasoning_effort", "high"),
+class TestSplitEffortSuffix:
+    def test_codex_splits_reasoning_effort(self):
+        assert _split_effort_suffix("codex-acp", "gpt-5.5/high") == ("gpt-5.5", "high")
+
+    def test_claude_splits_effort(self):
+        assert _split_effort_suffix("claude-agent-acp", "opus[1m]/max") == (
+            "opus[1m]",
+            "max",
         )
 
     def test_leaves_base_or_custom_model_id_unchanged(self):
-        assert _codex_model_config_options("gpt-5.5") == (("model", "gpt-5.5"),)
-        assert _codex_model_config_options("custom/provider/model") == (
-            ("model", "custom/provider/model"),
+        assert _split_effort_suffix("codex-acp", "gpt-5.5") == ("gpt-5.5", None)
+        assert _split_effort_suffix("codex-acp", "custom/provider/model") == (
+            "custom/provider/model",
+            None,
         )
+        # `ultra` is a Codex level, not a Claude one.
+        assert _split_effort_suffix("claude-agent-acp", "opus[1m]/ultra") == (
+            "opus[1m]/ultra",
+            None,
+        )
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_codex_splits_top_reasoning_efforts(self, effort):
+        assert _split_effort_suffix("codex-acp", f"gpt-6.1-sol/{effort}") == (
+            "gpt-6.1-sol",
+            effort,
+        )
+
+    def test_provider_without_effort_option_is_unchanged(self):
+        assert _split_effort_suffix("gemini-cli", "gemini-2.5-pro/high") == (
+            "gemini-2.5-pro/high",
+            None,
+        )
+        assert _split_effort_suffix("my-acp", "model/high") == ("model/high", None)
 
 
 # ---------------------------------------------------------------------------
@@ -5347,7 +5448,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_config_option.assert_not_called()
         # The override was actually pushed to the server via the protocol call.
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_set_config_option_mechanism(self):
@@ -5367,7 +5468,31 @@ class TestMaybeSetSessionModel:
             session_id="session-1",
         )
         conn.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "opus[1m]"
+
+    @pytest.mark.asyncio
+    async def test_rejected_effort_keeps_applied_model(self):
+        # claude-agent-acp has no effort option for Haiku: the model switch
+        # still succeeds and only the effort is dropped.
+        conn = AsyncMock()
+
+        async def _set_config_option(*, config_id, value, session_id):
+            if config_id == "effort":
+                raise ACPRequestError(code=-32603, message="Internal error")
+
+        conn.set_config_option.side_effect = _set_config_option
+        applied = await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "haiku/high",
+            via_config_option=True,
+        )
+        assert conn.set_config_option.await_args_list == [
+            call(config_id="model", value="haiku", session_id="session-1"),
+            call(config_id="effort", value="high", session_id="session-1"),
+        ]
+        assert applied == "haiku"
 
     @pytest.mark.asyncio
     async def test_codex_config_option_splits_reasoning_effort(self):
@@ -5389,7 +5514,7 @@ class TestMaybeSetSessionModel:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_pi_model_switch_mechanism(self):
@@ -5407,7 +5532,7 @@ class TestMaybeSetSessionModel:
             value="anthropic/claude-sonnet-4-6",
             session_id="session-1",
         )
-        assert applied is True
+        assert applied == "anthropic/claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
@@ -5417,7 +5542,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_unknown_provider_applies_via_detected_mechanism(self):
@@ -5431,7 +5556,7 @@ class TestMaybeSetSessionModel:
             config_id="model", value="kimi-k2-6", session_id="session-1"
         )
         conn_cfg.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
         conn_set = AsyncMock()
         applied = await _maybe_set_session_model(
@@ -5441,7 +5566,7 @@ class TestMaybeSetSessionModel:
             model_id="kimi-k2-6", session_id="session-1"
         )
         conn_set.set_config_option.assert_not_called()
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
     @pytest.mark.asyncio
     async def test_unknown_provider_apply_failure_is_tolerated(self):
@@ -5455,7 +5580,7 @@ class TestMaybeSetSessionModel:
             conn, "some-custom-acp", "session-1", "whatever", via_config_option=True
         )
         conn.set_config_option.assert_awaited_once()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_known_provider_apply_rejection_is_tolerated(self):
@@ -5474,7 +5599,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_config_option.assert_awaited_once()
         conn.set_session_model.assert_not_called()
-        assert applied is False
+        assert applied is None
 
 
 class TestReapplySessionModelOnResume:
@@ -5497,7 +5622,7 @@ class TestReapplySessionModelOnResume:
         conn.set_session_model.assert_awaited_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
         )
-        assert applied is True
+        assert applied == "claude-haiku-4-5-20251001"
 
     @pytest.mark.asyncio
     async def test_reapply_via_set_config_option_mechanism(self):
@@ -5511,7 +5636,7 @@ class TestReapplySessionModelOnResume:
             config_id="model", value="gpt-5.5", session_id="sess-1"
         )
         conn.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "gpt-5.5"
 
     @pytest.mark.asyncio
     async def test_codex_reapply_splits_reasoning_effort(self):
@@ -5531,7 +5656,7 @@ class TestReapplySessionModelOnResume:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_reapply(self):
@@ -5541,7 +5666,7 @@ class TestReapplySessionModelOnResume:
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_unknown_provider_reapplies_via_detected_mechanism(self):
@@ -5557,7 +5682,7 @@ class TestReapplySessionModelOnResume:
             value="kimi-k2-6",
             session_id="sess-1",
         )
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
     @pytest.mark.asyncio
     async def test_known_unsupported_provider_skips_reapply(self):
@@ -5584,7 +5709,7 @@ class TestReapplySessionModelOnResume:
                 conn, "legacy-acp", "sess-1", "x", via_config_option=False
             )
         conn.set_session_model.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_client_rejection_is_swallowed_on_resume(self):
@@ -5601,7 +5726,7 @@ class TestReapplySessionModelOnResume:
         conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_any_request_error_is_swallowed_on_resume(self):
@@ -5616,7 +5741,7 @@ class TestReapplySessionModelOnResume:
             conn, "codex-acp", "sess-1", "gpt-5.5", via_config_option=False
         )
         conn.set_session_model.assert_awaited_once()
-        assert applied is False
+        assert applied is None
 
 
 class TestHasLiveACPSession:
@@ -5731,7 +5856,7 @@ class TestSetACPModel:
         assert _agent_conn(agent).set_config_option.await_count == 2
         _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5/high"
-        assert agent._current_model_id == "gpt-5.5/high"
+        assert agent._current_model_id == "gpt-5.5"
 
     def test_switches_claude_via_config_option_single_call(self):
         # A bare id (no `/`) applies as a single `model` selection — no effort.
@@ -5741,6 +5866,29 @@ class TestSetACPModel:
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
+
+    def test_switches_claude_via_config_option_splits_effort(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("opus[1m]/high")
+        _agent_conn(agent).set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="opus[1m]", session_id="sess-1"),
+                call(config_id="effort", value="high", session_id="sess-1"),
+            ]
+        )
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        assert agent._current_model_id == "opus[1m]"
+
+    def test_switch_with_rejected_effort_reports_base_model(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+
+        async def _set_config_option(*, config_id, value, session_id):
+            if config_id == "effort":
+                raise ACPRequestError(code=-32603, message="Internal error")
+
+        _agent_conn(agent).set_config_option.side_effect = _set_config_option
+        agent.set_acp_model("haiku/low")
+        assert agent._current_model_id == "haiku"
 
     def test_switch_method_not_found_raises_no_fallback(self):
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
@@ -6308,7 +6456,7 @@ class TestACPSessionIdPersistence:
         )
         stack.enter_context(
             patch(
-                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                "openhands.sdk.agent.acp_agent._ACPClientConnection",
                 return_value=conn,
             )
         )
@@ -6381,6 +6529,44 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
+
+    @pytest.mark.parametrize("with_skills", [True, False])
+    def test_skills_directory_is_shared_with_the_session(self, tmp_path, with_skills):
+        context = (
+            AgentContext(
+                skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+            )
+            if with_skills
+            else None
+        )
+        agent = _make_agent().model_copy(update={"agent_context": context})
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        extra = conn.new_session.await_args.kwargs["additional_directories"]
+        assert extra == ([str(agent._skills_root)] if with_skills else None)
+
+    def test_skills_directory_is_not_sent_when_the_server_lacks_the_capability(
+        self, tmp_path
+    ):
+        agent = _make_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+                )
+            }
+        )
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_capabilities.session_capabilities = None
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        assert conn.new_session.await_args.kwargs["additional_directories"] is None
 
     def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
         """A failed replacement session should leave the deferred restart armed."""
@@ -7439,7 +7625,7 @@ class TestACPSecretsEnvInjection:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -7596,7 +7782,7 @@ class TestACPSecretRegistryEnvInjection:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -7829,7 +8015,7 @@ class TestACPEnvConflictSuppression:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -8419,13 +8605,29 @@ class TestDetectionAgainstRealSessionResponses:
             "gpt-5.5",
         ]
 
-    def test_gemini_046_uses_set_session_model(self):
-        resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+    def test_gemini_046_models_block_needs_the_extended_response(self):
+        # agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` block
+        # from ``NewSessionResponse``; gemini-cli reports its models only there.
+        plain = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+        assert _extract_session_models(plain) == (None, None, False)
+
+        resp = _NewSessionResponse.model_validate(_GEMINI_046_SESSION)
         cur, avail, via = _extract_session_models(resp)
         assert via is False
         assert cur == "gemini-3-flash-preview"
         assert avail is not None
-        assert "gemini-3-pro-preview" in [m.model_id for m in avail]
+        assert [m.model_id for m in avail][:3] == [
+            "auto",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+        ]
+
+    def test_malformed_models_block_is_ignored(self):
+        resp = _NewSessionResponse.model_validate(
+            {"sessionId": "s", "models": {"availableModels": [{"name": "no id"}]}}
+        )
+        assert resp.session_id == "s"
+        assert resp.models is None
 
 
 class TestApplyAcpModelNoFallback:
@@ -8679,6 +8881,118 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer token-y")
         ]
 
+    def test_oauth_access_token_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {"access_token": "oauth-access-token"},
+                            "token_expires_at": 4102444800.0,
+                        },
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
+    def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
+        from openhands.sdk.mcp.config import MCPServer
+
+        cipher = Cipher(secret_key="test-secret-key-0123456789")
+        stored = MCPServer.model_validate(
+            {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "oauth-access-token"}},
+                },
+            }
+        ).model_dump(mode="json", context={"cipher": cipher})
+        assert stored["auth"]["state"]["tokens"]["access_token"] != (
+            "oauth-access-token"
+        )
+        server = MCPServer.model_validate(stored, context={"cipher": cipher})
+
+        out = _mcp_config_to_acp_servers(
+            {"linear": server}, self._caps(http=True, sse=False)
+        )
+        assert [h.value for h in out[0].headers] == ["Bearer oauth-access-token"]
+
+    def test_oauth_access_token_keeps_static_headers(self):
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"X-Client": "canvas"},
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("X-Client", "canvas"),
+            ("Authorization", "Bearer oauth-access-token"),
+        ]
+
+    def test_oauth_without_stored_token_omits_authorization_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "granola": {
+                    "url": "https://mcp.granola.ai/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert out[0].headers == []
+
+    def test_oauth_access_token_maps_to_bearer_header_for_sse(self):
+        from acp.schema import SseMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/sse",
+                    "transport": "sse",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], SseMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
     def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
@@ -8881,7 +9195,7 @@ class TestACPFileSecretMaterialisation:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -9379,6 +9693,171 @@ class TestACPFileSecretMaterialisation:
         }
 
 
+class TestACPFileSecretProviderScoping:
+    """``acp_file_secrets`` defaults to the union across every registered
+    provider, but only the running provider's specs apply (#4923). Without the
+    scoping, registering a harness upstream changes how an unrelated provider's
+    conversation treats a secret carrying the new reserved name.
+    """
+
+    _H = TestACPFileSecretMaterialisation
+
+    @staticmethod
+    def _names(agent):
+        return {spec.secret_name for spec in agent._active_file_secrets()}
+
+    @pytest.mark.parametrize(
+        "acp_server,expected",
+        [
+            ("claude-code", set()),
+            ("codex", {"CODEX_AUTH_JSON"}),
+            ("gemini-cli", {"GOOGLE_APPLICATION_CREDENTIALS_JSON"}),
+            ("kimi-code", {"KIMI_CODE_CONFIG_TOML"}),
+            ("pi", {"PI_AUTH_JSON"}),
+            ("opencode", set()),
+        ],
+    )
+    def test_scopes_to_the_running_provider(self, acp_server, expected):
+        agent = _make_agent(acp_server=acp_server)
+        assert self._names(agent) == expected
+
+    def test_no_provider_claims_another_providers_reserved_secret(self):
+        """The property the scoping exists to hold, asserted over the registry
+        so a provider added upstream is covered without editing this test."""
+        from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+        for key, info in ACP_PROVIDERS.items():
+            others = {
+                spec.secret_name
+                for other, other_info in ACP_PROVIDERS.items()
+                if other != key
+                for spec in other_info.file_secrets
+            } - {spec.secret_name for spec in info.file_secrets}
+            assert self._names(_make_agent(acp_server=key)).isdisjoint(others)
+
+    def test_unrecognised_server_keeps_the_union(self):
+        """No identity means we cannot tell whose credential a reserved name
+        belongs to, so stay conservative — as ``_strip_conflicting_env`` does."""
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        agent = ACPAgent(acp_command=["some-unknown-acp-server"])
+        assert self._names(agent) == {
+            spec.secret_name for spec in default_acp_file_secrets()
+        }
+
+    def test_custom_command_resolves_the_provider_from_the_command(self):
+        agent = ACPAgent(acp_command=["codex-acp"])
+        assert self._names(agent) == {"CODEX_AUTH_JSON"}
+
+    def test_specs_outside_the_registry_always_apply(self):
+        """A downstream CLI's spec is owned by no registered provider, so it is
+        never filtered out — whichever harness the conversation runs."""
+        from openhands.sdk import ACPFileSecretSpec
+
+        custom = ACPFileSecretSpec(
+            secret_name="MYCLI_TOKEN_JSON",
+            filename="token.json",
+            env_var="MYCLI_HOME",
+            subdir="mycli",
+        )
+        agent = _make_agent(acp_server="codex", acp_file_secrets=[custom])
+        assert self._names(agent) == {"MYCLI_TOKEN_JSON"}
+
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        agent = _make_agent(
+            acp_server="codex",
+            acp_file_secrets=[custom, *default_acp_file_secrets()],
+        )
+        assert self._names(agent) == {"MYCLI_TOKEN_JSON", "CODEX_AUTH_JSON"}
+
+    def test_a_list_persisted_before_a_provider_was_added_still_scopes(self):
+        """The upgrade case. A conversation written when the registry held only
+        Codex and Gemini carries that two-spec list; resumed on a newer SDK it
+        must still scope, which a comparison against today's default could not
+        do — the stored list no longer equals it.
+        """
+        from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+        pre_upgrade = [
+            *ACP_PROVIDERS["codex"].file_secrets,
+            *ACP_PROVIDERS["gemini-cli"].file_secrets,
+        ]
+        agent = _make_agent(acp_server="claude-code", acp_file_secrets=pre_upgrade)
+        assert self._names(agent) == set()
+
+        agent = _make_agent(acp_server="codex", acp_file_secrets=pre_upgrade)
+        assert self._names(agent) == {"CODEX_AUTH_JSON"}
+
+    def test_a_name_several_providers_share_is_kept(self):
+        """``owned_elsewhere`` subtracts the running provider's own names, so a
+        spec two providers both claim is not filtered from either."""
+        from openhands.sdk import ACPFileSecretSpec
+
+        shared = ACPFileSecretSpec(
+            secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            filename="gcloud-credentials.json",
+            env_var="GOOGLE_APPLICATION_CREDENTIALS",
+            subdir="gemini-cli",
+        )
+        agent = _make_agent(acp_server="gemini-cli", acp_file_secrets=[shared])
+        assert self._names(agent) == {"GOOGLE_APPLICATION_CREDENTIALS_JSON"}
+
+    def test_empty_specs_stay_empty(self):
+        agent = _make_agent(acp_server="codex", acp_file_secrets=[])
+        assert self._names(agent) == set()
+
+    def test_scoping_survives_a_serialization_round_trip(self):
+        """A resumed conversation must scope too — including one written by an
+        older SDK, which ``test_a_list_persisted_before_a_provider_was_added_
+        still_scopes`` covers."""
+        agent = _make_agent(acp_server="claude-code")
+        restored = ACPAgent.model_validate(agent.model_dump())
+        assert self._names(restored) == set()
+
+    def test_other_providers_blob_stays_a_plain_env_var(self, tmp_path):
+        """End to end through ``_start_acp_server``: on a claude-code
+        conversation ``PI_AUTH_JSON`` is delivered as an ordinary env var, not
+        materialised to disk with ``PI_CODING_AGENT_DIR`` set."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_server="claude-code")
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+
+        assert env.get("PI_AUTH_JSON") == "blob"
+        assert "PI_CODING_AGENT_DIR" not in env
+        assert not (agent._acp_file_secret_dir(state, "pi") / "auth.json").exists()
+
+    def test_own_blob_still_materialises(self, tmp_path):
+        """The counterpart: on a pi conversation the same secret is written to
+        disk and the data-dir var points at it."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_server="pi")
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+
+        target = agent._acp_file_secret_dir(state, "pi") / "auth.json"
+        assert target.read_text() == "blob"
+        assert env.get("PI_CODING_AGENT_DIR") == str(target.parent)
+        assert "PI_AUTH_JSON" not in env
+
+
 # ---------------------------------------------------------------------------
 # Per-conversation CLI data-dir isolation (issue #1019)
 # ---------------------------------------------------------------------------
@@ -9467,7 +9946,7 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
-    def test_binding_overrides_isolated_codex_home(self, tmp_path):
+    def test_binding_links_auth_into_durable_codex_home(self, tmp_path):
         agent = self._agent(["codex-acp"])
         state = self._H._state(tmp_path)
         durable_codex_home = Path(state.persistence_dir or "") / "acp" / "codex"
@@ -9489,12 +9968,14 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(agent, state, conn=self._H._make_conn())
         try:
             codex_home = Path(env["CODEX_HOME"])
-            assert codex_home != durable_codex_home
-            assert (codex_home / "auth.json").read_text(encoding="utf-8") == auth
-            assert not durable_auth.exists()
-            assert durable_codex_home.exists()
+            assert codex_home == durable_codex_home
+            assert durable_auth.is_symlink()
+            assert not durable_auth.resolve().is_relative_to(durable_codex_home)
+            assert durable_auth.read_text(encoding="utf-8") == auth
         finally:
             agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
+        assert durable_codex_home.exists()
 
     # --- Claude: isolation applies under either auth mode (#3588) ------------
 

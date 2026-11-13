@@ -12,7 +12,6 @@ import textwrap
 import types
 from collections.abc import Collection
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -25,16 +24,13 @@ from pydantic import BaseModel
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
-from openhands.sdk.llm import LLM, LLMResponse, Message
-from openhands.sdk.tool import ToolDefinition
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
-    from openhands.sdk.llm.streaming import AnyTokenCallbackType
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.mixins.fn_call_converter import (
+    TERMINAL_COMMAND_PREFIX_ALIASES,
+    TOOL_NAME_ALIASES,
+)
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -194,7 +190,11 @@ def fix_malformed_tool_arguments(
 
             origin = get_origin(expected_type)
             if origin is Union or origin is types.UnionType:
-                type_args = get_args(expected_type)
+                # Unwrap Annotated members too, e.g. Annotated[list[int], ...] | None
+                type_args = [
+                    get_args(arg)[0] if get_origin(arg) is Annotated else arg
+                    for arg in get_args(expected_type)
+                ]
                 expected_origins = [get_origin(arg) or arg for arg in type_args]
             else:
                 expected_origins = [origin or expected_type]
@@ -248,17 +248,6 @@ def fix_malformed_tool_arguments(
     return fixed_arguments
 
 
-TOOL_NAME_ALIASES: dict[str, str] = {
-    "bash": "terminal",
-    "command": "terminal",
-    "execute": "terminal",
-    "execute_bash": "terminal",
-    "git": "terminal",
-    "reset": "terminal",
-    "str_replace": "file_editor",
-    "str_replace_editor": "file_editor",
-}
-
 # Regex to detect malformed tool names (e.g., "str_replace </parameter"
 # or "str_replace</function>"). These occur when LLMs emit XML/HTML
 # tag fragments in tool names. The leading identifier is extracted and
@@ -277,12 +266,6 @@ def _extract_tool_name_base(tool_name: str) -> str:
     match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
     return match.group(1) if match else tool_name
 
-
-# Terminal aliases that prepend the tool name to the command argument.
-# Unlike 'bash' which passes through the command directly, these tools
-# (e.g., 'git', 'reset') are themselves commands that should be combined
-# with their arguments (e.g., 'git status', 'reset clear').
-_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
 
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
@@ -514,7 +497,7 @@ def normalize_tool_call(
             # For terminal alias with prefix, combine tool name with command
             if (
                 alias_target == "terminal"
-                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+                and base_name in TERMINAL_COMMAND_PREFIX_ALIASES
             ):
                 original_command = arguments.get("command")
                 normalized_arguments = {
@@ -566,6 +549,34 @@ def normalize_tool_call(
             )
 
     return normalized_tool_name, normalized_arguments
+
+
+_TRAILING_ASSISTANT_NUDGE = (
+    "Your previous response has already been delivered to the user. If the user "
+    "sent a new message above that your previous response did not address, "
+    "respond to it now. Otherwise, continue the task."
+)
+
+
+def _ensure_trailing_user_message(messages: list[Message]) -> None:
+    """Append a request-only user turn when the history ends with the assistant.
+
+    A user message that lands while the LLM call is in flight is recorded before
+    the agent's reply (``astep`` releases the state lock for the network wait),
+    so the continued run would otherwise send ``[..., user, assistant]``. Chat
+    APIs expect the final turn to be a user turn, and Anthropic rejects a
+    trailing assistant message on models without prefill support. The nudge is
+    not persisted: it only shapes this request.
+    """
+    if not messages or messages[-1].role != "assistant":
+        return
+    logger.warning(
+        "LLM history ends with an assistant message; appending a user turn so "
+        "the request does not end with assistant prefill."
+    )
+    messages.append(
+        Message(role="user", content=[TextContent(text=_TRAILING_ASSISTANT_NUDGE)])
+    )
 
 
 @overload
@@ -638,58 +649,8 @@ def prepare_llm_messages(
     if additional_messages:
         messages.extend(additional_messages)
 
+    _ensure_trailing_user_message(messages)
     return messages
-
-
-def make_llm_completion(
-    llm: LLM,
-    messages: list[Message],
-    tools: list[ToolDefinition] | None = None,
-    on_token: ConversationTokenCallbackType | None = None,
-    call_context: LLMCallContext | None = None,
-) -> LLMResponse:
-    """Make an LLM completion call with the provided messages and tools.
-
-    Args:
-        llm: The LLM instance to use for completion
-        messages: The messages to send to the LLM
-        tools: Optional list of tools to provide to the LLM
-        on_token: Optional callback for streaming token updates
-        call_context: Per-conversation context for cache/session affinity.
-
-    Returns:
-        LLMResponse from the LLM completion call
-
-    Note:
-        Always exposes a 'security_risk' parameter in tool schemas via
-        add_security_risk_prediction=True. This ensures the schema remains
-        consistent, even if the security analyzer is disabled. Validation of
-        this field happens dynamically at runtime depending on the analyzer
-        configured. This allows weaker models to omit risk field and bypass
-        validation requirements when analyzer is disabled. For detailed logic,
-        see `_extract_security_risk` method in agent.py.
-
-        Summary field is always added to tool schemas for transparency and
-        explainability of agent actions.
-    """
-    if llm.uses_responses_api():
-        return llm.responses(
-            messages=messages,
-            tools=tools or [],
-            include=None,
-            store=False,
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
-    else:
-        return llm.completion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -724,32 +685,5 @@ async def aprepare_llm_messages(
     if additional_messages:
         messages.extend(additional_messages)
 
+    _ensure_trailing_user_message(messages)
     return messages
-
-
-async def amake_llm_completion(
-    llm: LLM,
-    messages: list[Message],
-    tools: list[ToolDefinition] | None = None,
-    on_token: AnyTokenCallbackType | None = None,
-    call_context: LLMCallContext | None = None,
-) -> LLMResponse:
-    """Async variant of :func:`make_llm_completion`."""
-    if llm.uses_responses_api():
-        return await llm.aresponses(
-            messages=messages,
-            tools=tools or [],
-            include=None,
-            store=False,
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
-    else:
-        return await llm.acompletion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )

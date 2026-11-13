@@ -1,0 +1,27 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v6-llm",
+    "tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      },
+      {
+        "name": "switch_llm",
+        "params": {}
+      }
+    ]
+  },
+  "schema_version": 6,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v6-llm"
+  },
+  "tools": [
+    {
+      "name": "TerminalTool",
+      "params": {}
+    }
+  ]
+}

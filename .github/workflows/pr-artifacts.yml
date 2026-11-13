@@ -2,92 +2,13 @@
 name: PR Artifacts
 
 on:
-    workflow_dispatch: # Manual trigger for testing
     pull_request_target:
-        types: [opened, synchronize, reopened, closed]
+        types: [opened, synchronize, reopened]
         branches: [main]
-    pull_request_review:
-        types: [submitted]
 
 jobs:
-  # Auto-remove .pr/ directory from same-repository PRs when approved.
-    cleanup-on-approval:
-        concurrency:
-            group: cleanup-pr-artifacts-${{ github.event.pull_request.number }}
-            cancel-in-progress: false
-        if: >-
-            github.event_name == 'pull_request_review' &&
-            github.event.review.state == 'approved' &&
-            github.event.pull_request.head.repo.full_name == github.repository
-        runs-on: ubuntu-latest
-        permissions:
-            contents: write
-            pull-requests: write
-        steps:
-            # Use PAT so the push triggers CI workflows that will complete and
-            # satisfy branch protection. We can't use [skip ci] because the Vercel
-            # GitHub App creates stuck checks that block merging.
-            - uses: actions/checkout@v7
-              with:
-                  ref: ${{ github.event.pull_request.head.ref }}
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
-
-            - name: Remove .pr/ directory
-              id: remove
-              run: |
-                  if [ -d ".pr" ]; then
-                    git config user.name "allhands-bot"
-                    git config user.email "allhands-bot@users.noreply.github.com"
-                    git rm -rf .pr/
-                    git commit -m "chore: Remove PR-only artifacts [automated]"
-                    git push || {
-                      echo "::error::Failed to push cleanup commit. Check branch protection rules."
-                      exit 1
-                    }
-                    echo "removed=true" >> "$GITHUB_OUTPUT"
-                    echo "::notice::Removed .pr/ directory"
-                  else
-                    echo "removed=false" >> "$GITHUB_OUTPUT"
-                    echo "::notice::No .pr/ directory to remove"
-                  fi
-
-            - name: Update PR comment after cleanup
-              if: steps.remove.outputs.removed == 'true'
-              uses: actions/github-script@v9
-              with:
-                  script: |
-                      const marker = '<!-- pr-artifacts-notice -->';
-                      const body = `${marker}
-                      ✅ **PR Artifacts Cleaned Up**
-
-                      The \`.pr/\` directory has been automatically removed.
-                      `;
-
-                      const comments = await github.paginate(
-                        github.rest.issues.listComments,
-                        {
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          issue_number: context.issue.number,
-                          per_page: 100,
-                        },
-                      );
-
-                      const existing = comments.find(c => c.body.includes(marker));
-                      if (existing) {
-                        await github.rest.issues.updateComment({
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          comment_id: existing.id,
-                          body: body,
-                        });
-                      }
-
   # Inspect the fork through the API; never check out untrusted code with a write token.
     check-pr-artifacts:
-        if: >-
-            github.event_name == 'pull_request_target' &&
-            github.event.action != 'closed'
         runs-on: ubuntu-latest
         permissions:
             contents: read
@@ -98,24 +19,19 @@ jobs:
               with:
                   script: |
                       const marker = '<!-- pr-artifacts-notice -->';
-                      const pullRequest = context.payload.pull_request;
-                      const headRepository = pullRequest.head.repo;
-                      let exists = true;
-
-                      try {
-                        await github.rest.repos.getContent({
-                          owner: headRepository.owner.login,
-                          repo: headRepository.name,
-                          path: '.pr',
-                          ref: pullRequest.head.sha,
-                        });
-                      } catch (error) {
-                        if (error.status === 404) {
-                          exists = false;
-                        } else {
-                          throw error;
-                        }
-                      }
+                      const files = await github.paginate(
+                        github.rest.pulls.listFiles,
+                        {
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          pull_number: context.payload.pull_request.number,
+                          per_page: 100,
+                        },
+                      );
+                      // The base can already carry merged artifacts; count only this PR's.
+                      const exists = files.some(
+                        f => f.status !== 'removed' && f.filename.split('/')[0] === '.pr',
+                      );
 
                       const comments = await github.paginate(
                         github.rest.issues.listComments,
@@ -137,21 +53,17 @@ jobs:
                             body: `${marker}
                             ✅ **PR Artifacts Cleaned Up**
 
-                            The \`.pr/\` directory is no longer present.
+                            This PR no longer adds or changes files under \`.pr/\`.
                             `,
                           });
                         }
                         return;
                       }
 
-                      const isFork = headRepository.full_name !== context.payload.repository.full_name;
-                      const cleanup = isFork
-                        ? 'Because this is a fork PR, the directory will be **automatically removed from `main` immediately after merge**.'
-                        : 'The directory will be **automatically removed when the PR is approved**.';
                       const body = `${marker}
                       📁 **PR Artifacts Notice**
 
-                      This PR contains a \`.pr/\` directory with temporary PR-specific documents. ${cleanup}
+                      This PR adds or changes temporary PR-specific documents under \`.pr/\`. They stay available on this branch for review; after merge, the **next release PR removes \`.pr/\` from main**.
                       `;
 
                       core.warning('.pr/ directory contains temporary PR-only artifacts');
@@ -167,79 +79,6 @@ jobs:
                           owner: context.repo.owner,
                           repo: context.repo.repo,
                           issue_number: context.issue.number,
-                          body: body,
-                        });
-                      }
-
-  # Fork branches cannot be modified reliably, so clean the trusted base branch
-  # after merge. This also covers same-repository PRs if approval cleanup was missed.
-    cleanup-after-merge:
-        concurrency:
-            group: cleanup-pr-artifacts-${{ github.event.pull_request.base.ref }}
-            cancel-in-progress: false
-        if: >-
-            github.event_name == 'pull_request_target' &&
-            github.event.action == 'closed' &&
-            github.event.pull_request.merged == true
-        runs-on: ubuntu-latest
-        permissions:
-            contents: write
-            pull-requests: write
-        steps:
-            - uses: actions/checkout@v7
-              with:
-                  ref: ${{ github.event.pull_request.base.ref }}
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
-
-            - name: Remove .pr/ directory
-              id: remove
-              env:
-                  BASE_REF: ${{ github.event.pull_request.base.ref }}
-              run: |
-                  if [ -d ".pr" ]; then
-                    git config user.name "allhands-bot"
-                    git config user.email "allhands-bot@users.noreply.github.com"
-                    git rm -rf .pr/
-                    git commit -m "chore: Remove merged PR artifacts [automated]"
-                    git push origin "HEAD:$BASE_REF" || {
-                      echo "::error::Failed to remove .pr/ from $BASE_REF. Check branch protection rules."
-                      exit 1
-                    }
-                    echo "removed=true" >> "$GITHUB_OUTPUT"
-                    echo "::notice::Removed .pr/ directory from $BASE_REF"
-                  else
-                    echo "removed=false" >> "$GITHUB_OUTPUT"
-                    echo "::notice::No .pr/ directory to remove from $BASE_REF"
-                  fi
-
-            - name: Update PR comment after cleanup
-              if: steps.remove.outputs.removed == 'true'
-              uses: actions/github-script@v9
-              with:
-                  script: |
-                      const marker = '<!-- pr-artifacts-notice -->';
-                      const body = `${marker}
-                      ✅ **PR Artifacts Cleaned Up**
-
-                      The \`.pr/\` directory has been automatically removed from \`${context.payload.pull_request.base.ref}\` after merge.
-                      `;
-
-                      const comments = await github.paginate(
-                        github.rest.issues.listComments,
-                        {
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          issue_number: context.issue.number,
-                          per_page: 100,
-                        },
-                      );
-                      const existing = comments.find(c => c.body.includes(marker));
-
-                      if (existing) {
-                        await github.rest.issues.updateComment({
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          comment_id: existing.id,
                           body: body,
                         });
                       }

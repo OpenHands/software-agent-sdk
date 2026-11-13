@@ -1,6 +1,7 @@
 """Windows-specific terminal interrupt behavior tests."""
 
 import platform
+import time
 
 import psutil
 import pytest
@@ -29,6 +30,21 @@ def _wait_for_child_exit(pid: int, timeout: float = 5.0) -> bool:
         return False
     except psutil.NoSuchProcess:
         return True
+
+
+def _wait_for_pid_file(pid_path, timeout: float = 15.0) -> bool:
+    """Wait for the script to write its child pid file.
+
+    ``execute`` returns at the 1s no-change timeout, but on a loaded runner
+    PowerShell may not have started the script (and written the file) yet;
+    the command is still running in the session at that point.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pid_path.exists():
+            return True
+        time.sleep(0.1)
+    return pid_path.exists()
 
 
 def _stop_powershell_process(pid: int) -> None:
@@ -78,7 +94,7 @@ def test_windows_ctrl_c_interrupt_kills_child_process(tmp_path) -> None:
 
         assert obs.metadata.exit_code == -1
         assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
-        assert pid_path.exists()
+        assert _wait_for_pid_file(pid_path), "child pid file was never written"
         child_pid = int(pid_path.read_text(encoding="utf-8").strip())
         assert psutil.pid_exists(child_pid)
 

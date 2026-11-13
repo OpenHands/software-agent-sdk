@@ -11,11 +11,23 @@ See issue: LiteLLM proxy model_info lookup misses when proxy uses short
 aliases (claude-opus-4-8 vision still off).
 """
 
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+from typing import Any
 from unittest.mock import patch
 
+import litellm
+import pytest
+from litellm import model_cost
+from pydantic import SecretStr
+
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.utils.model_info import (
     _get_model_info_from_litellm_proxy,
     _merge_raw_model_metadata,
+    _register_proxy_alias_pricing,
     get_litellm_model_info,
 )
 
@@ -52,8 +64,8 @@ def _patched_httpx_get(*_a, **_kw):
 
 
 def setup_function(_):
-    # Both functions are lru_cache'd; clear between tests so cache_key reuse
-    # across tests does not mask behavior.
+    # `_get_model_info_from_litellm_proxy` is lru_cache'd; clear between tests
+    # so cache_key reuse across tests does not mask behavior.
     _get_model_info_from_litellm_proxy.cache_clear()
 
 
@@ -66,7 +78,7 @@ def test_lookup_matches_by_model_name_alias():
             model="litellm_proxy/claude-opus-4-8",
             cache_key=1,
         )
-    assert info == {"supports_vision": True}
+    assert info == {"supports_vision": True, "_capability_source": "proxy"}
 
 
 def test_lookup_matches_by_litellm_params_model():
@@ -84,7 +96,7 @@ def test_lookup_matches_by_litellm_params_model():
             model="litellm_proxy/anthropic/claude-opus-4-8",
             cache_key=2,
         )
-    assert info == {"supports_vision": True}
+    assert info == {"supports_vision": True, "_capability_source": "proxy"}
 
 
 def test_lookup_returns_none_for_unknown_model():
@@ -138,3 +150,525 @@ def test_raw_registry_capabilities_survive_typed_model_info_projection():
     assert info["supports_reasoning"] is True
     assert info["supports_adaptive_thinking"] is True
     assert info["supports_sampling_params"] is False
+
+
+# --- alias pricing registration (issue #4816) ---
+
+# Each test uses a distinct custom alias so litellm's internal caches (which
+# remember a previously-registered alias as priceable even after it is popped
+# out of `model_cost`) cannot pollute a later test's priceability check.
+_UNDERLYING = "claude-sonnet-4-5-20250929"
+
+
+def _pop(alias):
+    model_cost.pop(alias, None)
+
+
+def test_register_proxy_alias_makes_alias_priceable():
+    """Registering a custom alias flips cost_per_token from raising to a value."""
+    alias = "prod/claude-sonnet-4-5-bedrock-a"
+    _pop(alias)
+    # Sanity: the alias is not priceable before registration.
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        pre_raises = False
+    except Exception:
+        pre_raises = True
+    assert pre_raises
+
+    underlying = model_cost[_UNDERLYING]
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info=None,
+    )
+    cost = (0.0, 0.0)
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+        post_raises = False
+    except Exception:
+        post_raises = True
+
+    assert not post_raises
+    # (prompt_cost, completion_cost); both must be non-zero.
+    assert cost[0] > 0
+    assert cost[1] > 0
+    _pop(alias)
+
+
+def test_register_proxy_alias_skips_already_priceable_models():
+    """A provider-prefixed real model is priceable natively; do not clobber."""
+    alias = "anthropic/claude-sonnet-4-5-20250929"
+    before = dict(model_cost.get(alias, {}))
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=model_cost[_UNDERLYING],
+        proxy_model_info={"input_cost_per_token": 999},
+    )
+    # Entry unchanged: registration was skipped.
+    assert model_cost.get(alias, {}) == before
+
+
+def test_register_proxy_proxy_overrides_win():
+    """Proxy-side pricing overrides take precedence over the underlying model."""
+    alias = "prod/claude-sonnet-4-5-bedrock-b"
+    _pop(alias)
+    underlying = model_cost[_UNDERLYING]
+    override = {"input_cost_per_token": 1.0, "output_cost_per_token": 2.0}
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info=override,
+    )
+    entry = model_cost[alias]
+    assert entry["input_cost_per_token"] == 1.0
+    assert entry["output_cost_per_token"] == 2.0
+    # Underlying cache/max/provider fields still carried over.
+    assert entry["litellm_provider"] == underlying["litellm_provider"]
+    _pop(alias)
+
+
+def test_register_proxy_alias_bedrock_converse_provider_normalized():
+    """A bedrock_converse provider label must be normalized to bedrock.
+
+    ``get_llm_provider`` resolves ``bedrock_converse`` only for model ids already
+    present in litellm's builtin bedrock_converse set; an unknown alias id with that
+    label raises, leaving the span priced $0. Registering with ``bedrock`` makes
+    ``cost_per_token`` resolve without an explicit ``custom_llm_provider`` (#4836).
+    """
+    alias = "prod/claude-sonnet-4-5-bedrock-e"
+    _pop(alias)
+    # Sanity: the alias is not priceable before registration.
+
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        pre_raises = False
+    except Exception:
+        pre_raises = True
+    assert pre_raises
+
+    # The proxy advertises ``bedrock_converse`` (the Anthropic-on-Bedrock route),
+    # which would otherwise override the underlying provider in the merged entry.
+
+    underlying = model_cost["us.anthropic.claude-sonnet-4-5-20250929-v1:0"]
+    assert underlying["litellm_provider"] == "bedrock_converse"
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info={"litellm_provider": "bedrock_converse"},
+    )
+    assert model_cost[alias]["litellm_provider"] == "bedrock"
+    cost = (0.0, 0.0)
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+        post_raises = False
+    except Exception:
+        post_raises = True
+    assert not post_raises
+    assert cost[0] > 0
+    assert cost[1] > 0
+    _pop(alias)
+
+
+def test_register_proxy_alias_no_pricing_logs_and_skips():
+    """When no pricing can be derived, the alias stays unregistered (no $0 entry)."""
+    alias = "prod/claude-sonnet-4-5-bedrock-c"
+    _pop(alias)
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=None,
+        proxy_model_info={"supports_vision": True},
+    )
+    assert alias not in model_cost
+
+
+def test_get_model_info_from_proxy_registers_alias_pricing():
+    """End-to-end: fetching proxy model info registers the alias into model_cost."""
+    alias = "prod/claude-sonnet-4-5-bedrock-d"
+    _pop(alias)
+    proxy_response = {
+        "data": [
+            {
+                "model_name": alias,
+                "litellm_params": {"model": _UNDERLYING},
+                "model_info": {"supports_vision": True},
+            }
+        ]
+    }
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        lambda *_a, **_kw: _FakeResponse(proxy_response),
+    ):
+        _get_model_info_from_litellm_proxy.cache_clear()
+        _get_model_info_from_litellm_proxy(
+            secret_api_key="k",
+            base_url="https://proxy.example",
+            model=f"litellm_proxy/{alias}",
+            cache_key=42,
+        )
+    assert alias in model_cost
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+    except Exception:
+        cost = None
+    assert cost is not None and cost[0] > 0
+    _pop(alias)
+
+
+@pytest.fixture
+def local_proxy():
+    payload = {"data": []}
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+        def do_GET(self):
+            assert self.path == "/v1/model/info"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+
+        def do_POST(self):
+            requests.append(
+                json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "id": "local-test",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "local-test",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
+                    }
+                ).encode()
+            )
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", payload, requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    [["reasoning_effort"], [], "reasoning_effort", ["reasoning_effort", 1], None],
+)
+def test_proxy_projects_only_string_list_allowance(local_proxy, allowed):
+    url, payload, _ = local_proxy
+    payload["data"] = [
+        {
+            "model_name": "bounded-local-test",
+            "litellm_params": {
+                "model": "openai/bounded-local-test",
+                "allowed_openai_params": allowed,
+                "api_key": "never-copy-this",
+                "api_base": "https://private.example",
+                "extra_headers": {"secret": "secret"},
+            },
+            "model_info": {
+                "supports_vision": False,
+                "supports_reasoning_effort": False,
+            },
+        }
+    ]
+    info = get_litellm_model_info("local-only", url, "litellm_proxy/bounded-local-test")
+    expected = {
+        "supports_vision": False,
+        "supports_reasoning_effort": False,
+        "_capability_source": "proxy",
+    }
+    if isinstance(allowed, list):
+        string_params = [item for item in allowed if isinstance(item, str)]
+        if string_params:
+            expected["allowed_openai_params"] = string_params
+    assert info == expected
+
+
+def test_proxy_preserves_explicit_allowance(local_proxy):
+    url, payload, _ = local_proxy
+    payload["data"] = [
+        {
+            "model_name": "bounded-local-test",
+            "litellm_params": {"allowed_openai_params": ["reasoning_effort"]},
+            "model_info": {"allowed_openai_params": [], "supports_reasoning": False},
+        }
+    ]
+    info = get_litellm_model_info("local-only", url, "litellm_proxy/bounded-local-test")
+    assert info == {
+        "allowed_openai_params": [],
+        "supports_reasoning": False,
+        "_capability_source": "proxy",
+    }
+
+
+def test_litellm_metadata_source():
+    info = get_litellm_model_info(None, None, "gpt-4o")
+    assert info is not None
+    assert info["_capability_source"] == "litellm"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"supports_reasoning_effort": True},
+        {"supported_openai_params": ["reasoning_effort"]},
+        {"allowed_openai_params": ["reasoning_effort"]},
+        {},
+    ],
+)
+def test_explicit_reasoning_reaches_local_http_endpoint(local_proxy, metadata):
+    url, payload, requests = local_proxy
+    payload["data"] = [{"model_name": "bounded-local-test", "model_info": metadata}]
+    llm = LLM(
+        model="litellm_proxy/bounded-local-test",
+        base_url=url,
+        api_key="local-only",
+        reasoning_effort="high",
+        capability_overrides={"supports_reasoning_effort": True}
+        if not metadata
+        else {},
+    )
+    user_allowed = ["user"]
+    options = select_chat_options(
+        llm, {"allowed_openai_params": user_allowed}, has_tools=False
+    )
+    assert options["allowed_openai_params"] == ["user", "reasoning_effort"]
+    assert user_allowed == ["user"]
+    litellm.completion(
+        model="openai/bounded-local-test",
+        api_base=url + "/v1",
+        api_key="local-only",
+        drop_params=True,
+        messages=[
+            {"role": "system", "content": "Test"},
+            {"role": "user", "content": "Hello"},
+        ],
+        **options,
+    )
+    assert requests[-1]["reasoning_effort"] == "high"
+    assert "allowed_openai_params" not in requests[-1]
+
+
+@pytest.mark.parametrize(
+    "reasoning_effort, overrides",
+    [
+        (None, {"supports_reasoning_effort": True}),
+        ("high", {"supports_reasoning_effort": False}),
+    ],
+)
+def test_no_reasoning_allowance_without_emitted_enabled_effort(
+    local_proxy, reasoning_effort, overrides
+):
+    url, payload, _ = local_proxy
+    payload["data"] = [
+        {
+            "model_name": "bounded-local-test",
+            "model_info": {"supports_reasoning_effort": True},
+        }
+    ]
+    llm = LLM(
+        model="litellm_proxy/bounded-local-test",
+        base_url=url,
+        api_key="local-only",
+        reasoning_effort=reasoning_effort,
+        capability_overrides=overrides,
+    )
+    options = select_chat_options(llm, {}, has_tools=False)
+    assert "allowed_openai_params" not in options
+
+
+# --- proxy-advertised request params (issue #5499) ---
+
+
+@pytest.fixture
+def model_info_server():
+    """Real ``/v1/model/info`` endpoint; ``state`` controls its behavior."""
+    state = {"entries": [], "required_key": "proxy-key", "status": 200, "body": None}
+    auth_headers = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            auth = self.headers.get("Authorization")
+            auth_headers.append(auth)
+            required = state["required_key"]
+            if required and auth != f"Bearer {required}":
+                status, payload = 401, json.dumps({"error": {"code": "401"}}).encode()
+            elif state["body"] is not None:
+                status, payload = state["status"], state["body"]
+            else:
+                status = state["status"]
+                payload = json.dumps({"data": state["entries"]}).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", state, auth_headers
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+# Unknown to LiteLLM's registry, so only proxy metadata can describe it.
+_ALIAS = "acme-reasoner-7"
+_UPSTREAM = "openai/acme-reasoner-7-upstream"
+_ENTRY = {
+    "model_name": _ALIAS,
+    "litellm_params": {
+        "model": _UPSTREAM,
+        "allowed_openai_params": ["reasoning_effort"],
+    },
+    "model_info": {"max_input_tokens": 200_000, "supports_reasoning_effort": None},
+}
+
+
+def _deployment(allowed):
+    params = {"model": _UPSTREAM}
+    if allowed is not None:
+        params["allowed_openai_params"] = allowed
+    return {**_ENTRY, "litellm_params": params}
+
+
+def _proxy_llm(base_url: str, api_key: str | None = "proxy-key") -> LLM:
+    return LLM(
+        model=f"litellm_proxy/{_ALIAS}",
+        base_url=base_url,
+        api_key=SecretStr(api_key) if api_key else None,
+        reasoning_effort="low",
+        usage_id="proxy-capabilities",
+    )
+
+
+def test_authenticated_proxy_advertised_param_reaches_request(model_info_server):
+    base_url, state, auth_headers = model_info_server
+    state["entries"] = [_ENTRY]
+
+    llm = _proxy_llm(base_url)
+    features = llm._model_features()
+    request = select_chat_options(llm, {}, has_tools=True)
+
+    assert auth_headers == ["Bearer proxy-key"]
+    assert llm.model_info == {
+        "max_input_tokens": 200_000,
+        "supports_reasoning_effort": None,
+        "allowed_openai_params": ["reasoning_effort"],
+        "_capability_source": "proxy",
+    }
+    assert features.supports_reasoning_effort is True
+    assert request["reasoning_effort"] == "low"
+    assert features.supports_prompt_cache_key is False
+    assert features.supports_prompt_cache is False
+    assert features.supports_vision is False
+
+
+def test_authless_proxy_advertised_params_are_consumed(model_info_server):
+    base_url, state, auth_headers = model_info_server
+    state["required_key"] = None
+    state["entries"] = [_ENTRY]
+
+    llm = _proxy_llm(base_url, api_key=None)
+
+    assert auth_headers == [None]
+    assert llm._model_features().supports_reasoning_effort is True
+
+
+@pytest.mark.parametrize(
+    "deployments,expected",
+    [
+        (
+            [["reasoning_effort", "prompt_cache_key"], ["reasoning_effort"]],
+            ["reasoning_effort"],
+        ),
+        ([["reasoning_effort"], None], None),
+        ([["reasoning_effort"], "reasoning_effort"], None),
+        ([["reasoning_effort", 7, None]], ["reasoning_effort"]),
+    ],
+)
+def test_advertised_params_must_hold_for_every_matching_deployment(
+    model_info_server, deployments, expected
+):
+    base_url, state, _ = model_info_server
+    state["entries"] = [_deployment(allowed) for allowed in deployments]
+
+    info = _get_model_info_from_litellm_proxy(
+        secret_api_key="proxy-key",
+        base_url=base_url,
+        model=f"litellm_proxy/{_ALIAS}",
+    )
+
+    assert info is not None
+    assert info.get("allowed_openai_params") == expected
+
+
+@pytest.mark.parametrize(
+    "api_key,status,body",
+    [
+        (None, 200, None),
+        ("wrong-key", 200, None),
+        ("proxy-key", 500, b"internal error"),
+        ("proxy-key", 200, b"{not json"),
+        ("proxy-key", 200, b'{"data": {"unexpected": "shape"}}'),
+    ],
+    ids=["missing-key", "401", "non-2xx", "invalid-json", "malformed-data"],
+)
+def test_unavailable_proxy_metadata_falls_back_safely(
+    model_info_server, api_key, status, body
+):
+    base_url, state, _ = model_info_server
+    state["entries"] = [_ENTRY]
+    state["status"], state["body"] = status, body
+
+    llm = _proxy_llm(base_url, api_key=api_key)
+
+    assert llm.model_info is None
+    assert llm._model_features().supports_reasoning_effort is False
+    assert "reasoning_effort" not in select_chat_options(llm, {}, has_tools=True)
+
+
+def test_proxy_metadata_is_cached_per_key(model_info_server):
+    base_url, state, auth_headers = model_info_server
+    state["entries"] = [_ENTRY]
+
+    _proxy_llm(base_url)
+    llm = _proxy_llm(base_url)
+
+    assert len(auth_headers) == 1
+    assert llm._model_features().supports_reasoning_effort is True

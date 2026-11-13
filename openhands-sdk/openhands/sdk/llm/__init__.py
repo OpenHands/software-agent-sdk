@@ -4,10 +4,26 @@ from openhands.sdk.llm.auth import (
     OAuthCredentials,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.cleanup_profile import (
     CLEANUP_PROFILE_NAME,
     aclean_outward_text,
     clean_outward_text,
+)
+from openhands.sdk.llm.decision import (
+    Choice,
+    ChoiceAnswer,
+    DecisionJSON,
+    DecisionModel,
+    DecisionReply,
+    DecisionResult,
+    DecisionUsage,
+    Noul,
+    NoulAnswer,
+    NoulCriteria,
+    Question,
+    Score,
+    ScoreAnswer,
 )
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
@@ -18,6 +34,7 @@ from openhands.sdk.llm.llm_profile_store import (
 )
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
+from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.llm.message import (
     ImageContent,
     Message,
@@ -27,6 +44,12 @@ from openhands.sdk.llm.message import (
     TextContent,
     ThinkingBlock,
     content_to_str,
+)
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfile,
+    MetaProfileClass,
+    MetaProfileLimitExceeded,
+    MetaProfileStore,
 )
 from openhands.sdk.llm.router import RouterLLM
 from openhands.sdk.llm.streaming import (
@@ -51,16 +74,36 @@ __all__ = [
     "OPENAI_CODEX_MODELS",
     # Core
     "CLEANUP_PROFILE_NAME",
+    # Decision models
+    "Choice",
+    "ChoiceAnswer",
+    "DecisionJSON",
+    "DecisionModel",
+    "DecisionReply",
+    "DecisionResult",
+    "DecisionUsage",
+    "Noul",
+    "NoulAnswer",
+    "NoulCriteria",
+    "Question",
+    "Score",
+    "ScoreAnswer",
     "aclean_outward_text",
     "clean_outward_text",
     "FallbackStrategy",
     "LLMResponse",
     "LLM",
+    "LLMCallContext",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
+    "LLMSession",
     "LLMProfileLoader",
     "LLMProfileMutator",
     "LLMProfileStore",
+    "MetaProfile",
+    "MetaProfileClass",
+    "MetaProfileLimitExceeded",
+    "MetaProfileStore",
     "RouterLLM",
     "RegistryEvent",
     # Messages

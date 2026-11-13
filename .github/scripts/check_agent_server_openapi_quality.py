@@ -229,6 +229,34 @@ def _walk_operation_schemas(
                         _walk_schema(schema, schema_pointer, findings)
 
 
+def _tool_meta_locations(document: dict[str, Any]) -> set[WeakLocation]:
+    schemas = document.get("components", {}).get("schemas", {})
+    if not isinstance(schemas, dict):
+        return set()
+    tool_definition = schemas.get("ToolDefinition")
+    if not isinstance(tool_definition, dict):
+        return set()
+
+    locations: set[WeakLocation] = set()
+    for variant in tool_definition.get("oneOf", []):
+        if not isinstance(variant, dict):
+            continue
+        ref = variant.get("$ref")
+        if not isinstance(ref, str) or not ref.startswith("#/components/schemas/"):
+            continue
+        name = ref.removeprefix("#/components/schemas/")
+        locations.add(
+            WeakLocation(
+                pointer=(
+                    f"/components/schemas/{_escape_pointer_token(name)}"
+                    "/properties/meta/anyOf/0/additionalProperties"
+                ),
+                kind="unrestricted-additional-properties",
+            )
+        )
+    return locations
+
+
 def find_weak_locations(document: dict[str, Any]) -> set[WeakLocation]:
     findings: set[WeakLocation] = set()
     _walk_operation_schemas(document, findings)
@@ -241,7 +269,7 @@ def find_weak_locations(document: dict[str, Any]) -> set[WeakLocation]:
                 f"/components/schemas/{_escape_pointer_token(name)}",
                 findings,
             )
-    return findings
+    return findings - _tool_meta_locations(document)
 
 
 def find_contract_quality_errors(document: dict[str, Any]) -> list[str]:

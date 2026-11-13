@@ -18,6 +18,7 @@ directory in one rename), rolling back if the second fails.
 
 import os
 import shutil
+from contextlib import suppress
 from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
@@ -26,6 +27,7 @@ from openhands.agent_server.canvas_extensions.manifest import (
     MANIFEST_FILENAME,
     CanvasExtensionManifest,
     resolve_entrypoint,
+    resolve_icon,
 )
 from openhands.sdk.extensions.fetch import fetch_with_resolution
 from openhands.sdk.extensions.installation import (
@@ -246,6 +248,24 @@ def get_canvas_extension_bundle_path(
     if manifest is None:
         return None
     return resolve_entrypoint(manifest, installed_dir / name)
+
+
+def get_canvas_extension_icon_path(
+    name: str, installed_dir: Path | None = None
+) -> Path | None:
+    """Resolve *name*'s icon file, re-checking containment like the bundle.
+
+    Returns:
+        None if not installed, no icon is declared, or the icon doesn't resolve
+        to a contained file. A broken icon never affects the manifest itself.
+    """
+    installed_dir = _resolve_installed_dir(installed_dir)
+    manifest = get_installed_canvas_extension_manifest(name, installed_dir)
+    if manifest is None:
+        return None
+    with suppress(ValueError, OSError):
+        return resolve_icon(manifest, installed_dir / name)
+    return None
 
 
 class CanvasExtensionUpdateCheck(BaseModel):

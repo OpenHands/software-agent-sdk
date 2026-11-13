@@ -1,4 +1,5 @@
 import { HttpClient, HttpError } from './http-client';
+import { getCachedAgentServerInfo } from './agent-server-compatibility';
 import { ConversationExecutionStatus, LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
@@ -9,6 +10,7 @@ import type {
   ConversationEventPage,
   ConversationEventSearchOptions,
   ConversationInfo,
+  ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
@@ -20,6 +22,7 @@ import type {
   UpdateSecretsRequest,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
+import type { ReactionEmoji, ReactionEvent } from '../events/types';
 
 export interface ConversationClientOptions {
   host: string;
@@ -42,6 +45,8 @@ export interface CreateConversationPayload {
   agent_profile_id?: string;
   agent?: unknown;
   agent_settings?: unknown;
+  /** Positive USD limit on accumulated conversation cost; a step may overshoot. */
+  max_budget_per_run?: number | null;
   [key: string]: unknown;
 }
 
@@ -67,8 +72,44 @@ export class ConversationClient {
   async createConversation<TConversation = ConversationInfo>(
     payload: CreateConversationPayload
   ): Promise<TConversation> {
-    const response = await this.client.post<TConversation>('/api/conversations', payload);
-    return response.data;
+    try {
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    } catch (error) {
+      // A lost response does not mean the create was not applied: the server
+      // may have committed it and the initial message may already be running.
+      // Re-sending is only safe where the server deduplicates concurrent
+      // creates for one id, which it advertises as a capability. There is no
+      // caller-supplied id to reconcile against otherwise, and even with one, a
+      // server without the capability would double-create on a re-send, so
+      // surface the original transport error instead.
+      if (
+        error instanceof HttpError ||
+        typeof payload.conversation_id !== 'string' ||
+        !(await this.supportsCreateRetry())
+      ) {
+        throw error;
+      }
+
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    }
+  }
+
+  /**
+   * Whether the server deduplicates concurrent creates for one conversation id.
+   *
+   * A server that cannot be probed is treated as unsupported, so an older or
+   * unreachable backend keeps the previous behavior rather than risking a
+   * duplicate conversation.
+   */
+  private async supportsCreateRetry(): Promise<boolean> {
+    try {
+      const serverInfo = await getCachedAgentServerInfo(this.client);
+      return serverInfo.capabilities?.includes('idempotent_conversation_create_v1') === true;
+    } catch {
+      return false;
+    }
   }
 
   async searchConversations(
@@ -95,16 +136,37 @@ export class ConversationClient {
   async getConversations<TConversation = ConversationInfo>(
     conversationIds: string[]
   ): Promise<Array<TConversation | null>> {
-    const response = await this.client.get<Array<TConversation | null>>('/api/conversations', {
-      params: { ids: conversationIds },
-    });
-    return response.data;
+    const conversations: Array<TConversation | null> = [];
+    // The Agent Server validates a maximum of 99 IDs per request.
+    const batchSize = 99;
+    for (let offset = 0; offset < conversationIds.length; offset += batchSize) {
+      const response = await this.client.get<Array<TConversation | null>>('/api/conversations', {
+        params: { ids: conversationIds.slice(offset, offset + batchSize) },
+      });
+      conversations.push(...response.data);
+    }
+    return conversations;
   }
 
   async getConversation<TConversation = ConversationInfo>(
     conversationId: string
   ): Promise<TConversation> {
     const response = await this.client.get<TConversation>(`/api/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  async getRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.get<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime`
+    );
+    return response.data;
+  }
+
+  async reprovisionRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.post<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime/reprovision`,
+      {}
+    );
     return response.data;
   }
 
@@ -153,6 +215,28 @@ export class ConversationClient {
       ...event,
       ...(options.run === undefined ? {} : { run: options.run }),
     });
+  }
+
+  /**
+   * Put the user's emoji reaction on a message, or take it off with
+   * `removed: true`. Without `targetEventId` it goes on the agent's latest
+   * message. Does not run the agent. The server answers 409 while the
+   * `conversation_reactions` feature is off.
+   */
+  async react(
+    conversationId: string,
+    emoji: ReactionEmoji,
+    options: { targetEventId?: string; removed?: boolean } = {}
+  ): Promise<ReactionEvent> {
+    const response = await this.client.post<ReactionEvent>(
+      `/api/conversations/${conversationId}/reactions`,
+      {
+        emoji,
+        ...(options.targetEventId === undefined ? {} : { target_event_id: options.targetEventId }),
+        ...(options.removed === undefined ? {} : { removed: options.removed }),
+      }
+    );
+    return response.data;
   }
 
   async pauseConversation(conversationId: string): Promise<Success> {
@@ -358,11 +442,11 @@ export class ConversationClient {
   }
 
   /**
-   * Switch the model of a running ACP conversation in place (the ACP analog of
-   * {@link switchLLM}). Calls the wrapper's `session/set_model` on the live
-   * session; context is preserved. Only valid once the ACP session exists —
-   * the server returns 409 before the first message (set the default via
-   * settings instead) and 400 for non-ACP conversations.
+   * Switch the model of an ACP conversation (the ACP analog of
+   * {@link switchLLM}). On a live session the server calls the wrapper's
+   * `session/set_model` in place; context is preserved. Before the first run
+   * there is no session yet, so the server answers 200 and stores the model for
+   * the first session. Non-ACP conversations get 400.
    */
   async switchAcpModel(conversationId: string, model: string): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_model`, {
@@ -370,19 +454,32 @@ export class ConversationClient {
     });
   }
 
+  /**
+   * Switch the reasoning effort of an ACP conversation. Live for a started
+   * conversation; persisted and applied at session start otherwise. 400 when
+   * the current model doesn't offer `effort`.
+   */
+  async switchAcpEffort(conversationId: string, effort: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_effort`, {
+      effort,
+    });
+  }
+
   async deleteConversation(conversationId: string): Promise<void> {
     await this.client.delete<Success>(`/api/conversations/${conversationId}`);
   }
 
+  /**
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
+   */
   async updateConversation<TConversation = ConversationInfo>(
     conversationId: string,
     update: UpdateConversationRequest
   ): Promise<TConversation> {
-    const response = await this.client.patch<TConversation>(
-      `/api/conversations/${conversationId}`,
-      update
-    );
-    return response.data;
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation<TConversation>(conversationId);
   }
 
   close(): void {

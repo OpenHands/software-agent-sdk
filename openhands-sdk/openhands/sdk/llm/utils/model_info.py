@@ -5,10 +5,12 @@ from logging import getLogger
 from typing import Any
 
 import httpx
+import litellm
 from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
+from openhands.sdk.llm.utils.model_features import ALLOWED_OPENAI_PARAMS_KEY
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 
 
@@ -20,8 +22,81 @@ def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     key = model_info.get("key")
     raw = model_cost.get(key) if isinstance(key, str) else None
     if not isinstance(raw, dict):
-        return dict(model_info)
-    return {**raw, **model_info}
+        return {**model_info, "_capability_source": "litellm"}
+    return {**raw, **model_info, "_capability_source": "litellm"}
+
+
+# Pricing fields copied from the underlying model so a custom proxy alias
+# becomes priceable in litellm's global `model_cost` map (#4816).
+_PRICING_FIELDS: tuple[str, ...] = (
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "cache_read_input_token_cost",
+    "cache_creation_input_token_cost",
+    "max_input_tokens",
+    "max_output_tokens",
+    "litellm_provider",
+    "mode",
+)
+
+
+def _register_proxy_alias_pricing(
+    alias: str,
+    underlying_model_info: Mapping[str, Any] | None,
+    proxy_model_info: Mapping[str, Any] | None,
+) -> None:
+    """Register a `litellm_proxy/*` alias into litellm's `model_cost` (#4816).
+
+    litellm strips the `litellm_proxy/` prefix and parses the first segment as
+    the provider, so a custom name like `prod/claude-sonnet-4-5-bedrock` makes
+    `cost_per_token` raise and the span is silently priced $0. Registering the
+    alias with the underlying model's pricing makes it priceable without
+    renaming the proxy model.
+    """
+    if not alias or alias in model_cost:
+        return
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        return
+    except Exception:
+        pass
+
+    entry: dict[str, Any] = {}
+    for src in (underlying_model_info, proxy_model_info):
+        if isinstance(src, Mapping):
+            entry.update({f: src[f] for f in _PRICING_FIELDS if f in src})
+
+    # litellm's `get_llm_provider` cannot resolve `bedrock_converse` as a
+    # provider label for an unknown alias id (only ``bedrock`` is accepted), so
+    # normalize it before registering or `cost_per_token` keeps raising.
+
+    if entry.get("litellm_provider") == "bedrock_converse":
+        entry["litellm_provider"] = "bedrock"
+
+    if (
+        entry.get("input_cost_per_token") is None
+        and entry.get("output_cost_per_token") is None
+    ):
+        return
+
+    entry.setdefault("mode", "chat")
+    try:
+        litellm.register_model({alias: entry})
+    except Exception as e:
+        logger.debug("Failed to register litellm_proxy alias %r: %s", alias, e)
+
+
+def _allowed_openai_params(entry: Mapping[str, Any]) -> set[str]:
+    """Request params a ``/v1/model/info`` deployment forwards upstream.
+
+    LiteLLM documents ``allowed_openai_params`` as a deployment setting, but
+    ``/v1/model/info`` only exposes it by echoing ``litellm_params``; it is not
+    a declared response field. Anything malformed is treated as absent.
+    """
+    params = entry.get("litellm_params", {}).get(ALLOWED_OPENAI_PARAMS_KEY)
+    if not isinstance(params, list):
+        return set()
+    return {p for p in params if isinstance(p, str)}
 
 
 @lru_cache
@@ -49,19 +124,49 @@ def _get_model_info_from_litellm_proxy(
         # `model_info` overrides set on the proxy are invisible to clients
         # that address the model by its provider id.
         stripped = model.removeprefix("litellm_proxy/")
-        current = next(
-            (
-                info
-                for info in data
-                if info.get("model_name") == stripped
-                or info.get("litellm_params", {}).get("model") == stripped
-            ),
-            None,
-        )
-        if current:
-            model_info = current.get("model_info")
+        matches = [
+            info
+            for info in data
+            if info.get("model_name") == stripped
+            or info.get("litellm_params", {}).get("model") == stripped
+        ]
+        if matches:
+            current = matches[0]
+            raw_model_info = current.get("model_info")
+            model_info = (
+                dict(raw_model_info) if isinstance(raw_model_info, Mapping) else {}
+            )
             logger.debug(f"Got model info from litellm proxy: {model_info}")
-            return model_info
+            # The proxy may route to any matching deployment, so only params
+            # every one of them forwards are safe to send. An explicit
+            # ``allowed_openai_params`` already on ``model_info`` wins.
+            if ALLOWED_OPENAI_PARAMS_KEY not in model_info:
+                allowed_params = set.intersection(
+                    *(_allowed_openai_params(info) for info in matches)
+                )
+                if allowed_params:
+                    model_info[ALLOWED_OPENAI_PARAMS_KEY] = sorted(allowed_params)
+            if model_info:
+                model_info["_capability_source"] = "proxy"
+
+            # Make custom proxy aliases priceable so cost instrumentation does
+            # not silently record $0 (#4816).
+            underlying_model = current.get("litellm_params", {}).get("model")
+            underlying_model_info = None
+            if isinstance(underlying_model, str) and underlying_model != stripped:
+                try:
+                    underlying_model_info = get_model_info(underlying_model)
+                except Exception as e:
+                    logger.debug(
+                        f"get_model_info(underlying={underlying_model}) failed: {e}"
+                    )
+            _register_proxy_alias_pricing(
+                alias=stripped,
+                underlying_model_info=underlying_model_info,
+                proxy_model_info=model_info,
+            )
+
+            return model_info or None
     except Exception as e:
         logger.debug(
             f"Error fetching model info from proxy: {e}",

@@ -5,11 +5,6 @@ without touching it: frames are envelopes rather than the disk record; history
 and live traffic cannot interleave; and a slow consumer cannot wedge the
 publisher, because admission is byte-bounded and only this connection's writer
 task awaits the socket.
-
-``ItemStarted`` / ``Delta`` / ``ItemAborted`` are carried but never produced
-yet — that needs ``StreamContext`` (#4682). Until then this is a durable-only
-channel and ``StreamingDeltaEvent`` is dropped rather than forwarded, since
-putting it back on the wire would restore the coupling this endpoint removes.
 """
 
 import asyncio
@@ -23,6 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from openhands.agent_server import sockets
 from openhands.agent_server.conversation_service import (
     CredentialBindingActivationRequired,
 )
@@ -30,20 +26,30 @@ from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
     MAX_PENDING_BYTES,
+    DeltaFrame,
     DurableFrame,
     ErrorFrame,
+    ItemAbortedFrame,
+    ItemStartedFrame,
     SessionFrameBase,
     SyncFrame,
     TransientFrame,
 )
 from openhands.agent_server.sockets import (
     _accept_authenticated_websocket,
+    _close_subscribed_websocket,
     _get_conversation_service,
     _is_auth_control_message,
     _is_websocket_connected,
     _safe_close_websocket,
 )
 from openhands.sdk import Event, Message
+from openhands.sdk.agent.stream_context import (
+    StreamAborted,
+    StreamDelta,
+    StreamProgress,
+    StreamStarted,
+)
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -78,6 +84,8 @@ class _ConnectionWriter:
 
     _queue: deque[tuple[str, int]] = field(default_factory=deque, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+    # Set while nothing is queued or being sent (or the writer is done).
+    _idle: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     _pending_bytes: int = field(default=0, init=False)
     _task: asyncio.Task | None = field(default=None, init=False)
 
@@ -86,7 +94,12 @@ class _ConnectionWriter:
         return self.closed_event.is_set()
 
     def start(self) -> None:
+        self._idle.set()
         self._task = asyncio.create_task(self._run())
+
+    async def wait_idle(self) -> None:
+        """Return once every admitted frame was sent or the writer is done."""
+        await self._idle.wait()
 
     def send(self, frame: SessionFrameBase) -> bool:
         """Admit one frame, never blocking. False if the connection is done."""
@@ -118,6 +131,7 @@ class _ConnectionWriter:
 
         self._queue.append((payload, size))
         self._pending_bytes += size
+        self._idle.clear()
         self._wake.set()
         return True
 
@@ -125,6 +139,7 @@ class _ConnectionWriter:
         if not self.closed:
             self.drop_reason = reason
             self.closed_event.set()
+        self._idle.set()
         self._wake.set()
 
     async def _run(self) -> None:
@@ -141,6 +156,7 @@ class _ConnectionWriter:
                         self._fail("disconnected")
                         return
                     await self.websocket.send_text(payload)
+                self._idle.set()
         except asyncio.CancelledError:
             raise
         except (RuntimeError, WebSocketDisconnect):
@@ -178,19 +194,40 @@ class _SessionSubscriber(Subscriber[Event]):
     events: EventLog
 
     _buffer: list[Event] | None = field(default_factory=list, init=False)
+    _through_seq: int | None = field(default=None, init=False)
+    snapshot_log_length: int | None = field(default=None, init=False)
+    _snapshot_id: str | None = field(default=None, init=False)
 
     async def __call__(self, event: Event) -> None:
         if isinstance(event, StreamingDeltaEvent):
-            # Deltas never ride the durable channel; progress frames will come
-            # from StreamContext instead.
+            # Deltas never ride the durable channel; progress frames come from
+            # StreamContext, over their own fan-out.
             return
         if self._buffer is not None:
             self._buffer.append(event)
             return
         self._emit(event)
 
+    async def close_connection(self, code: int, reason: str) -> None:
+        # Send what is already queued, then the close code; the writer then
+        # stops, which also ends the handler's inbound loop. A peer that stopped
+        # reading gets the same bound as the close itself.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                self.writer.wait_idle(),
+                timeout=sockets.SUBSCRIBER_CLOSE_TIMEOUT_SECONDS,
+            )
+        await _close_subscribed_websocket(self.writer.websocket, code, reason)
+        await self.writer.aclose()
+
     def _emit(self, event: Event) -> None:
         seq = self._seq_of(event)
+        if (
+            seq is not None
+            and self._through_seq is not None
+            and seq <= self._through_seq
+        ):
+            return
         frame: SessionFrameBase = (
             TransientFrame(event=event)
             if seq is None
@@ -199,7 +236,7 @@ class _SessionSubscriber(Subscriber[Event]):
         self.writer.send(frame)
 
     def _seq_of(self, event: Event) -> int | None:
-        """The event's index in the log, or None if it is not persisted.
+        """The event's seq (its on-disk index), or None if it is not persisted.
 
         By lookup, never by type: most ``ConversationStateUpdateEvent`` *are*
         appended, so treating the type as transient would strip their ``seq``
@@ -208,7 +245,7 @@ class _SessionSubscriber(Subscriber[Event]):
         so only anything *else* missing is worth warning about.
         """
         try:
-            return self.events.get_index(event.id)
+            idx = self.events.get_index(event.id)
         except KeyError:
             if not isinstance(event, ConversationStateUpdateEvent):
                 logger.warning(
@@ -217,20 +254,91 @@ class _SessionSubscriber(Subscriber[Event]):
                     event.id,
                 )
             return None
+        return self.events.get_seq(idx)
+
+    async def on_initial_state(self, event: Event, log_length: int | None) -> None:
+        self.snapshot_log_length = log_length
+        self._snapshot_id = event.id
+        await self(event)
+
+    def _index_of(self, event: Event) -> int | None:
+        try:
+            return self.events.get_index(event.id)
+        except KeyError:
+            return None
+
+    def _order_around_snapshot(self, buffered: list[Event]) -> list[Event]:
+        """Move buffered events newer than the connect snapshot to after it."""
+        limit = self.snapshot_log_length
+        pos = next(
+            (i for i, e in enumerate(buffered) if e.id == self._snapshot_id), None
+        )
+        if limit is None or pos is None:
+            return buffered
+        older: list[Event] = []
+        newer: list[Event] = []
+        for event in buffered[:pos]:
+            idx = self._index_of(event)
+            is_newer = (
+                event.timestamp > buffered[pos].timestamp
+                if idx is None
+                else idx >= limit
+            )
+            (newer if is_newer else older).append(event)
+        return [*older, buffered[pos], *newer, *buffered[pos + 1 :]]
 
     def go_live(self, through_seq: int | None) -> None:
         """Flush the buffer, dropping anything already replayed from disk."""
         buffered = self._buffer
         self._buffer = None
-        for event in buffered or ():
-            seq = self._seq_of(event)
-            if seq is not None and through_seq is not None and seq <= through_seq:
-                continue  # already sent from disk during replay
+        self._through_seq = through_seq
+        for event in self._order_around_snapshot(buffered or []):
             self._emit(event)
 
 
+def _to_wire(frame: StreamProgress) -> SessionFrameBase:
+    """Map one SDK progress frame onto its envelope."""
+    match frame:
+        case StreamStarted():
+            return ItemStartedFrame(
+                item_id=frame.item_id,
+                attempt=frame.attempt,
+                anchor_seq=frame.anchor_seq,
+            )
+        case StreamDelta():
+            return DeltaFrame(
+                item_id=frame.item_id,
+                attempt=frame.attempt,
+                order=frame.order,
+                kind=frame.kind,
+                content=frame.content,
+                chunk_id=frame.chunk_id,
+                choice_index=frame.choice_index,
+            )
+        case StreamAborted():
+            return ItemAbortedFrame(
+                item_id=frame.item_id,
+                attempt=frame.attempt,
+                reason=frame.reason,
+            )
+
+
+class _ProgressSubscriber(Subscriber[StreamProgress]):
+    """Forwards stream progress straight to the writer.
+
+    No buffering and no replay boundary: a dropped frame costs a repaint, and
+    the real text arrives with the durable event.
+    """
+
+    def __init__(self, writer: _ConnectionWriter) -> None:
+        self._writer = writer
+
+    async def __call__(self, frame: StreamProgress) -> None:
+        self._writer.send(_to_wire(frame))
+
+
 def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event]]:
-    """Read one page by index, skipping unreadable events.
+    """Read one page by index as ``(seq, event)``, skipping unreadable events.
 
     A corrupt or half-written file should cost one event, not the connection —
     same tolerance as ``EventService._get_searchable_event``.
@@ -238,7 +346,7 @@ def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event
     page: list[tuple[int, Event]] = []
     for idx in range(start, stop):
         try:
-            page.append((idx, events[idx]))
+            page.append((events.get_seq(idx), events[idx]))
         except (OSError, UnicodeDecodeError, ValidationError, IndexError):
             # OSError also covers the transient read errors EventLog warns
             # about on networked filesystems.
@@ -317,6 +425,14 @@ async def session_socket(
     writer.start()
     subscriber = _SessionSubscriber(writer=writer, events=events)
 
+    # Read the client's frames from the start. Subscribing waits for the
+    # conversation's state lock, which a running step holds until it ends:
+    # a message sent meanwhile must be taken (and saved once the lock frees)
+    # even if the client leaves before the snapshot is ready.
+    inbound = asyncio.ensure_future(
+        _inbound_loop(conversation_id, websocket, event_service, writer)
+    )
+
     # Subscribe FIRST (buffering), then read the mark: no lock needed, since
     # anything appended before subscribe is on disk before the mark is read,
     # and anything after lands in the buffer and is deduped by seq.
@@ -324,6 +440,7 @@ async def session_socket(
         subscriber_id = await event_service.subscribe_to_events(subscriber)
     except MaxSubscribersError:
         logger.warning("session_socket_subscriber_limit: %s", conversation_id)
+        await _stop_inbound(inbound)
         await writer.aclose()
         await _safe_close_websocket(
             websocket, code=1013, reason="Too many connections for this conversation"
@@ -332,25 +449,35 @@ async def session_socket(
     except Exception:
         # subscribe_to_events registers before it can fail, and this lands
         # before the try/finally below, so clean up the writer and socket here.
-        # The registration itself can't be reclaimed (the id is only returned
-        # on success); it is inert but holds a slot. Belongs in
-        # subscribe_to_events, which has the same hole for the legacy endpoint.
         logger.exception("session_socket_subscribe_failed: %s", conversation_id)
+        await _stop_inbound(inbound)
         await writer.aclose()
         await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
         return
 
+    progress_id: UUID | None = None
     try:
-        length = len(events)
-        through_seq = length - 1 if length else None
+        try:
+            progress_id = await event_service.subscribe_to_stream_progress(
+                _ProgressSubscriber(writer)
+            )
+        except MaxSubscribersError:
+            # Durable delivery is what the client cannot recover on its own;
+            # losing progress only costs it the live typing effect.
+            logger.warning("session_socket_progress_limit: %s", conversation_id)
+
+        length = subscriber.snapshot_log_length
+        if length is None:
+            length = len(events)
+        through_seq = events.get_seq(length - 1) if length else None
 
         if not writer.send(SyncFrame(from_seq=after_seq, through_seq=through_seq)):
             return
 
         replayed = False
         if after_seq is not None and through_seq is not None:
-            start = max(after_seq + 1, 0)
-            if not await _replay(events, start, through_seq + 1, writer):
+            start = events.index_after_seq(after_seq)
+            if not await _replay(events, start, length, writer):
                 return
             replayed = True
 
@@ -359,8 +486,11 @@ async def session_socket(
         # whatever the mark would discard.
         subscriber.go_live(through_seq if replayed else None)
 
-        await _inbound_loop(conversation_id, websocket, event_service, writer)
+        await inbound
     finally:
+        await _stop_inbound(inbound)
+        if progress_id is not None:
+            await event_service.unsubscribe_from_stream_progress(progress_id)
         await event_service.unsubscribe_from_events(subscriber_id)
         await writer.aclose()
         if writer.drop_reason in ("slow_consumer", "frame_too_large"):
@@ -368,6 +498,40 @@ async def session_socket(
         logger.info(
             "session_socket_closed: %s reason=%s", conversation_id, writer.drop_reason
         )
+
+
+_pending_sends: set[asyncio.Future] = set()
+"""Messages taken from a socket that is gone, still waiting to be saved."""
+
+
+async def _stop_inbound(inbound: asyncio.Future) -> None:
+    """Stop reading frames; a message already taken is still saved."""
+    if not inbound.done():
+        inbound.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await inbound
+
+
+def _log_orphaned_send(send: asyncio.Future) -> None:
+    _pending_sends.discard(send)
+    if not send.cancelled() and send.exception() is not None:
+        logger.warning(
+            "session_socket_send_after_close_failed: %s",
+            send.exception(),
+        )
+
+
+async def _deliver(event_service, message: Message) -> None:
+    """Save and run ``message``, even if this socket's reader is cancelled.
+
+    The send waits for the conversation's state lock, which a running step
+    holds; the reader may be cancelled meanwhile (the socket closed), but the
+    person sent this message, so it is kept and saved when the lock frees.
+    """
+    send = asyncio.ensure_future(event_service.send_message(message, True))
+    _pending_sends.add(send)
+    send.add_done_callback(_log_orphaned_send)
+    await asyncio.shield(send)
 
 
 async def _inbound_loop(
@@ -388,21 +552,20 @@ async def _inbound_loop(
             done, _ = await asyncio.wait(
                 {receiver, closed_waiter}, return_when=asyncio.FIRST_COMPLETED
             )
-            if closed_waiter in done:
+            if receiver not in done:
                 receiver.cancel()
-                if receiver in done:
-                    # Both finished at once: cancel() is a no-op on a done
-                    # future, so consume the outcome or asyncio logs
-                    # "Task exception was never retrieved" on GC.
-                    with contextlib.suppress(Exception, asyncio.CancelledError):
-                        receiver.result()
                 return
+            # A frame that arrived with the close is still the client's: read
+            # it, and stop after handling it.
+            closing = closed_waiter in done
             try:
                 data = receiver.result()
             except WebSocketDisconnect:
                 logger.info("session_socket_disconnected: %s", conversation_id)
                 return
             except Exception as e:
+                if closing:
+                    return
                 # receive_json decodes with json.loads, so a non-JSON frame
                 # raises here, not at validation below. Keep the connection,
                 # as the legacy endpoint's one broad handler does.
@@ -418,14 +581,19 @@ async def _inbound_loop(
                 continue
 
             if _is_auth_control_message(data):
+                if closing:
+                    return
                 continue
 
             try:
                 message = Message.model_validate(data)
-                await event_service.send_message(message, True)
+                await _deliver(event_service, message)
             except WebSocketDisconnect:
                 return
             except Exception as e:
+                if closing:
+                    logger.exception("session_socket_inbound_error", stack_info=True)
+                    return
                 # About this socket, not the conversation, so an ErrorFrame
                 # rather than a durable event — and not worth dropping over.
                 logger.exception("session_socket_inbound_error", stack_info=True)
@@ -433,5 +601,7 @@ async def _inbound_loop(
                     ErrorFrame(code=e.__class__.__name__, detail=str(e))
                 ):
                     return
+            if closing:
+                return
     finally:
         closed_waiter.cancel()

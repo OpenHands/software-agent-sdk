@@ -12,10 +12,9 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
-from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
+from openhands.sdk.skills.utils import SecretLookup, expand_mcp_servers
 from openhands.sdk.utils.redact import redact_url_credentials
 
 
@@ -107,13 +106,7 @@ def load_plugins(
     # Expand MCP server variables with per-conversation secrets
     # This handles ${VAR} placeholders that reference secrets injected via API
     if merged_mcp_config and get_secret:
-        expanded_mcp = expand_mcp_variables(
-            {"mcpServers": dump_mcp_config(merged_mcp_config)},
-            {},
-            get_secret=get_secret,
-            expand_defaults=True,
-        )
-        merged_mcp_config = coerce_mcp_config(expanded_mcp["mcpServers"])
+        merged_mcp_config = expand_mcp_servers(merged_mcp_config, get_secret)
         logger.debug("Expanded MCP config variables")
 
     # Combine all hook configs (concatenation semantics)

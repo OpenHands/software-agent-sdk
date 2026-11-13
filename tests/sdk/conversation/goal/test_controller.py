@@ -66,6 +66,20 @@ def test_caps_at_max_iterations():
     assert not step.outcome.verdict.complete
 
 
+def test_failed_judge_call_does_not_count_a_round():
+    # A judge call that raises is not a completed audit: the count must not
+    # advance, or a resumed goal would overrun max_iterations.
+    controller = GoalController(
+        "build x",
+        TestLLM.from_messages([RuntimeError("judge network error")]),
+        max_iterations=1,
+    )
+
+    with pytest.raises(RuntimeError):
+        controller.on_run_finished([])
+    assert controller.iteration == 0
+
+
 @pytest.mark.parametrize(
     ("objective", "max_iterations"),
     [("   ", 10), ("build x", 0)],
