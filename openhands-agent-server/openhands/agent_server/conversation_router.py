@@ -42,6 +42,7 @@ from openhands.agent_server.models import (
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
+    ContentSearchEnabledResponse,
     ContentSearchHit,
     ContentSearchResponse,
     ConversationInfo,
@@ -98,10 +99,20 @@ logger = logging.getLogger(__name__)
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
-# Only mounted when the app actually has a content search service, so
-# hosted deployments have no route, no schema entry, and no 404
-# fingerprint for this feature at all.
 conversation_search_router = APIRouter(prefix="/conversations", tags=["Conversations"])
+
+
+@conversation_search_router.get("/search/enabled")
+async def get_conversation_search_enabled() -> ContentSearchEnabledResponse:
+    """Feature probe: the UI hides the search box when this 404s.
+
+    Mounted on the same opt-in condition as the search service itself,
+    so deployments without the feature keep a schema identical to
+    upstream ``main`` — no route, no schema entry, no fingerprint.
+    """
+    return ContentSearchEnabledResponse(enabled=True)
+
+
 _OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
 _OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
 _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)

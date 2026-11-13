@@ -439,6 +439,19 @@ class ContentSearchResponse(BaseModel):
     )
 
 
+class ContentSearchEnabledResponse(BaseModel):
+    """Probe answer for clients deciding whether to render search UI.
+
+    The route exists only on deployments that constructed the content
+    search service, so a 404 means "feature off" — no fingerprint is left
+    when the flag is disabled.
+    """
+
+    enabled: bool = Field(
+        description="True when this server runs the content search service"
+    )
+
+
 INCLUDE_SKILLS_PARAM_TITLE = (
     "Whether to include ``agent.agent_context.skills`` in the response. "
     "Default ``false`` (breaking change as of this release): skills are "

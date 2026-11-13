@@ -141,6 +141,42 @@ def test_disabled_by_default_locally(client_factory):
     _assert_fallthrough_parity(resp, unknown)
 
 
+def test_probe_enabled_when_service_exists(client):
+    """The UI hides the search box on 404, so an enabled server must answer."""
+    resp = client.get(
+        "/api/conversations/search/enabled",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"enabled": True}
+
+
+def test_probe_absent_when_disabled(client_factory):
+    """No route, no schema entry, no fingerprint when the flag is off."""
+    app = client_factory(content_search_enabled=False)
+    assert "/api/conversations/search/enabled" not in app.app.openapi()["paths"]
+    probe = app.get(
+        "/api/conversations/search/enabled",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    # Parity against another nonexistent two-segment path: one-segment
+    # unknowns hit the /{conversation_id} catch-all (503 without a live
+    # service), while unmapped two-segment paths return a bare 404 —
+    # the same answer upstream main gives for any route that never existed.
+    unknown = app.get(
+        "/api/conversations/definitely-not-a-route/definitely-not-a-route",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+    _assert_fallthrough_parity(probe, unknown)
+
+
+def test_probe_absent_on_remote_deployment(remote_client):
+    """Hosted deployments keep the upstream-identical schema: no probe route."""
+    assert (
+        "/api/conversations/search/enabled" not in remote_client.app.openapi()["paths"]
+    )
+
+
 def test_overlong_query_is_rejected(client):
     """Queries beyond the cap are rejected before hitting the index."""
     resp = client.get(
