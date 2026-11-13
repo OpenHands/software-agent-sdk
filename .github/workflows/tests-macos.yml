@@ -67,9 +67,9 @@ jobs:
             - name: Install deps
               run: uv sync --frozen --group dev
 
-            - name: Install browser prerequisite
+            - name: Verify runner browser prerequisite
               if: matrix.suite == 'browser'
-              run: uv run --frozen playwright install chromium
+              run: '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version'
 
             - name: Run ${{ matrix.suite }} tests
               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}
