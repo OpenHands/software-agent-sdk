@@ -74,6 +74,21 @@ def test_code_based_classification_takes_priority_over_detail(
     assert classify_error(code, detail).kind == expected_kind
 
 
+def test_proxy_lookup_race_is_retryable_but_managed_key_rotation_is_auth() -> None:
+    detail = "Invalid proxy server token passed; Unable to find token in cache"
+    assert classify_error("AuthenticationError", detail) == ErrorClassification(
+        kind=FailureKind.TRANSIENT, retryable=True, user_action="retry"
+    )
+    assert classify_error(
+        "AuthenticationError", detail + " (token_not_found_in_db)"
+    ) == (
+        ErrorClassification(
+            kind=FailureKind.AUTH, user_action="settings", retryable=False
+        )
+    )
+    assert classify_error("LLMAuthenticationError", detail).kind == FailureKind.AUTH
+
+
 def test_agent_error_event_defaults_to_unknown() -> None:
     """Without an explicit classification, AgentErrorEvent is UNKNOWN (diagnostic)."""
     event = AgentErrorEvent(

@@ -89,15 +89,11 @@ AUTH_PATTERNS: Final[list[str]] = [
     "access denied",
 ]
 
-# LiteLLM proxy-side cache misses surface as AuthenticationError (401) even
-# though the token is valid and the same call succeeds on retry (#18951).
-# These are transient proxy state issues, not credential problems: retrying
-# is the correct recovery, so they must NOT be classified as fatal auth
-# errors (which would mark the conversation failed and tell the user to
-# rotate keys that were never broken).
+# A proxy cache lookup may race with provisioning (#18951). An explicit
+# token_not_found_in_db marker, however, also identifies a rotated managed
+# credential (#5189) that must go through the refresh-on-401 path instead.
 TRANSIENT_PROXY_AUTH_PATTERNS: Final[list[str]] = [
     "unable to find token in cache",
-    "invalid proxy server token",
 ]
 
 CONTENT_POLICY_PATTERNS: Final[list[str]] = [
@@ -196,13 +192,13 @@ def is_quota_exhaustion_error(exception: BaseException) -> bool:
 
 
 def is_transient_proxy_auth_error(exception: BaseException) -> bool:
-    """Detect LiteLLM proxy cache-miss 401s that succeed on retry (#18951).
-
-    The proxy raises these as typed AuthenticationError, so they look fatal,
-    but the token is valid — the retry loop must see them as transient.
-    """
+    """Recognize retryable proxy lookup races without masking key rotation."""
+    if not isinstance(exception, AuthenticationError):
+        return False
     s = str(exception).lower()
-    return any(p in s for p in TRANSIENT_PROXY_AUTH_PATTERNS)
+    return "token_not_found_in_db" not in s and any(
+        p in s for p in TRANSIENT_PROXY_AUTH_PATTERNS
+    )
 
 
 def looks_like_auth_error(exception: Exception) -> bool:

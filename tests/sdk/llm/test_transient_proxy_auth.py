@@ -26,6 +26,10 @@ TRANSIENT_MESSAGE = (
 )
 
 FATAL_MESSAGE = "AuthenticationError: Invalid API key provided"
+ROTATED_KEY_MESSAGE = (
+    "Invalid proxy server token passed. Unable to find token in cache or "
+    "LiteLLM_VerificationTokenTable (token_not_found_in_db)"
+)
 
 
 def test_transient_proxy_cache_miss_detected():
@@ -36,6 +40,12 @@ def test_transient_proxy_cache_miss_detected():
 def test_fatal_auth_not_flagged_transient():
     e = AuthenticationError(FATAL_MESSAGE, MODEL, PROVIDER)
     assert is_transient_proxy_auth_error(e) is False
+
+
+def test_rotated_proxy_key_uses_auth_refresh_instead_of_transient_retry():
+    e = AuthenticationError(ROTATED_KEY_MESSAGE, MODEL, PROVIDER)
+    assert is_transient_proxy_auth_error(e) is False
+    assert looks_like_auth_error(e) is True
 
 
 def test_typed_auth_error_with_proxy_pattern_not_fatal():
@@ -55,6 +65,9 @@ def test_mapping_passes_proxy_miss_through_unmapped():
     e = AuthenticationError(TRANSIENT_MESSAGE, MODEL, PROVIDER)
     mapped = map_provider_exception(e)
     # Not wrapped into the fatal LLMAuthenticationError
-    assert not isinstance(mapped, __import__(
-        "openhands.sdk.llm.exceptions", fromlist=["LLMAuthenticationError"]
-    ).LLMAuthenticationError)
+    assert not isinstance(
+        mapped,
+        __import__(
+            "openhands.sdk.llm.exceptions", fromlist=["LLMAuthenticationError"]
+        ).LLMAuthenticationError,
+    )
