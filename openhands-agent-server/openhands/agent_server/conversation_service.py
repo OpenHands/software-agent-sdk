@@ -1775,11 +1775,14 @@ class ConversationService:
         initial_sender: str | None = None,
         server_tools: Sequence[Tool] = (),
         gateway_run: bool = False,
+        reuse_existing: bool = True,
     ) -> tuple[ConversationInfo, bool]:
         """Create a conversation from ``request``.
 
         A project worker passes the rest: ``title``, the ``initial_sender`` of
         its first message, and ``server_tools`` the server adds to its agent.
+        Without ``reuse_existing``, an id another create took meanwhile is
+        refused instead of reused.
         """
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
@@ -1994,7 +1997,7 @@ class ConversationService:
                 else None
             ),
             initial_sender=initial_sender,
-            reuse_request=request,
+            reuse_request=request if reuse_existing else None,
             max_budget_per_run=request.max_budget_per_run,
         )
 
@@ -2760,6 +2763,9 @@ class ConversationService:
                     server_tools=[
                         Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS
                     ],
+                    # A concurrent create with the same reserved id must not
+                    # hand one coordinator to two projects.
+                    reuse_existing=False,
                 )
             except Exception as exc:
                 if not isinstance(exc, LaunchFailure):
