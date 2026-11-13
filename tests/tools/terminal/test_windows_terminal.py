@@ -19,6 +19,7 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalTool
 from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal import TerminalSession, create_terminal_session
+from openhands.tools.terminal.terminal.windows_terminal import WindowsTerminal
 
 
 pytestmark = pytest.mark.skipif(
@@ -205,3 +206,39 @@ def test_terminal_tool_uses_windows_description(temp_dir: str) -> None:
 
     tools = TerminalTool.create(conv_state, terminal_type="powershell")
     assert "PowerShell session" in tools[0].description
+
+
+def test_close_unblocks_reader_thread_without_deadlock(temp_dir: str) -> None:
+    session = create_terminal_session(work_dir=temp_dir)
+    session.initialize()
+    terminal = cast(WindowsTerminal, session.terminal)
+    assert terminal.reader_thread is not None
+    assert terminal.reader_thread.is_alive()
+
+    # Send a command that keeps PowerShell busy/waiting
+    terminal.send_keys("Start-Sleep -Seconds 30")
+
+    # Closing while reader thread is actively waiting on stdout must not hang
+    session.close()
+
+    assert terminal.closed
+    assert terminal.process is None
+    assert not terminal.reader_thread.is_alive()
+
+
+def test_interrupt_and_close_after_timed_out_command(temp_dir: str) -> None:
+    session = create_terminal_session(work_dir=temp_dir)
+    session.initialize()
+    terminal = cast(WindowsTerminal, session.terminal)
+
+    # Execute a command that will time out
+    obs = session.execute(TerminalAction(command="Start-Sleep -Seconds 30", timeout=1))
+    assert obs.is_error or obs.exit_code != 0
+
+    # Sending interrupt (Ctrl+C) after timeout must succeed and not hang
+    assert session.interrupt()
+
+    # Session close after interrupt must complete cleanly
+    session.close()
+    assert terminal.closed
+    assert terminal.process is None
