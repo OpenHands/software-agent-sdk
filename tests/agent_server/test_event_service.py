@@ -66,6 +66,7 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -3929,6 +3930,32 @@ def test_llm_log_callback_swallows_emit_failures(
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()
     assert "Failed to emit LLM completion log event" in caplog.text
+
+
+@pytest.mark.parametrize("option", ["log_completions", "log_completions_to_file"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_llm_log_streaming_accepts_both_logging_names(event_service, option, enabled):
+    """Both the canonical and deprecated field names wire the same session.
+
+    ``_setup_llm_log_streaming`` registers its callback on the registry
+    unconditionally (every session of the conversation, including those a
+    later ``switch_llm`` opens); whether a completion is actually logged is
+    gated by ``Telemetry.completion_logging_enabled`` at log time, not by
+    registration. So the alias must set that flag the same way regardless of
+    which field name was used to construct the ``LLM``.
+    """
+    llm = LLM.model_validate(
+        {"model": "openai/gpt-4o-mini", "usage_id": "test-usage", option: enabled}
+    )
+    registry = LLMRegistry()
+    registry.add(llm)
+    conversation = MagicMock(llm_registry=registry)
+    with patch.object(
+        type(llm.session.telemetry), "set_log_completions_callback"
+    ) as register:
+        event_service._setup_llm_log_streaming(conversation)
+    register.assert_called_once()
+    assert llm.session.telemetry.completion_logging_enabled is enabled
 
 
 def _make_stored(tmp_path: Path) -> StoredConversation:

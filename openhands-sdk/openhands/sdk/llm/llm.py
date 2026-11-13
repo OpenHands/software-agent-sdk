@@ -33,6 +33,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    TypeAdapter,
     computed_field,
     field_serializer,
     field_validator,
@@ -544,15 +545,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Enable caching of prompts.",
         json_schema_extra=field_meta(),
     )
+    log_completions_to_file: bool = Field(
+        default=False,
+        description="Enable completion JSON logging to log_completions_folder or a "
+        "configured completion-log callback. OpenTelemetry tracing is configured "
+        "separately and can export LLM message content while completion logging "
+        "is disabled.",
+        json_schema_extra=field_meta(),
+    )
     log_completions: bool = Field(
         default=False,
-        description="Enable logging of completions.",
+        description="Deprecated alias for log_completions_to_file. "
+        "Deprecated since v1.63.0 and scheduled for removal in v1.68.0.",
+        deprecated=True,
         json_schema_extra=field_meta(),
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
         description="The folder to log LLM completions to. "
-        "Required if log_completions is True.",
+        "Required if log_completions_to_file is True.",
         json_schema_extra=field_meta(),
     )
     custom_tokenizer: str | None = Field(
@@ -768,6 +779,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if "stream_idle_timeout" not in d:
             d["stream_idle_timeout"] = d.get("timeout", 300)
 
+        if "log_completions" in d:
+            old_val = TypeAdapter(bool).validate_python(d.pop("log_completions"))
+            if "log_completions_to_file" in d:
+                new_val = TypeAdapter(bool).validate_python(
+                    d["log_completions_to_file"]
+                )
+                if new_val != old_val:
+                    raise ValueError(
+                        "Conflicting values for log_completions (deprecated) and "
+                        "log_completions_to_file: pass only log_completions_to_file."
+                    )
+            else:
+                d["log_completions_to_file"] = old_val
+                warn_deprecated(
+                    "LLM(log_completions=...)",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=4,
+                )
+
+        if "log_completions_to_file" in d:
+            d["log_completions"] = d["log_completions_to_file"]
+
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
             d["api_version"] = "2024-12-01-preview"
@@ -831,6 +866,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         self._init_model_info_and_caps()
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("log_completions", "log_completions_to_file"):
+            if name == "log_completions":
+                warn_deprecated(
+                    "LLM.log_completions assignment",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
+            super().__setattr__("log_completions_to_file", value)
+            super().__setattr__("log_completions", value)
+            return
+        super().__setattr__(name, value)
+
     def model_copy(
         self,
         *,
@@ -839,6 +889,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> Self:
         # Pydantic copies private attrs without re-running validators, even for
         # deep copies, so routing-field updates must rebuild derived metadata.
+        if update is not None and "log_completions" in update:
+            update = dict(update)
+            old_val = TypeAdapter(bool).validate_python(update.pop("log_completions"))
+            if "log_completions_to_file" in update:
+                new_val = TypeAdapter(bool).validate_python(
+                    update["log_completions_to_file"]
+                )
+                if new_val != old_val:
+                    raise ValueError(
+                        "Conflicting values for log_completions (deprecated) and "
+                        "log_completions_to_file: pass only log_completions_to_file."
+                    )
+            else:
+                update["log_completions_to_file"] = old_val
+                warn_deprecated(
+                    "LLM.model_copy(update={'log_completions': ...})",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
+        if update is not None and "log_completions_to_file" in update:
+            update = dict(update)
+            update["log_completions"] = update["log_completions_to_file"]
         copied = super().model_copy(update=update, deep=deep)
         route_changed = update is not None and any(
             k in update for k in ("model", "base_url", "litellm_extra_body")
@@ -850,10 +924,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Sessions follow the role. A copy made for another role is a
             # different user of the model, so it starts its own accounting.
             copied.reset_metrics()
-        elif not deep:
-            # Same role, same sessions: the shallow copy shares ``_session``
-            # already, and stays with the conversation the original is in.
-            copied._registry_session = self._registered_session()
+        else:
+            if not deep:
+                # Same role, same session: the shallow copy shares
+                # ``_session`` already, and stays with the conversation the
+                # original is in.
+                copied._registry_session = self._registered_session()
+            # A deep copy never shares ``_registry_session``: it is a raw
+            # slot, not a ``PrivateAttr``, so pydantic's deepcopy leaves it
+            # unset on the copy (``_registered_session()`` below returns
+            # ``None`` for it via the ``AttributeError`` fallback).
+            logging_changed = update is not None and (
+                "log_completions_to_file" in update
+                or "log_completions_folder" in update
+            )
+            if logging_changed and copied._registered_session() is None:
+                # Not part of a conversation: ``session_for`` won't run
+                # ``LLMSession.follow`` to resync these settings before the
+                # next call, so give the copy its own ``Telemetry`` now.
+                # For a shallow copy this starts from ``self``'s telemetry
+                # (shared ``_session`` otherwise), carrying over ``metrics``
+                # and attached callbacks by reference. For a deep copy,
+                # ``copied.session.telemetry`` is already an independent
+                # deep copy (own ``Metrics``); rebuilding from ``self``'s
+                # telemetry instead would silently re-merge the two copies'
+                # usage into one shared ``Metrics`` instance.
+                source_telemetry = (
+                    copied.session.telemetry if deep else self.session.telemetry
+                )
+                copied._session = LLMSession._wrapping(
+                    source_telemetry.model_copy(
+                        update={
+                            "completion_logging_enabled": (
+                                copied.log_completions_to_file
+                            ),
+                            "log_dir": copied.log_completions_folder
+                            if copied.log_completions_to_file
+                            else None,
+                        }
+                    )
+                )
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
@@ -1560,12 +1670,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "messages": formatted_messages[:],  # already simple dicts
         }
-        if telemetry.log_enabled:
+        if telemetry.completion_logging_enabled:
             telemetry_ctx.update(
                 {
-                    "messages": formatted_messages[:],  # already simple dicts
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -1698,14 +1808,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "instructions": instructions,
+            "input": input_items[:],
         }
-        if telemetry.log_enabled:
+        if telemetry.completion_logging_enabled:
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
-                    "instructions": instructions,
-                    "input": input_items[:],
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }

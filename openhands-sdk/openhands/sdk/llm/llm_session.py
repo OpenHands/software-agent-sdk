@@ -39,12 +39,25 @@ class LLMSession:
     def __init__(self, llm: LLM) -> None:
         self._telemetry: Telemetry = Telemetry(
             model_name=llm.model,
-            log_enabled=llm.log_completions,
+            completion_logging_enabled=llm.log_completions_to_file,
             log_dir=_log_dir(llm),
             input_cost_per_token=llm.input_cost_per_token,
             output_cost_per_token=llm.output_cost_per_token,
             metrics=Metrics(model_name=llm.model),
         )
+
+    @classmethod
+    def _wrapping(cls, telemetry: Telemetry) -> LLMSession:
+        """Build a session around an already-configured ``Telemetry``.
+
+        Used when an ``LLM`` copy changes logging settings: the copy needs
+        its own ``Telemetry`` with the new settings, while keeping the same
+        ``Metrics`` instance and any callbacks already attached to the
+        original (``Telemetry.model_copy`` shares both by reference).
+        """
+        session = object.__new__(cls)
+        session._telemetry = telemetry
+        return session
 
     def __eq__(self, other: object) -> bool:
         # By value, as the metrics and telemetry it holds compare: two LLMs
@@ -73,7 +86,7 @@ class LLMSession:
         """
         telemetry = self._telemetry
         telemetry.model_name = llm.model
-        telemetry.log_enabled = llm.log_completions
+        telemetry.completion_logging_enabled = llm.log_completions_to_file
         telemetry.log_dir = _log_dir(llm)
         telemetry.input_cost_per_token = llm.input_cost_per_token
         telemetry.output_cost_per_token = llm.output_cost_per_token
@@ -99,4 +112,4 @@ class LLMSession:
 
 
 def _log_dir(llm: LLM) -> str | None:
-    return llm.log_completions_folder if llm.log_completions else None
+    return llm.log_completions_folder if llm.log_completions_to_file else None
