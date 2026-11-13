@@ -977,7 +977,7 @@ async def test_revision_bound_store_secret_lifecycle(tmp_path: Path, monkeypatch
     install_canvas_extension(str(source), installed_dir=installed)
     store = FileSecretsStore(tmp_path / "secrets")
     manager = CanvasExtensionBackendManager(
-        installed, tmp_path / "state", secrets_store=store
+        installed, tmp_path / "state", secrets_store=lambda: store
     )
     name = "my-extension"
     revision = manager.revision(name)
@@ -1170,7 +1170,7 @@ async def test_enable_orchestrates_backend_and_retains_revision_consent(
     install_canvas_extension(str(source), installed_dir=installed)
     store = FileSecretsStore(tmp_path / "secrets")
     manager = CanvasExtensionBackendManager(
-        installed, tmp_path / "state", secrets_store=store
+        installed, tmp_path / "state", secrets_store=lambda: store
     )
     app = FastAPI()
     add_domain_error_handler(app)
