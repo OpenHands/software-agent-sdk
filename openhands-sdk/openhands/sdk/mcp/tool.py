@@ -99,14 +99,24 @@ def to_camel_case(s: str) -> str:
     return "".join(word.capitalize() for word in parts if word)
 
 
-# JSON-RPC codes the MCP client uses when the session or transport is gone.
+# What the MCP client reports when its transport is gone (a stdio server that
+# exited). Only this message: the same code also covers an SSE stream that
+# ended without a response, and some servers use it for ordinary errors.
 _MCP_CONNECTION_CLOSED: Final[int] = -32000
-_MCP_INVALID_REQUEST: Final[int] = -32600
-# Messages a streamable-HTTP server (or the client, from its 404) sends for a
-# session it no longer knows, e.g. after a restart.
-_MCP_LOST_SESSION_MESSAGES: Final[frozenset[str]] = frozenset(
-    {"Session not found", "Session terminated"}
+_MCP_CONNECTION_CLOSED_MESSAGE: Final[str] = "Connection closed"
+# Wording for a session the server no longer knows (e.g. after a restart):
+# the Python SDK's "Session terminated" / "Session not found", the TypeScript
+# SDK's "Session not found" (code -32001), and other servers' variants.
+_LOST_SESSION_PHRASES: Final[tuple[str, ...]] = (
+    "session not found",
+    "session terminated",
+    "session expired",
+    "unknown session",
+    "invalid session",
 )
+# fastmcp raises this when a call starts while the session is being replaced;
+# the request was never sent.
+_NOT_CONNECTED_MESSAGE: Final[str] = "Client is not connected"
 
 
 def _is_session_lost(exc: BaseException) -> bool:
@@ -116,22 +126,28 @@ def _is_session_lost(exc: BaseException) -> bool:
     exits closes its pipes. ``client.is_connected()`` stays true in both
     cases, so the caller has to drop the session to get a new one.
     """
-    seen: set[int] = set()
+    seen: set[int] = set()  # a cause chain can loop back on itself
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, (anyio.ClosedResourceError, anyio.BrokenResourceError)):
             return True
         if isinstance(current, MCPProtocolError):
-            if current.code == _MCP_CONNECTION_CLOSED:
-                return True
+            message = current.error.message
             if (
-                current.code == _MCP_INVALID_REQUEST
-                and current.error.message in _MCP_LOST_SESSION_MESSAGES
+                current.code == _MCP_CONNECTION_CLOSED
+                and message == _MCP_CONNECTION_CLOSED_MESSAGE
             ):
+                return True
+            lowered = message.lower()
+            if any(phrase in lowered for phrase in _LOST_SESSION_PHRASES):
                 return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _is_not_connected(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and str(exc).startswith(_NOT_CONNECTED_MESSAGE)
 
 
 class MCPToolExecutor(ToolExecutor):
@@ -194,9 +210,19 @@ class MCPToolExecutor(ToolExecutor):
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
             )
-            result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
-                name=self.server_tool_name, arguments=action.to_mcp_arguments()
-            )
+            try:
+                result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
+                    name=self.server_tool_name, arguments=action.to_mcp_arguments()
+                )
+            except RuntimeError as e:
+                if not _is_not_connected(e) or self.client._closed:
+                    raise
+                # A parallel call is replacing a lost session. Nothing was
+                # sent, so connect (this waits for the drop) and send once.
+                await self.client.connect()
+                result = await self.client.call_tool_mcp(
+                    name=self.server_tool_name, arguments=action.to_mcp_arguments()
+                )
             return MCPToolObservation.from_call_tool_result(
                 tool_name=self.tool_name, result=result
             )

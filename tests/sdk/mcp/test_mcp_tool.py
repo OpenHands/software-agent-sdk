@@ -538,6 +538,18 @@ def test_action_type_cache_serializes_get_and_evict(monkeypatch):
         (McpProtocolError(code=-32600, message="Session not found"), True),
         (McpProtocolError(code=-32600, message="Session terminated"), True),
         (McpProtocolError(code=-32600, message="Invalid arguments"), False),
+        # TypeScript SDK servers answer an unknown session with -32001.
+        (McpProtocolError(code=-32001, message="Session not found"), True),
+        (McpProtocolError(code=-32000, message="Bad Request: Session expired"), True),
+        # -32000 is not enough on its own: the client also uses it for an SSE
+        # stream that ended without a response, and servers for plain errors.
+        (
+            McpProtocolError(
+                code=-32000, message="SSE stream ended without a response"
+            ),
+            False,
+        ),
+        (McpProtocolError(code=-32000, message="Rate limit exceeded"), False),
         (
             McpProtocolError(code=-32603, message="Server returned an error response"),
             False,
@@ -582,4 +594,43 @@ def test_call_tool_drops_lost_session_without_retrying():
     assert "Session not found" in observation.text
     assert calls == [1]
     assert dropped == [1]
+    client.sync_close()
+
+
+def test_call_racing_a_session_drop_connects_and_sends_once():
+    """A call that starts while a parallel call drops the lost session finds
+    no session ("Client is not connected"); nothing was sent, so it connects
+    and sends the request once."""
+    mock_action = MagicMock()
+    mock_action.model_dump.return_value = {}
+    mock_action.to_mcp_arguments.return_value = {}
+
+    client = MockMCPClient()
+    sent: list[int] = []
+    connects: list[int] = []
+
+    async def call_tool_mcp(**kwargs):
+        if not connects:
+            raise RuntimeError(
+                "Client is not connected. Use the 'async with client:' "
+                "context manager first."
+            )
+        sent.append(1)
+        return mcp.types.CallToolResult(
+            content=[mcp.types.TextContent(type="text", text="ok")]
+        )
+
+    async def connect():
+        connects.append(1)
+
+    client.is_connected = lambda: True  # type: ignore[method-assign]
+    client._closed = False
+    client.call_tool_mcp = call_tool_mcp  # type: ignore[method-assign]
+    client.connect = connect  # type: ignore[method-assign]
+
+    observation = MCPToolExecutor(tool_name="test_tool", client=client)(mock_action)
+
+    assert not observation.is_error, observation.text
+    assert connects == [1]
+    assert sent == [1]
     client.sync_close()
