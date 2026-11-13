@@ -1,6 +1,7 @@
 """List directory tool executor implementation."""
 
 import os
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,6 +12,10 @@ from openhands.tools.gemini.list_directory.definition import (
     FileEntry,
     ListDirectoryAction,
     ListDirectoryObservation,
+)
+from openhands.tools.utils.path_containment import (
+    PathContainment,
+    PathOutsideWorkspaceError,
 )
 
 
@@ -23,13 +28,24 @@ class ListDirectoryExecutor(
 ):
     """Executor for list_directory tool."""
 
-    def __init__(self, workspace_root: str):
+    def __init__(
+        self,
+        workspace_root: str,
+        restrict_to_workspace: bool = False,
+        allowed_roots: Sequence[str] | None = None,
+    ):
         """Initialize executor with workspace root.
 
         Args:
             workspace_root: Root directory for file operations
+            restrict_to_workspace: Reject paths outside the workspace root
+                (and ``allowed_roots``) after resolving symlinks.
+            allowed_roots: Extra absolute directories allowed when restricted.
         """
         self.workspace_root = Path(workspace_root)
+        self.containment: PathContainment | None = PathContainment.from_settings(
+            workspace_root, restrict_to_workspace, allowed_roots
+        )
 
     def __call__(
         self,
@@ -54,6 +70,12 @@ class ListDirectoryExecutor(
             resolved_path = self.workspace_root / dir_path
         else:
             resolved_path = Path(dir_path)
+
+        if self.containment is not None:
+            try:
+                self.containment.check(resolved_path)
+            except PathOutsideWorkspaceError as e:
+                return ListDirectoryObservation.from_text(is_error=True, text=str(e))
 
         # Check if directory exists
         if not resolved_path.exists():

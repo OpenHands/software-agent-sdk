@@ -86,6 +86,8 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     def create(
         cls,
         conv_state: "ConversationState",
+        restrict_to_workspace: bool = False,
+        allowed_roots: list[str] | None = None,
     ) -> Sequence["GrepTool"]:
         """Initialize GrepTool with a GrepExecutor.
 
@@ -93,6 +95,11 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
             conv_state: Conversation state to get working directory from.
                          If provided, working_dir will be taken from
                          conv_state.workspace
+            restrict_to_workspace: If True, reject paths that resolve (after
+                normalizing ``..`` and following symlinks) outside the
+                workspace root or ``allowed_roots``. Defaults to False.
+            allowed_roots: Extra absolute directories the tool may access
+                when ``restrict_to_workspace`` is True.
         """
         # Import here to avoid circular imports
         from openhands.tools.grep.impl import GrepExecutor
@@ -102,7 +109,11 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
             raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
 
         # Initialize the executor
-        executor = GrepExecutor(working_dir=working_dir)
+        executor = GrepExecutor(
+            working_dir=working_dir,
+            restrict_to_workspace=restrict_to_workspace,
+            allowed_roots=allowed_roots,
+        )
 
         # Add working directory information to the tool description
         enhanced_description = (
