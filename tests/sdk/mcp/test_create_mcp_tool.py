@@ -865,7 +865,9 @@ def test_mcp_tool_reconnects_after_http_error():
         thread.join(timeout=5)
 
 
-def _start_counter_http_server(port: int) -> tuple[uvicorn.Server, threading.Thread]:
+def _start_counter_http_server(
+    port: int, extra_tool: str | None = None
+) -> tuple[uvicorn.Server, threading.Thread]:
     """A fresh FastMCP HTTP server whose `counter` tool counts per process."""
     mcp = FastMCP("restart-test-server")
     calls = {"n": 0}
@@ -874,6 +876,9 @@ def _start_counter_http_server(port: int) -> tuple[uvicorn.Server, threading.Thr
     def counter() -> str:
         calls["n"] += 1
         return f"count={calls['n']}"
+
+    if extra_tool is not None:
+        mcp.tool(name=extra_tool)(lambda: "extra")
 
     server = uvicorn.Server(
         uvicorn.Config(
@@ -908,6 +913,40 @@ def test_mcp_tool_reconnects_after_http_server_restart():
 
             assert not again.is_error, again.text
             assert "count=" in again.text
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_reconnect_relists_the_restarted_servers_tools():
+    """A restarted server may offer other tools; after reconnecting, the client
+    re-lists them and tells the agent, as for tools/list_changed."""
+    port = _find_free_port()
+    server, thread = _start_counter_http_server(port)
+    snapshots: list[list[str]] = []
+    try:
+        config = {"web": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}}
+        with create_mcp_tools(
+            coerce_mcp_config(config),
+            timeout=10,
+            on_tools_reconciled=lambda _client, tools: snapshots.append(
+                sorted(tool.name for tool in tools)
+            ),
+        ) as client:
+            tool = next(tool for tool in client if tool.name == "counter")
+            assert tool.executor is not None
+            action = tool.action_from_arguments({})
+            tool.executor(action)
+
+            server.should_exit = True
+            thread.join(timeout=5)
+            server, thread = _start_counter_http_server(port, extra_tool="added")
+
+            tool.executor(action)  # may fail: the old session is gone
+            tool.executor(action)
+
+            assert sorted(t.name for t in client.tools) == ["added", "counter"]
+            assert snapshots[-1] == ["added", "counter"]
     finally:
         server.should_exit = True
         thread.join(timeout=5)

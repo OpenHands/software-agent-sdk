@@ -172,6 +172,26 @@ class MCPToolExecutor(ToolExecutor):
         # a server prefix.
         self.server_tool_name = server_tool_name or tool_name
 
+    async def _reconnect(self) -> None:
+        """Connect again and re-list the tools.
+
+        A new session (an HTTP server that restarted, a stdio server started
+        again) may offer different tools; the agent learns about them the same
+        way as after ``notifications/tools/list_changed``.
+        """
+        await self.client.connect()
+        from openhands.sdk.mcp.utils import _refresh_tools
+
+        try:
+            await _refresh_tools(
+                self.client,
+                on_tools_reconciled=self.client._tools_reconciled_callback,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to re-list MCP tools after reconnecting", exc_info=True
+            )
+
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
         """Execute the MCP tool call using the already-connected client.
@@ -196,7 +216,7 @@ class MCPToolExecutor(ToolExecutor):
                 "attempting reconnection before failing."
             )
             try:
-                await self.client.connect()
+                await self._reconnect()
             except Exception as exc:
                 return MCPToolObservation.from_text(
                     text=(
@@ -219,7 +239,7 @@ class MCPToolExecutor(ToolExecutor):
                     raise
                 # A parallel call is replacing a lost session. Nothing was
                 # sent, so connect (this waits for the drop) and send once.
-                await self.client.connect()
+                await self._reconnect()
                 result = await self.client.call_tool_mcp(
                     name=self.server_tool_name, arguments=action.to_mcp_arguments()
                 )
