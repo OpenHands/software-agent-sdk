@@ -612,6 +612,7 @@ class TerminalSession(TerminalSessionBase):
         command_to_send = command
         boundary_command: str | None = None
         command_boundary_marker: re.Pattern[str] | None = None
+        completion_signal: str = ""
         if command and not is_input:
             self._boundary_marker = None
             self._boundary_echo = None
@@ -624,16 +625,44 @@ class TerminalSession(TerminalSessionBase):
                 command_boundary_marker = re.compile(
                     rf"{re.escape(marker_start)}(?P<exit_code>\d+){marker_end}"
                 )
+                # Out-of-band completion signal: some terminals (tmux) can
+                # signal command completion through the tmux server itself,
+                # immune to the pane-text mangling that very long commands
+                # can inflict on the sentinel echo. Capability-detected so
+                # other backends keep the plain sentinel behavior.
+                completion_signal_snippet = getattr(
+                    self.terminal, "completion_signal_snippet", None
+                )
+                # completion_signal pre-initialized above
+                if callable(completion_signal_snippet):
+                    completion_signal = str(
+                        completion_signal_snippet(f"__openhands_cmd_{marker_id}")
+                    )
+                if completion_signal:
+                    completion_signal = f"{completion_signal}; "
                 boundary_command = (
                     "(__openhands_status=$?; printf '\\n%s%s%s\\n' "
                     f"'{marker_start}' \"$__openhands_status\" '{marker_end}' "
-                    '> /dev/tty; exit "$__openhands_status")'
+                    f"> /dev/tty; {completion_signal}"
+                    'exit "$__openhands_status")'
                 )
                 self._boundary_marker = command_boundary_marker
             command_to_send = escape_bash_special_chars(command_to_send)
             if boundary_command is not None:
                 self._boundary_echo = boundary_command
                 self._wrapper_echo = command_to_send
+
+        # Start the out-of-band completion waiter BEFORE sending the
+        # command: tmux discards a signal sent while no client waits.
+        completion_waiter = None
+        if completion_signal:
+            try:
+                start_waiter = getattr(self.terminal, "start_completion_waiter", None)
+                if callable(start_waiter):
+                    completion_waiter = start_waiter(f"__openhands_cmd_{marker_id}")
+            except Exception:
+                logger.debug("completion waiter unavailable", exc_info=True)
+                completion_waiter = None
 
         # Send actual command/inputs to the terminal
         sent_command = command != ""
@@ -659,118 +688,113 @@ class TerminalSession(TerminalSessionBase):
                     self.terminal.send_keys(boundary_command)
 
         # Loop until the command completes or times out
-        while True:
-            # A closed terminal never shows the command finishing, and a command with
-            # a timeout skips the no-change timeout, so stop waiting on it here.
-            if self._closed or self.terminal.closed:
-                return TerminalObservation.from_text(
-                    text="[The terminal was closed while the command was running.]",
-                    command=command,
-                    exit_code=-1,
-                    is_error=True,
+        try:
+            while True:
+                # A closed terminal never shows command completion, and a command
+                # with a timeout skips the no-change timeout, so stop waiting here.
+                if self._closed or self.terminal.closed:
+                    return TerminalObservation.from_text(
+                        text="[The terminal was closed while the command was running.]",
+                        command=command,
+                        exit_code=-1,
+                        is_error=True,
+                    )
+                _start_time = time.time()
+                logger.debug(f"GETTING TERMINAL CONTENT at {_start_time}")
+                cur_terminal_output = self.terminal.read_screen()
+                logger.debug(
+                    f"TERMINAL CONTENT GOT after "
+                    f"{time.time() - _start_time:.2f} seconds"
                 )
-            _start_time = time.time()
-            logger.debug(f"GETTING TERMINAL CONTENT at {_start_time}")
-            cur_terminal_output = self.terminal.read_screen()
-            logger.debug(
-                f"TERMINAL CONTENT GOT after {time.time() - _start_time:.2f} seconds"
-            )
-            logger.debug(
-                "Terminal content read (content_length=%s)", len(cur_terminal_output)
-            )
-            ps1_matches = CmdOutputMetadata.matches_ps1_metadata(cur_terminal_output)
-            current_ps1_count = len(ps1_matches)
-            output_changed_since_command = (
-                cur_terminal_output != initial_terminal_output
-            )
-            active_boundary_marker = command_boundary_marker or self._boundary_marker
-            boundary_match = (
-                active_boundary_marker.search(cur_terminal_output)
-                if active_boundary_marker is not None
-                else None
-            )
-            command_reached_boundary = (
-                active_boundary_marker is None or boundary_match is not None
-            )
+                logger.debug(
+                    "Terminal content read (content_length=%s)",
+                    len(cur_terminal_output),
+                )
+                ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+                    cur_terminal_output
+                )
+                current_ps1_count = len(ps1_matches)
+                output_changed_since_command = (
+                    cur_terminal_output != initial_terminal_output
+                )
+                active_boundary_marker = (
+                    command_boundary_marker or self._boundary_marker
+                )
+                boundary_match = (
+                    active_boundary_marker.search(cur_terminal_output)
+                    if active_boundary_marker is not None
+                    else None
+                )
+                boundary_signal_fired = (
+                    completion_waiter is not None and completion_waiter.fired.is_set()
+                )
+                command_reached_boundary = (
+                    active_boundary_marker is None
+                    or boundary_match is not None
+                    or boundary_signal_fired
+                )
 
-            if cur_terminal_output != last_terminal_output:
-                last_terminal_output = cur_terminal_output
-                last_change_time = time.time()
-                logger.debug(f"CONTENT UPDATED DETECTED at {last_change_time}")
+                if cur_terminal_output != last_terminal_output:
+                    last_terminal_output = cur_terminal_output
+                    last_change_time = time.time()
+                    logger.debug(f"CONTENT UPDATED DETECTED at {last_change_time}")
 
-            # 1) Execution completed when a prompt appears, or when a heredoc
-            # suffix reaches its tty boundary after stdout has been redirected.
-            prompt_reached = current_ps1_count > initial_ps1_count or (
-                cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
-            )
-            if (
-                command_reached_boundary
-                and (not sent_command or output_changed_since_command)
-                and (prompt_reached or boundary_match is not None)
-            ):
-                completed_terminal_output = cur_terminal_output
-                boundary_exit_code = None
-                if active_boundary_marker is not None:
-                    completed_terminal_output = self._strip_boundary_wrapper(
+                # 1) Execution completed when a prompt appears, or when a heredoc
+                # suffix reaches its tty boundary after stdout has been redirected.
+                prompt_reached = current_ps1_count > initial_ps1_count or (
+                    cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
+                )
+                if (
+                    command_reached_boundary
+                    and (not sent_command or output_changed_since_command)
+                    and (
+                        prompt_reached
+                        or boundary_match is not None
+                        or boundary_signal_fired
+                    )
+                ):
+                    completed_terminal_output = cur_terminal_output
+                    boundary_exit_code = None
+                    if active_boundary_marker is not None:
+                        completed_terminal_output = self._strip_boundary_wrapper(
+                            completed_terminal_output
+                        )
+                        if not prompt_reached and boundary_match is not None:
+                            boundary_exit_code = int(boundary_match.group("exit_code"))
+                    completed_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
                         completed_terminal_output
                     )
-                    if not prompt_reached and boundary_match is not None:
-                        boundary_exit_code = int(boundary_match.group("exit_code"))
-                completed_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
-                    completed_terminal_output
-                )
-                obs = self._handle_completed_command(
-                    command,
-                    terminal_content=completed_terminal_output,
-                    ps1_matches=completed_ps1_matches,
-                    boundary_exit_code=boundary_exit_code,
-                )
-                return obs
+                    obs = self._handle_completed_command(
+                        command,
+                        terminal_content=completed_terminal_output,
+                        ps1_matches=completed_ps1_matches,
+                        boundary_exit_code=boundary_exit_code,
+                    )
+                    return obs
 
-            # Timeout checks should only trigger if a new prompt hasn't appeared yet.
+                # Timeout checks only trigger if no new prompt has appeared yet.
 
-            # 2) Execution timed out since there's no change in output
-            # for a while (NO_CHANGE_TIMEOUT_SECONDS)
-            # We ignore this if the command is *blocking*
-            time_since_last_change = time.time() - last_change_time
-            is_blocking = action.timeout is not None
-            logger.debug(
-                f"CHECKING NO CHANGE TIMEOUT ({self.no_change_timeout_seconds}s): "
-                f"elapsed {time_since_last_change}. Action blocking: {is_blocking}"
-            )
-            if (
-                not is_blocking
-                and self.no_change_timeout_seconds is not None
-                and time_since_last_change >= self.no_change_timeout_seconds
-            ):
-                stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
-                obs = self._handle_nochange_timeout_command(
-                    command,
-                    terminal_content=stripped_output,
-                    ps1_matches=CmdOutputMetadata.matches_ps1_metadata(stripped_output),
-                    echoed_command=(
-                        command_to_send if command_boundary_marker is not None else None
-                    ),
+                # 2) Execution timed out since there's no change in output
+                # for a while (NO_CHANGE_TIMEOUT_SECONDS)
+                # We ignore this if the command is *blocking*
+                time_since_last_change = time.time() - last_change_time
+                is_blocking = action.timeout is not None
+                logger.debug(
+                    f"CHECKING NO CHANGE TIMEOUT ({self.no_change_timeout_seconds}s): "
+                    f"elapsed {time_since_last_change}. Action blocking: {is_blocking}"
                 )
-                return obs
-
-            # 3) Execution timed out since the command has been running for too long
-            # (hard timeout)
-            elapsed_time = time.time() - start_time
-            logger.debug(
-                f"CHECKING HARD TIMEOUT ({action.timeout}s): elapsed {elapsed_time:.2f}"
-            )
-            if action.timeout is not None:
-                time_since_start = time.time() - start_time
-                if time_since_start >= action.timeout:
+                if (
+                    not is_blocking
+                    and self.no_change_timeout_seconds is not None
+                    and time_since_last_change >= self.no_change_timeout_seconds
+                ):
                     stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
-                    obs = self._handle_hard_timeout_command(
+                    obs = self._handle_nochange_timeout_command(
                         command,
                         terminal_content=stripped_output,
                         ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
                             stripped_output
                         ),
-                        timeout=action.timeout,
                         echoed_command=(
                             command_to_send
                             if command_boundary_marker is not None
@@ -779,6 +803,38 @@ class TerminalSession(TerminalSessionBase):
                     )
                     return obs
 
-            # Poll in proportion to the command's run time so a short command is
-            # noticed within milliseconds, not at the next POLL_INTERVAL tick.
-            time.sleep(min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4)))
+                # 3) Execution timed out since the command has been running for too long
+                # (hard timeout)
+                elapsed_time = time.time() - start_time
+                logger.debug(
+                    f"CHECKING HARD TIMEOUT ({action.timeout}s): "
+                    f"elapsed {elapsed_time:.2f}"
+                )
+                if action.timeout is not None:
+                    time_since_start = time.time() - start_time
+                    if time_since_start >= action.timeout:
+                        stripped_output = self._strip_boundary_wrapper(
+                            cur_terminal_output
+                        )
+                        obs = self._handle_hard_timeout_command(
+                            command,
+                            terminal_content=stripped_output,
+                            ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                                stripped_output
+                            ),
+                            timeout=action.timeout,
+                            echoed_command=(
+                                command_to_send
+                                if command_boundary_marker is not None
+                                else None
+                            ),
+                        )
+                        return obs
+
+                # Poll in proportion to the command's run time so a short command is
+                # noticed within milliseconds, not at the next POLL_INTERVAL tick.
+                time.sleep(min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4)))
+
+        finally:
+            if completion_waiter is not None:
+                completion_waiter.release()
