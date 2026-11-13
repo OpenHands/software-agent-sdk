@@ -38,7 +38,9 @@ jobs:
                     # Isolate terminal state, but do not fork initialized macOS
                     # browser/Objective-C frameworks (which can crash after fork).
                     - suite: tools
-                      args: --forked --ignore=tests/tools/browser_use tests/tools
+                      args: >-
+                          --forked --timeout=180 --timeout-method=thread
+                          --ignore=tests/tools/browser_use tests/tools
                     - suite: browser
                       args: tests/tools/browser_use
                     - suite: agent_server
