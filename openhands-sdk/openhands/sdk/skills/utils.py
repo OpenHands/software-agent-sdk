@@ -238,9 +238,13 @@ def expand_mcp_servers(
     servers: Mapping[str, MCPServer],
     get_secret: SecretLookup | None = None,
     *,
+    expand_defaults: bool = True,
     on_unresolved: Callable[[str], None] | None = None,
 ) -> dict[str, MCPServer]:
     """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
+
+    With ``expand_defaults=False``, ``${VAR:-default}`` stays as it is when
+    nothing resolves it, for a later pass that has the conversation's secrets.
 
     Servers with ``literal_values`` are returned untouched: they come from an
     Agent Plugins package, whose loader has already expanded the only two
@@ -257,7 +261,7 @@ def expand_mcp_servers(
         {"mcpServers": dump_mcp_config(expandable)},
         {},
         get_secret=get_secret,
-        expand_defaults=True,
+        expand_defaults=expand_defaults,
         on_unresolved=on_unresolved,
     )
     return {**servers, **coerce_mcp_config(expanded["mcpServers"])}

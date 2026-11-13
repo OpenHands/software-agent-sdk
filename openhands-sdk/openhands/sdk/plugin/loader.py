@@ -105,9 +105,12 @@ def load_plugins(
 
     # Expand MCP server variables: per-conversation secrets first, then the
     # environment, then defaults. Plugin loading leaves every ${VAR} for this
-    # pass, so it runs even without a secret lookup.
+    # pass, so it runs even without a secret lookup. Without one, defaults
+    # stay for the conversation's pass, where a secret can still win.
     if merged_mcp_config:
-        merged_mcp_config = expand_mcp_servers(merged_mcp_config, get_secret)
+        merged_mcp_config = expand_mcp_servers(
+            merged_mcp_config, get_secret, expand_defaults=get_secret is not None
+        )
         logger.debug("Expanded MCP config variables")
 
     # Combine all hook configs (concatenation semantics)
