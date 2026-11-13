@@ -35,9 +35,12 @@ jobs:
                 include:
                     - suite: sdk
                       args: -n auto tests/sdk
-                    # --forked: terminal tests conflict when run in parallel
+                    # Isolate terminal state, but do not fork initialized macOS
+                    # browser/Objective-C frameworks (which can crash after fork).
                     - suite: tools
-                      args: --forked tests/tools
+                      args: --forked --ignore=tests/tools/browser_use tests/tools
+                    - suite: browser
+                      args: tests/tools/browser_use
                     - suite: agent_server
                       args: -n auto tests/agent_server
                     - suite: workspace
@@ -63,6 +66,10 @@ jobs:
 
             - name: Install deps
               run: uv sync --frozen --group dev
+
+            - name: Install browser prerequisite
+              if: matrix.suite == 'browser'
+              run: uv run --frozen playwright install chromium
 
             - name: Run ${{ matrix.suite }} tests
               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}
