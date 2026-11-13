@@ -1682,6 +1682,7 @@ class LocalConversation(BaseConversation):
         gateway = MCPToolGateway(
             self._state.mcp_gateway_selected_tools,
             filter_tools_regex=self.agent.filter_tools_regex,
+            tool_policy=self.agent.mcp_tool_policy,
         )
         if self.agent.mcp_config:
             gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)

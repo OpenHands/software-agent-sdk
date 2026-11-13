@@ -9,11 +9,14 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, OpenHandsAgentSettings
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.launch import LaunchRuntime, finalize, resolve
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, builtin_tool_class
 from openhands.sdk.tool.builtins.mcp_gateway import CallMCPToolAction, JSONValue
 from openhands.sdk.tool.registry import resolve_tool
 from openhands.sdk.tool.spec import Tool
+from tests.sdk.launch import fakes
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -49,6 +52,65 @@ def gateway_conversation(
 def call(conversation: LocalConversation, name: str, args: dict):
     tool = conversation.agent.tools_map[name]
     return tool(tool.action_from_arguments(args), conversation)
+
+
+def test_profile_policy_restricts_gateway_selection_and_survives_resume(
+    tmp_path: Path,
+):
+    profile = OpenHandsAgentProfile(
+        name="restricted",
+        llm_profile_ref="default",
+        tools=[],
+        mcp_tool_policy={
+            "alpha": {"include": ["fetch"]},
+            "beta": {"exclude": ["fetch"]},
+        },
+    )
+    launched = finalize(
+        resolve(profile, fakes.stores(mcp={"alpha": SERVER, "beta": SERVER})),
+        LaunchRuntime(),
+    )
+    assert launched.profile is not None
+    assert launched.profile.agent_profile_id == profile.id
+    first = LocalConversation(
+        agent=launched.agent,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        first._ensure_agent_ready()
+        listing = first.mcp_gateway.list_tools()
+        assert [tool["name"] for tool in listing["tools"]] == ["alpha.fetch"]
+        assert first.mcp_gateway.call(
+            "beta.fetch", {"url": "x"}, listing["revision"], first
+        ).is_error
+        first.select_mcp_tools(["beta.fetch"])
+        assert first.mcp_gateway.list_tools()["tools"] == []
+        first.select_mcp_tools(None)
+        assert [tool["name"] for tool in first.mcp_gateway.list_tools()["tools"]] == [
+            "alpha.fetch"
+        ]
+        conversation_id = first.state.id
+    finally:
+        first.close()
+
+    resumed = LocalConversation(
+        agent=None,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "history",
+        conversation_id=conversation_id,
+        delete_on_close=False,
+        visualizer=None,
+    )
+    try:
+        resumed._ensure_agent_ready()
+        assert [tool["name"] for tool in resumed.mcp_gateway.list_tools()["tools"]] == [
+            "alpha.fetch"
+        ]
+    finally:
+        resumed.close()
 
 
 def test_gateway_arguments_have_typed_json_schema_and_accept_nested_values():

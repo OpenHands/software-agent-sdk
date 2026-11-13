@@ -118,6 +118,18 @@ def test_mcp_server_refs_filter_the_user_servers(refs, expected):
     assert list(resolved.settings.mcp_config) == expected
 
 
+def test_profile_tool_policy_resolves_into_agent_settings():
+    profile = _profile(
+        mcp_server_refs=["a"], mcp_tool_policy={"a": {"include": ["fetch"]}}
+    )
+    resolved = resolve(profile, fakes.stores(mcp=_mcp("a", "b")))
+
+    assert list(resolved.settings.mcp_config) == ["a"]
+    assert _openhands(resolved).mcp_tool_policy["a"].include == ["fetch"]
+    assert resolved.profile is not None
+    assert resolved.profile.agent_profile_id == profile.id
+
+
 def test_an_openhands_profile_gets_the_catalog_minus_its_deny_list():
     catalog = [Skill(name="alpha", content="a"), Skill(name="beta", content="b")]
 

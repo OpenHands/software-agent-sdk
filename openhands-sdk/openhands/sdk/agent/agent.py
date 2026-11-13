@@ -74,6 +74,8 @@ from openhands.sdk.llm.exceptions import (
 )
 from openhands.sdk.llm.router.base import RouterLLM
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
     observe,
@@ -85,18 +87,17 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
-    from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
     ThinkAction,
 )
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
+    from openhands.sdk.tool import ToolDefinition
 
 
 logger = get_logger(__name__)
@@ -473,6 +474,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "call_mcp_tool tools instead of registering each downstream tool. "
             "Set to False to use the legacy per-tool registration mode."
         ),
+    )
+    mcp_tool_policy: dict[str, MCPToolPolicy] = Field(
+        default_factory=dict,
+        description="Per-server MCP gateway tool rules resolved from agent settings.",
     )
     mcp_gateway_startup_catalog: bool = Field(
         default=False,
