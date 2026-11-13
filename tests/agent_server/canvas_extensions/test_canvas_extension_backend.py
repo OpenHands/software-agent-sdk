@@ -47,6 +47,9 @@ _SERVER = (
     f"#!{sys.executable}\n"
     + """
 import http.server
+import socket
+# Loopback test servers do not need reverse DNS (runner-images#14409).
+socket.getfqdn = lambda name='': name
 import json
 import os
 import subprocess
@@ -563,6 +566,9 @@ _SLOW_HEALTH_SERVER = (
     f"#!{sys.executable}\n"
     + """
 import http.server
+import socket
+# Loopback test servers do not need reverse DNS (runner-images#14409).
+socket.getfqdn = lambda name='': name
 import sys
 import time
 
@@ -741,7 +747,8 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
     payload = (
         b"#!/usr/bin/python3\n"
-        b"import http.server, os, signal, subprocess, sys\n"
+        b"import http.server, os, signal, socket, subprocess, sys\n"
+        b"socket.getfqdn = lambda name='': name\n"
         b"port = int(sys.argv[1])\n"
         b"data_dir = sys.argv[2]\n"
         b"os.makedirs(data_dir, exist_ok=True)\n"
