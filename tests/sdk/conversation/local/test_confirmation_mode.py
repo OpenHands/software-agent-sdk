@@ -552,6 +552,14 @@ class TestConfirmationMode:
 
     def test_think_and_finish_action_skips_confirmation_entirely(self):
         """First step: ThinkAction (skips confirmation). Second step: FinishAction."""
+        # ThinkTool is opt-in, and this test exercises its confirmation behavior.
+        self.agent = Agent(
+            llm=self.llm,
+            tools=[Tool(name="test_tool")],
+            include_default_tools=["FinishTool", "ThinkTool"],
+        )
+        self.conversation = Conversation(agent=self.agent)
+
         # Enable confirmation mode
         self.conversation.set_confirmation_policy(AlwaysConfirm())
 

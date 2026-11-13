@@ -51,7 +51,9 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.llm_convertible.observation import ToolValidationError
 from openhands.sdk.event.security import SecurityAnalysisEvent
+from openhands.sdk.event.types import ROOT_PARENT_ID, EventID
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -111,7 +113,7 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     if "summary" in tool.action_type.model_fields:
         return True
     if isinstance(tool, MCPToolDefinition):
-        props = tool.mcp_tool.inputSchema.get("properties", {})
+        props = tool.mcp_tool.input_schema.get("properties", {})
         if "summary" in props:
             return True
     return False
@@ -141,6 +143,11 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
     return False
 
 
+def _messages_contain_image(messages: list[Message]) -> bool:
+    """True if any message (user, tool observation, ...) carries an image."""
+    return any(message.contains_image for message in messages)
+
+
 def _non_multimodal_image_message(model: str) -> Message:
     """Create an error message for when images are sent to a non-vision model.
 
@@ -168,30 +175,31 @@ def _non_multimodal_image_message(model: str) -> Message:
     )
 
 
-def _replace_latest_user_images_with_references(
+def _replace_images_with_references(
     messages: list[Message],
 ) -> list[Message]:
-    """Replace images in the most recent user message containing images.
+    """Replace images in every image-bearing message with vision references.
 
-    Searches backward, skipping user messages without images. Each image URL
-    becomes a textual reference to the inspect_image_with_vision tool, with a
-    zero-based image index within the selected message.
+    Covers tool observations (e.g. browser screenshots) and non-latest user
+    messages, not just the latest user message: the LLM request guard rejects
+    image-bearing requests to text-only models, so every image must become
+    delegable. Each image URL becomes a textual reference to the
+    inspect_image_with_vision tool, numbered in conversation order matching
+    the vision executor's ``image_index``.
 
     Args:
         messages: List of conversation messages to process.
 
     Returns:
-        A new list with the selected message copied and its images replaced.
-        Other messages and non-image content are unchanged. If no user message
-        contains images, returns a shallow copy of the original list.
+        A new list with image-bearing messages copied and their images
+        replaced. Non-image content is unchanged.
     """
     rewritten = list(messages)
-    for index in range(len(rewritten) - 1, -1, -1):
-        message = rewritten[index]
-        if message.role != "user" or not message.contains_image:
+    image_index = 0
+    for index, message in enumerate(rewritten):
+        if not message.contains_image:
             continue
 
-        image_index = 0
         content: list[TextContent | ImageContent] = []
         for item in message.content:
             if isinstance(item, ImageContent):
@@ -199,9 +207,10 @@ def _replace_latest_user_images_with_references(
                     content.append(
                         TextContent(
                             text=(
-                                f"[Image {image_index} is attached to the latest "
-                                "user message. Use the inspect_image_with_vision "
-                                f"tool with image_index={image_index} to inspect it.]"
+                                f"[Image {image_index} is attached in the "
+                                "conversation history. Use the "
+                                "inspect_image_with_vision tool with "
+                                f"image_index={image_index} to inspect it.]"
                             )
                         )
                     )
@@ -210,8 +219,11 @@ def _replace_latest_user_images_with_references(
                 content.append(item)
 
         rewritten[index] = message.model_copy(update={"content": content})
-        break
     return rewritten
+
+
+# Backwards-compatible alias for the pre-generalization helper.
+_replace_latest_user_images_with_references = _replace_images_with_references
 
 
 def _should_handle_non_multimodal_image_input(
@@ -219,7 +231,7 @@ def _should_handle_non_multimodal_image_input(
 ) -> bool:
     if isinstance(llm, RouterLLM):
         return False
-    return _latest_user_message_contains_image(messages) and not llm.vision_is_active()
+    return _messages_contain_image(messages) and not llm.vision_is_active()
 
 
 @dataclass(frozen=True, slots=True)
@@ -561,12 +573,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             return
 
+        # A damaged event log can lose the SystemPromptEvent's file. The first
+        # surviving event still names it as its parent, or names the copy that an
+        # earlier resume re-created under the same id.
+        restored_prompt_id: EventID | None = None
+        if has_user_message:
+            parent_id = state.events[0].parent_id
+            if parent_id is not None and parent_id in state.events:
+                parent = state.events[state.events.get_index(parent_id)]
+                if isinstance(parent, SystemPromptEvent):
+                    return
+            elif parent_id not in (None, ROOT_PARENT_ID):
+                restored_prompt_id = parent_id
+
         # Assert: A user message should never appear before the system prompt.
         #
         # NOTE: This is a best-effort check based on the first few events only.
         # Remote conversations can include a ConversationStateUpdateEvent near the
         # start, so we scan a small prefix window.
-        if has_user_message:
+        if has_user_message and restored_prompt_id is None:
             event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
                 f"init_state: User message found in prefix before SystemPromptEvent! "
@@ -598,7 +623,29 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             if dynamic_context
             else None,
         )
-        on_event(event)
+        if restored_prompt_id is None:
+            on_event(event)
+            return
+
+        # Re-create it as an explicit root under its old id, so the surviving
+        # history hangs off it again; appending must not move HEAD onto it.
+        logger.warning(
+            "SystemPromptEvent '%s' is missing from the event log (its file was "
+            "lost); re-creating it as the root of the surviving history. "
+            "conversation_id=%s",
+            restored_prompt_id,
+            state.id,
+        )
+        head = state.active_branch(limit=1)
+        head_is_empty = state.head_is_empty
+        on_event(
+            event.model_copy(
+                update={"id": restored_prompt_id, "parent_id": ROOT_PARENT_ID}
+            )
+        )
+        state.leaf_event_id = head[-1].id if head else None
+        state.head_is_empty = head_is_empty
+        state.rebuild_view()
 
     def get_dynamic_context(self, state: ConversationState) -> str | None:
         """Get dynamic context for the system prompt, including secrets from state.
@@ -627,7 +674,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
     @staticmethod
     def _mark_conversation_finished(state: ConversationState) -> None:
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "agent finished")
 
     def _execute_actions(
         self,
@@ -649,8 +696,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
@@ -668,6 +715,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
+        # Each tool masks its observation in a worker thread while arun() holds
+        # the state lock. A lookup made there may call a server on this event
+        # loop that registers secrets on the conversation, which needs that lock
+        # (#6642). Resolve lookups first with the lock released, as astep does
+        # for agent messages, so masking under the lock finds them cached.
+        while True:
+            sources = dict(state.secret_registry.secret_sources)
+            async with conversation._released_state_lock_during_io():
+                await asyncio.to_thread(state.secret_registry.resolve_uncached_values)
+            if sources == state.secret_registry.secret_sources:
+                break
         batch = await _ActionBatch.aprepare(
             action_events,
             state=state,
@@ -680,8 +738,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: self._mark_conversation_finished(state),
         )
@@ -724,7 +782,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED, "user message blocked by hook"
+                )
                 return
         elif state.blocked_messages:
             logger.debug(
@@ -761,8 +821,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "image references and vision inspection tool",
                     self.llm.model,
                 )
-                _messages = _replace_latest_user_images_with_references(_messages)
-            else:
+                _messages = _replace_images_with_references(_messages)
+            elif _latest_user_message_contains_image(_messages):
                 logger.info(
                     "Image input received while selected model does not support "
                     "vision: %s",
@@ -774,8 +834,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                         llm_message=_non_multimodal_image_message(self.llm.model),
                     )
                 )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED,
+                    "model cannot read the attached images",
+                )
                 return
+            # Images only in tool observations or older messages, with no
+            # vision tool to delegate to: fall through and let the formatter
+            # drop the pixels so the turn continues degraded instead of
+            # hard-failing (see LLM._validate_image_request).
 
         logger.debug(
             "Sending messages to LLM: "
@@ -935,7 +1002,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED, "user message blocked by hook"
+                )
                 return
         elif state.blocked_messages:
             logger.debug(
@@ -969,8 +1038,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "image references and vision inspection tool",
                     self.llm.model,
                 )
-                _messages = _replace_latest_user_images_with_references(_messages)
-            else:
+                _messages = _replace_images_with_references(_messages)
+            elif _latest_user_message_contains_image(_messages):
                 logger.info(
                     "Image input received while selected model does not support "
                     "vision: %s",
@@ -982,8 +1051,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                         llm_message=_non_multimodal_image_message(self.llm.model),
                     )
                 )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+                state.transition(
+                    ConversationExecutionStatus.FINISHED,
+                    "model cannot read the attached images",
+                )
                 return
+            # Images only in tool observations or older messages, with no
+            # vision tool to delegate to: fall through and let the formatter
+            # drop the pixels so the turn continues degraded instead of
+            # hard-failing (see LLM._validate_image_request).
 
         logger.debug(
             "Sending messages to LLM: "
@@ -1190,8 +1266,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state: ConversationState, risks: list[risk.SecurityRisk]
     ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
-            state.execution_status = (
-                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            state.transition(
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+                "action needs user confirmation",
             )
             return True
 
@@ -1286,6 +1363,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
         stream: StreamContext | None = None,
+        validation_errors: list[ToolValidationError] | None = None,
     ) -> None:
         try:
             json.loads(tool_call.arguments)
@@ -1325,6 +1403,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_name=tool_name,
             tool_call_id=tool_call.id,
             classification=AGENT_OUTCOME,
+            validation_errors=validation_errors,
         )
         record_tool_result(
             conversation,
@@ -1453,6 +1532,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
                 stream=stream,
+                validation_errors=(
+                    [
+                        ToolValidationError(type=detail["type"], loc=detail["loc"])
+                        for detail in e.errors(
+                            include_url=False,
+                            include_context=False,
+                            include_input=False,
+                        )
+                    ]
+                    if isinstance(e, ValidationError)
+                    else None
+                ),
             )
             return
 
@@ -1554,7 +1645,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        return [obs_event]
+        return [obs_event, *observation.follow_up_events()]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType

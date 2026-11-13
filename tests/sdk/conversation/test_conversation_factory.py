@@ -79,12 +79,14 @@ def test_conversation_factory_forwards_local_parameters(agent):
     conversation = Conversation(
         agent=agent,
         max_iteration_per_run=100,
+        max_budget_per_run=4.5,
         stuck_detection=False,
         visualizer=None,
     )
 
     assert isinstance(conversation, LocalConversation)
     assert conversation.max_iteration_per_run == 100
+    assert conversation.max_budget_per_run == 4.5
     conversation.close()
 
 

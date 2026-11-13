@@ -115,7 +115,7 @@ def test_llm_private_attributes_not_serialized() -> None:
     # Private attributes should not be present
     assert "_model_info" not in llm_dict
     assert "_tokenizer" not in llm_dict
-    assert "_telemetry" not in llm_dict
+    assert "_session" not in llm_dict
 
     # Serialize to JSON and deserialize
     llm_json = llm.model_dump_json()
@@ -127,8 +127,8 @@ def test_llm_private_attributes_not_serialized() -> None:
     assert deserialized_llm._tokenizer is None
     assert deserialized_llm.native_tool_calling is True
     assert (
-        deserialized_llm._telemetry is not None
-    )  # LLM creates telemetry automatically
+        deserialized_llm._session is not None
+    )  # LLM creates its session (metrics + telemetry) automatically
     assert deserialized_llm.model_dump() == llm.model_dump()
 
 

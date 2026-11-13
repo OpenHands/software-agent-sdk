@@ -2,29 +2,53 @@
 Local Event router for OpenHands SDK.
 """
 
+import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Annotated, Any, cast
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Query,
-    status,
 )
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_event_service,
+)
+from openhands.agent_server.errors import error_responses
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.experimental_features import (
+    host_experimental_features,
+    is_enabled,
+)
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventSortOrder,
+    ReactionRequest,
     SendMessageRequest,
     Success,
 )
+from openhands.agent_server.openai.usage import token_usage_delta
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk import Message
-from openhands.sdk.event import Event
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    RateLimited,
+    UpstreamTimeout,
+)
+from openhands.sdk.event import Event, ReactionEvent
 
 
 event_read_router = APIRouter(
@@ -34,6 +58,7 @@ event_write_router = APIRouter(
     prefix="/conversations/{conversation_id}/events", tags=["Events"]
 )
 logger = logging.getLogger(__name__)
+_GATEWAY_RUN_TIMEOUT_SECONDS = 120.0
 
 
 # Read methods
@@ -66,7 +91,7 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
 
 
 @event_read_router.get(
-    "/search", responses={404: {"description": "Conversation not found"}}
+    "/search", responses=error_responses({NotFound: "Conversation not found"})
 )
 async def search_conversation_events(
     page_id: Annotated[
@@ -140,7 +165,7 @@ async def search_conversation_events(
 
 
 @event_read_router.get(
-    "/count", responses={404: {"description": "Conversation not found"}}
+    "/count", responses=error_responses({NotFound: "Conversation not found"})
 )
 async def count_conversation_events(
     kind: Annotated[
@@ -186,7 +211,7 @@ async def count_conversation_events(
 
 
 @event_read_router.get(
-    "/{event_id}", responses={404: {"description": "Item not found"}}
+    "/{event_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def get_conversation_event(
     event_id: str,
@@ -195,7 +220,7 @@ async def get_conversation_event(
     """Get a local event given an id"""
     event = await event_service.get_event(event_id)
     if event is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return event
 
 
@@ -212,7 +237,9 @@ async def batch_get_conversation_events(
 
 @event_write_router.post(
     "",
-    responses={429: {"description": "Message saved but server run capacity is full"}},
+    responses=error_responses(
+        {RateLimited: "Message saved but server run capacity is full"}
+    ),
 )
 async def send_message(
     request: SendMessageRequest,
@@ -228,12 +255,110 @@ async def send_message(
     return Success()
 
 
+async def _gateway_context(
+    conversation_id: UUID,
+    http_request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> tuple[EventService, float]:
+    deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    event_service = await get_event_service(
+        conversation_id, http_request, conversation_service
+    )
+    return event_service, deadline
+
+
+@event_write_router.post("/_gateway/run", include_in_schema=False)
+async def _gateway_run_endpoint(
+    request: SendMessageRequest,
+    context: tuple[EventService, float] = Depends(_gateway_context),
+) -> dict[str, Any]:
+    event_service, deadline = context
+    return await run_gateway_message(request, event_service, deadline=deadline)
+
+
+async def run_gateway_message(
+    request: SendMessageRequest,
+    event_service: EventService,
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    """Run one gateway turn at a time for this conversation."""
+    if deadline is None:
+        deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    try:
+        await asyncio.wait_for(
+            event_service._gateway_run_lock.acquire(),
+            timeout=deadline - time.monotonic(),
+        )
+    except TimeoutError as exc:
+        raise UpstreamTimeout("Agent run timed out") from exc
+    try:
+        return await _run_gateway_message(request, event_service, deadline)
+    finally:
+        event_service._gateway_run_lock.release()
+
+
+async def _run_gateway_message(
+    request: SendMessageRequest, event_service: EventService, deadline: float
+) -> dict[str, Any]:
+    """Save the message only after run capacity is available."""
+    if event_service._run_task is not None:
+        try:
+            await event_service.wait_for_run_completion(
+                timeout=max(0, deadline - time.monotonic())
+            )
+        except TimeoutError as exc:
+            raise UpstreamTimeout("Agent run timed out") from exc
+    state_before = await event_service.get_state()
+    min_event_count = len(state_before.events) + 1
+    usage_before = state_before.stats.get_combined_metrics().accumulated_token_usage
+    run_slot = await event_service.reserve_run_slot()
+    try:
+        if time.monotonic() >= deadline:
+            raise UpstreamTimeout("Agent run timed out")
+        await event_service.send_message(
+            request.create_message(), run=True, run_slot=run_slot
+        )
+    finally:
+        if run_slot is not None:
+            run_slot.release()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise UpstreamTimeout("Agent run timed out")
+        try:
+            run_status = await event_service.wait_for_run_completion(timeout=remaining)
+        except TimeoutError as exc:
+            raise UpstreamTimeout("Agent run timed out") from exc
+        state = await event_service.get_state()
+        if len(state.events) > min_event_count and (
+            run_status.is_terminal()
+            or run_status
+            in (
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+            )
+        ):
+            break
+        await asyncio.sleep(0.1)
+    usage = token_usage_delta(
+        usage_before, state.stats.get_combined_metrics().accumulated_token_usage
+    )
+    return {
+        "status": run_status.value,
+        "final_response": await event_service.get_agent_final_response(),
+        "usage": usage.model_dump(mode="json") if usage is not None else None,
+    }
+
+
 @event_write_router.post(
     "/respond_to_confirmation",
-    responses={
-        404: {"description": "Item not found"},
-        429: {"description": "Server conversation run capacity is full"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "Item not found",
+            RateLimited: "Server conversation run capacity is full",
+        }
+    ),
 )
 async def respond_to_confirmation(
     request: ConfirmationResponseRequest,
@@ -244,6 +369,63 @@ async def respond_to_confirmation(
     return Success()
 
 
+reaction_router = APIRouter(
+    prefix="/conversations/{conversation_id}/reactions", tags=["Events"]
+)
+
+
+async def require_reactions_enabled(config: Config) -> None:
+    """Refuse with 409 unless the user has conversation reactions on."""
+    try:
+        settings = await asyncio.to_thread(
+            lambda: get_settings_store(config).load() or PersistedSettings()
+        )
+    except (PermissionError, OSError):
+        raise Conflict("Cannot read the settings file to check the feature flag")
+    if not is_enabled(settings.experimental_features, "conversation_reactions"):
+        raise Conflict("Conversation reactions are turned off")
+
+
+@reaction_router.post(
+    "",
+    responses=error_responses(
+        {
+            Invalid: "There is no such message to react to",
+            NotFound: "Item not found",
+            Conflict: "Conversation reactions are turned off",
+        }
+    ),
+)
+async def react_to_message(
+    request: ReactionRequest,
+    http_request: Request,
+    event_service: EventService = Depends(get_event_service),
+) -> ReactionEvent:
+    """Add or remove the user's emoji reaction on a message.
+
+    The reaction is saved as a `ReactionEvent` and streamed like other events;
+    it does not run the agent. While tool calls wait for their results (a
+    pending confirmation) it is held back and saved once they are answered.
+    Without `target_event_id` it goes on the agent's latest message. Needs
+    the `conversation_reactions` feature on;
+    unlike the agent's tools, which a conversation gets when it starts, this
+    check follows the switch at once.
+    """
+    # A Docker runtime's server finds the user's switch on the host, which
+    # checks it before forwarding the request.
+    if host_experimental_features() is None:
+        await require_reactions_enabled(get_config(http_request))
+    try:
+        return await event_service.react(
+            request.emoji, request.target_event_id, removed=request.removed
+        )
+    except ValueError as exc:
+        if str(exc) == "inactive_service":
+            raise
+        raise Invalid(str(exc))
+
+
 event_router = APIRouter()
 event_router.include_router(event_read_router)
 event_router.include_router(event_write_router)
+event_router.include_router(reaction_router)

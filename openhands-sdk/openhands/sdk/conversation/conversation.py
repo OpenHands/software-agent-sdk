@@ -74,6 +74,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -105,6 +106,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -136,6 +138,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -204,6 +207,7 @@ class Conversation:
                 token_callbacks=token_callbacks,
                 hook_config=hook_config,
                 max_iteration_per_run=max_iteration_per_run,
+                max_budget_per_run=max_budget_per_run,
                 stuck_detection=stuck_detection,
                 stuck_detection_thresholds=stuck_detection_thresholds,
                 visualizer=visualizer,
@@ -233,6 +237,7 @@ class Conversation:
             token_callbacks=token_callbacks,
             hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,
