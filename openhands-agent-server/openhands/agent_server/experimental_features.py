@@ -8,12 +8,25 @@ until the user turns it on. Unknown keys are refused, so
 To add a feature, append an :class:`ExperimentalFeatureDefinition` to
 ``EXPERIMENTAL_FEATURES`` and read it where it takes effect with
 :func:`is_enabled`.
+
+The tools a feature gives the agent are chosen when a conversation starts
+(:func:`experimental_feature_tools`), so they follow the switch for
+conversations started after it; a route that checks the switch follows it at
+once. Child conversations reuse their parent's agent and tools.
+
+A Docker runtime's server has its own, empty settings: the host passes it the
+user's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
+ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 
+import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from pydantic import BaseModel
+
+from openhands.sdk.tool.spec import Tool
 
 
 @dataclass(frozen=True)
@@ -36,7 +49,17 @@ class ExperimentalFeatureUpdate(BaseModel):
     enabled: bool
 
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = []
+CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
+    key="conversation_reactions",
+    label="Conversation reactions",
+    description=(
+        "The agent can put an emoji reaction on your messages, for example 👀 "
+        "when it starts on something before it answers, and you can react to "
+        "its messages. Applies to conversations started after you turn it on."
+    ),
+)
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [CONVERSATION_REACTIONS]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -59,3 +82,37 @@ def experimental_feature_flags(
         )
         for f in EXPERIMENTAL_FEATURES
     ]
+
+
+def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
+    """Tools to add to an OpenHands agent for the features that are on."""
+    if is_enabled(features, CONVERSATION_REACTIONS.key):
+        # Tool names as registered by openhands.tools.reaction.
+        return [Tool(name="react"), Tool(name="unreact")]
+    return []
+
+
+RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"
+
+
+def host_experimental_features() -> dict[str, bool] | None:
+    """The host's switches, in a Docker runtime's server; None elsewhere.
+
+    The host sets them when it starts the runtime's container, so they pick
+    the tools of the conversations started there. A route that follows a
+    switch at once is checked by the host before it forwards the request.
+    """
+    raw = os.getenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        key: value
+        for key, value in parsed.items()
+        if find_experimental_feature(key) is not None and isinstance(value, bool)
+    }

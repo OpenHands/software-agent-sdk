@@ -37,6 +37,12 @@
       "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/6758"
     },
     {
+      "endpoints": ["POST /api/conversations/{}/reactions"],
+      "reason": "Client-ahead API for conversation reactions, added with the Agent Server endpoint in the same PR.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/6609"
+    },
+    {
       "endpoints": ["POST /api/acp/models"],
       "reason": "Client-ahead API stacked on the pending Agent Server ACP model discovery endpoint.",
       "owner": "OpenHands SDK maintainers",

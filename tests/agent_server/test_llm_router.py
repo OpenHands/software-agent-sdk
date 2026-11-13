@@ -3,16 +3,17 @@
 import httpx
 import litellm
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.llm_router import (
     list_models,
     list_providers,
     list_verified_models,
 )
+from openhands.sdk.errors import DomainError
 from openhands.sdk.llm.auth.openai import OPENAI_CODEX_MODELS
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 
@@ -450,11 +451,11 @@ async def test_openai_subscription_device_poll_failure_keeps_pending_login(
 
     monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await llm_router.poll_openai_subscription_device_login(
             llm_router.SubscriptionDevicePollRequest(device_code="opaque-token")
         )
-    assert exc_info.value.status_code == 502
+    assert status_for(exc_info.value) == 502
     assert "opaque-token" in llm_router._PENDING_OPENAI_DEVICE_LOGINS
 
     success = await llm_router.poll_openai_subscription_device_login(

@@ -21,6 +21,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from openhands.agent_server import bash_router as bash_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -85,6 +86,7 @@ def app(
     returns 200 in the responsiveness canary.
     """
     fastapi_app = FastAPI()
+    add_domain_error_handler(fastapi_app)
     fastapi_app.state.config = Config()
     fastapi_app.state.bash_event_service = bash_service
     fastapi_app.include_router(server_details_router)

@@ -4,14 +4,15 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.openai import service
 from openhands.agent_server.openai.service import (
     _raise_for_terminal_error,
     _wait_for_reused_conversation_completion,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import DomainError
 
 
 class _StatusSequence:
@@ -50,9 +51,9 @@ def test_a_continued_run_that_stops_for_the_user_answers_409_at_once(stopped):
     )
 
     assert status_value == stopped
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         _raise_for_terminal_error(status_value)
-    assert exc_info.value.status_code == 409
+    assert status_for(exc_info.value) == 409
     assert exc_info.value.detail == f"Agent run ended with status: {stopped.value}"
 
 
@@ -61,7 +62,7 @@ def test_a_conversation_left_waiting_before_the_new_turn_is_not_the_answer():
     # events, so the earlier turn's waiting status must not end the wait.
     events = _StatusSequence(ConversationExecutionStatus.WAITING_FOR_CONFIRMATION)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         asyncio.run(
             _wait_for_reused_conversation_completion(
                 events,  # type: ignore[arg-type]
@@ -69,4 +70,4 @@ def test_a_conversation_left_waiting_before_the_new_turn_is_not_the_answer():
                 timeout_seconds=0,
             )
         )
-    assert exc_info.value.status_code == 504
+    assert status_for(exc_info.value) == 504
