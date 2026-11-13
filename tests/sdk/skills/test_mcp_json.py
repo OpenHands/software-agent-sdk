@@ -118,3 +118,13 @@ def test_load_skills_from_dir_mcp_json_only_for_agentskills(tmp_path: Path) -> N
 
     assert agent_skills["agent-skill"].mcp_tools is not None
     assert repo_skills["legacy"].mcp_tools is None
+
+
+def test_mcp_json_non_utf8_raises_skill_validation_error(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Skill")
+    (skill_dir / ".mcp.json").write_bytes(b'\xff\xfe{"mcpServers": {}}')
+
+    with pytest.raises(SkillValidationError):
+        Skill.load(skill_dir / "SKILL.md")

@@ -4,24 +4,31 @@ import asyncio
 import io
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote, unquote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
+from starlette.responses import FileResponse
+from starlette.types import Message
 
 from openhands.agent_server import file_router as file_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.file_router import ARCHIVE_MANIFEST_NAME, _upload_file
+from openhands.agent_server.server_context import server_context_of
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from tests.agent_server.conftest import client_context, update_test_context
 
 
 @pytest.fixture
@@ -56,7 +63,7 @@ def test_upload_file_query_param_success(client, tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"success": True}
+    assert response.json() == {"success": True, "file_size": len(file_content)}
     assert target_path.exists()
     assert target_path.read_bytes() == file_content
 
@@ -87,6 +94,33 @@ def test_upload_file_query_param_relative_path_fails(client):
 
     assert response.status_code == 400
     assert "must be absolute" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("relative_target", "detail"),
+    [
+        ("is-a-dir", "Path is a directory"),
+        ("a-file.txt/child.txt", "A parent of the path is not a directory"),
+        ("a-file.txt/nested/child.txt", "A parent of the path is not a directory"),
+    ],
+)
+def test_upload_onto_directory_or_under_file_is_400(
+    client, tmp_path, relative_target, detail
+):
+    """Uploading onto a directory, or below a file, is the caller's path error."""
+    (tmp_path / "is-a-dir").mkdir()
+    (tmp_path / "a-file.txt").write_bytes(b"keep me")
+
+    response = client.post(
+        "/api/file/upload",
+        params={"path": str(tmp_path / relative_target)},
+        files={"file": ("test.txt", io.BytesIO(b"content"), "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == detail
+    assert (tmp_path / "is-a-dir").is_dir()
+    assert (tmp_path / "a-file.txt").read_bytes() == b"keep me"
 
 
 def test_upload_file_query_param_missing_path(client):
@@ -292,6 +326,7 @@ def test_upload_large_file_chunked(client, tmp_path):
     )
 
     assert response.status_code == 200
+    assert response.json()["file_size"] == len(large_content)
     assert target_path.exists()
     assert target_path.read_bytes() == large_content
 
@@ -309,6 +344,7 @@ def test_upload_overwrites_existing_file(client, tmp_path):
     )
 
     assert response.status_code == 200
+    assert response.json()["file_size"] == len(new_content)
     assert target_path.read_bytes() == new_content
 
 
@@ -342,6 +378,19 @@ def test_upload_file_with_special_characters_in_path(client, tmp_path):
     assert target_path.read_bytes() == file_content
 
 
+def _use_conversations_path(client, conversations_path: Path) -> None:
+    """Point the app's request-time config at ``conversations_path``.
+
+    Trajectory downloads resolve the conversations directory from the
+    config of the server context — the same config ``POST /api/init``
+    replaces on a deferred-init server.
+    """
+    update_test_context(
+        client.app,
+        config=Config(session_api_keys=[], conversations_path=conversations_path),
+    )
+
+
 def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
     """Trajectory downloads should not depend on an OS-level zip command."""
     conversations_path = tmp_path / "conversations"
@@ -352,10 +401,7 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
     (conversation_dir / "meta.json").write_text("{}")
     (nested_dir / "event.json").write_text('{"id": "event-1"}')
 
-    monkeypatch.setattr(
-        "openhands.agent_server.file_router.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
-    )
+    _use_conversations_path(client, conversations_path)
 
     async def fail_if_shell_zip_is_used(*_args, **_kwargs):
         raise AssertionError("download_trajectory must not shell out to zip")
@@ -378,6 +424,31 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
         )
 
     assert not (conversations_path / f"{conversation_id.hex}.zip").exists()
+
+
+def test_download_trajectory_omits_acp_credential_dir(client, monkeypatch, tmp_path):
+    conversations_path = tmp_path / "conversations"
+    conversation_id = uuid4()
+    conversation_dir = conversations_path / conversation_id.hex
+    acp_dir = conversation_dir / "acp" / "codex"
+    acp_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    (conversation_dir / "acp_notes.json").write_text("{}")
+    (acp_dir / "auth.json").write_text('{"refresh_token": "rt-secret-123"}')
+
+    _use_conversations_path(client, conversations_path)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+    assert response.status_code == 200
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        blob = b"\n".join(archive.read(n) for n in names if not n.endswith("/"))
+
+    assert f"{conversation_id.hex}/meta.json" in names
+    assert f"{conversation_id.hex}/acp_notes.json" in names
+    assert not any("/acp/" in n or n.endswith("/acp") for n in names)
+    assert b"rt-secret-123" not in blob
 
 
 def test_download_trajectory_redacts_llm_and_condenser_secrets(
@@ -440,10 +511,7 @@ def test_download_trajectory_redacts_llm_and_condenser_secrets(
     }
     (events_dir / "event-00000.json").write_text(json.dumps(event))
 
-    monkeypatch.setattr(
-        "openhands.agent_server.file_router.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
-    )
+    _use_conversations_path(client, conversations_path)
 
     response = client.get(f"/api/file/download-trajectory/{conversation_id}")
     assert response.status_code == 200
@@ -467,6 +535,565 @@ def test_download_trajectory_redacts_llm_and_condenser_secrets(
     assert meta_out["agent"]["llm"]["api_key"] == "**********"
     assert meta_out["agent"]["condenser"]["llm"]["api_key"] == "**********"
     assert meta_out["agent"]["llm"]["model"] == "gpt-4o"
+
+
+def _trajectory_dir(client, tmp_path):
+    """Create a conversation directory served by download-trajectory."""
+    conversations_path = tmp_path / "conversations"
+    conversation_id = uuid4()
+    conversation_dir = conversations_path / conversation_id.hex
+    (conversation_dir / "events").mkdir(parents=True)
+    (conversation_dir / "base_state.json").write_text('{"v": 1}')
+    (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
+    _use_conversations_path(client, conversations_path)
+    return conversation_id, conversation_dir
+
+
+def _mutate_after_listing(monkeypatch, directory: Path, mutate) -> None:
+    """Run ``mutate`` right after ``directory.rglob`` lists its entries.
+
+    Reproduces a concurrent writer changing the directory between the
+    listing and the reads of the entries it returned.
+    """
+    original_rglob = Path.rglob
+
+    def rglob(self, pattern, *args, **kwargs):
+        entries = list(original_rglob(self, pattern, *args, **kwargs))
+        if self == directory:
+            mutate()
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "rglob", rglob)
+
+
+def test_download_trajectory_redacts_json_and_jsonl_files_only(
+    client, monkeypatch, tmp_path
+):
+    """``.json`` and ``.jsonl`` files, in any letter case, are redacted.
+
+    Other files are archived byte for byte, even when they hold JSON.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    line = json.dumps({"llm": {"api_key": "sk-plaintext-main-0123456789"}})
+    jsonl_names = ("events.jsonl", "MORE.JSONL")
+    for name in jsonl_names:
+        (conversation_dir / name).write_text(f"{line}\n{line}\n")
+    (conversation_dir / "STATE.JSON").write_text(line)
+    (conversation_dir / "notes.txt").write_text(line)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    root = conversation_id.hex
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        jsonl = {
+            name: archive.read(f"{root}/{name}").decode().splitlines()
+            for name in jsonl_names
+        }
+        state = json.loads(archive.read(f"{root}/STATE.JSON"))
+        notes = archive.read(f"{root}/notes.txt")
+    for rows in jsonl.values():
+        assert [json.loads(row)["llm"]["api_key"] for row in rows] == [
+            REDACTED_SECRET_VALUE,
+            REDACTED_SECRET_VALUE,
+        ]
+    assert state["llm"]["api_key"] == REDACTED_SECRET_VALUE
+    assert notes == line.encode()
+
+
+def test_download_trajectory_survives_state_save_during_zip(
+    client, monkeypatch, tmp_path
+):
+    """An atomic base-state save that lands mid-zip must not cause a 500."""
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    temp_file = conversation_dir / ".base_state.json.4867ztqe.tmp"
+    temp_file.write_text('{"v": 2}')
+
+    _mutate_after_listing(
+        monkeypatch,
+        conversation_dir,
+        lambda: os.replace(temp_file, conversation_dir / "base_state.json"),
+    )
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.read(f"{conversation_id.hex}/base_state.json") == b'{"v": 2}'
+        assert f"{conversation_id.hex}/.base_state.json.4867ztqe.tmp" not in (
+            archive.namelist()
+        )
+
+
+def test_download_trajectory_skips_entries_removed_while_zipping(
+    client, monkeypatch, tmp_path
+):
+    """Files and directories removed after listing are left out, not a 500."""
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    (conversation_dir / "gone.txt").write_text("gone")
+    (conversation_dir / "gone_dir").mkdir()
+    (conversation_dir / "gone_dir" / "inner.json").write_text("{}")
+
+    def remove_entries():
+        (conversation_dir / "gone.txt").unlink()
+        shutil.rmtree(conversation_dir / "gone_dir")
+
+    _mutate_after_listing(monkeypatch, conversation_dir, remove_entries)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+    root = conversation_id.hex
+    assert f"{root}/base_state.json" in names
+    assert f"{root}/events/event-00000.json" in names
+    assert not [name for name in names if "gone" in name]
+
+
+def test_download_trajectory_omits_tmp_files(client, monkeypatch, tmp_path):
+    """Files still being written (``*.tmp``) are not archived.
+
+    That covers ``atomic_write_text`` temp files and the conversation lease's
+    ``owner_lease.tmp``. They may be half-written, and their names do not end
+    in ``.json``, so they would also bypass secret redaction.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    secret = "sk-in-progress-save-0123456789"
+    (conversation_dir / ".base_state.json.4867ztqe.tmp").write_text(
+        '{"agent": {"llm": {"api_key": "' + secret + '"'
+    )
+    events_dir = conversation_dir / "events"
+    (events_dir / ".event-00001-abc.json.k2_9xq0z.tmp").write_text("{")
+    (conversation_dir / "owner_lease.tmp").write_text('{"owner_instance_id": "')
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        blob = b"\n".join(archive.read(name) for name in names)
+    root = conversation_id.hex
+    assert sorted(names) == [
+        f"{root}/",
+        f"{root}/base_state.json",
+        f"{root}/events/",
+        f"{root}/events/event-00000.json",
+    ]
+    assert secret.encode() not in blob
+
+
+def test_download_trajectory_keeps_dotfiles_that_are_not_tmp_files(
+    client, monkeypatch, tmp_path
+):
+    """Only ``*.tmp`` files are left out; other dotfiles are archived."""
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    kept = [".env.template", ".cache.metadata", "events/.eventlog-len-1.marker"]
+    for name in kept:
+        (conversation_dir / name).write_text(name)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        for name in kept:
+            assert archive.read(f"{conversation_id.hex}/{name}") == name.encode()
+
+
+def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
+    client, monkeypatch, tmp_path
+):
+    """A save that lands after a JSON file is read cannot slip in a secret.
+
+    ``base_state.json`` holds no secret when it is read and is replaced right
+    afterwards by a version holding a Fernet token. The archive must contain
+    the content that was read, not the newer file.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    base_state = conversation_dir / "base_state.json"
+    first_save = b'{"secret_registry": {"secret_sources": {}}}'
+    base_state.write_bytes(first_save)
+    token = "gAAAAABnewly-saved-fernet-token"
+    replaced = False
+
+    def replace_after_first_read(read):
+        def read_then_save(self, *args, **kwargs):
+            nonlocal replaced
+            content = read(self, *args, **kwargs)
+            if self == base_state and not replaced:
+                replaced = True
+                newer = conversation_dir / ".base_state.json.newsave0.tmp"
+                newer.write_text(
+                    '{"secret_registry": {"secret_sources": '
+                    '{"GITHUB_TOKEN": "' + token + '"}}}'
+                )
+                os.replace(newer, base_state)
+            return content
+
+        return read_then_save
+
+    # Hook both read methods so the test does not depend on which one is used.
+    monkeypatch.setattr(Path, "read_bytes", replace_after_first_read(Path.read_bytes))
+    monkeypatch.setattr(Path, "read_text", replace_after_first_read(Path.read_text))
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    assert replaced
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        archived = archive.read(f"{conversation_id.hex}/base_state.json")
+        blob = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert archived == first_save
+    assert token.encode() not in blob
+
+
+def test_download_trajectory_resolves_dir_from_request_config(
+    client, monkeypatch, tmp_path
+):
+    """The served directory comes from the server context's config.
+
+    ``POST /api/init`` on a deferred-init server replaces that context; the
+    config the app was created with must not decide where the route looks.
+    """
+    request_path = tmp_path / "request-conversations"
+    conversation_id = uuid4()
+    conversation_dir = request_path / conversation_id.hex
+    (conversation_dir / "events").mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
+
+    _use_conversations_path(client, request_path)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.read(f"{conversation_id.hex}/meta.json") == b"{}"
+
+
+def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_path):
+    """Both trajectory routes work after ``/api/init`` moves storage.
+
+    Regression test for a deferred-init (warm-pool) server: ``/api/init``
+    installs the per-user ``conversations_path`` in the server context, so
+    both the flat and the conversation-scoped download route must serve the
+    conversation from that directory instead of the launch-time default.
+    """
+    boot_conversations = tmp_path / "boot-conversations"
+    user_conversations = tmp_path / "user" / "conversations"
+    app = create_app(
+        Config(
+            deferred_init=True,
+            conversations_path=boot_conversations,
+            bash_events_dir=tmp_path / "boot-bash-events",
+        )
+    )
+    headers = {"X-Session-API-Key": "init-key"}
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/init",
+            json={
+                "session_api_keys": ["init-key"],
+                "conversations_path": str(user_conversations),
+                "bash_events_dir": str(tmp_path / "user" / "bash_events"),
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        response = client.post(
+            "/api/conversations",
+            headers=headers,
+            json={
+                "workspace": {"working_dir": str(tmp_path / "workspace")},
+                "agent": {
+                    "kind": "Agent",
+                    "llm": {"model": "openai/test", "usage_id": "test"},
+                },
+            },
+        )
+        assert response.status_code == 201, response.text
+        conversation_id = UUID(response.json()["id"])
+        assert (user_conversations / conversation_id.hex).is_dir()
+        assert not (boot_conversations / conversation_id.hex).exists()
+
+        flat = client.get(
+            f"/api/file/download-trajectory/{conversation_id}", headers=headers
+        )
+        scoped = client.get(
+            f"/api/conversations/{conversation_id}/file/download-trajectory/"
+            f"{conversation_id}",
+            headers=headers,
+        )
+
+        assert flat.status_code == 200, flat.text
+        assert scoped.status_code == 200, scoped.text
+
+        root = conversation_id.hex
+        with zipfile.ZipFile(io.BytesIO(flat.content)) as archive:
+            flat_names = set(archive.namelist())
+        with zipfile.ZipFile(io.BytesIO(scoped.content)) as archive:
+            scoped_names = set(archive.namelist())
+        assert flat_names == scoped_names
+        assert f"{root}/meta.json" in flat_names
+        assert f"{root}/base_state.json" in flat_names
+
+        # No conversation directory under the resolved config → 404 on
+        # both routes. Rebinding the config stands in for a conversation
+        # whose storage moved away from the initialized path.
+        update_test_context(
+            app,
+            config=server_context_of(app).config.model_copy(
+                update={"conversations_path": tmp_path / "elsewhere"}
+            ),
+        )
+        for url in (
+            f"/api/file/download-trajectory/{conversation_id}",
+            f"/api/conversations/{conversation_id}/file/download-trajectory/"
+            f"{conversation_id}",
+        ):
+            missing = client.get(url, headers=headers)
+            assert missing.status_code == 404, missing.text
+            assert missing.json()["detail"] == "Conversation not found"
+
+        # Repeated downloads leave no zip residue behind.
+        assert list(user_conversations.glob("*.zip")) == []
+
+
+async def _stream_trajectory(
+    response: FileResponse, error: BaseException | None = None
+) -> bytes:
+    chunks: list[bytes] = []
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b""}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.body":
+            if error is not None:
+                raise error
+            chunks.append(message["body"])
+
+    await response(
+        {"type": "http", "method": "GET", "headers": [], "path": "/"},
+        receive,
+        send,
+    )
+    return b"".join(chunks)
+
+
+async def test_download_trajectory_repeat_survives_previous_cleanup(
+    client, monkeypatch, tmp_path
+):
+    """A download's cleanup must not delete the zip a later download built.
+
+    On a keep-alive connection uvicorn starts the next request once the first
+    body is sent, before the first response's background cleanup runs.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    conversations_path = conversation_dir.parent
+
+    first = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    second = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    await _stream_trajectory(first)
+
+    with zipfile.ZipFile(second.path) as archive:
+        assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    await _stream_trajectory(second)
+    assert list(conversations_path.glob("*.zip")) == []
+
+
+async def test_download_trajectory_concurrent_downloads_use_own_files(
+    client, monkeypatch, tmp_path
+):
+    """Concurrent downloads each get their own complete zip, all cleaned up."""
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    conversations_path = conversation_dir.parent
+
+    responses = await asyncio.gather(
+        *(
+            file_router_module.download_trajectory(
+                conversation_id, client_context(client).config
+            )
+            for _ in range(6)
+        )
+    )
+
+    assert len({response.path for response in responses}) == 6
+    for response in responses:
+        assert response.headers["content-disposition"] == (
+            f'attachment; filename="{conversation_id.hex}.zip"'
+        )
+        with zipfile.ZipFile(response.path) as archive:
+            assert archive.testzip() is None
+            assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    for response in responses:
+        await _stream_trajectory(response)
+    assert list(conversations_path.glob("*.zip")) == []
+
+
+async def test_download_trajectory_removes_temp_zip_when_zipping_fails(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+
+    def fail(source_dir, output_path):
+        output_path.write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", fail)
+
+    with pytest.raises(OSError, match="disk full"):
+        await file_router_module.download_trajectory(
+            conversation_id, client_context(client).config
+        )
+    assert list(conversation_dir.parent.glob("*.zip")) == []
+
+
+async def test_download_trajectory_cancellation_joins_zip_worker(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    release = threading.Event()
+    create_zip = file_router_module._create_zip_from_directory
+
+    def blocked_zip(source, destination):
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(timeout=10)
+            create_zip(source, destination)
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", blocked_zip)
+    task = asyncio.create_task(
+        file_router_module.download_trajectory(
+            conversation_id, client_context(client).config
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        assert list(conversation_dir.parent.glob("*.zip")) == []
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("send failed"), asyncio.CancelledError()]
+)
+async def test_download_trajectory_cleans_up_after_stream_failure(
+    client, tmp_path, error
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    response = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    with pytest.raises(type(error)):
+        await _stream_trajectory(response, error)
+    assert list(conversation_dir.parent.glob("*.zip")) == []
+
+
+async def test_download_trajectory_limits_concurrent_zip_builds(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, _ = _trajectory_dir(client, tmp_path)
+    create_zip = file_router_module._create_zip_from_directory
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def tracked_zip(source, destination):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        create_zip(source, destination)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", tracked_zip)
+
+    responses = await asyncio.gather(
+        *(
+            file_router_module.download_trajectory(
+                conversation_id, client_context(client).config
+            )
+            for _ in range(6)
+        )
+    )
+
+    for response in responses:
+        await _stream_trajectory(response)
+    assert 1 <= peak <= 2
+
+
+async def test_download_trajectory_removes_only_stale_orphaned_temp_zips(
+    client, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    two_hours_ago = time.time() - 2 * 60 * 60
+    # An unstreamed response leaves its temp zip, as a killed server would.
+    stale = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    recent = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    os.utime(stale.path, (two_hours_ago, two_hours_ago))
+    unrelated = conversation_dir.parent / ".backup.zip"
+    unrelated.touch()
+    os.utime(unrelated, (two_hours_ago, two_hours_ago))
+
+    await _stream_trajectory(
+        await file_router_module.download_trajectory(
+            conversation_id, client_context(client).config
+        )
+    )
+
+    assert not Path(stale.path).exists()
+    assert Path(recent.path).exists()
+    assert unrelated.exists()
+
+
+async def test_download_trajectory_survives_failure_removing_stale_temp_zip(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    two_hours_ago = time.time() - 2 * 60 * 60
+    stale = conversation_dir.parent / f".{conversation_id.hex}-orphan.zip"
+    stale.touch()
+    os.utime(stale, (two_hours_ago, two_hours_ago))
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self == stale:
+            raise PermissionError("in use")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    response = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+
+    with zipfile.ZipFile(response.path) as archive:
+        assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    assert stale.exists()
+    await _stream_trajectory(response)
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):
@@ -594,6 +1221,45 @@ def test_search_subdirs_paginates_with_limit_and_page_id(client, tmp_path):
     third_body = third.json()
     assert [e["name"] for e in third_body["items"]] == ["echo"]
     assert third_body["next_page_id"] is None
+
+
+def test_search_subdirs_pages_past_case_only_twins(client, tmp_path):
+    """Following next_page_id reaches each of two names that differ by case."""
+    (tmp_path / "foo").mkdir()
+    if (tmp_path / "Foo").exists():
+        pytest.skip("filesystem does not distinguish case-only directory names")
+    for name in ["Foo", "bar"]:
+        (tmp_path / name).mkdir()
+
+    seen: list[str] = []
+    page_id: str | None = None
+    for _ in range(5):
+        params: dict[str, str | int] = {"path": str(tmp_path), "limit": 1}
+        if page_id is not None:
+            params["page_id"] = page_id
+        response = client.get("/api/file/search_subdirs", params=params)
+        assert response.status_code == 200
+        body = response.json()
+        seen.extend(e["name"] for e in body["items"])
+        page_id = body["next_page_id"]
+        if page_id is None:
+            break
+
+    assert seen == ["bar", "Foo", "foo"]
+    assert page_id is None
+
+
+def test_search_subdirs_accepts_lowercase_cursor(client, tmp_path):
+    """A lowercase cursor from an older server still resumes at its entry."""
+    for name in ["Alpha", "Bravo"]:
+        (tmp_path / name).mkdir()
+
+    response = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path), "limit": 1, "page_id": "bravo"},
+    )
+    assert response.status_code == 200
+    assert [e["name"] for e in response.json()["items"]] == ["Bravo"]
 
 
 def test_search_subdirs_limit_too_low_returns_422(client, tmp_path):
@@ -1033,11 +1699,30 @@ def test_tar_gz_response_includes_repo_metadata_headers(client, tmp_path):
     assert "x-archive-base-commit" not in resp.headers
 
 
-def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "https://user:ghp_secrettoken@github.com/example/repo.git",
-    )
+@pytest.mark.parametrize(
+    ("remote_url", "expected_remote"),
+    [
+        pytest.param(
+            "https://user:ghp_secrettoken@github.com/example/repo.git",
+            "https://****@github.com/example/repo.git",
+            id="plain",
+        ),
+        pytest.param(
+            "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
+            "HTTPS://****@github.com/example/repo.git",
+            id="mixed_case",
+        ),
+        pytest.param(
+            "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
+            "https://****@github.com/example/repo.git\nextra",
+            id="multiline",
+        ),
+    ],
+)
+def test_archive_redacts_remote_credentials_in_header(
+    client, tmp_path, remote_url, expected_remote
+):
+    _repo_with_remote(tmp_path / "repo", remote_url)
 
     resp = client.get(
         "/api/file/archive",
@@ -1047,24 +1732,7 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert resp.status_code == 200, resp.text
     remote = resp.headers["x-archive-repo-remote"]
     assert "ghp_secrettoken" not in remote
-    assert remote == quote("https://****@github.com/example/repo.git", safe="")
-
-
-def test_archive_redacts_mixed_case_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
-    )
-
-    resp = client.get(
-        "/api/file/archive",
-        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
-    )
-
-    assert resp.status_code == 200, resp.text
-    remote = resp.headers["x-archive-repo-remote"]
-    assert "ghp_secrettoken" not in remote
-    assert remote == quote("HTTPS://****@github.com/example/repo.git", safe="")
+    assert remote == quote(expected_remote, safe="")
 
 
 def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
@@ -1100,23 +1768,6 @@ def test_archive_literal_percent_is_encoded(client, tmp_path):
     assert "%252F" in resp.headers["x-archive-repo-remote"]
 
 
-def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
-    )
-
-    resp = client.get(
-        "/api/file/archive",
-        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
-    )
-
-    assert resp.status_code == 200, resp.text
-    remote = resp.headers["x-archive-repo-remote"]
-    assert "ghp_secrettoken" not in remote
-    assert remote == quote("https://****@github.com/example/repo.git\nextra", safe="")
-
-
 def test_archive_detached_head_reports_detached_branch(client, tmp_path):
     head_sha = _repo_with_remote(
         tmp_path / "repo", "https://github.com/example/repo.git"
@@ -1143,6 +1794,40 @@ def test_archive_non_git_directory_has_no_repo_metadata_headers(client, workspac
     assert "x-archive-repo-remote" not in resp.headers
     assert "x-archive-branch" not in resp.headers
     assert "x-archive-head-commit" not in resp.headers
+
+
+def test_archive_format_description_matches_single_nested_repo(client, tmp_path):
+    # A non-repo directory holding exactly one repository is archived as that
+    # repository, so files beside it are left out; the public description of
+    # ``format`` must say so instead of promising "the entire directory".
+    parent = tmp_path / "parent"
+    repo = parent / "group" / "proj"
+    repo.mkdir(parents=True)
+    _git(["init", "-q"], repo)
+    (repo / "README.md").write_text("# proj\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-qm", "init"], repo)
+    (parent / "top.txt").write_text("top\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(parent), "format": "tar.gz"}
+    )
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert "proj/README.md" in names
+    assert not any(name.endswith("top.txt") for name in names)
+
+    paths = client.get("/openapi.json").json()["paths"]
+    for route in (
+        "/api/file/archive",
+        "/api/conversations/{runtime_conversation_id}/file/archive",
+    ):
+        params = paths[route]["get"]["parameters"]
+        descriptions = {p["name"]: p.get("description", "") for p in params}
+        assert "entire directory" not in descriptions["format"]
+        for name in ("format", "path"):
+            assert "exactly one git repository" in descriptions[name]
 
 
 def test_archive_remote_with_embedded_control_char_is_percent_encoded(client, tmp_path):
@@ -1776,3 +2461,20 @@ def test_git_delta_dir_only_exclude_keeps_same_named_file(client, tmp_path):
     assert "diff --git a/build b/build" in patch  # the file is kept
     assert "authored marker" in patch
     assert "sub/build/out.o" not in patch  # the directory is excluded
+
+
+def test_archive_non_latin1_base_ref_is_percent_encoded(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["branch", "功能"], repo)
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "base_ref": "功能"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-base-ref"] == quote("功能", safe="")
+    assert [p.name for p in tmp_path.iterdir()] == ["repo"]

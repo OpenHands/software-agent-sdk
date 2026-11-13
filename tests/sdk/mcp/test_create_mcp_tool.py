@@ -1,26 +1,29 @@
 """Tests for MCP utils functionality - integration tests with real MCP servers."""
 
 import asyncio
-import json
 import logging
 import socket
 import sys
 import threading
 import time
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Literal
 from unittest.mock import MagicMock, patch
 
 import httpx
+import httpx2
 import pytest
+import uvicorn
 from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
+from mcp import MCPError as MCPClientError
 from pydantic import SecretStr
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse, PlainTextResponse
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import (
@@ -34,9 +37,13 @@ from openhands.sdk.mcp.config import (
     coerce_mcp_config,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.exceptions import (
+    MCPError,
+    MCPServerHTTPError,
+    MCPTimeoutError,
+)
 from openhands.sdk.mcp.oauth import MCPOAuth
-from openhands.sdk.mcp.utils import _prepare_mcp_config
+from openhands.sdk.mcp.utils import _http_error_reason, _prepare_mcp_config
 
 
 logger = logging.getLogger(__name__)
@@ -188,36 +195,6 @@ class MCPTestServer:
             # Daemon thread will clean up automatically when process exits
             self._server_thread = None
         self.port = None
-
-
-@contextmanager
-def rejecting_http_server(
-    status: int, headers: dict[str, str], body: bytes
-) -> Iterator[str]:
-    """Serve ``status``/``headers``/``body`` for every request; yield the URL."""
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            self.send_response(status)
-            for name, value in headers.items():
-                self.send_header(name, value)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        do_GET = do_DELETE = do_POST
-
-        def log_message(self, format: str, *args: object) -> None:
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}/mcp"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 @pytest.fixture
@@ -525,6 +502,8 @@ def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
 
     tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
 
+    assert tools.mode == "auto"
+    assert tools.initialize_result is None
     assert len(tools) == 2
     tool_names = {t.name for t in tools}
     assert "greet" in tool_names
@@ -714,19 +693,40 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
         pass  # Expected connection errors are acceptable
 
 
-@pytest.mark.parametrize("transport", ["http", "sse"])
-def test_create_mcp_tools_http_error_keeps_response_body_readable(
-    transport: Literal["http", "sse"],
-):
-    body = b'{"message": "MCP server not enabled for any of your groups"}'
-    with rejecting_http_server(403, {"Content-Type": "application/json"}, body) as url:
-        config = {"rejecting": MCPServer(url=url, transport=transport)}
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            with create_mcp_tools(config, timeout=10):
-                pass
+@pytest.mark.parametrize(
+    "data", [{}, {"enabled": True}, {"description": "x", "args": ["a"]}]
+)
+def test_mcp_server_requires_command_or_url(data: dict) -> None:
+    with pytest.raises(ValueError, match="require 'command' or 'url'"):
+        MCPServer.model_validate(data)
 
-    assert exc_info.value.response.status_code == 403
-    assert exc_info.value.response.json() == json.loads(body)
+
+def test_mcp_server_accepts_command_or_url_without_transport() -> None:
+    assert MCPServer.model_validate({"command": "uvx"}).command == "uvx"
+    assert MCPServer.model_validate({"url": "https://x.example/mcp"}).url
+
+
+def _server_without_command_or_url() -> MCPServer:
+    # A server stored before MCPServer rejected it, bypassing validation.
+    return MCPServer.model_construct(enabled=True)
+
+
+def test_create_mcp_tools_skips_invalid_server_and_keeps_valid_ones(caplog):
+    mcp_config = native_mcp_config(stdio_fetch_mcp_config())
+    mcp_config["qa-empty"] = _server_without_command_or_url()
+
+    with caplog.at_level(logging.WARNING, logger="openhands.sdk.mcp.utils"):
+        with create_mcp_tools(mcp_config, timeout=10.0) as client:
+            assert [tool.name for tool in client.tools] == ["fetch"]
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("Skipping invalid MCP server qa-empty" in m for m in warnings)
+    assert not any("fetch" in m.split(";")[0] for m in warnings)
+
+
+def test_prepare_mcp_config_raises_when_every_server_is_invalid():
+    with pytest.raises(ValueError, match="No valid MCP servers among: qa-empty"):
+        _prepare_mcp_config({"qa-empty": _server_without_command_or_url()})
 
 
 def test_create_mcp_tools_stdio_server():
@@ -822,3 +822,179 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_mcp_tool_reconnects_after_http_error():
+    mcp = FastMCP("http-error-test-server")
+
+    @mcp.tool()
+    def ping() -> str:
+        return "pong"
+
+    class FailFirstToolCall(BaseHTTPMiddleware):
+        failed = False
+
+        async def dispatch(self, request, call_next):
+            body = (await request.body()).replace(b" ", b"")
+            if not self.failed and b'"method":"tools/call"' in body:
+                self.failed = True
+                return PlainTextResponse("gateway timeout", status_code=504)
+            return await call_next(request)
+
+    port = _find_free_port()
+    app = mcp.http_app(path="/mcp")
+    app.add_middleware(FailFirstToolCall)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    _wait_for_port(port)
+
+    try:
+        config = {
+            "server": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}
+        }
+        with create_mcp_tools(coerce_mcp_config(config), timeout=5) as client:
+            tool = next(tool for tool in client if tool.name == "ping")
+            assert tool.executor is not None
+            action = tool.action_from_arguments({})
+
+            first = tool.executor(action)
+            second = tool.executor(action)
+
+            assert first.is_error
+            # mcp 2 reports a non-2xx HTTP answer as a JSON-RPC error without
+            # the status line, so only the failed call itself is checked.
+            assert "Error calling MCP tool ping" in first.text
+            assert not second.is_error
+            assert "pong" in second.text
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+_GITLAB_REASON = "403 Forbidden - MCP server not enabled for any of your groups"
+
+
+class RejectRequests(BaseHTTPMiddleware):
+    """Answer MCP requests the way GitLab does when MCP is off for the user."""
+
+    async def dispatch(self, request, call_next):
+        return JSONResponse({"message": _GITLAB_REASON}, status_code=403)
+
+
+class EndSessionOnToolsList(BaseHTTPMiddleware):
+    """Initialize normally, then answer ``tools/list`` with a plain-text 404."""
+
+    async def dispatch(self, request, call_next):
+        body = (await request.body()).replace(b" ", b"")
+        if b'"method":"tools/list"' in body:
+            return PlainTextResponse("session not found", status_code=404)
+        return await call_next(request)
+
+
+@contextmanager
+def _serve(app) -> Generator[int]:
+    port = _find_free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    _wait_for_port(port)
+    try:
+        yield port
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+def test_create_mcp_tools_reports_the_server_reason_for_an_http_error(
+    transport: MCPTransport,
+):
+    path = "/sse" if transport == "sse" else "/mcp"
+    app = FastMCP("rejecting-server").http_app(path=path, transport=transport)
+    app.add_middleware(RejectRequests)
+    with _serve(app) as port:
+        config = {
+            "gitlab": {
+                "transport": transport,
+                "url": f"http://user:hunter2@127.0.0.1:{port}{path}?token=abc123",
+            }
+        }
+        with pytest.raises(MCPServerHTTPError) as exc_info:
+            create_mcp_tools(coerce_mcp_config(config), timeout=10)
+
+    error = exc_info.value
+    assert str(error) == (
+        f"HTTP 403 Forbidden from http://127.0.0.1:{port}: {_GITLAB_REASON}"
+    )
+    assert (error.status_code, error.reason) == (403, _GITLAB_REASON)
+    assert error.__cause__ is not None
+
+
+def test_create_mcp_tools_reports_the_http_error_behind_a_404_stand_in():
+    server = FastMCP("session-ending-server")
+
+    @server.tool()
+    def ping() -> str:
+        return "pong"
+
+    app = server.http_app(path="/mcp", stateless_http=False)
+    app.add_middleware(EndSessionOnToolsList)
+    with _serve(app) as port:
+        config = {
+            "server": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}
+        }
+        with pytest.raises(MCPServerHTTPError) as exc_info:
+            create_mcp_tools(coerce_mcp_config(config), timeout=10)
+
+    assert str(exc_info.value) == (
+        f"HTTP 404 Not Found from http://127.0.0.1:{port}: session not found"
+    )
+    # The MCP client reports the 404 as "Session terminated" or "Not Found".
+    assert isinstance(exc_info.value.__cause__, MCPClientError)
+
+
+@pytest.mark.parametrize(
+    ("headers", "body", "reason"),
+    [
+        pytest.param(
+            {
+                "WWW-Authenticate": 'Bearer error="invalid_token", '
+                'error_description="The token expired"'
+            },
+            '{"message": "ignored"}',
+            "The token expired",
+            id="www-authenticate-description",
+        ),
+        pytest.param(
+            {"WWW-Authenticate": 'Bearer error="insufficient_scope"'},
+            "",
+            "insufficient_scope",
+            id="www-authenticate-error-code",
+        ),
+        pytest.param(
+            {},
+            '{"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "No"}}',
+            "No",
+            id="json-rpc-error",
+        ),
+        pytest.param({}, '{"detail": "Not allowed"}', "Not allowed", id="detail"),
+        pytest.param({}, '{"error": "access_denied"}', "access_denied", id="error"),
+        pytest.param({}, "  plain\n  text  ", "plain text", id="plain-text"),
+        pytest.param({}, "x" * 400, "x" * 297 + "...", id="long-body-is-cut"),
+        pytest.param({}, "", None, id="empty-body"),
+    ],
+)
+def test_http_error_reason(headers: dict, body: str, reason: str | None):
+    response = httpx2.Response(
+        403,
+        headers=headers,
+        text=body,
+        request=httpx2.Request("POST", "https://example.com/mcp"),
+    )
+
+    assert _http_error_reason(response) == reason

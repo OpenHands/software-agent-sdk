@@ -101,35 +101,23 @@ class TestGlobConsistency:
 
             yield temp_dir
 
-    def test_basic_pattern_consistency(self, temp_dir_with_files):
-        """Test that both methods return consistent results for basic patterns."""
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            pytest.param("*.py", id="basic"),
+            pytest.param("**/*.py", id="recursive"),
+            pytest.param(".*", id="hidden_files"),
+            pytest.param("*.tar.gz", id="multiple_extensions"),
+            pytest.param("**/level3/*.py", id="deep_nesting"),
+            pytest.param("**/test*.py", id="wildcard_directory"),
+            pytest.param("*-with-*.py", id="special_characters"),
+            pytest.param("*.md", id="case_sensitivity"),
+        ],
+    )
+    def test_pattern_consistency(self, temp_dir_with_files, pattern):
+        """Test that both methods return the same files for a pattern."""
         executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="*.py")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )
-
-    def test_recursive_pattern_consistency(self, temp_dir_with_files):
-        """Test that both methods handle recursive patterns consistently."""
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="**/*.py")
+        action = GlobAction(pattern=pattern)
 
         # Get results from both methods
         ripgrep_files, _ = executor._execute_with_ripgrep(
@@ -171,106 +159,6 @@ class TestGlobConsistency:
         # Both must return exactly the same (empty) set
         assert ripgrep_files == fallback_files == set()
 
-    def test_hidden_files_consistency(self, temp_dir_with_files):
-        """Test that both methods handle hidden files consistently."""
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern=".*")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )
-
-    def test_multiple_extensions_consistency(self, temp_dir_with_files):
-        """Test that both methods handle multiple extensions consistently."""
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="*.tar.gz")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )
-
-    def test_deep_nesting_consistency(self, temp_dir_with_files):
-        """Test that both methods handle deeply nested files consistently."""
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="**/level3/*.py")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )
-
-    def test_wildcard_directory_consistency(self, temp_dir_with_files):
-        """Test that both methods handle wildcard directories consistently."""
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="**/test*.py")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )
-
     def test_config_files_consistency(self, temp_dir_with_files):
         """Test that both methods find various config file formats consistently."""
         executor = GlobExecutor(temp_dir_with_files)
@@ -298,55 +186,3 @@ class TestGlobConsistency:
                 f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
                 f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
             )
-
-    def test_special_characters_consistency(self, temp_dir_with_files):
-        """
-        Test that both methods handle special characters in filenames consistently.
-        """
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="*-with-*.py")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )
-
-    def test_case_sensitivity_consistency(self, temp_dir_with_files):
-        """Test that both methods handle case sensitivity consistently."""
-        executor = GlobExecutor(temp_dir_with_files)
-        action = GlobAction(pattern="*.md")
-
-        # Get results from both methods
-        ripgrep_files, _ = executor._execute_with_ripgrep(
-            action.pattern, Path(temp_dir_with_files)
-        )
-        fallback_files, _ = executor._execute_with_glob(
-            action.pattern, Path(temp_dir_with_files)
-        )
-
-        # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_files)
-        fallback_files = set(fallback_files)
-
-        # Both methods must return exactly the same files
-        assert ripgrep_files == fallback_files, (
-            f"Ripgrep found: {ripgrep_files}\n"
-            f"Fallback found: {fallback_files}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_files - fallback_files}\n"
-            f"Difference (fallback - ripgrep): {fallback_files - ripgrep_files}"
-        )

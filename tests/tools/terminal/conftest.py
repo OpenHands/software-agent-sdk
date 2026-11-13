@@ -20,6 +20,7 @@ _WINDOWS_UNSUPPORTED_BACKEND_TEST_MODULES = {
     "test_pool_integration.py",
     "test_schema.py",
     "test_secrets_masking.py",
+    "test_terminal_env_sanitization.py",
     "test_terminal_exit_code_top_level.py",
     "test_terminal_reset.py",
     "test_terminal_session.py",

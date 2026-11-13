@@ -14,11 +14,17 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.title_utils import generate_title_with_llm
+from openhands.sdk.conversation.request import ConversationConfig
+from openhands.sdk.conversation.title_utils import (
+    generate_fallback_title,
+    generate_title_with_llm,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def create_test_agent() -> Agent:
@@ -73,6 +79,13 @@ def create_mock_llm_response(content: str) -> LLMResponse:
     )
 
 
+def get_completion_user_prompt(mock_completion: MagicMock) -> str:
+    messages = mock_completion.call_args.kwargs["messages"]
+    content = messages[1].content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
 @patch("openhands.sdk.llm.llm.LLM.completion")
 def test_generate_title_without_llm_uses_agent_llm(mock_completion):
     """Without an explicit LLM, generate_title falls back to the agent's LLM.
@@ -92,6 +105,22 @@ def test_generate_title_without_llm_uses_agent_llm(mock_completion):
 
     assert title == "Create Python Script"
     mock_completion.assert_called_once()
+
+
+def test_generate_title_skips_llm_for_settings_built_acp_agent(tmp_path):
+    agent = ACPAgentSettings(
+        acp_server="custom", acp_command=["true"], acp_model="claude-opus-4-7"
+    ).create_agent()
+    conv = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
+    conv.state.events.append(create_user_message_event("Fix the login bug"))
+
+    with patch(
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    ) as mock_llm_title:
+        title = conv.generate_title()
+
+    assert title == "Fix the login bug"
+    mock_llm_title.assert_not_called()
 
 
 def test_generate_title_no_user_messages():
@@ -145,6 +174,56 @@ def test_generate_title_with_llm_invokes_on_error(mock_completion):
     assert result is None
     assert len(seen) == 1
     assert str(seen[0]) == "model does not exist"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_renders_custom_prompt_placeholders(mock_completion):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("Fix Login")
+
+    result = generate_title_with_llm(
+        "Fix the login bug",
+        custom_llm,
+        max_length=32,
+        prompt=(
+            "Return a title under {max_length} characters for: {conversation_content}"
+        ),
+    )
+
+    assert result == "Fix Login"
+    assert get_completion_user_prompt(mock_completion) == (
+        "Return a title under 32 characters for: Fix the login bug"
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_appends_content_to_custom_prompt(mock_completion):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("Fix Login")
+
+    generate_title_with_llm(
+        "Fix the login bug",
+        custom_llm,
+        prompt="Use sentence case without an emoji.",
+    )
+
+    assert get_completion_user_prompt(mock_completion) == (
+        "Use sentence case without an emoji.\n\n"
+        "Conversation content:\nFix the login bug"
+    )
+
+
+@pytest.mark.parametrize("prompt", [None, "", "   "])
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_uses_default_for_blank_prompt(mock_completion, prompt):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("🐛 Fix Login")
+
+    generate_title_with_llm("Fix the login bug", custom_llm, prompt=prompt)
+
+    user_prompt = get_completion_user_prompt(mock_completion)
+    assert user_prompt.startswith("Generate a title (maximum 50 characters)")
+    assert "emoji" not in user_prompt.lower()
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
@@ -430,6 +509,53 @@ def test_title_uses_real_http_transport(title_http_server, tmp_path, mode):
         assert body["store"] is False
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        None,
+        "Title: {conversation_content}",
+        "Return only a title.",
+        "Keep the title faithful to the request. " * 100 + "{conversation_content}",
+    ],
+)
+def test_title_preserves_full_input_over_http(title_http_server, prompt):
+    base_url, requests = title_http_server
+    message = "Background context. " * 100 + "Investigate the Zephyr login failure."
+    llm = LLM(
+        model="openai/gpt-4o-mini",
+        api_key=SecretStr("local-test-key"),
+        base_url=base_url,
+        num_retries=0,
+    )
+
+    assert generate_title_with_llm(message, llm, prompt=prompt) == "Fix title transport"
+    assert len(requests) == 1
+    body = requests[0][1]
+    assert message in json.dumps(body["messages"], ensure_ascii=False)
+    assert "...(truncated)" not in json.dumps(body["messages"])
+    if prompt is not None:
+        assert prompt.replace("{conversation_content}", message) in json.dumps(
+            body["messages"], ensure_ascii=False
+        )
+
+
+def test_title_prompt_accepts_long_content_and_round_trips(tmp_path):
+    prompt = "Use the complete writing guidance. " * 100
+    config = ConversationConfig(
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        prompt=prompt,
+    )
+
+    assert config.prompt == prompt
+    assert (
+        ConversationConfig.model_validate_json(config.model_dump_json()).prompt
+        == prompt
+    )
+    assert "maxLength" not in json.dumps(
+        ConversationConfig.model_json_schema()["properties"]["prompt"]
+    )
+
+
 @patch("openhands.sdk.llm.llm.LLM.completion")
 def test_generate_title_strips_inline_reasoning(mock_completion):
     """Guards #4530.
@@ -470,3 +596,8 @@ def test_generate_title_keeps_text_without_reasoning(mock_completion):
     assert generate_title_with_llm("Help me write a script", llm) == (
         "✨ Create Python Script"
     )
+
+
+@pytest.mark.parametrize("max_length", [0, 1, 2])
+def test_fallback_title_never_exceeds_tiny_max_length(max_length):
+    assert len(generate_fallback_title("hello world", max_length)) <= max_length

@@ -8,9 +8,12 @@ delegate agents from the top-level agent and ``agent_profiles``.
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_config
+from openhands.agent_server.launch import configured_browser_available
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.mcp.config import MCPServer
@@ -65,7 +68,13 @@ class SubAgentInfo(BaseModel):
     permission_mode: str | None = None
     max_iteration_per_run: int | None = None
     max_budget_per_run: float | None = None
-    mcp_config: dict[str, MCPServer] | None = None
+    mcp_config: dict[str, MCPServer] | None = Field(
+        default=None,
+        description=(
+            "MCP servers the definition declares. A delegated sub-agent ignores "
+            "them and inherits its parent's MCP servers."
+        ),
+    )
     mcp_servers: dict[str, MCPServer] | None = Field(
         default=None,
         deprecated=True,
@@ -115,18 +124,27 @@ class SubAgentsResponse(BaseModel):
 
 
 @sub_agents_router.post("", response_model=SubAgentsResponse)
-def get_sub_agents(request: SubAgentsRequest) -> SubAgentsResponse:
+def get_sub_agents(
+    request: SubAgentsRequest, config: Config = Depends(get_config)
+) -> SubAgentsResponse:
     """List file-based and built-in sub-agents for the workspace.
 
     Merged first-wins by name with precedence project > user > builtin. Read-only:
-    it registers nothing into the conversation registry.
+    it registers nothing into the conversation registry. Browser-only built-ins
+    are left out when the server's config disables the browser.
     """
     discovered = discover_agents(
         project_dir=request.project_dir,
         include_project=request.load_project,
         include_user=request.load_user,
     )
-    builtins = discover_builtin_agents() if request.load_builtin else []
+    builtins = (
+        discover_builtin_agents(
+            enable_browser=configured_browser_available(config) is not False
+        )
+        if request.load_builtin
+        else []
+    )
 
     # project > user (from discover_agents) > builtin: first wins on name clash.
     seen_names: set[str] = set()

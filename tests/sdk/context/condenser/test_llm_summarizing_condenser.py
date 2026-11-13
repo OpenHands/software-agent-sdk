@@ -8,7 +8,7 @@ from litellm.types.utils import (
     ModelResponse,
     Usage,
 )
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
@@ -79,6 +79,7 @@ def mock_llm() -> LLM:
     mock_llm.metrics = None
     mock_llm.model = "test-model"
     mock_llm.log_completions = False
+    mock_llm.log_completions_to_file = False
     mock_llm.log_completions_folder = None
     mock_llm.custom_tokenizer = None
     mock_llm.base_url = None
@@ -93,8 +94,7 @@ def mock_llm() -> LLM:
     mock_llm.input_cost_per_token = None
     mock_llm.output_cost_per_token = None
 
-    mock_llm._metrics = None
-    mock_llm._telemetry = None
+    mock_llm._session = None
 
     # Helper method to set mock response content
     def set_mock_response_content(content: str):
@@ -230,13 +230,18 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     completion_mock.assert_called_once()
     call_args = completion_mock.call_args
     messages = call_args[1]["messages"]  # Get keyword arguments
-    prompt_text = messages[0].content[0].text
+
+    # The summarization instructions are sent as a system message and the
+    # events to summarize (including any previous summary) as a user message.
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
+    events_text = messages[1].content[0].text
 
     # The prompt should contain the previous summary (it's in <PREVIOUS SUMMARY> sec.)
     # The summary is now retrieved from the view, which should have it at the summary
     # event
     assert (
-        "Previous summary content" in prompt_text or "<PREVIOUS SUMMARY>" in prompt_text
+        "Previous summary content" in events_text or "<PREVIOUS SUMMARY>" in events_text
     )
 
 
@@ -1071,6 +1076,65 @@ def _applied_messages(condensation: Condensation, view: View) -> list[Message]:
     return LLMConvertibleEvent.events_to_messages(applied)
 
 
+def test_hard_context_reset_preserves_leading_system_prompt(mock_llm: LLM) -> None:
+    """A hard context reset must keep the SystemPromptEvent at the head.
+
+    Regression for #5149: the hard-reset path used to summarize the entire view
+    (including the system prompt) at offset 0, producing a user-role summary as
+    the first message. It must now open with the preserved system message.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(Any, mock_llm).set_mock_response_content("Hard reset summary")
+
+    events: list[Event] = [
+        _system_prompt_event("You are a safe assistant."),
+        *[message_event(f"Event {i}") for i in range(12)],
+    ]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Force the get_condensation path to fail so hard_context_reset runs.
+    success_response = cast(Any, mock_llm).generate.return_value
+    cast(MagicMock, mock_llm).generate.side_effect = [
+        RuntimeError("context window exceeded"),
+        success_response,
+    ]
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary_offset == 1  # summary placed after the system prompt
+    # The system prompt is retained, not forgotten.
+    assert events[0].id not in result.forgotten_event_ids
+    messages = _applied_messages(result, view)
+    assert messages[0].role == "system"
+
+
+@pytest.mark.asyncio
+async def test_ahard_context_reset_preserves_leading_system_prompt(
+    mock_llm: LLM,
+) -> None:
+    """Async hard context reset must also keep the system prompt first."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(Any, mock_llm).set_mock_response_content("Hard reset summary")
+
+    events: list[Event] = [
+        _system_prompt_event(),
+        *[message_event(f"Event {i}") for i in range(12)],
+    ]
+    view = View.from_events(events)
+
+    result = await condenser.ahard_context_reset(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary_offset == 1
+    assert events[0].id not in result.forgotten_event_ids
+    messages = _applied_messages(result, view)
+    assert messages[0].role == "system"
+
+
 def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> None:
     """keep_first=0 must not let the SystemPromptEvent be forgotten.
 
@@ -1094,3 +1158,26 @@ def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> 
     assert messages[0].role == "system"
     # The forgotten set must not include the leading system prompt event.
     assert events[0].id not in result.forgotten_event_ids
+
+
+def test_llm_summarizing_condenser_get_llm() -> None:
+    """LLMSummarizingCondenser requires llm and exposes get_llm()."""
+    assert LLMSummarizingCondenser.model_fields["llm"].is_required()
+
+    my_llm = LLM(model="test-condenser-model")
+    summarizing = LLMSummarizingCondenser(llm=my_llm)
+    assert summarizing.llm is not None
+    assert summarizing.llm.model == "test-condenser-model"
+    assert summarizing.get_llm() is summarizing.llm
+
+    summarizing.llm = my_llm.model_copy(update={"model": "updated-model"})
+    assert summarizing.llm.model == "updated-model"
+    updated_llm = summarizing.get_llm()
+    assert updated_llm is not None
+    assert updated_llm.model == "updated-model"
+
+
+def test_llm_summarizing_condenser_requires_llm() -> None:
+    """LLMSummarizingCondenser raises ValidationError when llm is missing."""
+    with pytest.raises(ValidationError):
+        LLMSummarizingCondenser()  # type: ignore[call-arg]

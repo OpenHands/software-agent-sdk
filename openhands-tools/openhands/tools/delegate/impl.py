@@ -13,7 +13,9 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
+from openhands.sdk.subagent.scope import inherit_mcp_config
 from openhands.sdk.tool.tool import ToolExecutor
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.tools.delegate.definition import DelegateObservation
 
 
@@ -33,6 +35,9 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 class DelegateExecutor(ToolExecutor):
     """Executor for delegation operations.
 
+    Deprecated since v1.60.0 and scheduled for removal in v1.65.0.
+    Use TaskToolSet instead.
+
     This class handles:
     - Spawning sub-agents with meaningful string identifiers (e.g., 'refactor_module')
     - Delegating tasks to sub-agents and waiting for results (blocking)
@@ -43,6 +48,12 @@ class DelegateExecutor(ToolExecutor):
         max_children: int = 5,
         confirmation_handler: ConfirmationHandler | None = None,
     ):
+        warn_deprecated(
+            "DelegateExecutor",
+            deprecated_in="1.60.0",
+            removed_in="1.65.0",
+            details="Use TaskToolSet instead.",
+        )
         self._parent_conversation: LocalConversation | None = None
         # Map from user-friendly identifier to conversation
         self._sub_agents: dict[str, LocalConversation] = {}
@@ -188,7 +199,9 @@ class DelegateExecutor(ToolExecutor):
                 worker_agent = factory.factory_func(sub_agent_llm)
 
                 # ensuring that the sub-agent LLM has stream deactivated
-                worker_agent = worker_agent.model_copy(
+                worker_agent = inherit_mcp_config(
+                    parent_conversation.agent, worker_agent
+                ).model_copy(
                     update={
                         "llm": worker_agent.llm.model_copy(update={"stream": False})
                     }
@@ -220,6 +233,11 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
+                    "_parent_llm_call_context": (
+                        parent_conversation.get_llm_call_context()
+                    ),
+                    "mcp_tool_provider": parent_conversation._mcp_tool_provider,
+                    "_mcp_config_from_parent": True,
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 from .acp_providers import (
     ACP_PROVIDERS,
     ACPFileSecretSpec,
-    ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
     default_acp_file_secrets,
@@ -85,7 +84,6 @@ _MODEL_EXPORTS = {
 __all__ = [
     "ACP_PROVIDERS",
     "ACPFileSecretSpec",
-    "ACPModelOption",
     "ACPProviderInfo",
     "build_session_model_meta",
     "default_acp_file_secrets",

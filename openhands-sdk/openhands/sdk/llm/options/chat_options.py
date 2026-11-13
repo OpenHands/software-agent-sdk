@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.llm.call_context import (
+    apply_llm_call_context,
+    resolve_llm_call_context,
+)
 from openhands.sdk.llm.options.common import (
-    apply_call_context,
     apply_defaults_if_absent,
     apply_extra_body,
     apply_extra_headers,
+    is_openrouter,
 )
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
+    from openhands.sdk.llm.call_context import LLMCallContext
 
 
 def select_chat_options(
@@ -47,6 +51,14 @@ def select_chat_options(
     if supports_reasoning_effort:
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
+        explicit_reasoning = model_features.sources.get(
+            "supports_reasoning_effort"
+        ) in {"caller", "endpoint", "sdk"}
+        if explicit_reasoning and out.get("reasoning_effort") is not None:
+            allowed = list(out.get("allowed_openai_params") or [])
+            if "reasoning_effort" not in allowed:
+                allowed.append("reasoning_effort")
+            out["allowed_openai_params"] = allowed
 
     model_name = llm._model_name_for_capabilities()
     if model_features.supports_sampling_params is False or (
@@ -88,6 +100,12 @@ def select_chat_options(
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
     out = apply_extra_body(out, llm)
-    out = apply_call_context(out, llm, call_context)
+    context = resolve_llm_call_context(call_context)
+    apply_llm_call_context(
+        out,
+        context,
+        supports_prompt_cache_key=model_features.supports_prompt_cache_key,
+        openrouter=is_openrouter(llm),
+    )
 
     return out

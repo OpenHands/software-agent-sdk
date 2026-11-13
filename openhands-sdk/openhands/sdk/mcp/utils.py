@@ -2,19 +2,22 @@
 
 import asyncio
 import inspect
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
-import httpx
+import httpx2
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
+from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
+from mcp.client.auth.utils import extract_field_from_www_auth
 from mcp.shared._httpx_utils import create_mcp_http_client
-from pydantic import PrivateAttr
+from pydantic import PrivateAttr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -25,7 +28,7 @@ from openhands.sdk.mcp.config import (
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPServerHTTPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -95,6 +98,7 @@ def _oauth_auth_from_authentication_config(
     authentication: MCPOAuthAuthentication | None,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
+    mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> OAuth | None:
     """Build FastMCP OAuth auth from explicit SDK MCP auth metadata."""
     if authentication is None:
@@ -105,7 +109,7 @@ def _oauth_auth_from_authentication_config(
     if client_auth_method is not None:
         additional_client_metadata["token_endpoint_auth_method"] = client_auth_method
 
-    return MCPOAuth(
+    return mcp_oauth_class(
         scopes=authentication.scopes,
         client_name=authentication.client_name or "FastMCP Client",
         token_storage=mcp_oauth_token_storage,
@@ -118,32 +122,61 @@ def _oauth_auth_from_authentication_config(
     )
 
 
-class _HookedRemoteMCPServer(RemoteMCPServer):
-    """A remote server whose HTTP client runs OpenHands' httpx event hooks.
+class _HTTPErrorLog:
+    """The last HTTP error response an MCP server's client received."""
 
-    Every server keeps error response bodies readable. A package-declared
-    server also keeps its headers on its own origin (Agent Plugins §7.2.1):
-    httpx strips only ``Authorization`` on a cross-origin redirect, so every
-    configured header name is dropped from any request that leaves it.
+    def __init__(self) -> None:
+        self.last: httpx2.Response | None = None
+
+    async def record(self, response: httpx2.Response) -> None:
+        if not response.is_error:
+            return
+        # A streamable-HTTP server without a server-to-client stream answers
+        # the client's GET with 405; the spec makes that a normal reply.
+        if response.status_code == 405 and response.request.method == "GET":
+            return
+        # The transport streams responses and may never read an error body.
+        await response.aread()
+        self.last = response
+
+
+class _RemoteMCPServer(RemoteMCPServer):
+    """A remote server whose HTTP client reports the server's error responses.
+
+    The MCP client turns an HTTP error from the server into a stand-in such as
+    ``Server returned an error response`` or ``Session terminated`` and drops
+    the response, so the server's reason (e.g. GitLab's "MCP server not
+    enabled for any of your groups") never reaches the user. This server's
+    client records its error responses in ``_http_errors`` instead.
+
+    A package-declared server also keeps its headers on its own origin (Agent
+    Plugins §7.2.1): httpx strips only ``Authorization`` on a cross-origin
+    redirect, so every configured header name is dropped from any request
+    that leaves it.
     """
 
+    _http_errors: _HTTPErrorLog = PrivateAttr(default_factory=_HTTPErrorLog)
     _bind_headers_to_origin: bool = PrivateAttr(default=False)
 
     def to_transport(self):  # type: ignore[override]
         transport = super().to_transport()
+        if not isinstance(transport, (StreamableHttpTransport, SSETransport)):
+            return transport
         request_hooks = []
         if self._bind_headers_to_origin and self.headers:
             request_hooks.append(
                 _drop_headers_off_origin(self.url, tuple(self.headers))
             )
-        transport.httpx_client_factory = _mcp_http_client_factory(request_hooks)
+        transport.httpx_client_factory = _mcp_http_client_factory(
+            request_hooks, self._http_errors.record
+        )
         return transport
 
 
 def _drop_headers_off_origin(url: str, header_names: tuple[str, ...]):
-    origin = _origin(httpx.URL(url))
+    origin = _origin(httpx2.URL(url))
 
-    async def hook(request: httpx.Request) -> None:
+    async def hook(request: httpx2.Request) -> None:
         # Request hooks run on every redirect hop, after httpx has copied the
         # previous request's headers onto the next one.
         if _origin(request.url) != origin:
@@ -153,34 +186,100 @@ def _drop_headers_off_origin(url: str, header_names: tuple[str, ...]):
     return hook
 
 
-async def _read_error_response_body(response: httpx.Response) -> None:
-    # MCP transports stream responses and call ``raise_for_status()`` before
-    # reading them, so without this the ``HTTPStatusError`` loses the server's
-    # explanation (e.g. GitLab's 403 reason) to ``ResponseNotRead``.
-    if response.is_error:
-        await response.aread()
-
-
 def _mcp_http_client_factory(
-    request_hooks: list[Callable[[httpx.Request], Awaitable[None]]],
+    request_hooks: list[Callable[[httpx2.Request], Awaitable[None]]],
+    response_hook: Callable[[httpx2.Response], Awaitable[None]],
 ):
     def factory(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         **_: object,
-    ) -> httpx.AsyncClient:
+    ) -> httpx2.AsyncClient:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-        client.event_hooks = {
-            "request": request_hooks,
-            "response": [_read_error_response_body],
-        }
+        client.event_hooks = {"request": request_hooks, "response": [response_hook]}
         return client
 
     return factory
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+# What the MCP client reports instead of a streamable-HTTP error response.
+_HTTP_ERROR_STAND_INS = frozenset(
+    {"Server returned an error response", "Session terminated", "Not Found"}
+)
+_HTTP_ERROR_REASON_MAX_CHARS = 300
+
+
+def _server_http_error(
+    exc: BaseException, config: FastMCPConfig
+) -> MCPServerHTTPError | None:
+    """The HTTP error response behind ``exc``, if a server rejected a request."""
+    if isinstance(exc, httpx2.HTTPStatusError):
+        response = exc.response
+    elif isinstance(exc, mcp.MCPError) and exc.message in _HTTP_ERROR_STAND_INS:
+        responses = [
+            server._http_errors.last
+            for server in config.mcpServers.values()
+            if isinstance(server, _RemoteMCPServer)
+        ]
+        response = next((r for r in responses if r is not None), None)
+    else:
+        return None
+    if response is None:
+        return None
+    url = response.request.url
+    return MCPServerHTTPError(
+        status_code=response.status_code,
+        reason_phrase=response.reason_phrase,
+        url=f"{url.scheme}://{url.netloc.decode()}",
+        reason=_http_error_reason(response),
+    )
+
+
+def _http_error_reason(response: httpx2.Response) -> str | None:
+    """The most readable reason a server gave for rejecting a request.
+
+    RFC 6750 puts it in ``WWW-Authenticate``'s ``error_description``, but most
+    servers send only an error code there and explain in a JSON body.
+    """
+    try:
+        text = response.text.strip()
+    except httpx2.ResponseNotRead:
+        text = ""
+    candidates = [
+        extract_field_from_www_auth(response, "error_description"),
+        *_json_body_reasons(text),
+        extract_field_from_www_auth(response, "error"),
+        text,
+    ]
+    reason = next((c for c in candidates if c), None)
+    if reason is None:
+        return None
+    reason = " ".join(reason.split())
+    if len(reason) > _HTTP_ERROR_REASON_MAX_CHARS:
+        reason = reason[: _HTTP_ERROR_REASON_MAX_CHARS - 3] + "..."
+    return reason
+
+
+def _json_body_reasons(text: str) -> list[str]:
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(body, dict):
+        return []
+    error = body.get("error")
+    candidates = [
+        body.get("error_description"),
+        body.get("message"),
+        error.get("message") if isinstance(error, dict) else None,
+        body.get("detail"),
+        error,
+    ]
+    return [c for c in candidates if isinstance(c, str)]
+
+
+def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
     default_port = {"http": 80, "https": 443}.get(url.scheme)
     return url.scheme, url.host, url.port or default_port
 
@@ -190,16 +289,37 @@ def _prepare_mcp_config(
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
+    mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> FastMCPConfig:
-    """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
+    """Validate MCP config and apply explicit OpenHands runtime auth metadata.
 
-    for server_name, server_spec in mcp_config.items():
-        server = prepared.mcpServers.get(server_name)
-        if isinstance(server, RemoteMCPServer):
-            hooked = _HookedRemoteMCPServer.model_validate(server.model_dump())
-            hooked._bind_headers_to_origin = server_spec.literal_values
-            prepared.mcpServers[server_name] = hooked
+    Servers are validated one by one: a server FastMCP rejects is skipped with
+    a warning naming it, so it cannot cost its siblings their tools.
+    """
+    servers = to_fastmcp_mcp_config(mcp_config)["mcpServers"]
+    valid: dict[str, Any] = {}
+    for server_name, server in servers.items():
+        try:
+            FastMCPConfig.model_validate({"mcpServers": {server_name: server}})
+        except ValidationError as exc:
+            logger.warning(
+                "Skipping invalid MCP server %s; continuing without its tools: %s",
+                server_name,
+                exc,
+            )
+            continue
+        valid[server_name] = server
+    if servers and not valid:
+        raise ValueError(f"No valid MCP servers among: {', '.join(sorted(servers))}")
+    prepared = FastMCPConfig.model_validate({"mcpServers": valid})
+
+    for server_name, server in list(prepared.mcpServers.items()):
+        if not isinstance(server, RemoteMCPServer):
+            continue
+        remote = _RemoteMCPServer.model_validate(server.model_dump())
+        spec = mcp_config.get(server_name)
+        remote._bind_headers_to_origin = spec is not None and spec.literal_values
+        prepared.mcpServers[server_name] = remote
 
     for server_name, server_spec in mcp_config.items():
         auth = server_spec.auth
@@ -219,12 +339,13 @@ def _prepare_mcp_config(
             else _oauth_auth_from_authentication_config(
                 auth.authentication,
                 mcp_oauth_token_storage=mcp_oauth_token_storage,
+                mcp_oauth_class=mcp_oauth_class,
             )
         )
         if oauth_auth is not None:
             server.auth = oauth_auth
         elif mcp_oauth_token_storage is not None:
-            server.auth = MCPOAuth(token_storage=mcp_oauth_token_storage)
+            server.auth = mcp_oauth_class(token_storage=mcp_oauth_token_storage)
 
     return prepared
 
@@ -398,6 +519,7 @@ def create_mcp_tools(
     on_tools_reconciled: ToolsReconciledCallback | None = None,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
+    mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> MCPClient:
     """Create MCP tools from OpenHands-native MCP server settings.
 
@@ -429,6 +551,7 @@ def create_mcp_tools(
         mcp_config,
         mcp_oauth_token_storage=mcp_oauth_token_storage,
         mcp_oauth_factory=mcp_oauth_factory,
+        mcp_oauth_class=mcp_oauth_class,
     )
     handler = _ToolListChangedHandler(
         client=None,  # type: ignore[arg-type]
@@ -459,13 +582,16 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
-    except BaseException:
+    except BaseException as exc:
         try:
             client.sync_close()
         except Exception as close_exc:
             logger.warning(
                 "Failed to close MCP client during error cleanup", exc_info=close_exc
             )
+        http_error = _server_http_error(exc, config)
+        if http_error is not None:
+            raise http_error from exc
         raise
 
     logger.info("Created %d MCP tools", len(client.tools))

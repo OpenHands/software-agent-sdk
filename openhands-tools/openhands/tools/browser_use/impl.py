@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import builtins
 import functools
+import importlib.util
 import json
 import logging
 import os
 import shutil
 import sys
 import threading
+import time
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
 from uuid import uuid4
+
+import psutil
 
 
 if TYPE_CHECKING:
@@ -106,8 +110,8 @@ def _current_platform(platform: str | None = None) -> str:
 
 def _windows_browser_install_paths() -> list[Path]:
     roots = [
-        os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-        os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+        os.environ.get("PROGRAMFILES") or "C:\\Program Files",
+        os.environ.get("PROGRAMFILES(X86)") or "C:\\Program Files (x86)",
         os.environ.get("LOCALAPPDATA"),
     ]
     browsers = [
@@ -118,7 +122,7 @@ def _windows_browser_install_paths() -> list[Path]:
 
     paths: list[Path] = []
     for root in roots:
-        if root is None:
+        if not root:
             continue
         for parts in browsers:
             paths.append(Path(root).joinpath(*parts))
@@ -146,16 +150,62 @@ def _standard_chromium_paths(platform: str | None = None) -> list[Path]:
             ]
 
 
+def _playwright_hermetic_cache_dirs() -> list[Path]:
+    try:
+        spec = importlib.util.find_spec("playwright")
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return []
+
+    if spec is None or spec.submodule_search_locations is None:
+        return []
+
+    try:
+        return [
+            Path(package_root) / "driver" / "package" / ".local-browsers"
+            for package_root in spec.submodule_search_locations
+        ]
+    except (OSError, TypeError, ValueError):
+        return []
+
+
 def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
-    match _current_platform(platform):
+    current_platform = _current_platform(platform)
+    dirs: list[Path] = []
+    # Windows resolves relative and hermetic paths below; other platforms
+    # retain their configured-cache-then-default-cache lookup.
+    if current_platform != "win32":
+        if (browsers_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH")) and (
+            browsers_path != "0"
+        ):
+            dirs.append(Path(browsers_path).expanduser())
+    match current_platform:
         case "darwin":
-            return [Path.home() / "Library" / "Caches" / "ms-playwright"]
+            dirs.append(Path.home() / "Library" / "Caches" / "ms-playwright")
         case "win32":
+            if configured_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+                if configured_path == "0":
+                    return _playwright_hermetic_cache_dirs()
+                try:
+                    cache_path = Path(configured_path).expanduser()
+                    if not cache_path.is_absolute():
+                        cache_path = Path(
+                            os.path.abspath(
+                                Path(os.environ.get("INIT_CWD") or os.getcwd())
+                                / cache_path
+                            )
+                        )
+                except (OSError, RuntimeError, ValueError):
+                    return []
+                return [cache_path]
             if local_app_data := os.environ.get("LOCALAPPDATA"):
                 return [Path(local_app_data) / "ms-playwright"]
-            return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+            try:
+                return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+            except RuntimeError:
+                return []
         case _:
-            return [Path.home() / ".cache" / "ms-playwright"]
+            dirs.append(Path.home() / ".cache" / "ms-playwright")
+    return dirs
 
 
 def _playwright_chromium_paths(
@@ -194,6 +244,75 @@ def _playwright_chromium_paths(
                 chromium_dir / "chrome-linux64" / "chrome",
                 chromium_dir / "chrome-linux" / "chrome",
             ]
+
+
+def _playwright_build_sort_key(chromium_dir: Path) -> tuple[int, str]:
+    prefix, separator, build = chromium_dir.name.rpartition("-")
+    try:
+        build_number = (
+            int(build)
+            if separator
+            and not prefix.endswith("-")
+            and build.isascii()
+            and build.isdigit()
+            else -1
+        )
+    except (OverflowError, ValueError):
+        build_number = -1
+    return build_number, str(chromium_dir).casefold()
+
+
+def _playwright_chromium_install_paths(
+    platform: str | None = None,
+) -> list[Path]:
+    current_platform = _current_platform(platform)
+    paths: list[Path] = []
+    chromium_dirs: list[Path] = []
+    for playwright_cache in _playwright_cache_dirs(current_platform):
+        try:
+            if not playwright_cache.exists():
+                continue
+            if current_platform == "win32":
+                cache_chromium_dirs = [
+                    *playwright_cache.glob("chromium-[0-9]*"),
+                    *playwright_cache.glob("chromium_win*_special-[0-9]*"),
+                ]
+            else:
+                cache_chromium_dirs = list(playwright_cache.glob("chromium-*"))
+        except (OSError, RuntimeError, ValueError):
+            if current_platform != "win32":
+                raise
+            continue
+        chromium_dirs.extend(cache_chromium_dirs)
+    if current_platform == "win32":
+        chromium_dirs.sort(key=_playwright_build_sort_key, reverse=True)
+    for chromium_dir in chromium_dirs:
+        paths.extend(_playwright_chromium_paths(chromium_dir, current_platform))
+    return paths
+
+
+def _is_browser_executable(path: Path, platform: str | None = None) -> bool:
+    current_platform = _current_platform(platform)
+    try:
+        if not path.exists():
+            return False
+        if current_platform != "win32":
+            return True
+        if not path.is_file() or not os.access(path, os.X_OK):
+            return False
+        with path.open("rb") as executable:
+            if executable.read(2) != b"MZ":
+                return False
+            executable.seek(0x3C)
+            pe_header_offset = int.from_bytes(executable.read(4), "little")
+            if pe_header_offset < 0x40:
+                return False
+            executable.seek(pe_header_offset)
+            return executable.read(4) == b"PE\x00\x00"
+    except (OSError, ValueError):
+        if current_platform != "win32":
+            raise
+        return False
 
 
 def _path_binary_candidates(platform: str | None = None) -> tuple[str, ...]:
@@ -240,6 +359,52 @@ def _get_chromium_error_message() -> str:
     )
 
 
+def _kill_processes(processes: list[psutil.Process], timeout: float = 3.0) -> None:
+    """Kill the processes that are still running and wait briefly for them.
+
+    Used for a browser that a timed-out cleanup left behind, which otherwise
+    outlives the conversation and the program (re-parented to PID 1).
+    """
+    killed: list[psutil.Process] = []
+    for process in processes:
+        try:
+            if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                process.kill()
+                killed.append(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as e:
+            logger.warning("Could not kill browser process %s: %s", process.pid, e)
+    if not killed:
+        return
+    logger.warning(
+        "Killed %d browser process(es) left running after cleanup", len(killed)
+    )
+    # Poll rather than wait(): Chromium is a direct child that asyncio's child
+    # watcher also waits on, and reaping it here makes asyncio log a bogus
+    # "exit status already read" for it.
+    deadline = time.monotonic() + timeout
+    while True:
+        survivors = [p for p in killed if _still_running(p)]
+        if not survivors or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    if survivors:
+        logger.warning(
+            "Browser process(es) still running after kill: %s",
+            ", ".join(str(p.pid) for p in survivors),
+        )
+
+
+def _still_running(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True
+
+
 class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     """Executor that wraps browser-use MCP server for OpenHands integration."""
 
@@ -259,25 +424,25 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Returns:
             Path to Chromium binary if found, None otherwise
         """
-        # Check standard installation paths (prefer full Chrome installs)
-        for path in _standard_chromium_paths():
-            if path.exists():
-                return str(path)
+        current_platform = _current_platform()
+        path_sources = (
+            (_playwright_chromium_install_paths, _standard_chromium_paths)
+            if current_platform == "win32"
+            else (_standard_chromium_paths, _playwright_chromium_install_paths)
+        )
 
-        # Check Playwright-installed Chromium (preferred over PATH lookups
-        # because PATH binaries like homebrew chromium may lack CDP support)
-        for playwright_cache in _playwright_cache_dirs():
-            if playwright_cache.exists():
-                chromium_dirs = list(playwright_cache.glob("chromium-*"))
-                for chromium_dir in chromium_dirs:
-                    for path in _playwright_chromium_paths(chromium_dir):
-                        if path.exists():
-                            return str(path)
+        for path_source in path_sources:
+            for path in path_source(current_platform):
+                if _is_browser_executable(path, current_platform):
+                    return str(path)
 
         # Fallback: check PATH for any chromium-based binary
         for binary in _path_binary_candidates():
             if path := shutil.which(binary):
-                return path
+                if current_platform != "win32" or _is_browser_executable(
+                    Path(path), current_platform
+                ):
+                    return path
 
         return None
 
@@ -287,6 +452,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Raises:
             Exception: If Chromium is not available
         """
+        if _current_platform() == "win32":
+            BrowserToolExecutor.check_chromium_available.cache_clear()
         if path := self.check_chromium_available():
             logger.info(f"Chromium is available for browser operations at {path}")
             return path
@@ -325,7 +492,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._close_lock = threading.Lock()
 
         def init_logic():
-            executable_path = self._ensure_chromium_available()
+            executable_path = (
+                config.pop("executable_path", None) or self._ensure_chromium_available()
+            )
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )
@@ -425,8 +594,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 self._consecutive_failures,
             )
             # Best-effort cleanup of the old browser process/session.
-            # If the browser truly crashed this will fail fast; if it's
-            # wedged this avoids leaking the process.
+            # If the browser truly crashed this will fail fast. A wedged
+            # browser can outlast the cleanup, so its processes are killed
+            # afterwards and the server forgets the session either way;
+            # otherwise the next action reuses the hung session.
+            processes = self._browser_processes()
             try:
                 self._async_executor.run_async(self.cleanup, timeout=5.0)
             except Exception as e:
@@ -435,6 +607,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     "(expected if browser crashed): %s",
                     e,
                 )
+            _kill_processes(processes)
+            self._forget_browser_session()
             self._initialized = False
             self._consecutive_failures = 0
             error_text = (
@@ -538,9 +712,27 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     # Navigation & Browser Control Methods
     @recording_aware
     async def navigate(self, url: str, new_tab: bool = False) -> str:
-        """Navigate to a URL."""
+        """Navigate to a URL.
+
+        browser-use's MCP ``_navigate`` awaits the navigation event but never
+        reads its handler results, so a navigation its security watchdog refused
+        (``allowed_domains``) still reported success. Read the results here and
+        raise, so the observation is an error that names the blocked URL.
+        """
         await self._ensure_initialized()
-        return await self._server._navigate(url, new_tab)
+        session = self._server.browser_session
+        if session is None:
+            return await self._server._navigate(url, new_tab)
+
+        from browser_use.browser.events import NavigateToUrlEvent
+
+        self._server._update_session_activity(session.id)
+        event = session.event_bus.dispatch(NavigateToUrlEvent(url=url, new_tab=new_tab))
+        await event
+        await event.event_result(raise_if_any=True, raise_if_none=False)
+        if new_tab:
+            return f"Opened new tab with URL: {url}"
+        return f"Navigated to: {url}"
 
     @recording_aware
     async def go_back(self) -> str:
@@ -676,6 +868,40 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
 
+    def _browser_processes(self) -> list[psutil.Process]:
+        """The local browser process and its descendants, if one is running."""
+        # getattr: close() also runs on an executor whose __init__ failed.
+        server = getattr(self, "_server", None)
+        session = getattr(server, "browser_session", None)
+        watchdog = getattr(session, "_local_browser_watchdog", None)
+        process = getattr(watchdog, "_subprocess", None)
+        if not isinstance(process, psutil.Process):
+            return []
+        try:
+            return [process, *process.children(recursive=True)]
+        except psutil.Error:
+            return [process]
+
+    def _forget_browser_session(self) -> None:
+        """Drop the server's session references so the next action starts anew.
+
+        A cancelled cleanup leaves the old session's event bus running on the
+        portal loop, which then holds up the executor's close, so stop it too.
+        """
+        session = self._server.browser_session
+        self._server.browser_session = None
+        self._server.tools = None
+        self._server.active_sessions.clear()
+        event_bus = getattr(session, "event_bus", None)
+        if event_bus is None:
+            return
+        try:
+            self._async_executor.run_async(
+                event_bus.stop(clear=True, timeout=1), timeout=3.0
+            )
+        except Exception as e:
+            logger.debug("Stopping the old browser session's event bus failed: %s", e)
+
     def close(self):
         """Close the browser executor and cleanup resources."""
         with self._close_lock:
@@ -685,12 +911,15 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     self._release_shared_executor_creation_lock()
                 return
             self._cleanup_initiated = True
+            processes = self._browser_processes()
             try:
                 # Run cleanup in the async executor with a shorter timeout
                 self._async_executor.run_async(self.cleanup, timeout=30.0)
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
+                # A hung browser can outlast the cleanup; don't leave it behind.
+                _kill_processes(processes)
                 # Remove the browser profile directory to avoid disk accumulation.
                 # browser_use doesn't clean up the user_data_dir on shutdown.
                 user_data_dir = self._config.get("user_data_dir")

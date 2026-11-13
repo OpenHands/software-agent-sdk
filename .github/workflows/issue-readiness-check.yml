@@ -1,8 +1,8 @@
 ---
 name: Ready-for-dev Label Policy
 
-# The issue-triage automation and repository writers may grant ready-for-dev.
-# Labels from any other actor are removed.
+# Granting ready-for-dev requires write, maintain, or admin permission, even for bots.
+# This workflow checks permission, not issue content.
 
 on:
     issues:
@@ -65,7 +65,7 @@ jobs:
             actions: write
         steps:
             - name: Checkout trusted workflow scripts
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
 
             - name: Re-run PR description checks for linked open PRs
               env:

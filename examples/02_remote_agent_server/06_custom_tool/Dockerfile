@@ -8,7 +8,7 @@
 #   cd examples/02_remote_agent_server/06_custom_tool
 #   docker build -t custom-base-image:latest .
 
-FROM nikolaik/python-nodejs:python3.13-nodejs22-slim
+FROM nikolaik/python-nodejs:python3.13-nodejs24-slim
 
 # Copy custom tools into a directory outside the frozen binary.
 COPY custom_tools /app/custom_tools

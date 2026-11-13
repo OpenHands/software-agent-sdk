@@ -1,8 +1,10 @@
 """Test DockerWorkspace import and basic functionality."""
 
+import gc
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -116,6 +118,22 @@ def test_removed_mount_dir_input_fails_loudly():
         )
 
 
+def test_exit_sends_completion_callback(mock_docker_workspace, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace, _ = mock_docker_workspace()
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.args[0] == "https://svc.test/complete"
+
+
 def test_cleanup_without_image_deletion(mock_docker_workspace):
     """Test that cleanup with cleanup_image=False does not delete the image."""
     workspace, mock_exec = mock_docker_workspace(cleanup_image=False)
@@ -147,6 +165,27 @@ def test_cleanup_with_image_deletion(mock_docker_workspace):
     assert "rmi" in rmi_call_args
     assert "-f" in rmi_call_args
     assert "test:latest" in rmi_call_args
+
+
+def test_cleanup_from_log_thread_still_stops_container(mock_docker_workspace):
+    """__del__ may run cleanup() on the logs thread when it drops the last ref."""
+    workspace, mock_exec = mock_docker_workspace()
+    workspace._stop_logs = threading.Event()
+    errors: list[Exception] = []
+
+    def run_cleanup():
+        try:
+            workspace.cleanup()
+        except Exception as e:
+            errors.append(e)
+
+    workspace._logs_thread = threading.Thread(target=run_cleanup)
+    workspace._logs_thread.start()
+    workspace._logs_thread.join(timeout=5)
+
+    assert errors == []
+    stop_calls = [c.args[0] for c in mock_exec.call_args_list if "stop" in c.args[0]]
+    assert stop_calls == [["docker", "stop", "container_id_123"]]
 
 
 def test_docker_network(mock_docker_workspace):
@@ -183,6 +222,83 @@ def test_docker_network(mock_docker_workspace):
         assert "--network" in run_cmd
         network_index = run_cmd.index("--network")
         assert run_cmd[network_index + 1] == network_name
+
+
+def test_docker_workspace_publishes_ports_on_loopback(mock_docker_workspace):
+    with (
+        patch(
+            "openhands.workspace.docker.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch.object(DockerWorkspace, "_wait_for_health"),
+    ):
+        with patch.object(DockerWorkspace, "_start_container"):
+            workspace = DockerWorkspace(
+                server_image="test:latest",
+                host_port=8010,
+                extra_ports=True,
+                detach_logs=False,
+            )
+        workspace, mock_exec = workspace, mock_docker_workspace()[1]
+        mock_exec.reset_mock()
+        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
+
+        workspace._start_container("test:latest", None)
+
+        run_cmd = next(
+            call[0][0] for call in mock_exec.call_args_list if "run" in call[0][0]
+        )
+        assert "127.0.0.1:8010:8000" in run_cmd
+        assert "127.0.0.1:8011:8001" in run_cmd
+        assert run_cmd[run_cmd.index("--host") + 1] == "0.0.0.0"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, None),
+        ({"SESSION_API_KEY": "legacy-key"}, "legacy-key"),
+        ({"OH_SESSION_API_KEYS_0": "current-key"}, "current-key"),
+        (
+            {
+                "SESSION_API_KEY": "legacy-key",
+                "OH_SESSION_API_KEYS_0": "current-key",
+            },
+            "current-key",
+        ),
+    ],
+)
+def test_docker_workspace_uses_forwarded_session_key(
+    mock_docker_workspace, monkeypatch, env, expected
+):
+    """The client key must match what the server in this container accepts.
+
+    `forward_env` forwards both variables, and the server resolves the V1
+    `OH_SESSION_API_KEYS_0` first (V0 `SESSION_API_KEY` is only a fallback), so
+    with both set the workspace has to send the V1 key or the container
+    rejects it.
+    """
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    with (
+        patch(
+            "openhands.workspace.docker.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch.object(DockerWorkspace, "_wait_for_health"),
+    ):
+        workspace, mock_exec = mock_docker_workspace()
+        workspace.host_port = 8010
+        workspace.detach_logs = False
+        mock_exec.reset_mock()
+        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
+
+        workspace._start_container("test:latest", None)
+
+    assert workspace.api_key == expected
 
 
 # ===========================================================================
@@ -277,3 +393,51 @@ def test_apptainer_workspace_startup_uses_health_check_timeout():
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
         ApptainerWorkspace(server_image="test:latest", health_check_timeout=45.0)
         mock_wait.assert_called_once_with(timeout=45.0)
+
+
+def test_failed_health_check_stops_container(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_execute_command(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return Mock(returncode=0, stdout="cid-123\n", stderr="")
+
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.execute_command", fake_execute_command
+    )
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.check_port_available", lambda p: True
+    )
+
+    with (
+        patch.object(
+            DockerWorkspace,
+            "_wait_for_health",
+            side_effect=RuntimeError("Container failed to become healthy in time"),
+        ),
+        pytest.raises(RuntimeError, match="healthy") as excinfo,
+    ):
+        DockerWorkspace(server_image="test:latest", host_port=8123, detach_logs=False)
+
+    # excinfo keeps the half-built workspace alive, so __del__ has not run yet
+    # and cannot stand in for a rollback inside the constructor.
+    stopped_during_startup = ["docker", "stop", "cid-123"] in calls
+    del excinfo
+    gc.collect()  # let __del__ run while execute_command is still faked
+    assert stopped_during_startup
+
+
+def test_no_free_port_raises_runtime_error(monkeypatch):
+    """find_available_tcp_port() returns -1 when no port in range is free."""
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.find_available_tcp_port", lambda: -1
+    )
+    execute_command = MagicMock()
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.execute_command", execute_command
+    )
+
+    with pytest.raises(RuntimeError, match="Port -1 is not available"):
+        DockerWorkspace(server_image="test:latest")
+
+    execute_command.assert_not_called()

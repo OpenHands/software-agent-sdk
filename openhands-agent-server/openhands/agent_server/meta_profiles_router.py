@@ -4,17 +4,17 @@ Unlike LLM profiles, meta-profiles hold no secrets — they are plain JSON
 documents persisted via :class:`MetaProfileStore`.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Path, status
+from pydantic import AfterValidator, BaseModel
 
-from openhands.agent_server._secrets_exposure import get_config
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_settings_store,
+from openhands.agent_server.dependencies import get_settings_store
+from openhands.agent_server.persistence import FileSettingsStore, PersistedSettings
+from openhands.sdk.errors import (
+    Conflict,
+    NotFound,
+    OperationFailed,
 )
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.llm.meta_profile_store import (
@@ -36,6 +36,23 @@ MetaProfileName = Annotated[
     str,
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
+
+
+def _require_route(meta_profile: MetaProfile) -> MetaProfile:
+    """Refuse a meta-profile that has nothing to route to.
+
+    Checked on save only, not in ``MetaProfile`` itself, so meta-profiles
+    already persisted without classes or a template (store files, the inline
+    copy in ``settings.json``, conversation tool params) still load.
+    """
+    if not meta_profile.classes and meta_profile.prompt_template is None:
+        raise ValueError(
+            "A meta-profile needs either classes or a prompt_template to route."
+        )
+    return meta_profile
+
+
+RoutableMetaProfile = Annotated[MetaProfile, AfterValidator(_require_route)]
 
 
 def _get_meta_profile_store() -> MetaProfileStore:
@@ -71,33 +88,15 @@ class MetaProfileMutationResponse(BaseModel):
 class ActivateMetaProfileResponse(BaseModel):
     name: str
     message: str
-
-
-@contextmanager
-def _store_errors() -> Iterator[None]:
-    """Map ``MetaProfileStore`` errors to HTTP responses."""
-    try:
-        yield
-    except TimeoutError:
-        # save()/delete() can raise TimeoutError from the file lock under
-        # contention; surface a retryable 503 instead of a generic 500
-        # (mirrors profiles_router._store_errors()).
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Meta-profile store is busy. Please retry.",
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+    applied: bool = True
+    """False when the current agent settings cannot attach the routing tool
+    (e.g. ACP), so nothing was activated (mirrors ``llm_applied`` on LLM-profile
+    activation)."""
 
 
 def _set_active_meta_profile_if_matches(
-    request: Request, old_name: str, new_name: str | None
+    settings_store: FileSettingsStore, old_name: str, new_name: str | None
 ) -> bool:
-    config = get_config(request)
-    settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
     if settings.active_meta_profile != old_name:
         return False
@@ -121,15 +120,14 @@ def _set_active_meta_profile_if_matches(
 
 
 @meta_profiles_router.get("", response_model=MetaProfileListResponse)
-async def list_meta_profiles(request: Request) -> MetaProfileListResponse:
+def list_meta_profiles(
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
-    config = get_config(request)
-    settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
     store = _get_meta_profile_store()
-    with _store_errors():
-        summaries = store.list_summaries()
+    summaries = store.list_summaries()
 
     return MetaProfileListResponse(
         meta_profiles=[MetaProfileInfo(**s) for s in summaries],
@@ -138,17 +136,13 @@ async def list_meta_profiles(request: Request) -> MetaProfileListResponse:
 
 
 @meta_profiles_router.get("/{name}", response_model=MetaProfileDetailResponse)
-async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
+def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     """Get a meta-profile's full configuration."""
     store = _get_meta_profile_store()
     try:
-        with _store_errors():
-            meta_profile = store.load(name)
+        meta_profile = store.load(name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meta-profile '{name}' not found",
-        )
+        raise NotFound(f"Meta-profile '{name}' not found")
 
     return MetaProfileDetailResponse(name=name, config=meta_profile)
 
@@ -158,9 +152,9 @@ async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     response_model=MetaProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_meta_profile(
+def save_meta_profile(
     name: MetaProfileName,
-    body: MetaProfile,
+    body: RoutableMetaProfile,
 ) -> MetaProfileMutationResponse:
     """Save (create or overwrite) a meta-profile.
 
@@ -169,15 +163,11 @@ async def save_meta_profile(
     """
     store = _get_meta_profile_store()
     try:
-        with _store_errors():
-            store.save(name, body, max_profiles=MAX_META_PROFILES)
+        store.save(name, body, max_profiles=MAX_META_PROFILES)
     except MetaProfileLimitExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Meta-profile limit reached ({MAX_META_PROFILES}). "
-                "Delete a meta-profile before saving a new one."
-            ),
+        raise Conflict(
+            f"Meta-profile limit reached ({MAX_META_PROFILES}). "
+            "Delete a meta-profile before saving a new one."
         )
 
     logger.info(f"Saved meta-profile '{name}'")
@@ -187,8 +177,9 @@ async def save_meta_profile(
 
 
 @meta_profiles_router.delete("/{name}", response_model=MetaProfileMutationResponse)
-async def delete_meta_profile(
-    request: Request, name: MetaProfileName
+def delete_meta_profile(
+    name: MetaProfileName,
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> MetaProfileMutationResponse:
     """Delete a meta-profile (idempotent).
 
@@ -196,9 +187,8 @@ async def delete_meta_profile(
     cleared.
     """
     store = _get_meta_profile_store()
-    with _store_errors():
-        store.delete(name)
-    if _set_active_meta_profile_if_matches(request, name, None):
+    store.delete(name)
+    if _set_active_meta_profile_if_matches(settings_store, name, None):
         logger.info(f"Cleared active_meta_profile for deleted meta-profile '{name}'")
     logger.info(f"Deleted meta-profile '{name}'")
     return MetaProfileMutationResponse(
@@ -209,31 +199,30 @@ async def delete_meta_profile(
 @meta_profiles_router.post(
     "/{name}/activate", response_model=ActivateMetaProfileResponse
 )
-async def activate_meta_profile(
-    request: Request, name: MetaProfileName
+def activate_meta_profile(
+    name: MetaProfileName,
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ActivateMetaProfileResponse:
     """Activate a meta-profile by recording it as ``active_meta_profile``.
 
     Unlike LLM profiles, activating a meta-profile does not mutate the agent's
     LLM config — it only records which meta-profile the
     ``route_task_to_model`` tool should route with. Returns 404 if the
-    meta-profile does not exist.
+    meta-profile does not exist. On agent settings that cannot attach the
+    routing tool (e.g. ACP) nothing is recorded and the response has
+    ``applied: false``.
     """
     # Verify the meta-profile exists (and is valid) before activating.
     store = _get_meta_profile_store()
     try:
-        with _store_errors():
-            meta_profile = store.load(name)
+        meta_profile = store.load(name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meta-profile '{name}' not found",
-        )
+        raise NotFound(f"Meta-profile '{name}' not found")
 
-    config = get_config(request)
-    settings_store = get_settings_store(config)
+    applied = False
 
     def apply_active(settings: PersistedSettings) -> PersistedSettings:
+        nonlocal applied
         # Route through PersistedSettings.update() so activation also wires
         # agent_settings (active_meta_profile + enable_classify_and_switch_llm_tool),
         # which is what actually attaches the routing tool. A direct field
@@ -246,14 +235,29 @@ async def activate_meta_profile(
                 },
             }
         )
+        # ``update()`` drops the pointer when the agent cannot route (ACP).
+        applied = settings.active_meta_profile == name
         return settings
 
     try:
         settings_store.update(apply_active)
     except (OSError, PermissionError):
         logger.error("Failed to activate meta-profile - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to activate meta-profile")
+        raise OperationFailed("Failed to activate meta-profile")
+    except RuntimeError as e:
+        logger.error(f"Failed to activate meta-profile: {e}")
+        raise Conflict("Settings file is corrupted or encrypted with a different key")
 
+    if not applied:
+        logger.info(f"Meta-profile '{name}' not activated: agent cannot route")
+        return ActivateMetaProfileResponse(
+            name=name,
+            message=(
+                f"Meta-profile '{name}' not activated: the current agent "
+                "settings cannot route between models"
+            ),
+            applied=False,
+        )
     logger.info(f"Activated meta-profile '{name}'")
     return ActivateMetaProfileResponse(
         name=name, message=f"Meta-profile '{name}' activated"
