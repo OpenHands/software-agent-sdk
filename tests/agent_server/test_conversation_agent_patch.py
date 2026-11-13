@@ -29,6 +29,8 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.launch import resolve
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.exceptions import MCPError
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.profiles.agent_profile import OpenHandsAgentProfile
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -160,6 +162,144 @@ def test_patch_adds_mcp_connection_to_gateway_without_changing_prompt(conversati
         ]
     finally:
         resumed.close()
+
+
+def test_patch_updates_mcp_tool_policy_without_reconnecting_and_persists(conversation):
+    server = MCPServer(
+        command=sys.executable,
+        args=["-m", "tests.sdk.mcp.stdio_test_server"],
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+    apply_conversation_agent_patch(
+        conversation,
+        UpdateConversationAgentRequest.model_validate(
+            {
+                "profile_diff": {"mcp_server_refs": ["docs"]},
+                "resources": {"mcp_servers": {"docs": server}},
+            }
+        ),
+    )
+    gateway = conversation.mcp_gateway
+    client = gateway.clients["docs"]
+    previous = gateway.revision
+    result = apply_conversation_agent_patch(
+        conversation,
+        UpdateConversationAgentRequest(
+            profile_diff={"mcp_tool_policy": {"docs": {"include": []}}}
+        ),
+    )
+    assert result.conversation_profile_revision == 2
+    assert result.conversation_profile.mcp_tool_policy["docs"].include == []
+    assert conversation.agent.mcp_tool_policy["docs"].include == []
+    assert gateway.clients["docs"] is client
+    assert gateway.revision != previous
+    assert gateway.list_tools()["tools"] == []
+    assert gateway.call(
+        "docs.fetch", {"url": "x"}, gateway.revision, conversation
+    ).is_error
+    conversation.select_mcp_tools(["docs.fetch"])
+    assert gateway.list_tools()["tools"] == []
+    conversation.select_mcp_tools(None)
+    assert gateway.list_tools()["tools"] == []
+
+    resumed = LocalConversation(
+        agent=None,
+        workspace=conversation.workspace,
+        persistence_dir=Path(conversation.state.persistence_dir).parent,
+        conversation_id=conversation.state.id,
+        cipher=Cipher("test-encryption-key"),
+        visualizer=None,
+        delete_on_close=False,
+    )
+    try:
+        assert resumed.state.conversation_profile == result.conversation_profile
+        assert isinstance(resumed.agent, Agent)
+        assert resumed.agent.mcp_tool_policy["docs"].include == []
+        assert resumed.mcp_gateway.list_tools()["tools"] == []
+    finally:
+        resumed.close()
+
+    allowed = apply_conversation_agent_patch(
+        conversation,
+        UpdateConversationAgentRequest(
+            profile_diff={"mcp_tool_policy": {"docs": {"include": ["fetch"]}}}
+        ),
+    )
+    assert allowed.conversation_profile_revision == 3
+    assert gateway.clients["docs"] is client
+    assert [tool["name"] for tool in gateway.list_tools()["tools"]] == ["docs.fetch"]
+
+
+def test_patch_applies_policy_to_new_mcp_server_in_same_edit(conversation):
+    server = MCPServer(
+        command=sys.executable,
+        args=["-m", "tests.sdk.mcp.stdio_test_server"],
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+    result = apply_conversation_agent_patch(
+        conversation,
+        UpdateConversationAgentRequest.model_validate(
+            {
+                "profile_diff": {
+                    "mcp_server_refs": ["docs"],
+                    "mcp_tool_policy": {"docs": {"include": []}},
+                },
+                "resources": {"mcp_servers": {"docs": server}},
+            }
+        ),
+    )
+    assert result.conversation_profile_revision == 1
+    assert "docs" in conversation.mcp_gateway.clients
+    assert conversation.mcp_gateway.list_tools()["tools"] == []
+    assert conversation.agent.mcp_tool_policy["docs"].include == []
+
+
+def test_failed_server_connection_rolls_back_tool_policy_and_secrets(conversation):
+    conversation._ensure_agent_ready()
+    gateway = conversation.mcp_gateway
+    with pytest.raises(MCPError, match="MCP Connection Failure"):
+        apply_conversation_agent_patch(
+            conversation,
+            UpdateConversationAgentRequest.model_validate(
+                {
+                    "profile_diff": {
+                        "mcp_server_refs": ["broken"],
+                        "mcp_tool_policy": {"broken": {"include": []}},
+                        "secret_refs": ["NEW_SECRET"],
+                    },
+                    "resources": {
+                        "mcp_servers": {
+                            "broken": {"command": "__nonexistent_mcp_binary__"}
+                        },
+                        "secrets": {"NEW_SECRET": "private"},
+                    },
+                }
+            ),
+        )
+    assert conversation.state.conversation_profile_revision == 0
+    assert conversation.state.conversation_profile.mcp_tool_policy == {}
+    assert conversation.agent.mcp_tool_policy == {}
+    assert "NEW_SECRET" not in conversation.state.secret_registry.secret_sources
+    assert gateway.list_tools()["tools"] == []
+    assert "broken" not in gateway.clients
+    apply_conversation_agent_patch(
+        conversation,
+        UpdateConversationAgentRequest.model_validate(
+            {
+                "profile_diff": {"mcp_server_refs": ["broken"]},
+                "resources": {
+                    "mcp_servers": {
+                        "broken": {
+                            "command": sys.executable,
+                            "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                            "cwd": str(Path(__file__).resolve().parents[2]),
+                        }
+                    }
+                },
+            }
+        ),
+    )
+    assert [tool["name"] for tool in gateway.list_tools()["tools"]] == ["broken.fetch"]
 
 
 def test_profile_addition_never_removes_existing_connection(conversation):
@@ -309,14 +449,21 @@ async def test_service_applies_patch_and_restores_revision_after_restart(tmp_pat
 
 
 def test_profile_resolution_records_immutable_launch_snapshot():
-    profile = OpenHandsAgentProfile(name="saved", llm_profile_ref="default")
+    profile = OpenHandsAgentProfile(
+        name="saved",
+        llm_profile_ref="default",
+        mcp_tool_policy={"docs": MCPToolPolicy(exclude=["delete"])},
+    )
     stores = fakes.stores(profile)
     launched = resolve(profile.id, stores)
     assert launched.profile is not None
-    assert launched.profile.profile_snapshot == profile
-    assert launched.profile.profile_snapshot is not None
+    snapshot = launched.profile.profile_snapshot
+    assert isinstance(snapshot, OpenHandsAgentProfile)
+    assert snapshot == profile
     profile.name = "mutated globally"
-    assert launched.profile.profile_snapshot.name == "saved"
+    profile.mcp_tool_policy["docs"].exclude.append("search")
+    assert snapshot.name == "saved"
+    assert snapshot.mcp_tool_policy["docs"].exclude == ["delete"]
 
 
 @pytest.mark.asyncio
@@ -348,22 +495,32 @@ async def test_saved_profile_launch_is_snapshot_and_edits_are_local(
             event_service = await service.get_event_service(info.id)
             assert event_service is not None
             result = await event_service.update_agent_profile(
-                UpdateConversationAgentRequest(profile_diff={"secret_refs": []})
+                UpdateConversationAgentRequest(
+                    profile_diff={
+                        "secret_refs": [],
+                        "mcp_tool_policy": {"future": {"include": []}},
+                    }
+                )
             )
             assert result.conversation_profile_revision == 1
+            assert result.conversation_profile.mcp_tool_policy["future"].include == []
             saved = get_agent_profile_store().load(profile.name)
-            assert saved is not None
+            assert isinstance(saved, OpenHandsAgentProfile)
             assert saved.secret_refs is None
+            assert saved.mcp_tool_policy == {}
         async with ConversationService(
             conversations_dir=conversations_dir, cipher=cipher
         ) as restarted:
             restored = await restarted.get_conversation(info.id)
             assert restored is not None
-            assert restored.conversation_profile is not None
+            assert isinstance(restored.conversation_profile, OpenHandsAgentProfile)
             assert restored.launched_agent_profile is not None
-            assert restored.launched_agent_profile.profile_snapshot is not None
+            snapshot = restored.launched_agent_profile.profile_snapshot
+            assert isinstance(snapshot, OpenHandsAgentProfile)
             assert restored.conversation_profile.secret_refs == []
-            assert restored.launched_agent_profile.profile_snapshot.secret_refs is None
+            assert restored.conversation_profile.mcp_tool_policy["future"].include == []
+            assert snapshot.secret_refs is None
+            assert snapshot.mcp_tool_policy == {}
     finally:
         reset_stores()
 

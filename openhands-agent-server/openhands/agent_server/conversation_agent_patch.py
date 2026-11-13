@@ -83,22 +83,35 @@ def apply_conversation_agent_patch(
         registry_changed = (
             secret_registry.secret_sources != previous_registry.secret_sources
         )
+        policy_changed = updated_profile.mcp_tool_policy != profile.mcp_tool_policy
+        gateway = conversation.mcp_gateway if policy_changed else None
         if registry_changed:
             state.secret_registry = secret_registry
         try:
+            if gateway is not None:
+                gateway.set_tool_policy(updated_profile.mcp_tool_policy)
             if additions:
                 conversation.add_mcp_servers(additions)
         except BaseException:
-            if registry_changed:
-                state.secret_registry = previous_registry
+            try:
+                if gateway is not None:
+                    gateway.set_tool_policy(profile.mcp_tool_policy)
+            finally:
+                if registry_changed:
+                    state.secret_registry = previous_registry
             raise
+        agent_updates = {}
+        if policy_changed:
+            agent_updates["mcp_tool_policy"] = updated_profile.mcp_tool_policy
         if updated_profile.condenser != profile.condenser:
-            new_agent = conversation.agent.model_copy(
-                update={"condenser": new_condenser}
-            )
-            conversation.agent = new_agent
-            state.agent = new_agent
-            if new_condenser is not None:
+            agent_updates["condenser"] = new_condenser
+        if agent_updates:
+            new_agent = conversation.agent.model_copy(update=agent_updates)
+            conversation.agent = state.agent = new_agent
+            if (
+                updated_profile.condenser != profile.condenser
+                and new_condenser is not None
+            ):
                 llm = getattr(new_condenser, "llm", None)
                 if (
                     llm is not None

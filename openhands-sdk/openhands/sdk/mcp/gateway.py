@@ -166,6 +166,17 @@ class MCPToolGateway:
                 self._selected = selected
                 self._version += 1
 
+    def set_tool_policy(self, policy: Mapping[str, MCPToolPolicy]) -> None:
+        updated = {
+            server: rule.model_copy(deep=True) for server, rule in policy.items()
+        }
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("MCP gateway is closed")
+            if updated != self._tool_policy:
+                self._tool_policy = updated
+                self._version += 1
+
     def _allows(self, name: str) -> bool:
         server = max(
             (key for key in self._clients if name.startswith(f"{key}.")),

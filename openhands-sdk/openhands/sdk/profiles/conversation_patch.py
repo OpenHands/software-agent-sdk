@@ -10,7 +10,9 @@ from openhands.sdk.profiles.agent_profile import (
 from openhands.sdk.settings.model import _merge_patch
 
 
-EDITABLE_FIELDS = frozenset({"condenser", "mcp_server_refs", "secret_refs"})
+EDITABLE_FIELDS = frozenset(
+    {"condenser", "mcp_server_refs", "mcp_tool_policy", "secret_refs"}
+)
 
 
 def apply_conversation_profile_diff(
