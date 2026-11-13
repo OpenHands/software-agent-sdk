@@ -83,7 +83,22 @@ def _server_priority() -> int:
 
 def _assert_lowered(agent: int, server: int) -> None:
     if SYSTEM == "Darwin":
-        assert agent < server
+        # Hosted runners may already run at utility QoS. A clamp cannot lower
+        # an inherited priority that is already at or below its ceiling.
+        utility = int(
+            subprocess.check_output(
+                [
+                    "/usr/sbin/taskpolicy",
+                    "-c",
+                    "utility",
+                    "sh",
+                    "-c",
+                    "ps -o pri= -p $$",
+                ],
+                text=True,
+            )
+        )
+        assert agent == min(server, utility)
     else:
         assert agent == min(19, server + 10)
 

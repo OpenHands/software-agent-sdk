@@ -159,13 +159,12 @@ def test_exit_preserves_parent_lifecycle_and_cleanup(k8s_mocks):
 
     with (
         patch.object(RemoteWorkspace, "__exit__", side_effect=error) as parent_exit,
-        patch.object(type(ws), "cleanup") as cleanup,
         pytest.raises(RuntimeError, match="callback failed"),
     ):
         ws.__exit__(RuntimeError, error, None)
 
     parent_exit.assert_called_once_with(RuntimeError, error, None)
-    cleanup.assert_called_once()
+    k8s_mocks.handle.terminate.assert_called_once()
 
 
 def test_cleanup_terminates_sandbox(k8s_mocks):

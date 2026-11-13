@@ -1,12 +1,15 @@
 """Tests for TmuxPanePool."""
 
 import os
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 
+import libtmux
 import pytest
+from libtmux.exc import LibTmuxException
 
 from openhands.tools.terminal.constants import (
     TMUX_SESSION_HEIGHT,
@@ -117,6 +120,37 @@ def test_replace_returns_new_terminal(pool):
     assert new is not old
     assert new._initialized
     pool.checkin(new)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS PTY allocation race")
+@pytest.mark.parametrize("persistent", [False, True])
+def test_replace_handles_macos_pty_allocation_failure(pool, monkeypatch, persistent):
+    old = pool.checkout()
+    original = libtmux.Session.new_window
+    failed = False
+
+    def allocate(session, *args, **kwargs):
+        nonlocal failed
+        if persistent or not failed:
+            failed = True
+            raise LibTmuxException(
+                "create window failed: fork failed: Device not configured"
+            )
+        return original(session, *args, **kwargs)
+
+    monkeypatch.setattr(libtmux.Session, "new_window", allocate)
+    if persistent:
+        with pytest.raises(LibTmuxException, match="Device not configured"):
+            pool.replace(old)
+        terminal = old
+    else:
+        terminal = pool.replace(old)
+    terminal.send_keys("echo allocation$((40 + 2))")
+    deadline = time.monotonic() + 3
+    while "allocation42" not in terminal.read_screen():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    pool.checkin(terminal)
 
 
 def test_replace_preserves_semaphore(pool):
@@ -372,8 +406,9 @@ def test_first_terminal_shell_gets_fallback_locale(
     session = create_terminal_session(work_dir=str(tmp_path), terminal_type="tmux")
     session.initialize()
     try:
-        obs = session.execute(TerminalAction(command='echo "ctype=$LC_CTYPE"'))
+        obs = session.execute(TerminalAction(command="locale charmap"))
     finally:
         session.close()
 
-    assert "ctype=C.UTF-8" in obs.text
+    assert obs.metadata.exit_code == 0
+    assert obs.text.strip() == "UTF-8"

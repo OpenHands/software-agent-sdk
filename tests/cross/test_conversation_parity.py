@@ -32,6 +32,7 @@ from openhands.sdk.event import (
     AgentErrorEvent,
     ConversationStateUpdateEvent,
     Event,
+    InterruptEvent,
     MessageEvent,
     ObservationEvent,
     UserRejectObservation,
@@ -205,6 +206,13 @@ def _interrupt_during_tool(conversation: BaseConversation) -> dict[str, Any]:
     try:
         assert TOOL_ENTERED.wait(timeout=10), "the tool never started"
         conversation.interrupt()
+        # interrupt() schedules cancellation; keep the tool blocked until it lands.
+        deadline = time.monotonic() + 5
+        while not any(
+            isinstance(event, InterruptEvent) for event in conversation.state.events
+        ):
+            assert time.monotonic() < deadline, "the interruption never completed"
+            time.sleep(0.01)
     finally:
         TOOL_RELEASED.set()
         runner.join(timeout=10)

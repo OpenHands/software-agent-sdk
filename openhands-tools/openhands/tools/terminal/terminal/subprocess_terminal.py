@@ -21,12 +21,15 @@ if platform.system() == "Windows":
 import fcntl
 import pty
 import select
+import termios
 
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
@@ -158,6 +161,9 @@ class SubprocessTerminal(TerminalInterface):
 
         # Create a PTY; give the slave to the child, keep the master
         master_fd, slave_fd = pty.openpty()
+        # A new PTY has a zero-sized viewport on macOS. Readline otherwise
+        # inserts wrapping spaces into echoed commands and completion markers.
+        termios.tcsetwinsize(slave_fd, (TMUX_SESSION_HEIGHT, TMUX_SESSION_WIDTH))
 
         logger.debug("Initializing PTY terminal with: %s", " ".join(bash_cmd))
         try:
