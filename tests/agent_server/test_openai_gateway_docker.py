@@ -77,6 +77,7 @@ def _gateway_event_service():
     event_service = AsyncMock()
     event_service._run_task = None
     event_service._gateway_run_lock = asyncio.Lock()
+    event_service._active_gateway_runs = 0
     return event_service
 
 
