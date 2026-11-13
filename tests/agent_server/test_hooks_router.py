@@ -191,3 +191,50 @@ class TestHooksRouterUserHooks:
         assert [m["hooks"][0]["command"] for m in no_project["pre_tool_use"]] == [
             "echo user"
         ]
+
+    def test_corrupt_hooks_reported_in_response(
+        self, client, tmp_path, monkeypatch
+    ):
+        user_dir = tmp_path / "user"
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(user_dir))
+        project = tmp_path / "project"
+        project_hooks = project / ".openhands" / "hooks.json"
+        project_hooks.parent.mkdir(parents=True)
+        project_hooks.write_text('{"PreToolUse":[{"matcher":"terminal",}]}')
+
+        response = client.post(
+            "/api/hooks",
+            json={"project_dir": str(project), "load_user_hooks": False},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["hook_config"] is None
+        assert len(data["errors"]) == 1
+        assert data["errors"][0]["source"] == "project"
+        assert data["errors"][0]["path"] == str(project_hooks)
+        assert data["errors"][0]["message"]
+
+    @pytest.mark.parametrize("target", ["hooks.json", "missing.json"])
+    def test_broken_project_symlink_is_reported(
+        self, client, tmp_path, monkeypatch, target
+    ):
+        user_dir = tmp_path / "user"
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(user_dir))
+        self._write(user_dir / "hooks.json", "echo user")
+        project = tmp_path / "project"
+        project_hooks = project / ".openhands" / "hooks.json"
+        project_hooks.parent.mkdir(parents=True)
+        project_hooks.symlink_to(target)
+
+        response = client.post("/api/hooks", json={"project_dir": str(project)})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert [
+            matcher["hooks"][0]["command"]
+            for matcher in data["hook_config"]["pre_tool_use"]
+        ] == ["echo user"]
+        assert len(data["errors"]) == 1
+        assert data["errors"][0]["source"] == "project"
+        assert data["errors"][0]["path"] == str(project_hooks)
+        assert data["errors"][0]["message"]

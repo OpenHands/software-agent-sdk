@@ -506,8 +506,16 @@ export interface HooksRequest {
   load_user_hooks?: boolean;
 }
 
+export interface HooksSourceError {
+  source: 'project' | 'user';
+  path: string;
+  message: string;
+}
+
 export interface HooksResponse {
   hook_config?: HookConfig | null;
+  /** Source load failures, when reported by the server. */
+  errors?: HooksSourceError[];
 }
 
 /** @deprecated Use `AgentServerMCPTestRequest["server"]` for MCP test payloads. */
