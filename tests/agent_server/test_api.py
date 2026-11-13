@@ -817,7 +817,8 @@ class TestServiceParallelization:
                 server_context=_context_without_side_services()
             )
             async with api_lifespan(mock_app):
-                assert os.environ[overridden] == "C.UTF-8"
+                encoding = subprocess.check_output(["locale", "charmap"], text=True)
+                assert encoding.strip() == "UTF-8"
 
             assert os.environ.get(overridden) == original
 

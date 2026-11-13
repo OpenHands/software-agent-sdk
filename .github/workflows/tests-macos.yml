@@ -35,9 +35,17 @@ jobs:
                 include:
                     - suite: sdk
                       args: -n auto tests/sdk
-                    # --forked: terminal tests conflict when run in parallel
+                    # Only terminal tests need fork isolation. Other tools can
+                    # load macOS frameworks that are unsafe after fork.
+                    - suite: terminal
+                      args: --forked --timeout=180 --timeout-method=thread tests/tools/terminal
                     - suite: tools
-                      args: --forked tests/tools
+                      args: >-
+                          --timeout=180 --timeout-method=thread
+                          --ignore=tests/tools/browser_use
+                          --ignore=tests/tools/terminal tests/tools
+                    - suite: browser
+                      args: tests/tools/browser_use
                     - suite: agent_server
                       args: -n auto tests/agent_server
                     - suite: workspace
@@ -58,8 +66,15 @@ jobs:
                   enable-cache: true
                   python-version: '3.13'
 
+            - name: Install terminal prerequisite
+              run: brew install tmux
+
             - name: Install deps
               run: uv sync --frozen --group dev
+
+            - name: Verify runner browser prerequisite
+              if: matrix.suite == 'browser'
+              run: '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version'
 
             - name: Run ${{ matrix.suite }} tests
               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}

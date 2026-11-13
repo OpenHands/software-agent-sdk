@@ -169,8 +169,12 @@ def test_server() -> Generator[str]:
         server_process = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "http.server",
+                "-c",
+                # macOS runner reverse DNS can stall before HTTPServer.listen.
+                # The loopback fixture needs no canonical host name (#14409 in
+                # actions/runner-images).
+                "import runpy, socket; socket.getfqdn = lambda name='': name; "
+                "runpy.run_module('http.server', run_name='__main__')",
                 str(port),
                 "--bind",
                 "127.0.0.1",
