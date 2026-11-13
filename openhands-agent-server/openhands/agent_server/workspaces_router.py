@@ -8,7 +8,7 @@ agent-server sees the same list.
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.agent_server._secrets_exposure import get_config
@@ -18,6 +18,7 @@ from openhands.agent_server.persistence import (
     WorkspaceParentItem,
     get_workspaces_store,
 )
+from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.logger import get_logger
 
 
@@ -68,17 +69,14 @@ async def list_workspaces(request: Request) -> WorkspacesListResponse:
         persisted = store.load()
     except (OSError, PermissionError):
         logger.error("Workspaces list failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to read workspaces")
+        raise OperationFailed("Failed to read workspaces")
     if persisted is None:
         # ``load()`` collapses "file missing" and "file present but
         # unreadable/corrupted/future-schema" into the same ``None``. Returning
         # an empty list for the second case would hide the user's data and let
         # a subsequent POST overwrite the still-on-disk file with defaults.
         if store._path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Workspaces file is corrupted",
-            )
+            raise Conflict("Workspaces file is corrupted")
         persisted = PersistedWorkspaces()
     return _to_response(persisted)
 
@@ -116,13 +114,10 @@ async def add_workspaces(
         updated = store.update(apply)
     except RuntimeError as e:
         logger.error(f"Workspaces add blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspaces add failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to save workspaces")
+        raise OperationFailed("Failed to save workspaces")
 
     return _to_response(updated)
 
@@ -150,16 +145,13 @@ async def delete_workspace(
         store.update(apply)
     except RuntimeError as e:
         logger.error(f"Workspaces delete blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspaces delete failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to update workspaces")
+        raise OperationFailed("Failed to update workspaces")
 
     if not removed:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise NotFound("Workspace not found")
     return DeleteResponse()
 
 
@@ -197,13 +189,10 @@ async def add_workspace_parents(
         updated = store.update(apply)
     except RuntimeError as e:
         logger.error(f"Workspace parents add blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspace parents add failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to save workspaces")
+        raise OperationFailed("Failed to save workspaces")
 
     return _to_response(updated)
 
@@ -231,14 +220,11 @@ async def delete_workspace_parent(
         store.update(apply)
     except RuntimeError as e:
         logger.error(f"Workspace parents delete blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspace parents delete failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to update workspaces")
+        raise OperationFailed("Failed to update workspaces")
 
     if not removed:
-        raise HTTPException(status_code=404, detail="Workspace parent not found")
+        raise NotFound("Workspace parent not found")
     return DeleteResponse()
