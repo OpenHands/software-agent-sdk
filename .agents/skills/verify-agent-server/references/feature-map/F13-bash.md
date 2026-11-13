@@ -42,13 +42,13 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/bash/bash_events/searc
 - `F13.get-events`: `GET /api/bash/bash_events/{event_id}` returns one event by its hex id (404 when unknown), and `GET /api/bash/bash_events/` with a JSON array body returns events in input order with `null` for missing ids (422 without a body).
 - `F13.search`: search filters by `kind__eq`, `command_id__eq` (outputs only), a UTC `timestamp__gte`/`timestamp__lt` window, sorts with `sort_order`, pages with `limit`/`next_page_id`, and rejects bad parameters with 422.
 - `F13.timestamp-offset`: a `timestamp__gte` with a non-UTC offset selects the same instant as its UTC spelling.
-- `F13.output-chunks`: output over 1 MiB is stored as ordered `BashOutput` chunks of 1048576 characters plus a final chunk with the exit code; `order__gt` skips seen chunks, and the SDK's `RemoteWorkspace.execute_command` reassembles them.
+- `F13.output-chunks`: output over 1 MiB is stored as ordered `BashOutput` chunks of 1048576 characters plus a final chunk with the exit code; `order__gt` skips seen chunks, and the SDK's `RemoteWorkspace.execute_command` reassembles them. Same promise: `S18.remote-command-exec`.
 - `F13.order-gt-paging`: `order__gt` filters before `limit` applies, so a poller asking for outputs after order N with a small page gets them.
 - `F13.execute-large-output`: `execute_bash_command` returns the complete stdout of a command whose output is over 1 MiB.
 - `F13.timeout`: a command that outlives its `timeout` is killed with its process group and reports `exit_code` -1.
 - `F13.stop`: stopping a running command by id terminates only that command (final `exit_code` -15, process gone) while another command finishes normally.
 - `F13.stop-idempotent`: stopping an already finished command (hex or dashed id) returns 200, an unknown id 404 and a non-UUID id 422.
-- `F13.scoped-cwd`: conversation-scoped commands run in the conversation workspace by default, accept an absolute cwd inside it (also through the SDK's `runtime_conversation_id`), and reject a cwd outside it, an escaping `..` path or a relative path with 422.
+- `F13.scoped-cwd`: conversation-scoped commands run in the conversation workspace by default, accept an absolute cwd inside it (also through the SDK's `runtime_conversation_id`), and reject a cwd outside it, an escaping `..` path or a relative path with 422. Same promise: `S18.runtime-scope`.
 - `F13.scoped-routes`: the conversation-scoped execute, start, stop, get, batch get and search routes work on the conversation's own history, and the command's files land in the workspace.
 - `F13.scoped-isolation`: scoped events are invisible to the global search, the global socket, the global stop route and other conversations, and are stored under the conversation's directory.
 - `F13.scoped-unknown`: every conversation-scoped bash route answers 404 `Conversation not found` for an unknown conversation id.

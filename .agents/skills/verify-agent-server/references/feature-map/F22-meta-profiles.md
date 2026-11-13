@@ -27,19 +27,19 @@ Routes: `GET /api/meta-profiles`, `GET /api/meta-profiles/{name}`,
 ## Sub-features
 
 - `F22.auth-required`: every meta-profile route answers 401 without a valid `X-Session-API-Key`, and nothing is stored.
-- `F22.save-classes`: `POST /api/meta-profiles/{name}` with `classifier_model` and `classes` answers 201 `Meta-profile '<name>' saved`; the list shows `{name, classifier_model, num_classes}`, `GET` returns the full config, and the file `meta-profiles/<name>.json` is mode `600`.
-- `F22.save-direct`: a direct-routing body (`prompt_template` with `{{ instance_text }}`, `model_table`, no `classes`) is saved; the list reports `num_classes: 0` and `GET` returns the template and table.
-- `F22.validation`: a template without `{{ instance_text }}`, a template together with `classes`, a missing `classifier_model` and a class without `model` are 422 and save nothing.
+- `F22.save-classes`: `POST /api/meta-profiles/{name}` with `classifier_model` and `classes` answers 201 `Meta-profile '<name>' saved`; the list shows `{name, classifier_model, num_classes}`, `GET` returns the full config, and the file `meta-profiles/<name>.json` is mode `600`. Same promise: `S03.meta-profile-store`.
+- `F22.save-direct`: a direct-routing body (`prompt_template` with `{{ instance_text }}`, `model_table`, no `classes`) is saved; the list reports `num_classes: 0` and `GET` returns the template and table. Same promise: `S03.meta-profile-store`.
+- `F22.validation`: a template without `{{ instance_text }}`, a template together with `classes`, a missing `classifier_model` and a class without `model` are 422 and save nothing. Same promise: `S03.meta-profile-store`.
 - `F22.empty-router`: a body with neither `classes` nor `prompt_template` (a router that can never route) is refused with 422.
 - `F22.overwrite`: saving an existing name replaces the whole config (here classes mode becomes direct mode) without adding a list entry.
 - `F22.name-rules`: names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`: a leading `-` is 422 on all four named routes, 64 characters are accepted and 65 are 422.
 - `F22.not-found`: `GET` and `activate` of an unknown name answer 404 `Meta-profile '<name>' not found` and the active pointer stays; `DELETE` of an unknown name is 200 (idempotent).
 - `F22.activate`: `activate` answers 200 `Meta-profile '<name>' activated` with `applied: true`; the list's `active_meta_profile` and `GET /api/settings` (`active_meta_profile`, `agent_settings.active_meta_profile`, `enable_classify_and_switch_llm_tool: true`, inline `meta_profile`) follow, the agent's LLM is unchanged, and `settings.json` stores it.
-- `F22.route-classes`: a conversation started from the settings carries the `ClassifyAndSwitchLLMTool` spec; when the agent calls `route_task_to_model`, the classifier profile picks the class, the observation names the class, profile and model, the conversation switches to `deepseek-pro`, both LLMs' usage is metered, and the events socket shows the switch live.
-- `F22.route-direct`: with a direct-routing meta-profile active, the classifier's JSON answer switches the conversation to the named profile (`chosen_class` `model: deepseek-pro`).
+- `F22.route-classes`: a conversation started from the settings carries the `ClassifyAndSwitchLLMTool` spec; when the agent calls `route_task_to_model`, the classifier profile picks the class, the observation names the class, profile and model, the conversation switches to `deepseek-pro`, both LLMs' usage is metered, and the events socket shows the switch live. Same promise: `S03.route-task-to-model`.
+- `F22.route-direct`: with a direct-routing meta-profile active, the classifier's JSON answer switches the conversation to the named profile (`chosen_class` `model: deepseek-pro`). Same promise: `S03.route-task-to-model`.
 - `F22.route-missing-profile`: a meta-profile whose `classifier_model` names no saved LLM profile is accepted at save time; overwriting the active one takes effect without re-activation (the store wins over the inline copy), and the tool then answers an error observation naming the missing profile while the conversation keeps its LLM.
 - `F22.persist-restart`: meta-profiles, the active pointer, the settings' routing flag and a routed conversation's switched LLM survive a restart.
-- `F22.delete`: deleting an inactive meta-profile removes the file and the list entry, keeps the active pointer, and a repeated delete is 200.
+- `F22.delete`: deleting an inactive meta-profile removes the file and the list entry, keeps the active pointer, and a repeated delete is 200. Same promise: `S03.meta-profile-store`.
 - `F22.delete-active-clears`: deleting the active meta-profile clears `active_meta_profile` in the list and settings, disables the routing tool and drops the inline copy; new conversations no longer get the tool.
 - `F22.acp-clears-pointer`: switching the settings' agent kind to ACP clears the active pointer; back on OpenHands settings the meta-profile can be activated again.
 - `F22.activate-acp`: on ACP agent settings, where no routing tool can be attached, activation answers 200 `applied: false` with `Meta-profile '<name>' not activated: ...`, and `active_meta_profile` stays `null` in the list and in settings (as LLM-profile activation reports `llm_applied: false`).
@@ -47,7 +47,7 @@ Routes: `GET /api/meta-profiles`, `GET /api/meta-profiles/{name}`,
 - `F22.corrupt-settings`: with an unreadable `settings.json`, activation is refused with 409 (as LLM-profile activation does) and the file is left untouched.
 - `F22.store-busy`: while another process holds the meta-profile store's lock, a save and a delete each wait out the 30-second lock timeout and answer 503 `Meta-profile store is busy. Please retry.` without changing anything; once the lock is free the same save is 201.
 - `F22.store-busy-responsive`: while a meta-profile save waits for the store lock, the server keeps answering other requests (`GET /alive` within 3 seconds).
-- `F22.limit`: with 50 meta-profiles stored, creating another is 409 `Meta-profile limit reached (50)` while overwriting an existing one still answers 201.
+- `F22.limit`: with 50 meta-profiles stored, creating another is 409 `Meta-profile limit reached (50)` while overwriting an existing one still answers 201. Same promise: `S03.meta-profile-store`.
 - `F22.ts-client`: the TypeScript `MetaProfilesClient` saves, reads, lists, activates and deletes a meta-profile and surfaces 404 and 422 as `HttpError`s.
 - `F22.persistence-dir`: with `OH_PERSISTENCE_DIR=~/<dir>`, meta-profiles are stored under the expanded directory next to `settings.json`, like every other store.
 

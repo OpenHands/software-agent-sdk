@@ -23,7 +23,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 
 ## Sub-features
 
-- `F04.create-settings`: a create from the saved settings (`agent_settings` plus `secrets_encrypted`, the Agent Canvas path) returns 201 `idle`, adds one to the count, and persists the agent only in `base_state.json`, never in `meta.json`.
+- `F04.create-settings`: a create from the saved settings (`agent_settings` plus `secrets_encrypted`, the Agent Canvas path) returns 201 `idle`, adds one to the count, and persists the agent only in `base_state.json`, never in `meta.json`. Same promise: `S19.settings-create-agent`.
 - `F04.create-inline-agent`: an inline `agent` without `kind` is accepted as `Agent`; the API key is never echoed back and the response trims inline skills.
 - `F04.create-agent-profile`: `agent_profile_id` resolves a stored Agent Profile and its LLM profile and records `launched_agent_profile`.
 - `F04.create-validation`: a missing agent source, two agent sources, a missing workspace, a bad tag key, `max_iterations` 0 and invalid `agent_settings` are 422; an unknown `agent_profile_id` is 404; a profile with a dangling LLM reference is 422 `unresolved_profile_references`; no key is 401; nothing is created.
@@ -32,14 +32,14 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.create-initial-message-run-false`: an `initial_message` with `"run": false` is recorded without starting a run (the same body with `"run": true` runs).
 - `F04.create-parent`: `parent_conversation_id` links a child that the parent lists in `sub_conversation_ids`; an unknown parent, a different workspace and a self-parent are 422.
 - `F04.create-worktree`: `worktree: true` inside a git repository moves the conversation into its own worktree on branch `openhands/<id>`.
-- `F04.create-observability`: the `X-OpenHands-Observability-*` headers are validated (422 for non-object metadata) and stored in `meta.json`.
-- `F04.create-observability-precedence`: body `observability_span_name`, `observability_tags` and `observability_parent_span_context` win over their headers, header metadata merges under the body's (body keys win), the parent-span header applies when the body has none, and an over-long or malformed span-name header, non-scalar header metadata and an empty body tag are 422.
-- `F04.create-secrets`: start-time `StaticSecret` values appear masked in the create response and are encrypted at rest.
+- `F04.create-observability`: the `X-OpenHands-Observability-*` headers are validated (422 for non-object metadata) and stored in `meta.json`. Same promise: `S20.conversation-args`, `S20.automation-headers`.
+- `F04.create-observability-precedence`: body `observability_span_name`, `observability_tags` and `observability_parent_span_context` win over their headers, header metadata merges under the body's (body keys win), the parent-span header applies when the body has none, and an over-long or malformed span-name header, non-scalar header metadata and an empty body tag are 422. Same promise: `S20.conversation-args`.
+- `F04.create-secrets`: start-time `StaticSecret` values appear masked in the create response and are encrypted at rest. Same promise: `S04.secrets-constructor`.
 - `F04.create-secrets-get`: a start-time secret is listed by `GET /api/conversations/{id}` right after the create.
 - `F04.create-secrets-plain`: a plain-string secret value in the create body is rejected with 422, never a 500.
 - `F04.run-real`: an initial message runs on DeepSeek flash to `finished`; the events socket replays the run, the final response is non-empty and autotitle names the conversation.
-- `F04.final-response`: `agent_final_response` is empty before the agent answers, carries the exact `finish` message afterwards, and is 404 for an unknown id.
-- `F04.title-llm-profile`: with `title_llm_profile` naming a saved LLM profile, autotitle calls that profile and not the agent's LLM; an unknown profile name falls back to the agent's LLM and never fails the create.
+- `F04.final-response`: `agent_final_response` is empty before the agent answers, carries the exact `finish` message afterwards, and is 404 for an unknown id. Same promise: `S04.final-response`.
+- `F04.title-llm-profile`: with `title_llm_profile` naming a saved LLM profile, autotitle calls that profile and not the agent's LLM; an unknown profile name falls back to the agent's LLM and never fails the create. Same promise: `S04.title-and-tags`.
 - `F04.get`: `GET /api/conversations/{id}` returns `runtime_info`, trims skills unless `include_skills=true`, accepts the 32-hex id form, and answers 404, 422 and 401.
 - `F04.batch-get`: `GET /api/conversations?ids=..` returns a list aligned with the ids, `null` for unknown ones, and 422 without or with malformed ids.
 - `F04.batch-get-limit`: 100 ids in one batch are refused with a client error, not a 500.
@@ -47,13 +47,13 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.search-filter`: `status` filters search and count consistently; an unknown status is 422.
 - `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
-- `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
+- `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket. Same promise: `S04.title-and-tags`.
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
 - `F04.patch-whitespace-title`: a whitespace-only title is rejected instead of erasing the stored title.
 - `F04.patch-unknown-id`: PATCH on an unknown id answers the 404 the OpenAPI document declares, not 200 `{"success": false}`.
 - `F04.delete`: DELETE stops a running conversation (`PauseEvent`, `InterruptEvent`), removes its state, keeps the workspace, removes a worktree conversation's worktree but keeps its branch, orphans children, and later reads are 404 (socket close 4004); a malformed id is 422 and no key is 401.
 - `F04.delete-unknown-id`: DELETE on an unknown or already deleted id answers the 404 the OpenAPI document declares, not 400.
-- `F04.restart-persist`: after a restart the catalog, statuses, titles, tags, final responses and event replay are unchanged, and deleted conversations stay deleted.
+- `F04.restart-persist`: after a restart the catalog, statuses, titles, tags, final responses and event replay are unchanged, and deleted conversations stay deleted. Same promise: `S04.persist-events`, `S04.resume`.
 - `F04.read-no-hydrate`: after a restart, GET, the batch get, search and count read a cold conversation without loading it (no `owner_lease.json`), while `agent_final_response` loads it and claims the lease.
 
 - `F04.child-start`: `POST .../children` starts a real-model task with fresh history, inherited configuration and a parent link, using a shared directory, an isolated git worktree, or the shared fallback for a non-git workspace.

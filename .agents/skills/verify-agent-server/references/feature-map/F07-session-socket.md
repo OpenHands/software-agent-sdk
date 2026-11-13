@@ -26,7 +26,7 @@ Routes: `WS /sockets/session/{conversation_id}`
 - `F07.sync-first`: the first server frame is `{"type": "sync"}`; `from_seq` echoes `after_seq` (absent when live-only) and `through_seq` is the last on-disk `seq` (absent for an empty log).
 - `F07.snapshot-transient`: every connection gets one `transient` frame with a `full_state` `ConversationStateUpdateEvent` and no `seq`, after `sync` (and after the replay when one ran); it is never persisted.
 - `F07.full-replay`: `after_seq=-1` (or any value below it) replays every persisted event as `durable` frames with `seq` 0..`through_seq`, in order, once each, with the same ids REST returns.
-- `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`.
+- `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`. Same promise: `S04.persist-events`, `S05.event-log-files`.
 - `F07.resume-cursor`: `after_seq=k` replays exactly the events with `seq > k`; `after_seq=through_seq` replays nothing.
 - `F07.live-durable`: on a live-only connection, an event appended later (a REST message with `run: false`) arrives as a `durable` frame with the next `seq`.
 - `F07.live-order`: live `durable` frames on one connection arrive in ascending `seq` order.

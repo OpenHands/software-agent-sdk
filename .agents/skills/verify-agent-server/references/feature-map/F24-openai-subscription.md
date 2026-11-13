@@ -33,7 +33,7 @@ Routes: `GET /api/llm/subscription/openai/models`,
 - `F24.status-invalid-file`: a credentials file that is not valid JSON or misses fields reads as `connected: false`, and status deletes it.
 - `F24.device-poll-invalid`: a poll without a body, without `device_code` or with a non-string one answers 422.
 - `F24.device-poll-unknown`: polling a token the server never issued answers 404 `Subscription device login not found or expired`.
-- `F24.device-start`: `device/start` answers 200 with an opaque 43-character `device_code`, a `user_code`, `verification_uri` `https://auth.openai.com/codex/device`, `verification_uri_complete` null, `expires_at` 15 minutes ahead and `interval_seconds` of at least 1, and stores nothing on disk.
+- `F24.device-start`: `device/start` answers 200 with an opaque 43-character `device_code`, a `user_code`, `verification_uri` `https://auth.openai.com/codex/device`, `verification_uri_complete` null, `expires_at` 15 minutes ahead and `interval_seconds` of at least 1, and stores nothing on disk. Same promise: `S03.subscription-login`.
 - `F24.device-poll-pending`: polling a started login before anyone approves it answers 200 `connected: false`, the token stays usable for the next poll, and no credentials are written.
 - `F24.logout-cancels-pending`: after logout, polling a token issued before it answers 404.
 - `F24.pending-lost-on-restart`: pending logins live in server memory, so after a restart a token that was pending answers 404.
@@ -42,7 +42,7 @@ Routes: `GET /api/llm/subscription/openai/models`,
 - `F24.device-poll-outage`: a poll whose call to OpenAI fails (the network drops after `device/start`) answers a 5xx but keeps the login pending: once OpenAI is reachable again, the same token polls 200 `connected: false`.
 - `F24.status-offline`: with an expired login and no route to `auth.openai.com`, status answers 200 `connected: false`, as it does for a rejected refresh.
 - `F24.device-start-offline`: with no route to `auth.openai.com`, `device/start` and a poll of a login started before the outage answer a gateway error (502, 503 or 504), not an unhandled 500.
-- `F24.login-complete`: after a human approves the user code with a ChatGPT account, a poll answers `connected: true` with `expires_at`, writes `auth/openai_oauth.json` with mode 600, consumes the token (the next poll is 404), and status shows the login.
+- `F24.login-complete`: after a human approves the user code with a ChatGPT account, a poll answers `connected: true` with `expires_at`, writes `auth/openai_oauth.json` with mode 600, consumes the token (the next poll is 404), and status shows the login. Same promise: `S03.subscription-login`.
 
 ## How to get to it (agent POV)
 

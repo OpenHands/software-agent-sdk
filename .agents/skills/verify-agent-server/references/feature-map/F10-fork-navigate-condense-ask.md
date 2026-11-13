@@ -22,28 +22,28 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 
 ## Sub-features
 
-- `F10.fork-whole`: `POST /fork` with no body answers 201 with a new `idle` conversation that names its source in `forked_from_conversation_id`, keeps the source's HEAD and working directory, and holds a copy of every event (same ids) in its own persistence directory; the source is unchanged.
-- `F10.fork-named`: a fork request's `id`, `title` and `tags` become the fork's id, title and tags on the response, on GET and in `meta.json`; the title does not add a tag.
+- `F10.fork-whole`: `POST /fork` with no body answers 201 with a new `idle` conversation that names its source in `forked_from_conversation_id`, keeps the source's HEAD and working directory, and holds a copy of every event (same ids) in its own persistence directory; the source is unchanged. Same promise: `S04.fork`.
+- `F10.fork-named`: a fork request's `id`, `title` and `tags` become the fork's id, title and tags on the response, on GET and in `meta.json`; the title does not add a tag. Same promise: `S04.fork`.
 - `F10.fork-tags-consistent`: when a fork request gives no tags, the fork's tags on GET and in `meta.json` are both empty; the source's tags are not inherited.
-- `F10.fork-from-event`: `from_event_id` copies only the branch up to and including that event, sets the fork's HEAD and `forked_from_event_id` to it, and leaves later events out.
-- `F10.fork-metrics`: by default the fork's `stats` start empty; `reset_metrics: false` copies the source's accumulated cost and token usage.
-- `F10.fork-independent`: messages appended to the fork never reach the source and vice versa; the fork's events socket replays the copied history plus its own events.
+- `F10.fork-from-event`: `from_event_id` copies only the branch up to and including that event, sets the fork's HEAD and `forked_from_event_id` to it, and leaves later events out. Same promise: `S04.fork-branch`.
+- `F10.fork-metrics`: by default the fork's `stats` start empty; `reset_metrics: false` copies the source's accumulated cost and token usage. Same promise: `S04.fork`.
+- `F10.fork-independent`: messages appended to the fork never reach the source and vice versa; the fork's events socket replays the copied history plus its own events. Same promise: `S04.fork`.
 - `F10.fork-errors`: an unknown source is 404, an unknown `from_event_id` is 404, a taken `id` is 409, a bad tag key or a title over 200 characters is 422, a malformed id is 422 and a missing key is 401; none of them creates a conversation.
 - `F10.fork-keeps-credentials`: the fork's `base_state.json` keeps the agent's (encrypted) model keys, like the source's.
-- `F10.fork-run-memory`: a fork of a finished DeepSeek conversation runs to `finished` with the source's history in context (it recalls a codename only the source was told).
-- `F10.navigate-event`: `POST /navigate` with an earlier `event_id` answers 200 with `leaf_event_id` set to it; GET and `base_state.json` agree and no event is deleted.
-- `F10.navigate-branch`: after navigating, the next appended event's `parent_id` is the new HEAD (a sibling of the abandoned branch), pushed live on the events socket; the HEAD move itself is not broadcast.
-- `F10.navigate-empty`: `{}` or `{"event_id": null}` selects the empty tree (`leaf_event_id` null, `head_is_empty` true on disk); the next appended event becomes a new root (`parent_id` `__root__`).
+- `F10.fork-run-memory`: a fork of a finished DeepSeek conversation runs to `finished` with the source's history in context (it recalls a codename only the source was told). Same promise: `S04.fork`.
+- `F10.navigate-event`: `POST /navigate` with an earlier `event_id` answers 200 with `leaf_event_id` set to it; GET and `base_state.json` agree and no event is deleted. Same promise: `S04.fork-branch`.
+- `F10.navigate-branch`: after navigating, the next appended event's `parent_id` is the new HEAD (a sibling of the abandoned branch), pushed live on the events socket; the HEAD move itself is not broadcast. Same promise: `S04.fork-branch`, `S05.event-tree`.
+- `F10.navigate-empty`: `{}` or `{"event_id": null}` selects the empty tree (`leaf_event_id` null, `head_is_empty` true on disk); the next appended event becomes a new root (`parent_id` `__root__`). Same promise: `S04.fork-branch`.
 - `F10.navigate-errors`: an unknown `event_id` is 404 `Unknown event_id: ...` and an unknown conversation 404, a missing body 422, a missing key 401; none of them moves HEAD.
 - `F10.navigate-final-response`: after navigating back before the agent's answer, `agent_final_response` reports the active branch (empty), not the abandoned answer.
-- `F10.condense-llm`: on a finished DeepSeek conversation `POST /condense` answers 200 `{"success": true}` after recording one `CondensationRequest` and one `Condensation` with a summary, pushed live on the events socket; the status stays `finished`.
-- `F10.condense-no-condenser`: an agent without a request-handling condenser (condenser disabled, or `no_op`) gets an error naming the cause, and no `CondensationRequest` or other event is recorded.
+- `F10.condense-llm`: on a finished DeepSeek conversation `POST /condense` answers 200 `{"success": true}` after recording one `CondensationRequest` and one `Condensation` with a summary, pushed live on the events socket; the status stays `finished`. Same promise: `S06.manual-condense`.
+- `F10.condense-no-condenser`: an agent without a request-handling condenser (condenser disabled, or `no_op`) gets an error naming the cause, and no `CondensationRequest` or other event is recorded. Same promise: `S06.manual-condense`.
 - `F10.condense-status`: that refusal is a client error (4xx), not a 500.
-- `F10.condense-llm-failure`: when the condenser's model is unreachable, condense answers 500 with an `error_id`, leaves the `CondensationRequest` pending and records no `Condensation`.
+- `F10.condense-llm-failure`: when the condenser's model is unreachable, condense answers 500 with an `error_id`, leaves the `CondensationRequest` pending and records no `Condensation`. Same promise: `S06.manual-condense`.
 - `F10.condense-errors`: an unknown id is 404 `Conversation not found`, a malformed id 422, a missing key 401 (and records nothing).
-- `F10.ask-agent`: `POST /ask_agent` answers a question about the conversation with DeepSeek (200 `{"response": ...}`), records no message and pushes no message on the socket, and leaves the status unchanged.
+- `F10.ask-agent`: `POST /ask_agent` answers a question about the conversation with DeepSeek (200 `{"response": ...}`), records no message and pushes no message on the socket, and leaves the status unchanged. Same promise: `S01.ask-agent`.
 - `F10.ask-agent-errors`: a missing `question` is 422, a missing key 401, and an unreachable model 500 with an `error_id`.
-- `F10.ask-agent-running`: while a run waits on its model, `ask_agent` answers at once (it does not wait for the step), records nothing and leaves the status `running`.
+- `F10.ask-agent-running`: while a run waits on its model, `ask_agent` answers at once (it does not wait for the step), records nothing and leaves the status `running`. Same promise: `S01.ask-agent`.
 - `F10.ask-agent-unknown`: an unknown conversation id is 404, as the route documents.
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
