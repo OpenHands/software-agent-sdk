@@ -1138,6 +1138,27 @@ class TestHttpExceptionLogging:
         assert all(r.exc_info is None for r in info_records)
 
 
+@pytest.mark.parametrize("status_code", [429, 503])
+def test_http_exception_keeps_its_headers(status_code):
+    """Headers set on an HTTPException reach the client, for 4xx and 5xx alike."""
+    from fastapi import HTTPException as FastAPIHTTPException
+
+    app = create_app(Config(static_files_path=None))
+
+    @app.get("/__test__/raise_with_headers")
+    def _raise():
+        raise FastAPIHTTPException(
+            status_code=status_code,
+            detail="slow down",
+            headers={"Retry-After": "30"},
+        )
+
+    response = TestClient(app).get("/__test__/raise_with_headers")
+
+    assert response.status_code == status_code
+    assert response.headers["retry-after"] == "30"
+
+
 def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeypatch):
     """create_app(config) must persist and notify per that config, not OH_* env.
 

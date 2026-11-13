@@ -109,3 +109,23 @@ def test_to_prompt_truncation_points_at_invoke_skill_not_source() -> None:
     assert "... [10 characters truncated" in result
     assert 'invoke_skill(name="test")' in result
     assert "/path/to/skill.md" not in result
+
+
+def test_loaded_long_description_points_at_invoke_skill_not_path(tmp_path) -> None:
+    """A long description truncated when SKILL.md is loaded must not leak the
+    file's path into the prompt; it points at invoke_skill instead (#6644)."""
+    skill_dir = tmp_path / ".agents" / "skills" / "longdesc"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        f"---\nname: longdesc\ndescription: {'C' * 2000}\n---\n# Long\nBody."
+    )
+
+    skill = Skill.load(skill_md)
+    result = to_prompt([skill])
+
+    assert skill.description is not None
+    assert len(skill.description) <= Skill.MAX_DESCRIPTION_LENGTH
+    assert 'invoke_skill(name="longdesc")' in result
+    assert str(skill_dir) not in result
+    assert "SKILL.md" not in result
