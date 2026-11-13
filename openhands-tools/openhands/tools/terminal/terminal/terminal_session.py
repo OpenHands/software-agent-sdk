@@ -299,8 +299,11 @@ class TerminalSession(TerminalSessionBase):
             get_content_before_last_match = bool(len(ps1_matches) == 1)
             if metadata.working_dir != self._cwd and metadata.working_dir:
                 self._cwd = metadata.working_dir
+            # After the final prompt there is only the new command line, which
+            # is empty unless something was typed into it before the agent
+            # sent anything (e.g. a terminal's reply to a query); not output.
             raw_command_output = self._combine_outputs_between_matches(
-                terminal_content,
+                terminal_content[: ps1_matches[-1].end()],
                 ps1_matches,
                 get_content_before_last_match=get_content_before_last_match,
             )

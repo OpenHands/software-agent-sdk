@@ -186,6 +186,22 @@ _TMUX_SPECIALS: dict[str, str] = {
 }
 
 
+def shell_setup_command(ps1: str) -> str:
+    """The command that prepares a fresh tmux pane's shell for the agent.
+
+    - ``stty -echoctl``: tmux answers terminal queries (e.g. a cursor-position
+      request) by typing the reply into the pane. With ``echoctl`` the tty
+      echoes that reply as visible text (``^[[13;2R``); without it the echo is
+      the escape sequence itself, which tmux consumes instead of showing.
+    - ``set +H``: no history expansion, so ``!`` reaches commands unchanged.
+    - A plain ``PS1`` the session can find, and no ``PS2``.
+    """
+    return (
+        "stty -echoctl 2>/dev/null; set +H; "
+        f'export PROMPT_COMMAND=\'export PS1="{ps1}"\'; export PS2=""'
+    )
+
+
 class TmuxTerminal(TerminalInterface):
     """Tmux-based terminal backend.
 
@@ -260,11 +276,7 @@ class TmuxTerminal(TerminalInterface):
         logger.debug(f"pane: {self.pane}; history_limit: {self.session.history_limit}")
         _initial_window.kill()
 
-        # Configure bash to use simple PS1 and disable PS2
-        # Disable history expansion to avoid ! mangling
-        self.pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
-        )
+        self.pane.send_keys(shell_setup_command(self.PS1))
         time.sleep(0.1)  # Wait for command to take effect
 
         logger.debug(f"Tmux terminal initialized with work dir: {self.work_dir}")
@@ -353,6 +365,9 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
+        # C-u first: drop anything left on the input line (e.g. a terminal
+        # query reply that arrived after the prompt) so it does not run.
+        self.pane.send_keys("C-u", enter=False)
         self.pane.send_keys("clear", enter=True)
         time.sleep(0.1)
         self.pane.cmd("clear-history")

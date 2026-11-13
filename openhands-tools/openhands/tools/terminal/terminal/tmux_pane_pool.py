@@ -35,6 +35,7 @@ from openhands.tools.terminal.terminal.process_priority import (
 from openhands.tools.terminal.terminal.tmux_terminal import (
     TmuxTerminal,
     _new_owned_session,
+    shell_setup_command,
 )
 
 
@@ -207,11 +208,8 @@ class TmuxPanePool:
         terminal.window = window
         terminal.pane = active_pane
 
-        # Configure PS1 (same as TmuxTerminal.initialize)
-        ps1 = terminal.PS1
-        active_pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{ps1}"\'; export PS2=""'
-        )
+        # Same shell setup as TmuxTerminal.initialize
+        active_pane.send_keys(shell_setup_command(terminal.PS1))
         time.sleep(0.1)
         terminal._initialized = True
         terminal.clear_screen()

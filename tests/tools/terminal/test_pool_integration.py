@@ -219,3 +219,33 @@ class TestFollowUpsReachTheRunningCommand:
         assert not result.is_error, result.text
         assert "after" in result.text
         assert result.exit_code == 0
+
+
+def test_terminal_query_reply_does_not_reach_the_next_command(pool_executor):
+    """tmux answers a cursor-position query (ESC [ 6 n) by typing the reply
+    into the pane; it must not show up or land in the next command (#6652)."""
+    query = pool_executor(TerminalAction(command="printf 'a\\033[6nb\\n'"))
+    after = pool_executor(TerminalAction(command="echo next"))
+    failing = pool_executor(TerminalAction(command="(exit 7)"))
+
+    assert query.text.strip() == "ab", query.text
+    assert after.text.strip() == "next", after.text
+    assert "syntax error" not in after.text
+    assert failing.exit_code == 7  # the prompt keeps the command's exit code
+
+
+@pytest.mark.parametrize("terminal_type", ["tmux", "subprocess"])
+def test_literal_caret_text_is_kept(terminal_type):
+    """Output that merely looks like an echoed cursor report is real output."""
+    with tempfile.TemporaryDirectory() as work_dir:
+        executor = TerminalExecutor(working_dir=work_dir, terminal_type=terminal_type)
+        try:
+            obs = executor(
+                TerminalAction(
+                    command="printf '%s\\n' before '^[[13;2R' 'log ^[[1;1R end' after"
+                )
+            )
+        finally:
+            executor.close()
+
+    assert "before\n^[[13;2R\nlog ^[[1;1R end\nafter" in obs.text, obs.text
