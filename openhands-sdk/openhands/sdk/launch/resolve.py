@@ -135,6 +135,13 @@ def resolve(
             secret_refs=profile.secret_refs,
             integration_refs=profile.integration_refs,
             llm_profile_ref=llm_profile_ref,
+            profile_snapshot=(
+                profile.model_copy(
+                    deep=True, update={"llm_profile_ref": llm_profile_ref}
+                )
+                if llm_profile_ref is not None
+                else profile.model_copy(deep=True)
+            ),
         ),
     )
 

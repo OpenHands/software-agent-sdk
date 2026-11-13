@@ -73,6 +73,7 @@ from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPServer,
+    coerce_mcp_config,
     enabled_mcp_servers,
 )
 from openhands.sdk.mcp.gateway import MCPToolGateway
@@ -230,6 +231,7 @@ class LocalConversation(BaseConversation):
     # it must skip re-acquiring the lock the run loop holds while blocked
     # awaiting that tool (#3485).
     _step_holds_state_lock: bool
+    _step_in_progress: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -356,6 +358,7 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._step_holds_state_lock = False
+        self._step_in_progress = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -1674,18 +1677,15 @@ class LocalConversation(BaseConversation):
     def _prepare_mcp_gateway(self) -> None:
         from openhands.sdk.agent.agent import Agent
 
-        if (
-            not isinstance(self.agent, Agent)
-            or not self.agent.mcp_config
-            or not self.agent.mcp_gateway
-        ):
+        if not isinstance(self.agent, Agent) or not self.agent.mcp_gateway:
             return
         gateway = MCPToolGateway(
             self._state.mcp_gateway_selected_tools,
             filter_tools_regex=self.agent.filter_tools_regex,
             tool_policy=self.agent.mcp_tool_policy,
         )
-        gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
+        if self.agent.mcp_config:
+            gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
         self._mcp_gateway = self._state._mcp_gateway = gateway
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
@@ -1749,6 +1749,8 @@ class LocalConversation(BaseConversation):
 
     def load_plugin(self, plugin_ref: str) -> None:
         """Load a plugin from the conversation's registered marketplaces."""
+        from openhands.sdk.agent.agent import Agent
+
         self._ensure_plugins_loaded()
         spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
 
@@ -1760,32 +1762,37 @@ class LocalConversation(BaseConversation):
             repo_path=spec.repo_path,
         )
         plugin = Plugin.load(path)
-        if self._agent_ready and self._mcp_gateway and plugin.mcp_config:
-            raise ValueError(
-                "Runtime plugin MCP servers are not supported by the MCP gateway"
-            )
         logger.info(
             f"Loaded plugin '{plugin.manifest.name}'"
             + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
         )
 
         get_secret = self._state.secret_registry.get_secret_value
+        gateway_mode = isinstance(self.agent, Agent) and self.agent.mcp_gateway
         runtime_plugin_mcp: dict[str, MCPServer] = {}
         if plugin.mcp_config:
             runtime_plugin_mcp = expand_mcp_servers(plugin.mcp_config, get_secret)
+            if gateway_mode:
+                duplicates = runtime_plugin_mcp.keys() & self.agent.mcp_config.keys()
+                if duplicates:
+                    raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
         if merged_mcp:
             merged_mcp = expand_mcp_servers(merged_mcp, get_secret)
+        if self._agent_ready and gateway_mode:
+            if runtime_plugin_mcp:
+                self.add_mcp_servers(runtime_plugin_mcp)
+            merged_mcp = dict(self.agent.mcp_config)
         runtime_mcp_tools = (
             self._runtime_mcp_tools(
                 runtime_plugin_mcp,
                 on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
                 on_tools_reconciled=self._on_mcp_tools_reconciled,
             )
-            if self._agent_ready
+            if self._agent_ready and not gateway_mode
             else []
         )
 
@@ -2440,11 +2447,13 @@ class LocalConversation(BaseConversation):
                     # tools (e.g. switch_llm) running on worker threads skip
                     # re-acquiring it instead of deadlocking (#3485).
                     self._step_holds_state_lock = True
+                    self._step_in_progress = True
                     try:
                         self.agent.step(
                             self, on_event=self._on_event, on_token=self._on_token
                         )
                     finally:
+                        self._step_in_progress = False
                         self._step_holds_state_lock = False
                     iteration += 1
 
@@ -2729,14 +2738,16 @@ class LocalConversation(BaseConversation):
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
-                        last_user_message_id = self._state.last_user_message_id
+                        self._step_in_progress = True
                         try:
+                            last_user_message_id = self._state.last_user_message_id
                             await self.agent.astep(
                                 self,
                                 on_event=self._on_event,
                                 on_token=self._on_token,
                             )
                         finally:
+                            self._step_in_progress = False
                             self._step_holds_state_lock = False
                         iteration += 1
 
@@ -3260,6 +3271,34 @@ class LocalConversation(BaseConversation):
             logger.info("interrupt(): cancelled in-flight arun() task")
         else:
             self.pause()
+
+    def add_mcp_servers(self, servers: Mapping[str, MCPServer]) -> None:
+        """Add MCP connections without changing any existing server or session."""
+        if not self.agent.supports_openhands_mcp:
+            raise ValueError("Runtime MCP additions require an OpenHands agent")
+        if self._step_in_progress:
+            raise RuntimeError("Cannot add MCP servers during an agent step")
+
+        config = expand_mcp_servers(
+            coerce_mcp_config(dict(servers)),
+            self._state.secret_registry.get_secret_value,
+        )
+        with self._state:
+            if self._step_in_progress:
+                raise RuntimeError("Cannot add MCP servers during an agent step")
+            duplicates = config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            gateway = self._mcp_gateway
+            if self._agent_ready and gateway is None:
+                raise ValueError("Runtime MCP additions require the MCP gateway")
+            for name, server in config.items():
+                if gateway is not None and server.enabled:
+                    gateway.add_server(name, server, self._mcp_tool_provider)
+                updated = self.agent.model_copy(
+                    update={"mcp_config": {**self.agent.mcp_config, name: server}}
+                )
+                self.agent = self._state.agent = updated
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.

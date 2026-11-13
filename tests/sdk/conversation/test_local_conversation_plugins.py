@@ -3,6 +3,7 @@
 import json
 import logging
 import shutil
+import sys
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -1053,6 +1054,7 @@ class TestLocalConversationPlugins:
         agent = Agent(
             llm=mock_llm,
             tools=[],
+            mcp_gateway=False,
             agent_context=AgentContext(
                 registered_marketplaces=[
                     MarketplaceRegistration(name="manual", source=str(marketplace_dir))
@@ -1086,6 +1088,83 @@ class TestLocalConversationPlugins:
         assert "runtime-server" in created_config
 
         conversation.close()
+
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_load_plugin_adds_live_mcp_server_to_gateway(
+        self, tmp_path: Path, mock_llm, existing: bool
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "mcp-plugin",
+                    "mcp_config": {
+                        "mcpServers": {
+                            "docs": {
+                                "command": sys.executable,
+                                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                                "cwd": str(Path(__file__).resolve().parents[3]),
+                            }
+                        }
+                    },
+                }
+            ],
+        )
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=mock_llm,
+                tools=[],
+                include_default_tools=[],
+                mcp_config=(
+                    {
+                        "existing": MCPServer(
+                            command=sys.executable,
+                            args=["-m", "tests.sdk.mcp.stdio_test_server"],
+                            cwd=str(Path(__file__).resolve().parents[3]),
+                        )
+                    }
+                    if existing
+                    else {}
+                ),
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="manual", source=str(marketplace_dir)
+                        )
+                    ]
+                ),
+            ),
+            workspace=tmp_path / "workspace",
+            visualizer=None,
+        )
+        try:
+            conversation._ensure_agent_ready()
+            gateway = conversation.mcp_gateway
+            previous_client = gateway.clients["existing"] if existing else None
+            tools = dict(conversation.agent.tools_map)
+            if not existing:
+                assert gateway.list_tools()["tools"] == []
+            conversation.load_plugin("mcp-plugin")
+            assert conversation.mcp_gateway is gateway
+            assert all(
+                conversation.agent.tools_map[name] is tool
+                for name, tool in tools.items()
+            )
+            assert {
+                tool["name"] for tool in conversation.mcp_gateway.list_tools()["tools"]
+            } == ({"existing.fetch", "docs.fetch"} if existing else {"docs.fetch"})
+            assert "docs" in conversation.agent.mcp_config
+            docs_client = conversation.mcp_gateway.clients["docs"]
+            with pytest.raises(ValueError, match="already exists"):
+                conversation.load_plugin("mcp-plugin")
+            assert conversation.mcp_gateway.clients["docs"] is docs_client
+            assert not docs_client._closed
+            if existing:
+                assert previous_client is not None
+                assert conversation.mcp_gateway.clients["existing"] is previous_client
+                assert not previous_client._closed
+        finally:
+            conversation.close()
 
     def test_load_plugin_merges_runtime_hooks_and_restarts_processor(
         self, tmp_path: Path, mock_llm

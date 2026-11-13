@@ -31,8 +31,11 @@ from openhands.sdk.llm.message import (  # re-export
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
+    ACPAgentProfile,
     LaunchedAgentProfile as LaunchedAgentProfile,
+    OpenHandsAgentProfile,
 )
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -250,6 +253,8 @@ class _ConversationInfoBase(BaseModel):
             "and Stop hooks."
         ),
     )
+    conversation_profile: OpenHandsAgentProfile | ACPAgentProfile | None = None
+    conversation_profile_revision: int = 0
 
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
@@ -536,6 +541,32 @@ class UpdateSecretsRequest(BaseModel):
                 converted[key] = value
 
         return converted
+
+
+class ConversationAgentResources(BaseModel):
+    """Private resources supplied only to this conversation."""
+
+    mcp_servers: dict[str, MCPServer] = Field(default_factory=dict)
+    secrets: dict[str, SecretSource] = Field(default_factory=dict)
+
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def normalize_secrets(cls, value: Any) -> Any:
+        return UpdateSecretsRequest.convert_string_secrets(value)
+
+
+class UpdateConversationAgentRequest(BaseModel):
+    """Sparse profile edit and conversation-only resources; never saves globals."""
+
+    profile_diff: dict[str, Any] = Field(default_factory=dict)
+    resources: ConversationAgentResources = Field(
+        default_factory=ConversationAgentResources
+    )
+
+
+class UpdateConversationAgentResponse(BaseModel):
+    conversation_profile_revision: int
+    conversation_profile: OpenHandsAgentProfile
 
 
 class SetConfirmationPolicyRequest(BaseModel):

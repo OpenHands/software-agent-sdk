@@ -49,6 +49,8 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StartGoalRequest,
     Success,
+    UpdateConversationAgentRequest,
+    UpdateConversationAgentResponse,
     UpdateConversationRequest,
     UpdateSecretsRequest,
     trim_conversation_response_skills,
@@ -76,6 +78,7 @@ from openhands.sdk.marketplace.registry import (
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles.agent_profile import safe_validation_error_detail
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 
@@ -550,6 +553,29 @@ async def update_conversation_secrets(
     secrets = cast(dict[str, SecretValue], request.secrets)
     await event_service.update_secrets(secrets)
     return Success()
+
+
+@conversation_router.patch(
+    "/{conversation_id}/agent",
+    responses=error_responses(
+        {NotFound: "Conversation not found", Invalid: "Invalid conversation agent edit"}
+    ),
+)
+async def update_conversation_agent(
+    conversation_id: UUID,
+    request: UpdateConversationAgentRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> UpdateConversationAgentResponse:
+    """Edit the current agent profile and resources, never a global profile."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    try:
+        return await event_service.update_agent_profile(request)
+    except ValidationError as exc:
+        raise Unprocessable(safe_validation_error_detail(exc)) from exc
+    except Exception as exc:
+        raise Invalid("Invalid conversation agent edit or MCP server") from exc
 
 
 @conversation_router.post(

@@ -105,6 +105,37 @@ class MCPToolGateway:
             self.close()
             raise
 
+    def add_server(
+        self, name: str, server: MCPServer, provider: MCPToolProvider
+    ) -> None:
+        """Connect one new server without touching existing sessions."""
+        if not provider_supports_on_tools_reconciled(provider):
+            raise ValueError("MCP gateway requires tool-list reconciliation support")
+        with self._lock:
+            if self._closed or self._active_calls:
+                raise RuntimeError("MCP gateway is unavailable for new connections")
+            if name in self._clients:
+                raise ValueError(f"MCP server already exists: {name}")
+
+        client = provider.create_tools(
+            {name: server},
+            _GATEWAY_STARTUP_TIMEOUT,
+            on_tools_reconciled=lambda client, tools: self._reconcile(
+                name, client, tools
+            ),
+        )
+        try:
+            with self._lock:
+                if self._closed or self._active_calls or name in self._clients:
+                    raise RuntimeError("MCP gateway changed during server addition")
+                tools = {f"{name}.{tool.name}": tool for tool in client.tools}
+                self._clients[name] = client
+                self._tools.update(tools)
+                self._version += 1
+        except BaseException:
+            client.sync_close()
+            raise
+
     def _reconcile(
         self, name: str, client: MCPClient, tools: Sequence[MCPToolDefinition]
     ) -> None:
@@ -133,6 +164,17 @@ class MCPToolGateway:
                 raise ValueError(f"Unknown MCP tools: {sorted(unknown)}")
             if selected != self._selected:
                 self._selected = selected
+                self._version += 1
+
+    def set_tool_policy(self, policy: Mapping[str, MCPToolPolicy]) -> None:
+        updated = {
+            server: rule.model_copy(deep=True) for server, rule in policy.items()
+        }
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("MCP gateway is closed")
+            if updated != self._tool_policy:
+                self._tool_policy = updated
                 self._version += 1
 
     def _allows(self, name: str) -> bool:
