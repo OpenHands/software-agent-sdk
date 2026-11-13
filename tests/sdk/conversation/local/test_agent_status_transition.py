@@ -392,6 +392,53 @@ def test_run_recovers_from_stuck():
     assert llm.call_count == 1
 
 
+def _repeated_tool_call(index: int) -> Message:
+    return Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id=f"call_{index}",
+                name="test_tool",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            )
+        ],
+    )
+
+
+def test_run_resumes_after_detected_stuck():
+    """run() on a conversation the detector made STUCK gives the agent a step.
+
+    The repeated action/observation pairs that triggered detection are still
+    in the history. Without a fresh detection window on resume, the detector
+    sees them again before any LLM call and sets STUCK straight back.
+    """
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    llm = TestLLM.from_messages(
+        [
+            *(_repeated_tool_call(i) for i in range(4)),
+            Message(role="assistant", content=[TextContent(text="Recovered")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = Conversation(agent=agent)
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="List files")])
+    )
+
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
+    calls_when_stuck = llm.call_count
+
+    conversation.run()
+
+    assert llm.call_count == calls_when_stuck + 1
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
 def test_send_message_resets_stuck_to_idle():
     """Test STUCK → IDLE transition when a new user message arrives.
 
@@ -641,4 +688,31 @@ def test_agent_mark_conversation_finished(tmp_path):
     conversation.state.execution_status = ConversationExecutionStatus.RUNNING
 
     Agent._mark_conversation_finished(conversation.state)
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+async def test_arun_resumes_after_detected_stuck():
+    """arun() resumes a detector-STUCK conversation the same way run() does."""
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    llm = TestLLM.from_messages(
+        [
+            *(_repeated_tool_call(i) for i in range(4)),
+            Message(role="assistant", content=[TextContent(text="Recovered")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = Conversation(agent=agent)
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="List files")])
+    )
+
+    await conversation.arun()
+    assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
+    calls_when_stuck = llm.call_count
+
+    await conversation.arun()
+
+    assert llm.call_count == calls_when_stuck + 1
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED

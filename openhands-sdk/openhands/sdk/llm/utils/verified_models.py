@@ -24,7 +24,8 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5.5 and 5. Sonnet: 5.5 and 5. Haiku: 5.5 and 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5.5 and 5. Haiku: 5.5 and 4.5.
+# Fable: 5.2 and 5.1; 5 remains available for existing users.
 VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
@@ -32,6 +33,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-sonnet-5",
     "claude-haiku-5-5",
     "claude-haiku-4-5-20251001",
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
 ]
@@ -83,6 +85,7 @@ VERIFIED_MINIMAX_MODELS = [
 VERIFIED_GLM_MODELS = [
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
 ]
 
@@ -122,6 +125,7 @@ VERIFIED_OPENROUTER_MODELS = [
     "anthropic/claude-sonnet-5",
     "anthropic/claude-haiku-5.5",
     "anthropic/claude-haiku-4.5",
+    "anthropic/claude-fable-5.2",
     "openai/gpt-6.1-sol",
     "openai/gpt-6.1-terra",
     "openai/gpt-6-astra",
@@ -142,6 +146,7 @@ VERIFIED_OPENROUTER_MODELS = [
     "mistralai/devstral-2512",
     "z-ai/glm-5.3",
     "z-ai/glm-5.3-flash",
+    "z-ai/glm-5.3-flashx",
     "z-ai/glm-5.2",
     "minimax/minimax-m3",
 ]
@@ -171,6 +176,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-5",
     "claude-sonnet-5-5",
     "claude-sonnet-5",
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
     "gpt-6.1-sol",
@@ -202,6 +208,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "devstral-medium-2512",
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",

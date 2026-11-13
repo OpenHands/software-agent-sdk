@@ -3,6 +3,7 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import { ConversationClient } from '../client/conversation-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { FileClient } from '../client/file-client';
 import { HooksClient } from '../client/hooks-client';
@@ -165,10 +166,9 @@ export class ConversationManager {
   async getConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ConversationInfo | null>> {
-    const response = await this.client.get<Array<ConversationInfo | null>>('/api/conversations', {
-      params: { ids: conversationIds },
-    });
-    return response.data;
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
+    );
   }
 
   /**
@@ -297,13 +297,9 @@ export class ConversationManager {
   async getACPConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ACPConversationInfo | null>> {
-    const response = await this.client.get<Array<ACPConversationInfo | null>>(
-      '/api/conversations',
-      {
-        params: { ids: conversationIds },
-      }
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
     );
-    return response.data;
   }
 
   /**

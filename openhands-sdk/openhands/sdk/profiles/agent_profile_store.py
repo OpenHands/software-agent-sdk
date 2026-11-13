@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from filelock import FileLock, Timeout
 
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import validate_agent_profile
 from openhands.sdk.utils.path import get_user_persistence_dir
@@ -88,8 +89,11 @@ class AgentProfileStore:
                 yield
         except Timeout:
             logger.error(f"[AgentProfile Store] Failed to acquire lock in {timeout}s")
-            raise TimeoutError(
-                f"Agent profile store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Profile store is busy. Please retry.",
+                message=(
+                    f"Agent profile store lock acquisition timed out after {timeout}s"
+                ),
             )
 
     def lock(
@@ -118,7 +122,7 @@ class AgentProfileStore:
         """
         clean_name = canonical_profile_name(name)
         if not PROFILE_NAME_REGEX.match(clean_name):
-            raise ValueError(
+            raise Invalid(
                 f"Invalid profile name: {name!r}. "
                 "Profile names must be 1-64 characters, start with a letter "
                 "or digit, and contain only letters, digits, '.', '_', or '-'."
@@ -216,7 +220,7 @@ class AgentProfileStore:
                 data = json.loads(profile_path.read_text())
                 profile = validate_agent_profile(data)
             except Exception as e:
-                raise ValueError(f"Failed to load profile `{name}`: {e}") from e
+                raise Invalid(f"Failed to load profile `{name}`: {e}") from e
 
             logger.info(
                 f"[AgentProfile Store] Loaded profile `{name}` from {profile_path}"
@@ -260,14 +264,24 @@ class AgentProfileStore:
                 raise FileNotFoundError(f"Profile `{old_name}` not found")
             if old_path == new_path:
                 return
-            if new_path.exists():
+            # On a case-insensitive filesystem a case-only rename finds the
+            # source file itself under the new name.
+            case_only = new_path.exists() and new_path.samefile(old_path)
+            if new_path.exists() and not case_only:
                 raise FileExistsError(f"Profile `{new_name}` already exists")
 
-            data = json.loads(old_path.read_text())
+            try:
+                data = json.loads(old_path.read_text())
+            except json.JSONDecodeError as e:
+                raise Invalid(str(e)) from e
             if isinstance(data, dict):
                 data["name"] = new_stem
             self._atomic_write(new_path, json.dumps(data, indent=2))
-            old_path.unlink()
+            if case_only:
+                # Replacing the file kept the old spelling; renaming fixes it.
+                old_path.rename(new_path)
+            else:
+                old_path.unlink()
             logger.info(
                 f"[AgentProfile Store] Renamed profile `{old_name}` to `{new_name}`"
             )
@@ -288,7 +302,7 @@ class AgentProfileStore:
                 return
             try:
                 data = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 return
             if not isinstance(data, dict):
                 return
@@ -317,7 +331,7 @@ class AgentProfileStore:
                     continue
                 try:
                     data = json.loads(path.read_text())
-                except (OSError, json.JSONDecodeError) as e:
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                     logger.warning(
                         f"[AgentProfile Store] Skipping corrupted profile {name!r}: {e}"
                     )

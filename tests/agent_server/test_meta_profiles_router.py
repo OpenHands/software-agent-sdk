@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import get_settings_store, reset_stores
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 
@@ -186,10 +187,10 @@ def test_save_invalid_name_returns_422(client):
 
 
 def test_save_timeout_returns_503(client, monkeypatch):
-    """Save surfaces store lock TimeoutError as a retryable 503, not a 500."""
+    """Save surfaces the store's LockTimeout as a retryable 503, not a 500."""
 
     def boom(self, name, meta_profile, *, max_profiles=None):
-        raise TimeoutError("locked")
+        raise LockTimeout("Meta-profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(MetaProfileStore, "save", boom)
 
@@ -213,10 +214,10 @@ def test_delete_is_idempotent(client):
 
 
 def test_delete_timeout_returns_503(client, monkeypatch):
-    """Delete surfaces store lock TimeoutError as a retryable 503, not a 500."""
+    """Delete surfaces the store's LockTimeout as a retryable 503, not a 500."""
 
     def boom(self, name):
-        raise TimeoutError("locked")
+        raise LockTimeout("Meta-profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(MetaProfileStore, "delete", boom)
 

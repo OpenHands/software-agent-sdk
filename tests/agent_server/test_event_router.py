@@ -1,7 +1,9 @@
 """Tests for event_router.py endpoints."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -10,6 +12,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import event_router as event_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.dependencies import (
     get_event_service,
     get_read_event_service,
@@ -22,6 +26,7 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.errors import NotFound
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
@@ -70,6 +75,7 @@ def test_normalize_datetime_fixed_offset_timezone():
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(event_router, prefix="/api")
     return TestClient(app)
 
@@ -86,6 +92,27 @@ def mock_event_service():
     service = AsyncMock(spec=EventService)
     service.send_message = AsyncMock()
     return service
+
+
+def test_gateway_deadline_includes_cold_conversation_load(client, monkeypatch):
+    monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.02)
+    event_service = AsyncMock(spec=EventService)
+    event_service._gateway_run_lock = asyncio.Lock()
+
+    async def slow_load(conversation_id):
+        await asyncio.sleep(0.04)
+        return event_service
+
+    client.app.state.conversation_service = SimpleNamespace(get_event_service=slow_load)
+    client.app.state.conversation_registry = None
+
+    response = client.post(
+        f"/api/conversations/{uuid4()}/events/_gateway/run",
+        json={"content": [{"type": "text", "text": "Do not save"}]},
+    )
+
+    assert response.status_code == 504
+    event_service.send_message.assert_not_awaited()
 
 
 class TestSendMessageEndpoint:
@@ -201,7 +228,7 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id
     ):
         """Test send_message endpoint when conversation is not found."""
-        from fastapi import HTTPException, status
+        from fastapi import status
 
         def raise_not_found():
             raise HTTPException(
@@ -368,8 +395,8 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with naive datetime (no timezone)."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -407,8 +434,8 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with timezone-aware datetime."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -446,8 +473,8 @@ class TestSearchEventsEndpoint:
         """Test search events with both timestamp filters using
         timezone-aware datetimes."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -485,8 +512,8 @@ class TestSearchEventsEndpoint:
     ):
         """Test count events with timezone-aware datetime."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -520,8 +547,8 @@ class TestSearchEventsEndpoint:
     ):
         """Test count events with source filter."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -556,8 +583,8 @@ class TestSearchEventsEndpoint:
         """Test that different timezone representations of the same moment
         normalize consistently."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -613,8 +640,8 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with source filter."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -650,8 +677,8 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with multiple filters including source."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_read_event_service] = (
-            lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: (
+            mock_event_service
         )
 
         try:
@@ -878,10 +905,9 @@ class TestReadEventServiceSeam:
         request = MagicMock()
         request.app.state = MagicMock(spec=[])
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(NotFound):
             await get_read_event_service(uuid4(), request, service)
 
-        assert exc_info.value.status_code == 404
 
 
 def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):

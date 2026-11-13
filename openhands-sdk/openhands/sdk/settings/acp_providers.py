@@ -18,6 +18,8 @@ Each record captures the static properties that are known at configuration time
 - ``supports_runtime_model_switch``  whether the server supports a protocol-level
                                   model switch for runtime, mid-conversation use
 - ``session_meta_key``      top-level ``_meta`` key for model selection (or ``None``)
+- ``effort_config_id``      config option that sets reasoning effort (or ``None``)
+- ``effort_levels``         effort suffixes split off a ``<model>/<effort>`` id
 - ``file_secrets``          reserved "file-content" credential secrets the
                             provider authenticates from (Codex ``auth.json``,
                             Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
@@ -306,6 +308,31 @@ class ACPProviderInfo:
     them — see :class:`ACPEnvConflictSpec`.
     """
 
+    effort_config_id: str | None = field(default=None, compare=False)
+    """Session config option that sets reasoning effort, or ``None``.
+
+    When set, an ``acp_model`` of the form ``<model>/<effort>`` (with ``effort``
+    in :attr:`effort_levels`) is split into a ``model`` selection plus this
+    config option — e.g. codex-acp ``reasoning_effort``, claude-agent-acp
+    ``effort``. See :meth:`split_model_effort`.
+    """
+
+    effort_levels: tuple[str, ...] = field(default=(), compare=False)
+    """Effort values accepted as a ``/<effort>`` model-id suffix."""
+
+    def split_model_effort(self, model: str) -> tuple[str, str | None]:
+        """Split ``<model>/<effort>`` into ``(model, effort)``.
+
+        Ids without a known effort suffix, or providers without an
+        :attr:`effort_config_id`, are returned unchanged with ``None``.
+        """
+        if self.effort_config_id is None:
+            return model, None
+        base_model, sep, effort = model.rpartition("/")
+        if sep and base_model and effort in self.effort_levels:
+            return base_model, effort
+        return model, None
+
 
 # ---------------------------------------------------------------------------
 # Reserved file-content credential secrets for the built-in providers.
@@ -394,6 +421,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
+            effort_config_id="effort",
+            effort_levels=("low", "medium", "high", "xhigh", "max"),
             binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
             data_dir_env_var="CLAUDE_CONFIG_DIR",
             # Keyed on the credential itself, NOT on CLAUDE_CONFIG_DIR: the
@@ -419,6 +448,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
+            effort_config_id="reasoning_effort",
+            effort_levels=("low", "medium", "high", "xhigh", "max", "ultra"),
             file_secrets=_CODEX_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
             data_dir_env_var="CODEX_HOME",
@@ -611,19 +642,29 @@ def detect_acp_provider_by_command(
     return None
 
 
-def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
-    """Build ACP session ``_meta`` content for model selection.
+def build_session_model_meta(
+    agent_name: str, acp_model: str | None, acp_effort: str | None = None
+) -> dict[str, Any]:
+    """Build ACP session ``_meta`` content for model and effort selection.
 
     Returns the dict to spread into ``new_session()`` kwargs for providers
     that select their model via ``_meta`` (i.e. those whose
-    :attr:`~ACPProviderInfo.session_meta_key` is not ``None``).
+    :attr:`~ACPProviderInfo.session_meta_key` is not ``None``). ``acp_effort``
+    wins over a ``<model>/<effort>`` suffix on ``acp_model``.
 
-    Returns an empty dict when *acp_model* is ``None`` or when the detected
+    Returns an empty dict when there is nothing to select or when the detected
     provider uses the ``set_session_model`` protocol call instead.
     """
-    if not acp_model:
-        return {}
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is None or provider.session_meta_key is None:
         return {}
-    return {provider.session_meta_key: {"options": {"model": acp_model}}}
+    options: dict[str, str] = {}
+    suffix_effort = None
+    if acp_model:
+        options["model"], suffix_effort = provider.split_model_effort(acp_model)
+    effort = acp_effort or suffix_effort
+    if effort and provider.effort_config_id is not None:
+        options[provider.effort_config_id] = effort
+    if not options:
+        return {}
+    return {provider.session_meta_key: {"options": options}}

@@ -19,6 +19,7 @@ from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
     REASONING_EFFORT_MODEL_OVERRIDES,
+    VISION_CAPABLE_MODELS,
     VISION_MODEL_OVERRIDES,
     _normalized_supported_openai_params,
     get_features,
@@ -473,6 +474,57 @@ def test_vision_overrides_are_not_redundant():
         )
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_vision_capable_models_supports_vision(model: str):
+    """Verified vision ids LiteLLM cannot resolve still report vision.
+
+    Regression for #5523: ``deepseek-v4.1-flash`` has no LiteLLM registry entry,
+    so the capability comes from the SDK's own list.
+    """
+    assert get_features(model).supports_vision is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_vision_capable_models_do_not_force_string_serializer(model: str):
+    """Vision-capable DeepSeek ids must keep list serialization.
+
+    Regression for #5523: the broad ``"deepseek"`` entry in
+    FORCE_STRING_SERIALIZER_MODELS otherwise drops image content because
+    ``Message.to_chat_dict`` takes the string branch.
+    """
+    features = get_features(model)
+    assert features.supports_vision is True
+    assert features.force_string_serializer is False
+
+
+def test_vision_capable_models_stay_out_of_litellm_resolvable_ids():
+    """Every entry must be one LiteLLM cannot already resolve.
+
+    Mirrors ``test_vision_overrides_are_not_redundant``: once LiteLLM reports the
+    model, the SDK entry is redundant and should be removed.
+    """
+    for pattern in VISION_CAPABLE_MODELS:
+        assert not supports_vision(pattern), (
+            f"Remove {pattern!r}: LiteLLM now reports it as vision-capable"
+        )
+
+
 def test_model_matches_with_provider_pattern():
     """model_matches uses substring on raw model name incl. provider prefixes."""
     assert model_matches("openai/gpt-4", ["openai/"])
@@ -578,6 +630,13 @@ def test_deepseek_v4_models_use_structured_content(model):
         ("claude-opus-4-5-20251101", False),
         ("claude-sonnet-4-5-20250929", False),
         ("gemini/gemini-2.5-pro", False),
+        # ``openai/prod/<upstream>`` is an OpenAI-compatible proxy route, not
+        # an OpenAI upstream: the deployment segment must be stripped before
+        # resolving the real provider, or Claude behind it is misread as
+        # OpenAI and sent prompt_cache_key (examples 49 / 59 regression).
+        ("openai/prod/claude-sonnet-4-5-20250929", False),
+        ("openai/prod/gpt-5.5", True),
+        ("litellm_proxy/prod/claude-opus-4-5-20251101", False),
         # Unresolved alias -> safe default False (call still succeeds)
         ("prod/my-unknown-alias", False),
     ],
@@ -790,6 +849,9 @@ def test_prompt_cache_retention_support(model, expected_retention):
 @pytest.mark.parametrize(
     "model,expected_send_reasoning",
     [
+        ("gpt-oss-120b", True),
+        ("openai/gpt-oss-120b", True),
+        ("openrouter/openai/gpt-oss-120b", True),
         ("kimi-k2-thinking", True),
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive

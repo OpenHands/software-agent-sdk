@@ -21,16 +21,29 @@ from openhands.sdk.git.exceptions import GitCommandError
 # -- parse_extension_source ---------------------------------------------------
 
 
-def test_parse_github_shorthand():
-    source_type, url = parse_extension_source("github:owner/repo")
+@pytest.mark.parametrize(
+    ("source", "expected_url"),
+    [
+        pytest.param(
+            "github:owner/repo", "https://github.com/owner/repo.git", id="plain"
+        ),
+        pytest.param(
+            "  github:owner/repo  ",
+            "https://github.com/owner/repo.git",
+            id="with_whitespace",
+        ),
+        # The repository URL ignores the subpath, which fetch() uses as repo_path.
+        pytest.param(
+            "github:OpenHands/extensions/skills/github",
+            "https://github.com/OpenHands/extensions.git",
+            id="with_subpath",
+        ),
+    ],
+)
+def test_parse_github_shorthand(source, expected_url):
+    source_type, url = parse_extension_source(source)
     assert source_type == SourceType.GITHUB
-    assert url == "https://github.com/owner/repo.git"
-
-
-def test_parse_github_shorthand_with_whitespace():
-    source_type, url = parse_extension_source("  github:owner/repo  ")
-    assert source_type == SourceType.GITHUB
-    assert url == "https://github.com/owner/repo.git"
+    assert url == expected_url
 
 
 def test_parse_github_shorthand_invalid_format():
@@ -44,43 +57,60 @@ def test_parse_github_shorthand_invalid_format():
         parse_extension_source("github:owner/")
 
 
-def test_parse_github_shorthand_with_subpath():
-    """The repository URL ignores the subpath, which fetch() uses as repo_path."""
-    source_type, url = parse_extension_source(
-        "github:OpenHands/extensions/skills/github"
-    )
-    assert source_type == SourceType.GITHUB
-    assert url == "https://github.com/OpenHands/extensions.git"
-
-
-def test_parse_https_git_url():
-    source_type, url = parse_extension_source("https://github.com/owner/repo.git")
+@pytest.mark.parametrize(
+    ("source", "expected_url"),
+    [
+        pytest.param(
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo.git",
+            id="https_git",
+        ),
+        pytest.param(
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            id="https_github_without_git_suffix",
+        ),
+        pytest.param(
+            "https://github.com/owner/repo/",
+            "https://github.com/owner/repo.git",
+            id="https_github_with_trailing_slash",
+        ),
+        pytest.param(
+            "https://gitlab.com/org/repo",
+            "https://gitlab.com/org/repo.git",
+            id="https_gitlab",
+        ),
+        pytest.param(
+            "https://bitbucket.org/org/repo",
+            "https://bitbucket.org/org/repo.git",
+            id="https_bitbucket",
+        ),
+        pytest.param(
+            "https://dev.azure.com/org/project/_git/repo/",
+            "https://dev.azure.com/org/project/_git/repo",
+            id="azure_devops_strips_trailing_slash",
+        ),
+        pytest.param(
+            "git@github.com:owner/repo.git",
+            "git@github.com:owner/repo.git",
+            id="ssh_git",
+        ),
+        pytest.param(
+            "git://github.com/owner/repo.git",
+            "git://github.com/owner/repo.git",
+            id="git_protocol",
+        ),
+        pytest.param(
+            "http://internal-git.local/repo",
+            "http://internal-git.local/repo.git",
+            id="http",
+        ),
+    ],
+)
+def test_parse_git_url(source, expected_url):
+    source_type, url = parse_extension_source(source)
     assert source_type == SourceType.GIT
-    assert url == "https://github.com/owner/repo.git"
-
-
-def test_parse_https_github_url_without_git_suffix():
-    source_type, url = parse_extension_source("https://github.com/owner/repo")
-    assert source_type == SourceType.GIT
-    assert url == "https://github.com/owner/repo.git"
-
-
-def test_parse_https_github_url_with_trailing_slash():
-    source_type, url = parse_extension_source("https://github.com/owner/repo/")
-    assert source_type == SourceType.GIT
-    assert url == "https://github.com/owner/repo.git"
-
-
-def test_parse_https_gitlab_url():
-    source_type, url = parse_extension_source("https://gitlab.com/org/repo")
-    assert source_type == SourceType.GIT
-    assert url == "https://gitlab.com/org/repo.git"
-
-
-def test_parse_https_bitbucket_url():
-    source_type, url = parse_extension_source("https://bitbucket.org/org/repo")
-    assert source_type == SourceType.GIT
-    assert url == "https://bitbucket.org/org/repo.git"
+    assert url == expected_url
 
 
 @pytest.mark.parametrize(
@@ -99,42 +129,20 @@ def test_parse_azure_devops_url_keeps_path_without_git_suffix(source):
     assert url == source
 
 
-def test_parse_azure_devops_url_strips_trailing_slash():
-    source_type, url = parse_extension_source(
-        "https://dev.azure.com/org/project/_git/repo/"
-    )
-    assert source_type == SourceType.GIT
-    assert url == "https://dev.azure.com/org/project/_git/repo"
-
-
-def test_parse_ssh_git_url():
-    source_type, url = parse_extension_source("git@github.com:owner/repo.git")
-    assert source_type == SourceType.GIT
-    assert url == "git@github.com:owner/repo.git"
-
-
-def test_parse_git_protocol_url():
-    source_type, url = parse_extension_source("git://github.com/owner/repo.git")
-    assert source_type == SourceType.GIT
-    assert url == "git://github.com/owner/repo.git"
-
-
-def test_parse_absolute_local_path():
-    source_type, url = parse_extension_source("/path/to/extension")
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("/path/to/extension", id="absolute"),
+        pytest.param("~/extensions/my-ext", id="home_relative"),
+        pytest.param("./extensions/my-ext", id="dot_relative"),
+        pytest.param("extensions/my-ext", id="relative_with_slash"),
+        pytest.param("path/to/my/extension", id="nested_relative"),
+    ],
+)
+def test_parse_local_path(source):
+    source_type, url = parse_extension_source(source)
     assert source_type == SourceType.LOCAL
-    assert url == "/path/to/extension"
-
-
-def test_parse_home_relative_path():
-    source_type, url = parse_extension_source("~/extensions/my-ext")
-    assert source_type == SourceType.LOCAL
-    assert url == "~/extensions/my-ext"
-
-
-def test_parse_dot_relative_path():
-    source_type, url = parse_extension_source("./extensions/my-ext")
-    assert source_type == SourceType.LOCAL
-    assert url == "./extensions/my-ext"
+    assert url == source
 
 
 def test_parse_invalid_source():
@@ -150,12 +158,6 @@ def test_parse_self_hosted_git_urls():
     source_type, url = parse_extension_source("https://git.mycompany.com/org/repo")
     assert source_type == SourceType.GIT
     assert url == "https://git.mycompany.com/org/repo.git"
-
-
-def test_parse_http_url():
-    source_type, url = parse_extension_source("http://internal-git.local/repo")
-    assert source_type == SourceType.GIT
-    assert url == "http://internal-git.local/repo.git"
 
 
 def test_parse_ssh_with_custom_user():
@@ -182,18 +184,6 @@ def test_parse_https_url_with_git_suffix_and_trailing_slash():
         SourceType.GIT,
         "https://github.com/owner/repo.git",
     )
-
-
-def test_parse_relative_path_with_slash():
-    source_type, url = parse_extension_source("extensions/my-ext")
-    assert source_type == SourceType.LOCAL
-    assert url == "extensions/my-ext"
-
-
-def test_parse_nested_relative_path():
-    source_type, url = parse_extension_source("path/to/my/extension")
-    assert source_type == SourceType.LOCAL
-    assert url == "path/to/my/extension"
 
 
 # -- SourceType enum ----------------------------------------------------------

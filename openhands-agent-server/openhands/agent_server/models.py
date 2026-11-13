@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
@@ -23,6 +23,8 @@ from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.reaction import ReactionEmoji
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
     ImageContent as ImageContent,
@@ -336,6 +338,23 @@ class _ConversationInfoBase(BaseModel):
             '``"Opus 4.7 with 1M context · ..."``).'
         ),
     )
+    current_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort the ACP session reports for its current model "
+            "(the server's own default when none was requested). ``None`` when "
+            "the model offers no effort setting, the server doesn't report one, "
+            "or the agent is not ACP."
+        ),
+    )
+    available_efforts: list[ACPEffortOption] = Field(
+        default_factory=list,
+        description=(
+            "Reasoning-effort levels the ACP session offers for its current "
+            "model, verbatim from the server. Pass a ``value`` to "
+            "``switch_acp_effort``. Empty when the model offers none."
+        ),
+    )
     supports_runtime_model_switch: bool = Field(
         default=False,
         description=(
@@ -449,6 +468,17 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
         update={"agent_context": trimmed_agent_context}
     )
     return info.model_copy(update={"agent": trimmed_agent})
+
+
+class ReactionRequest(BaseModel):
+    """Payload to add or remove the user's emoji reaction on a message."""
+
+    emoji: ReactionEmoji = Field(description="The emoji, as a shortcode.")
+    target_event_id: EventID | None = Field(
+        default=None,
+        description="The message to react to; the agent's latest when left out.",
+    )
+    removed: bool = Field(default=False, description="True to remove the reaction.")
 
 
 class ConfirmationResponseRequest(BaseModel):

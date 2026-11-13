@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
@@ -67,6 +68,7 @@ from tests.sdk.launch import fakes
 def client():
     """TestClient with no auth — conversations router only."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
     app.state.config = Config(
         static_files_path=None, session_api_keys=[], secret_key=None

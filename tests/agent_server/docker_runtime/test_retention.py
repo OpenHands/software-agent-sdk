@@ -4,7 +4,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import HTTPException
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
@@ -14,7 +13,9 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RuntimeExpiredError,
 )
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.models import ConversationRuntimeStatus
+from openhands.sdk.errors import DomainError
 
 
 DAY = 86400
@@ -130,9 +131,9 @@ async def test_expired_runtime_cannot_be_resumed(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "_build_container", no_docker)
     with pytest.raises(RuntimeExpiredError):
         await runtime.get_or_create(conversation_id)
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(DomainError) as raised:
         await routers._container(runtime, conversation_id)
-    assert raised.value.status_code == 410
+    assert status_for(raised.value) == 410
 
 
 @pytest.mark.asyncio

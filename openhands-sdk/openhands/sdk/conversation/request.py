@@ -243,8 +243,9 @@ class ConversationConfig(BaseModel):
         default=False,
         description=(
             "If true and the workspace is already inside a git repository, create "
-            "a dedicated git worktree for this conversation under "
-            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
+            "a dedicated git worktree for this conversation under the server's "
+            "conversation worktree root (by default "
+            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`)."
         ),
     )
     worktree_options: ConversationWorktreeOptions | None = Field(
@@ -424,7 +425,6 @@ class ConversationConfig(BaseModel):
     )
     prompt: str | None = Field(
         default=None,
-        max_length=2000,
         description=(
             "Optional prompt that replaces the default title-generation user "
             "message. Use {conversation_content} to place the first user "
@@ -498,7 +498,7 @@ class StartConversationRequest(ConversationConfig):
             return data
         # An explicit null means "not this source"; ``agent`` has no nullable
         # type of its own.
-        payload = {
+        payload: dict[str, Any] = {
             name: value
             for name, value in data.items()
             if value is not None or name not in ("agent", "agent_settings")
