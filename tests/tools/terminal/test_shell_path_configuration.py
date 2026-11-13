@@ -216,3 +216,32 @@ def test_terminal_tool_shell_path_parameter():
         assert terminal.executor.shell_path == bash_path
 
         terminal.executor.close()
+
+
+def test_reset_keeps_subprocess_backend_and_custom_shell(tmp_path):
+    """A reset starts a fresh shell of the same kind (#6653): a subprocess
+    executor with a custom shell must not come back on tmux."""
+    from openhands.tools.terminal.definition import TerminalAction
+    from openhands.tools.terminal.impl import TerminalExecutor
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    shell = tmp_path / "my-shell"
+    shell.symlink_to(bash_path)
+
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        terminal_type="subprocess",
+        shell_path=str(shell),
+    )
+    try:
+        before = executor(TerminalAction(command="echo shell=$0"))
+        reset = executor(TerminalAction(command="echo shell=$0", reset=True))
+
+        assert "my-shell" in before.text
+        assert "my-shell" in reset.text, reset.text
+        assert executor._session is not None
+        assert isinstance(executor._session.terminal, SubprocessTerminal)
+    finally:
+        executor.close()
