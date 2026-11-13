@@ -2186,3 +2186,29 @@ async def test_the_recipient_sees_the_senders_id(client, service, tmp_path):
     assert header.text.startswith(
         f"[Sent by [Reply with OK](conversation:{sender.hex}), "
     )
+
+
+@pytest.mark.asyncio
+async def test_a_saved_update_leaves_a_stuck_coordinator_stuck(
+    client, service, tmp_path
+):
+    """Review: a copy of the user's message in a worker, saved in the
+    coordinator without a run, turned a stuck coordinator idle; the next
+    worker update then resumed work the user had not looked at."""
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path, title="worker")
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _set_status(service, cat, ConversationExecutionStatus.STUCK)
+
+    assert await relay_user_message(service, worker, project["id"], "Use Postgres")
+
+    cat_service = await service.get_event_service(cat)
+    assert cat_service is not None
+    state = await cat_service.get_state()
+    assert state.execution_status == ConversationExecutionStatus.STUCK
+    assert cat_service._run_task is None

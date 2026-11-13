@@ -161,7 +161,9 @@ async def _deliver(
     """Save a message in the coordinator and, with ``run``, run it.
 
     The run is guarded like any message not from the user: a coordinator
-    that waits on the user keeps the message for its next run. When every
+    that waits on the user keeps the message for its next run. A stuck
+    coordinator stays stuck even when the message is only saved, so a later
+    update does not resume work the user has not looked at. When every
     run slot is taken, a background task waits for one instead of leaving the
     update unread. A failed save is retried before the update is given up.
     """
@@ -172,7 +174,9 @@ async def _deliver(
             await coordinator.send_message(
                 message,
                 run=run,
-                refuse_pending_confirmation=run,
+                # Also without a run: this is what keeps a stuck coordinator
+                # stuck while the message is saved.
+                refuse_pending_confirmation=True,
                 sender=conversation_sender(member_id),
                 keep_goal_loop=True,
             )
