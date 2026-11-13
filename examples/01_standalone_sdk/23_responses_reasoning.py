@@ -36,7 +36,7 @@ llm = LLM(
     # Responses-path options
     reasoning_effort="high",
     # Logging / behavior tweaks
-    log_completions=False,
+    log_completions_to_file=False,
     usage_id="agent",
 )
 
