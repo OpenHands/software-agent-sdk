@@ -15,6 +15,8 @@ from openhands.agent_server.canvas_extensions_router import (
     CANVAS_EXTENSION_NAME_PATTERN,
 )
 from openhands.agent_server.dependencies import check_session_api_key
+from openhands.agent_server.errors import error_responses
+from openhands.sdk.errors import Conflict, Forbidden, Unauthenticated, Unavailable
 
 
 app_backend_bridge_router = APIRouter(tags=["Canvas App Backends"])
@@ -33,12 +35,14 @@ AppBackendNamePath = Annotated[
     "/app-backends/{extension_name}/session",
     response_model=AppBackendSessionResponse,
     dependencies=[Depends(check_session_api_key)],
-    responses={
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
-        403: {"description": "Origin is not allowed"},
-        409: {"description": "Ingress does not use a separate browser origin"},
-        503: {"description": "Backend is unavailable or ingress is not configured"},
-    },
+    responses=error_responses(
+        {
+            Unauthenticated: "Missing or invalid X-Session-API-Key header",
+            Forbidden: "Origin is not allowed",
+            Conflict: "Ingress does not use a separate browser origin",
+            Unavailable: "Backend is unavailable or ingress is not configured",
+        }
+    ),
 )
 async def create_app_backend_session_endpoint(
     extension_name: AppBackendNamePath,
@@ -62,8 +66,12 @@ async def create_app_backend_session_endpoint(
     dependencies=[Depends(check_session_api_key)],
     responses={
         204: {"description": "Browser session revoked and cookie cleared"},
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
-        403: {"description": "Origin is not allowed"},
+        **error_responses(
+            {
+                Unauthenticated: "Missing or invalid X-Session-API-Key header",
+                Forbidden: "Origin is not allowed",
+            }
+        ),
     },
 )
 async def delete_app_backend_session_endpoint(
@@ -77,11 +85,20 @@ async def delete_app_backend_session_endpoint(
     return response
 
 
+# The root routes have no ``{path}`` segment, so they take no ``path`` argument:
+# FastAPI would bind it from a ``?path=`` query parameter instead.
 @app_backend_bridge_router.api_route(
     "/app-backends/{extension_name}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     include_in_schema=False,
 )
+async def proxy_app_backend_http_root_endpoint(
+    extension_name: AppBackendNamePath,
+    request: Request,
+) -> Response:
+    return await proxy_app_backend_http(request, extension_name, "")
+
+
 @app_backend_bridge_router.api_route(
     "/app-backends/{extension_name}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
@@ -90,16 +107,23 @@ async def delete_app_backend_session_endpoint(
 async def proxy_app_backend_http_endpoint(
     extension_name: AppBackendNamePath,
     request: Request,
-    path: str = "",
+    path: str,
 ) -> Response:
     return await proxy_app_backend_http(request, extension_name, path)
 
 
 @app_backend_bridge_router.websocket("/app-backends/{extension_name}")
+async def proxy_app_backend_websocket_root_endpoint(
+    extension_name: AppBackendNamePath,
+    websocket: WebSocket,
+) -> None:
+    await proxy_app_backend_websocket(websocket, extension_name, "")
+
+
 @app_backend_bridge_router.websocket("/app-backends/{extension_name}/{path:path}")
 async def proxy_app_backend_websocket_endpoint(
     extension_name: AppBackendNamePath,
     websocket: WebSocket,
-    path: str = "",
+    path: str,
 ) -> None:
     await proxy_app_backend_websocket(websocket, extension_name, path)

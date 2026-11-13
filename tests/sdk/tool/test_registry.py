@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,6 +10,8 @@ from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import ToolDefinition, registry as registry_module
 from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
 from openhands.sdk.tool.registry import (
+    _is_abstract_method,
+    _resolver_from_subclass,
     list_registered_tools,
     list_tool_catalog,
     list_usable_tools,
@@ -190,6 +193,28 @@ def test_register_tool_type_uses_create_params():
     observation = tool(_HelloAction(name="Alice"))
     assert isinstance(observation, _HelloObservation)
     assert observation.message == "Howdy, Alice?"
+
+
+def test_tool_registration_typed_inspection():
+    """ToolDefinition subclass resolution checks create concrete classmethod."""
+
+    class ValidTool(ToolDefinition[Action, Any]):
+        @classmethod
+        def create(cls, *args, **kwargs):
+            return [cls(description="test", action_type=Action)]
+
+    assert not _is_abstract_method(ValidTool, "create")
+    resolver = _resolver_from_subclass("valid_tool", ValidTool)
+    conv_state = MagicMock()
+    resolved = resolver({}, conv_state)
+    assert len(resolved) == 1
+
+    class AbstractTool(ToolDefinition[Action, Any]):
+        pass
+
+    assert _is_abstract_method(AbstractTool, "create")
+    with pytest.raises(TypeError, match="must define .create"):
+        _resolver_from_subclass("abstract_tool", AbstractTool)
 
 
 def test_catalog_reports_selectability_and_usability():

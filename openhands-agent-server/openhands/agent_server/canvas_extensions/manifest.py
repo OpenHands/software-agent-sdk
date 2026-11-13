@@ -171,6 +171,54 @@ class CanvasExtensionBackend(BaseModel):
         default_factory=CanvasExtensionBackendHealth
     )
     inherit_environment: list[str] = Field(default_factory=list)
+    secret_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("secret_refs")
+    @classmethod
+    def _validate_secret_refs(cls, value: list[str]) -> list[str]:
+        reserved = {
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TZ",
+            "PWD",
+            "SHELL",
+            "ENV",
+            "BASH_ENV",
+            "IFS",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "NODE_OPTIONS",
+            "SESSION_API_KEY",
+            "LOCAL_BACKEND_API_KEY",
+            "VITE_SESSION_API_KEY",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+        }
+        if len(value) != len(set(value)):
+            raise ValueError("secret_refs entries must be unique")
+        for name in value:
+            if (
+                not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                or name.upper() in reserved
+                or name.upper().startswith(
+                    (
+                        "OH_",
+                        "OPENHANDS_",
+                        "LD_",
+                        "DYLD_",
+                        "PYTHON",
+                        "NODE_",
+                        "BASH_",
+                        "UV_",
+                    )
+                )
+            ):
+                raise ValueError("secret_refs contains an invalid or reserved name")
+        return value
 
     @field_validator("argv")
     @classmethod

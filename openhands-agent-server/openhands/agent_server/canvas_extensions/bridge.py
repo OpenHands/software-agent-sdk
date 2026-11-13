@@ -15,7 +15,8 @@ from datetime import UTC, datetime
 from typing import Final, Protocol
 from urllib.parse import unquote, urlparse
 
-from fastapi import HTTPException, Request, Response, WebSocket, status
+import httpx
+from fastapi import Request, Response, WebSocket
 from pydantic import BaseModel
 
 from openhands.agent_server.auth_router import (
@@ -26,6 +27,17 @@ from openhands.agent_server.docker_runtime.proxy import (
     bridge_websocket,
     proxy_http,
     strip_auth_query,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    DomainError,
+    Forbidden,
+    Invalid,
+    Misdirected,
+    Unauthenticated,
+    Unavailable,
+    UpstreamFailed,
+    UpstreamTimeout,
 )
 
 
@@ -231,16 +243,10 @@ def get_app_backend_session_store(
 def _public_url(config: Config) -> str:
     value = config.app_backend_public_url
     if not value:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend ingress is not configured",
-        )
+        raise Unavailable("Canvas App backend ingress is not configured")
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend ingress is misconfigured",
-        )
+        raise Unavailable("Canvas App backend ingress is misconfigured")
     return value.rstrip("/")
 
 
@@ -295,10 +301,7 @@ def _request_origin(request: Request | WebSocket) -> str | None:
 
 def _require_ingress_host(request: Request | WebSocket, public_url: str) -> None:
     if _request_origin(request) != _origin(public_url):
-        raise HTTPException(
-            status.HTTP_421_MISDIRECTED_REQUEST,
-            "Canvas App request must use the configured ingress origin",
-        )
+        raise Misdirected("Canvas App request must use the configured ingress origin")
 
 
 def _require_bootstrap_origin(request: Request, public_url: str) -> None:
@@ -306,17 +309,14 @@ def _require_bootstrap_origin(request: Request, public_url: str) -> None:
     origin = request.headers.get("origin", "")
     config: Config = request.app.state.config
     if not _allowed_control_origin(config, origin):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Origin is not allowed")
+        raise Forbidden("Origin is not allowed")
     if _origin(origin) == _origin(public_url):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Canvas App ingress must use a separate browser origin",
-        )
+        raise Conflict("Canvas App ingress must use a separate browser origin")
 
 
 def _require_app_origin(origin: str | None, public_url: str) -> None:
     if not origin or _origin(origin) != _origin(public_url):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Origin is not allowed")
+        raise Forbidden("Origin is not allowed")
 
 
 def _validate_proxy_path(path: str) -> None:
@@ -337,9 +337,9 @@ def _validate_proxy_path(path: str) -> None:
             break
         candidate = decoded
     else:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backend path")
+        raise Invalid("Invalid backend path")
     if "\\" in candidate or any(part in {".", ".."} for part in candidate.split("/")):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backend path")
+        raise Invalid("Invalid backend path")
 
 
 def _ready_endpoint(
@@ -350,16 +350,10 @@ def _ready_endpoint(
     )
     endpoint = manager.ready_endpoint(extension_name) if manager is not None else None
     if endpoint is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend is not ready",
-        )
+        raise Unavailable("Canvas App backend is not ready")
     host, port = endpoint
     if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend target is not loopback",
-        )
+        raise Unavailable("Canvas App backend target is not loopback")
     return host, port
 
 
@@ -397,9 +391,8 @@ def _set_session_cookie(
     max_age: int,
 ) -> None:
     if not _session_cookie_is_secure(request):
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App sessions require HTTPS or a loopback secure context",
+        raise Unavailable(
+            "Canvas App sessions require HTTPS or a loopback secure context"
         )
     response.set_cookie(
         key=APP_BACKEND_SESSION_COOKIE_NAME,
@@ -459,17 +452,26 @@ async def proxy_app_backend_http(
         token, extension_name, endpoint
     )
     if session is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+        raise Unauthenticated()
     query = strip_auth_query("?" + request.url.query).lstrip("?")
     upstream_path = f"/{path}" if path else "/"
     if query:
         upstream_path = f"{upstream_path}?{query}"
-    return await proxy_http(
-        request,
-        _target(endpoint),
-        upstream_path=upstream_path,
-        reject_redirects=True,
-    )
+    try:
+        return await proxy_http(
+            request,
+            _target(endpoint),
+            upstream_path=upstream_path,
+            reject_redirects=True,
+        )
+    except UpstreamFailed as exc:
+        # proxy_http words connection failures for the Docker runtime
+        # ("Conversation container unreachable"); name the Canvas backend.
+        if not isinstance(exc, UpstreamTimeout) and isinstance(
+            exc.__cause__, httpx.HTTPError
+        ):
+            raise UpstreamFailed("Canvas App backend unreachable") from exc.__cause__
+        raise
 
 
 async def proxy_app_backend_websocket(
@@ -485,8 +487,8 @@ async def proxy_app_backend_websocket(
         store = get_app_backend_session_store(websocket)
         session = await store.authorize(token, extension_name, endpoint)
         if session is None:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-    except HTTPException:
+            raise Unauthenticated()
+    except DomainError:
         await websocket.close(code=1008)
         return
 
@@ -502,12 +504,12 @@ async def proxy_app_backend_websocket(
     upstream_path = f"/{path}" if path else "/"
     if query:
         upstream_path = f"{upstream_path}?{query}"
-    await websocket.accept()
     try:
         await bridge_websocket(
             websocket,
             _target(endpoint),
             upstream_path=upstream_path,
+            accept_client=True,
         )
     finally:
         await store.detach_socket(session, task)

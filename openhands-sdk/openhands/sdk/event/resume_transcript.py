@@ -103,7 +103,7 @@ def _render_action_event(event: ActionEvent, max_chars: int) -> str | None:
     # Built-in Actions (e.g. ``FinishAction``) expose a ``message`` field that
     # carries the agent's final summary for the turn. Other Actions don't, and
     # the LLMConvertible path renders them separately — skip silently.
-    message = getattr(event.action, "message", None) if event.action else None
+    message = event.message
     if not isinstance(message, str) or not message.strip():
         return None
     return f"[AGENT]: {_truncate_keep_head(message.strip(), max_chars)}"

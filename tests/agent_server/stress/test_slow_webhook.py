@@ -32,6 +32,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from openhands.agent_server import bash_router as bash_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_router import conversation_router
@@ -126,12 +127,13 @@ def app(
     conversation_service: ConversationService, bash_service: BashEventService
 ) -> FastAPI:
     fastapi_app = FastAPI()
+    add_domain_error_handler(fastapi_app)
     fastapi_app.state.config = Config()
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")
     fastapi_app.include_router(bash_router_module.bash_router, prefix="/api")
-    fastapi_app.dependency_overrides[get_conversation_service] = (
-        lambda: conversation_service
+    fastapi_app.dependency_overrides[get_conversation_service] = lambda: (
+        conversation_service
     )
     return fastapi_app
 
@@ -196,11 +198,12 @@ async def test_slow_webhook_does_not_unbound_growth(
     # but with a webhook-free ConversationService. We need a separate ASGI
     # client for it.
     baseline_app = FastAPI()
+    add_domain_error_handler(baseline_app)
     baseline_app.state.config = Config()
     baseline_app.include_router(conversation_router, prefix="/api")
     baseline_app.include_router(event_router, prefix="/api")
-    baseline_app.dependency_overrides[get_conversation_service] = (
-        lambda: baseline_service
+    baseline_app.dependency_overrides[get_conversation_service] = lambda: (
+        baseline_service
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(baseline_app),

@@ -3,7 +3,7 @@
 from pydantic import Field
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.types import SourceType, UnmaskedID
 
 
 class LLMCompletionLogEvent(Event):
@@ -27,7 +27,7 @@ class LLMCompletionLogEvent(Event):
         default="unknown",
         description="The model name for context",
     )
-    usage_id: str = Field(
+    usage_id: UnmaskedID = Field(
         default="default",
         description="The LLM usage_id that produced this log",
     )

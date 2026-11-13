@@ -5,9 +5,9 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
@@ -32,6 +32,7 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import drop_mcp_servers_without_endpoint
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -79,6 +80,57 @@ class ConversationExecutionStatus(str, Enum):
         )
 
 
+_Status = ConversationExecutionStatus
+
+# Moves no code path makes: ConversationState.transition() rejects these and
+# accepts every other move. In practice the lifecycle is almost fully
+# connected:
+# - a run can fail, be paused or (re)start from any status;
+# - a step can run under any status (``condense()``, a direct ``agent.step()``,
+#   or the sync loop retrying after ACPAgent reported a timeout as ERROR), so
+#   FINISHED, WAITING_FOR_CONFIRMATION and STUCK can follow ERROR;
+# - a pause can land mid-step (arun() releases the state lock for LLM I/O, ACP
+#   steps run without it), so PAUSED can be followed by the step's outcome;
+# - DELETING is only ever set on the webhook payload, never on the state, so
+#   it gets no special case. ERROR and PAUSED, the targets of the run loop's
+#   exception handlers, stay reachable from every status, so a handler can
+#   never mask the original error.
+_UNREACHED_MOVES: dict[_Status, frozenset[_Status]] = {
+    # Stuck detection runs under the same lock right after the run loop has
+    # stopped on PAUSED or FINISHED.
+    _Status.PAUSED: frozenset({_Status.STUCK}),
+    _Status.FINISHED: frozenset({_Status.STUCK}),
+    # Only send_message() (from FINISHED/STUCK), reject_pending_actions() (from
+    # WAITING_FOR_CONFIRMATION) and the run loop move to IDLE, and the run loop
+    # stops on ERROR.
+    _Status.ERROR: frozenset({_Status.IDLE}),
+}
+
+_ALLOWED_TRANSITIONS: dict[_Status, frozenset[_Status]] = {
+    status: frozenset(_Status) - {status} - _UNREACHED_MOVES.get(status, frozenset())
+    for status in _Status
+}
+
+
+class InvalidExecutionStatusTransitionError(ValueError):
+    """Raised when ``ConversationState.transition`` is asked for a move the
+    status table does not allow."""
+
+    def __init__(
+        self,
+        current: ConversationExecutionStatus,
+        target: ConversationExecutionStatus,
+        reason: str,
+    ) -> None:
+        super().__init__(
+            f"execution_status cannot move from {current.value} to "
+            f"{target.value} ({reason})"
+        )
+        self.current = current
+        self.target = target
+        self.reason = reason
+
+
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====
     id: ConversationID = Field(description="Unique conversation ID")
@@ -110,6 +162,11 @@ class ConversationState(OpenHandsModel):
         gt=0,
         description="Maximum number of iterations the agent can "
         "perform in a single run.",
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description="USD limit on accumulated conversation LLM cost; "
+        "None means unbounded.",
     )
     stuck_detection: bool = Field(
         default=True,
@@ -147,6 +204,20 @@ class ConversationState(OpenHandsModel):
             "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
             "which tracks trigger-based activations."
         ),
+    )
+
+    # Ambient (installed/local) plugins are re-discovered on every load, but their
+    # contributions are merged into the persisted agent. Recording what they
+    # contributed lets a resumed conversation drop them before re-discovery, so
+    # a since-disabled or removed plugin does not linger. ``None`` marks a
+    # conversation persisted before these fields existed.
+    ambient_plugin_skills: list[str] | None = Field(
+        default=None,
+        description="Skill names contributed by ambient plugins at the last load.",
+    )
+    ambient_plugin_mcp_servers: list[str] | None = Field(
+        default=None,
+        description="MCP server names contributed by ambient plugins at the last load.",
     )
 
     # Hook-blocked actions: action_id -> blocking reason
@@ -230,7 +301,7 @@ class ConversationState(OpenHandsModel):
     )
 
     # ===== Private attrs (NOT Fields) =====
-    _fs: FileStore = PrivateAttr()  # filestore for persistence
+    _fs: FileStore = PrivateAttr(default=cast(Any, None))  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
     # Cached projection of `_events` for the *active branch*, lazily updated on
     # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
@@ -255,6 +326,22 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_stored_mcp_servers_without_endpoint(cls, data: Any) -> Any:
+        """Let a persisted state with an endpoint-less MCP server still load.
+
+        Such a server was accepted before ``MCPServer`` required ``command``
+        or ``url``; it never contributed tools, so drop it rather than fail.
+        """
+        if not isinstance(data, dict):
+            return data
+        agent = data.get("agent")
+        if isinstance(agent, dict) and isinstance(agent.get("mcp_config"), dict):
+            mcp_config = drop_mcp_servers_without_endpoint(agent["mcp_config"])
+            data = {**data, "agent": {**agent, "mcp_config": mcp_config}}
+        return data
 
     @property
     def events(self) -> EventLog:
@@ -291,6 +378,28 @@ class ConversationState(OpenHandsModel):
             if not isinstance(self._events[i], artifacts):
                 return self._events.get_id(i)
         return None
+
+    def _repair_missing_leaf(self) -> bool:
+        """Move a persisted HEAD whose event file was lost onto a surviving event.
+
+        The lost event held its own parent, so the branch it was on cannot be
+        recovered; HEAD falls back to the lineage rule (the last real event, or
+        no HEAD for an empty log), and the warning says so. Returns whether
+        HEAD was moved.
+        """
+        lost = self.leaf_event_id
+        if lost is None or lost in self._events:
+            return False
+        self.leaf_event_id = None
+        self.leaf_event_id = self._resolve_active_leaf()
+        logger.warning(
+            "HEAD event '%s' is missing from the event log (its file was lost); "
+            "moved HEAD to '%s', the last surviving event. If HEAD was on "
+            "another branch, navigate back to it.",
+            lost,
+            self.leaf_event_id,
+        )
+        return True
 
     def active_branch(self, limit: int | None = None) -> list[Event]:
         """Raw events on the active branch (``path_to_root(leaf)``), root-first.
@@ -463,6 +572,7 @@ class ConversationState(OpenHandsModel):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
+        max_budget_per_run: float | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -488,6 +598,8 @@ class ConversationState(OpenHandsModel):
                 value is still stored on the state and used for environment
                 observation paths.
             max_iterations: Maximum iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. None preserves a
+                resumed state's cap and leaves new conversations unbounded.
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
                     persisted state. If provided, secrets are encrypted when
@@ -540,6 +652,7 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+            head_repaired = state._repair_missing_leaf()
 
             # Cold-load: rebuild the cached view with full property
             # enforcement — persisted events may come from an older code
@@ -548,6 +661,8 @@ class ConversationState(OpenHandsModel):
 
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
+            if head_repaired:  # persist it so the next load does not repeat it
+                state._save_base_state(file_store)
             # Agent: base_state.json is the single source of truth. When the
             # caller does not supply an agent (``agent is None``), keep the
             # persisted one untouched — this is what lets a persisted
@@ -560,6 +675,8 @@ class ConversationState(OpenHandsModel):
                 state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
+            if max_budget_per_run is not None:
+                state.max_budget_per_run = max_budget_per_run
 
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
@@ -579,8 +696,11 @@ class ConversationState(OpenHandsModel):
             workspace=workspace,
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
+            ambient_plugin_skills=[],
+            ambient_plugin_mcp_servers=[],
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
@@ -603,8 +723,8 @@ class ConversationState(OpenHandsModel):
         super().__setattr__(name, value)
 
         is_field = name in self.__class__.model_fields
-        autosave_enabled = getattr(self, "_autosave_enabled", False)
-        fs = getattr(self, "_fs", None)
+        autosave_enabled = self._autosave_enabled
+        fs = self._fs
 
         if not (autosave_enabled and is_field and fs is not None):
             return
@@ -612,7 +732,7 @@ class ConversationState(OpenHandsModel):
         if old is _sentinel or old != value:
             # Inside a context-manager block, defer the save until __exit__
             # so that multiple field mutations produce a single I/O write.
-            if getattr(self, "_save_depth", 0) > 0:
+            if self._save_depth > 0:
                 self._dirty = True
             else:
                 try:
@@ -625,7 +745,7 @@ class ConversationState(OpenHandsModel):
             # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
             # every event, so broadcasting it would ~double the persisted log) and
             # the HEAD is recoverable from the just-appended event.
-            callback = getattr(self, "_on_state_change", None)
+            callback = self._on_state_change
             if (
                 callback is not None
                 and old is not _sentinel
@@ -646,6 +766,38 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def transition(self, to: ConversationExecutionStatus, reason: str) -> None:
+        """Move ``execution_status`` to ``to``; the only way SDK code changes it.
+
+        The move is checked against the status table, so a status the run
+        loop can never produce (IDLE straight from ERROR, STUCK after FINISHED
+        or PAUSED) fails loudly instead of being persisted. The assignment
+        goes through the autosave hook, so it is persisted and published as a
+        ``ConversationStateUpdateEvent`` like any other field change. Moving to
+        the current status is a no-op.
+
+        Args:
+            to: The status to move to.
+            reason: Short description of why, for the debug log and the error.
+
+        Raises:
+            InvalidExecutionStatusTransitionError: If the table does not allow
+                moving from the current status to ``to``.
+        """
+        current = self.execution_status
+        if to == current:
+            return
+        if to not in _ALLOWED_TRANSITIONS[current]:
+            raise InvalidExecutionStatusTransitionError(current, to, reason)
+        logger.debug(
+            "Conversation %s execution_status %s -> %s: %s",
+            self.id,
+            current.value,
+            to.value,
+            reason,
+        )
+        self.execution_status = to  # status-write: the checked write
 
     def block_action(self, action_id: str, reason: str) -> None:
         """Persistently record a hook-blocked action."""
@@ -755,8 +907,8 @@ class ConversationState(OpenHandsModel):
         try:
             self._save_depth -= 1
             if self._save_depth == 0 and self._dirty:
-                fs = getattr(self, "_fs", None)
-                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                fs = self._fs
+                autosave_enabled = self._autosave_enabled
                 if autosave_enabled and fs is not None:
                     self._save_base_state(fs)
                 self._dirty = False

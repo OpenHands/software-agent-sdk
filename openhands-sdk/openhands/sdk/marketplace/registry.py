@@ -9,6 +9,11 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.types import Marketplace
 from openhands.sdk.plugin.fetch import fetch_plugin_with_resolution
+from openhands.sdk.plugin.format import agent_plugins
+from openhands.sdk.plugin.format.claude_code import (
+    PLUGIN_MANIFEST_DIRS,
+    PLUGIN_MANIFEST_FILE,
+)
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.utils.redact import redact_url_credentials
 
@@ -74,6 +79,44 @@ class MarketplaceNotFoundError(PluginResolutionError):
     def __init__(self, marketplace_name: str) -> None:
         self.marketplace_name = marketplace_name
         super().__init__(f"Marketplace '{marketplace_name}' is not registered")
+
+
+def _load_marketplace(path: Path, name: str) -> Marketplace:
+    """Load the manifest, or read a source without one as a plain skills folder."""
+    try:
+        return Marketplace.load(path)
+    except FileNotFoundError as missing_manifest:
+        marketplace = Marketplace.from_skills_dir(path, name)
+        if not marketplace.skills:
+            raise FileNotFoundError(
+                f"{missing_manifest}, and no skill folders (<name>/SKILL.md) "
+                "were found there"
+            ) from missing_manifest
+        logger.info(
+            "Marketplace '%s' has no manifest; using %d skills from its folder",
+            name,
+            len(marketplace.skills),
+        )
+        plugin_manifest = _plugin_manifest(path)
+        if plugin_manifest:
+            logger.warning(
+                "Marketplace '%s' is a plugin (%s), not a marketplace; only its "
+                "skills are loaded, and its hooks, MCP servers, commands and "
+                "agents are ignored",
+                name,
+                plugin_manifest,
+            )
+        return marketplace
+
+
+def _plugin_manifest(path: Path) -> str | None:
+    """The manifest of a single plugin at ``path``, if it is one."""
+    if (path / agent_plugins.MANIFEST_FILE).is_file():
+        return agent_plugins.MANIFEST_FILE
+    for manifest_dir in PLUGIN_MANIFEST_DIRS:
+        if (path / manifest_dir / PLUGIN_MANIFEST_FILE).is_file():
+            return f"{manifest_dir}/{PLUGIN_MANIFEST_FILE}"
+    return None
 
 
 class MarketplaceRegistry:
@@ -165,7 +208,7 @@ class MarketplaceRegistry:
             repo_path=registration.repo_path,
         )
         fetched = FetchedMarketplace(
-            marketplace=Marketplace.load(path),
+            marketplace=_load_marketplace(path, registration.name),
             path=path,
             resolved_ref=resolved_ref,
         )

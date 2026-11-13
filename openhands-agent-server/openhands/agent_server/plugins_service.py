@@ -15,6 +15,7 @@ counterparts (``skills_service.py``) so the router stays focused on HTTP:
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from time import monotonic
 
@@ -23,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.plugin import (
+    CheckedPlugin,
     InstalledPluginInfo,
     Plugin,
     disable_plugin,
@@ -33,6 +35,8 @@ from openhands.sdk.plugin import (
     uninstall_plugin,
     update_plugin,
 )
+from openhands.sdk.plugin.strict_fetch import fetch_plugin_strict
+from openhands.sdk.secret import SecretValue
 from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
     PUBLIC_SKILLS_REF,
@@ -67,6 +71,25 @@ def service_install_plugin(
         repo_path=repo_path,
         force=force,
         installed_dir=installed_dir,
+    )
+
+
+def service_fetch_plugin(
+    source: str,
+    ref: str | None = None,
+    repo_path: str | None = None,
+    secrets: Mapping[str, SecretValue] | None = None,
+    timeout: int = 60,
+) -> CheckedPlugin:
+    """Strictly fetch a plugin into the immutable plugin cache."""
+    return fetch_plugin_strict(
+        source=source,
+        ref=ref,
+        repo_path=repo_path,
+        secrets=secrets,
+        timeout=timeout,
+        allow_local=True,
+        use_cache=True,
     )
 
 

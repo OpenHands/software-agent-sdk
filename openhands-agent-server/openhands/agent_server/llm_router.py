@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
-from fastapi import APIRouter, HTTPException, Query, status
+import httpx
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from openhands.sdk.errors import NotFound, UpstreamFailed, UpstreamTimeout
 from openhands.sdk.llm.auth.openai import (
     DEVICE_CODE_TIMEOUT_SECONDS,
     OPENAI_CODEX_MODELS,
@@ -104,6 +108,20 @@ def _status_from_auth(auth: OpenAISubscriptionAuth) -> SubscriptionStatusRespons
     return SubscriptionStatusResponse(connected=True, expires_at=creds.expires_at)
 
 
+@contextmanager
+def _openai_upstream_errors() -> Iterator[None]:
+    """Report a failed call to auth.openai.com as a gateway error, not a 500."""
+    try:
+        yield
+    except httpx.TimeoutException as exc:
+        raise UpstreamTimeout("OpenAI did not answer in time") from exc
+    except httpx.HTTPError as exc:
+        raise UpstreamFailed("OpenAI is unreachable") from exc
+    except RuntimeError as exc:
+        # The SDK raises RuntimeError for a non-2xx or malformed OpenAI answer.
+        raise UpstreamFailed(f"OpenAI device login failed: {exc}") from exc
+
+
 def _drop_expired_device_logins() -> None:
     now = int(time.time() * 1000)
     for key, pending in list(_PENDING_OPENAI_DEVICE_LOGINS.items()):
@@ -183,7 +201,9 @@ async def get_openai_subscription_status() -> SubscriptionStatusResponse:
     auth = _get_openai_subscription_auth()
     try:
         await auth.refresh_if_needed()
-    except RuntimeError:
+    except (RuntimeError, httpx.HTTPError):
+        # A rejected refresh (RuntimeError) or an unreachable auth.openai.com
+        # (httpx transport error) both leave no usable login right now.
         return SubscriptionStatusResponse(connected=False)
     return _status_from_auth(auth)
 
@@ -195,7 +215,8 @@ async def get_openai_subscription_status() -> SubscriptionStatusResponse:
 async def start_openai_subscription_device_login() -> SubscriptionDeviceStartResponse:
     """Start ChatGPT device-code sign-in without returning tokens."""
     auth = _get_openai_subscription_auth()
-    challenge = await auth.start_device_login()
+    with _openai_upstream_errors():
+        challenge = await auth.start_device_login()
     token = secrets.token_urlsafe(32)
     expires_at = int(time.time() * 1000) + (DEVICE_CODE_TIMEOUT_SECONDS * 1000)
     async with _OPENAI_DEVICE_LOGIN_LOCK:
@@ -227,16 +248,16 @@ async def poll_openai_subscription_device_login(
         if pending is None:
             if request.device_code in _IN_FLIGHT_OPENAI_DEVICE_LOGINS:
                 return SubscriptionStatusResponse(connected=False)
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Subscription device login not found or expired",
-            )
+            raise NotFound("Subscription device login not found or expired")
         _IN_FLIGHT_OPENAI_DEVICE_LOGINS.add(request.device_code)
 
     auth = _get_openai_subscription_auth()
     credentials = None
     try:
-        credentials = await auth.poll_device_login(pending.device_code, persist=False)
+        with _openai_upstream_errors():
+            credentials = await auth.poll_device_login(
+                pending.device_code, persist=False
+            )
     finally:
         async with _OPENAI_DEVICE_LOGIN_LOCK:
             _IN_FLIGHT_OPENAI_DEVICE_LOGINS.discard(request.device_code)

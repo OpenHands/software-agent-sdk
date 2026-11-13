@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any, Literal
 
-from litellm import get_supported_openai_params
+from litellm import get_llm_provider, get_supported_openai_params
+from litellm.exceptions import BadRequestError
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
@@ -83,6 +86,21 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
             normalized = normalized.removeprefix(provider_prefix)
             break
 
+    # ``openai/prod/<upstream>`` (and dev/staging/test variants) reaches the
+    # LiteLLM proxy over its OpenAI-compatible endpoint, but the upstream is
+    # named after the deployment prefix -- e.g. ``openai/prod/claude-*`` is
+    # served by Anthropic. Stripping only the leading provider segment leaves
+    # LiteLLM parsing ``prod/claude-*`` as an OpenAI model and reporting the
+    # full OpenAI param set (including ``prompt_cache_key``), which Anthropic
+    # then rejects with UnsupportedParamsError. Strip the deployment segment
+    # too so the bare upstream name resolves to its real provider.
+    if "/" in normalized:
+        first, rest = normalized.split("/", 1)
+        if first in ("openai", "litellm_proxy", "openhands") and any(
+            rest.startswith(prefix) for prefix in DEPLOYMENT_PREFIXES
+        ):
+            normalized = rest
+
     # Strip deployment prefixes (e.g., "prod/", "dev/", "staging/", "test/")
     for prefix in DEPLOYMENT_PREFIXES:
         if normalized.startswith(prefix):
@@ -149,16 +167,45 @@ def _normalized_supported_openai_params(
     if not normalized:
         return frozenset()
 
-    params = get_supported_openai_params(
-        model=normalized,
-        custom_llm_provider=None,
-    )
+    # Split the provider prefix ourselves: LiteLLM >=1.105 checks the unsplit
+    # name against the OpenAI catalog, so `openai/gpt-4o` looks unknown and is
+    # reported as accepting `reasoning_effort`.
+    try:
+        bare_model, provider, _, _ = get_llm_provider(model=normalized)
+    except BadRequestError:
+        params = None
+    else:
+        if provider == "openai":
+            params = _openai_supported_params(bare_model)
+        else:
+            params = get_supported_openai_params(
+                model=bare_model,
+                custom_llm_provider=provider,
+            )
     if not params and provider_hint:
         params = get_supported_openai_params(
             model=normalized,
             custom_llm_provider=provider_hint,
         )
     return frozenset(params or ())
+
+
+def _openai_supported_params(model: str) -> list[str]:
+    """LiteLLM's param list for an ``openai`` model, minus its 1.105 guess.
+
+    LiteLLM >=1.105 assumes every model missing from its OpenAI catalog is a
+    proxy alias that accepts ``reasoning_effort``. Fine-tunes and custom
+    OpenAI-compatible servers are also missing from the catalog, and most do
+    not accept it, so only catalogued and GPT-5-series models keep it.
+    """
+    if model.startswith("ft:"):
+        model = model.split(":")[1]  # ft:<base>:<org>:<suffix>:<id>
+    params = get_supported_openai_params(model=model, custom_llm_provider="openai")
+    if OpenAIGPTConfig.is_openai_catalog_model(
+        model
+    ) or OpenAIGPT5Config.is_model_gpt_5_model(model):
+        return params or []
+    return [p for p in params or () if p != "reasoning_effort"]
 
 
 def _supports_prompt_cache_key_param(
@@ -181,8 +228,10 @@ def _supports_prompt_cache_key_param(
     )
 
 
+# Substring patterns, so they cover every host. Each value is a host LiteLLM
+# does not yet know about; the redundancy test checks it.
 REASONING_EFFORT_MODEL_OVERRIDES = {
-    "kimi-k3": "moonshot/kimi-k3",
+    "kimi-k3": "deepinfra/moonshotai/Kimi-K3",
 }
 
 
@@ -210,6 +259,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-haiku-5-5",
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     "claude-opus-5",
     # Claude Sonnet 5 supports prompt caching but is not covered by any
@@ -258,6 +308,8 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
     "grok-code-fast-1",
     # DeepSeek R1 family
     "deepseek-r1-0528",
+    # OpenAI models on Bedrock (gpt-oss, gpt-5.x, gpt-6) reject stopSequences
+    "openai.gpt-",
 ]
 
 # Models that should use the OpenAI Responses API path by default
@@ -277,10 +329,14 @@ RESPONSES_API_MODELS: list[str] = [
 # Models that require string serializer for tool messages
 # These models don't support structured content format [{"type":"text","text":"..."}]
 # and need plain strings instead
-# NOTE: model_matches uses case-insensitive substring matching, not globbing.
-#       Keep these entries as bare substrings without wildcards.
+# NOTE: evaluated with apply_ordered_model_rules, which uses case-insensitive
+#       substring matching (not globbing) and honors "!" exclude rules with
+#       last-match-wins semantics. Keep entries as bare substrings.
 FORCE_STRING_SERIALIZER_MODELS: list[str] = [
-    "deepseek",  # e.g., DeepSeek-V3.2-Exp
+    # Only the legacy DeepSeek v3.2 family needs string-only content. Newer
+    # v4/v4.1 ids accept structured list content, and matching a bare
+    # "deepseek" substring would string-serialize them and drop image parts.
+    "deepseek-v3.2",  # e.g., DeepSeek-V3.2-Exp, deepseek-v3.2-reasoner
     "glm",  # e.g., GLM-4.5 / GLM-4.6
     # Kimi K2-Instruct requires string serialization only on Groq
     "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs
@@ -292,6 +348,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # Models that we should send full reasoning content
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
+    "gpt-oss",
     "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.5",
@@ -307,13 +364,28 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 VISION_MODEL_OVERRIDES: dict[str, str] = {}
 
 
+# Vision-capable models that LiteLLM's live registry does not report as
+# vision-capable (no entry, or `supports_vision` absent/false). These ids are
+# vouched for in VERIFIED_MODELS, so assert the capability here rather than
+# silently treating them as text-only. Keep this minimal and remove an entry
+# once LiteLLM starts reporting the model correctly. See issue #5523; the
+# broader fix for outsourcing capabilities is tracked in #4880.
+VISION_CAPABLE_MODELS: list[str] = [
+    # OpenHands-verified (see #4940); LiteLLM has no `deepseek-v4.1-flash`
+    # entry, only `baseten/deepseek-ai/DeepSeek-V4.1-Flash` (vision=true).
+    "deepseek-v4.1-flash",
+]
+
+
 @cache
 def _model_supports_vision(model: str | None) -> bool:
-    """Return whether LiteLLM marks the model as visual."""
+    """Return whether LiteLLM or our verified list marks the model as visual."""
     normalized = _normalize_model_for_litellm(model)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return bool(normalized and litellm_supports_vision(normalized))
+        if normalized and litellm_supports_vision(normalized):
+            return True
+    return model_matches(model, VISION_CAPABLE_MODELS)
 
 
 # Models whose API rejects http(s) image URLs and only accepts base64
@@ -344,6 +416,27 @@ def _optional_bool(source: Mapping[str, Any] | None, key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+# Model-info key holding the request params a LiteLLM proxy deployment forwards
+# upstream, copied from its ``litellm_params.allowed_openai_params``. The list
+# only extends the provider's native params, so absence is not a denial.
+ALLOWED_OPENAI_PARAMS_KEY = "allowed_openai_params"
+
+# Capabilities that are exactly "the request accepts this param". Only these
+# can be enabled by an advertised param.
+_REQUEST_PARAM_CAPABILITIES: dict[str, str] = {
+    "supports_reasoning_effort": "reasoning_effort",
+    "supports_prompt_cache_key": "prompt_cache_key",
+    "supports_prompt_cache_retention": "prompt_cache_retention",
+}
+
+
+def _advertised_request_params(metadata: Mapping[str, Any] | None) -> frozenset[str]:
+    params = (metadata or {}).get(ALLOWED_OPENAI_PARAMS_KEY)
+    if not isinstance(params, (list, tuple)):
+        return frozenset()
+    return frozenset(p for p in params if isinstance(p, str))
+
+
 def _resolved_bool(
     key: str,
     *,
@@ -356,6 +449,8 @@ def _resolved_bool(
     override = _optional_bool(overrides, key)
     if override is not None:
         return override
+    if _REQUEST_PARAM_CAPABILITIES.get(key) in _advertised_request_params(metadata):
+        return True
     discovered = _optional_bool(metadata, metadata_key or key)
     if discovered is not None:
         return discovered
@@ -480,7 +575,9 @@ def get_features(
             fallback=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
         ),
         supports_responses_api=_supports_responses_api(model, model_info, overrides),
-        force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_MODELS),
+        force_string_serializer=apply_ordered_model_rules(
+            model, FORCE_STRING_SERIALIZER_MODELS
+        ),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_MODELS),
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
         supports_prompt_cache_retention=_resolved_bool(

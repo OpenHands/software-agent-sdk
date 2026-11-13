@@ -4,7 +4,7 @@ import json
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import TypeAdapter, ValidationError
@@ -12,6 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
@@ -30,6 +31,7 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
 )
+from openhands.sdk.errors import Unauthenticated, Unavailable, Unprocessable
 
 
 openai_router = APIRouter(tags=["OpenAI Compatibility"])
@@ -66,17 +68,19 @@ def check_openai_api_key(
         return
     if bearer_token in config.session_api_keys:
         return
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    raise Unauthenticated()
 
 
 def _get_config(request: Request) -> Config:
     config = getattr(request.app.state, "config", None)
     if not isinstance(config, Config):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Agent server config is not available",
-        )
+        raise Unavailable("Agent server config is not available")
     return config
+
+
+def _get_docker_registry(request: Request) -> DockerConversationRegistry | None:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    return registry if isinstance(registry, DockerConversationRegistry) else None
 
 
 def _parse_observability_overrides(
@@ -103,15 +107,11 @@ def _parse_observability_overrides(
                 _OBSERVABILITY_METADATA_ADAPTER.validate_python(metadata_payload)
             )
     except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        raise Unprocessable(
+            "X-OpenHands-Observability-Metadata must be a JSON object"
         ) from exc
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=exc.errors(include_context=False),
-        ) from exc
+        raise Unprocessable(exc.errors(include_context=False)) from exc
     if parent_span_context:
         overrides["observability_parent_span_context"] = parent_span_context
     return overrides
@@ -154,6 +154,7 @@ async def create_chat_completion(
         config=_get_config(request),
         conversation_service=conversation_service,
         reusable_conversation_id=x_openhands_server_conversation_id,
+        registry=_get_docker_registry(request),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
@@ -206,6 +207,7 @@ async def create_response(
         request=body,
         config=_get_config(request),
         conversation_service=conversation_service,
+        registry=_get_docker_registry(request),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,

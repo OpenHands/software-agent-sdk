@@ -1,13 +1,16 @@
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import APIKeyCookie, APIKeyHeader
+from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
+from openhands.sdk.errors import NotFound, OperationFailed, Unauthenticated, Unavailable
 
 
 # Cookie name used to authenticate the workspace static-file routes.
@@ -34,7 +37,7 @@ def check_session_api_key(
     """
     config: Config = request.app.state.config
     if config.session_api_keys and session_api_key not in config.session_api_keys:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+        raise Unauthenticated()
 
 
 def check_workspace_session(
@@ -58,34 +61,46 @@ def check_workspace_session(
     for candidate in (header_key, cookie_key):
         if candidate and candidate in config.session_api_keys:
             return
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    raise Unauthenticated()
 
 
 def get_conversation_service(request: Request) -> ConversationService:
     service = getattr(request.app.state, "conversation_service", None)
     if service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Conversation service is not available",
-        )
+        raise Unavailable("Conversation service is not available")
     return service
 
 
 async def get_bash_event_service(request: Request) -> BashEventService:
     if "runtime_conversation_id" in request.path_params:
-        event_service: EventService = request.state.runtime_event_service
+        event_service: EventService | None = getattr(
+            request.state, "runtime_event_service", None
+        )
+        if event_service is None:
+            # FastAPI still resolves this dependency when the router dependency
+            # bind_local_conversation_runtime failed validation, so report that
+            # validation error instead of reading state it never set.
+            raw_id = request.path_params["runtime_conversation_id"]
+            try:
+                TypeAdapter(UUID).validate_python(raw_id)
+            except ValidationError as exc:
+                raise RequestValidationError(
+                    [
+                        {**error, "loc": ("path", "runtime_conversation_id")}
+                        for error in exc.errors(include_url=False)
+                    ]
+                ) from exc
+            raise OperationFailed("Conversation runtime is not bound")
         if event_service.bash_event_service is None:
             event_service.bash_event_service = BashEventService(
                 bash_events_dir=event_service.conversation_dir / "bash_events",
                 default_cwd=event_service.get_conversation().workspace.working_dir,
+                cipher=event_service.cipher,
             )
         return event_service.bash_event_service
     service = getattr(request.app.state, "bash_event_service", None)
     if service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Bash event service is not available",
-        )
+        raise Unavailable("Bash event service is not available")
     return service
 
 
@@ -95,18 +110,14 @@ async def get_event_service(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> EventService:
     registry = getattr(request.app.state, "conversation_registry", None)
-    if (
-        isinstance(registry, ConversationRegistry)
-        and registry.serves_persisted_event_reads
-    ):
+    if isinstance(
+        registry, ConversationRegistry
+    ) and registry.serves_persisted_event_reads(conversation_id):
         event_service = await conversation_service.get_persisted_event_service(
             conversation_id
         )
     else:
         event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Conversation not found: {conversation_id}",
-        )
+        raise NotFound(f"Conversation not found: {conversation_id}")
     return event_service

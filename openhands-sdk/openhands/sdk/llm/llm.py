@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import importlib
 import json
 import os
 import threading
@@ -41,7 +40,19 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
+from openhands.sdk.llm._response_stream import (
+    OutputItemEvent,
+    ResponseStreamEvent,
+    async_response_events,
+    completed_response as get_completed_response,
+    response_events,
+)
+from openhands.sdk.llm._tokenizer import (
+    ChatTemplateTokenizer,
+    chat_template_tokenizer,
+    count_tokenized_output,
+    load_chat_template_tokenizer,
+)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
@@ -109,21 +120,21 @@ from litellm.utils import (
     create_pretrained_tokenizer,
     token_counter,
 )
-from tenacity import retry_if_exception, retry_if_exception_type
 
+# OpenHands utilities
+from openhands.sdk.llm.call_context import resolve_llm_call_context
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
-    is_quota_exhaustion_error,
     looks_like_auth_error,
     map_provider_exception,
 )
-
-# OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
+from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.llm.message import (
     Message,
+    TextContent,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -142,11 +153,13 @@ from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
     litellm_call_kwargs,
 )
-from openhands.sdk.llm.utils.retry_mixin import RetryMixin
+from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_condition
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -265,6 +278,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ```
     """
 
+    # The session of the conversation whose LLMRegistry this object was added
+    # to (see ``session_for``). It says where the object is used, not what it
+    # is, so it sits in a slot: pydantic neither compares nor copies it.
+    __slots__ = ("_registry_session",)
+
     # =========================================================================
     # Config fields
     # =========================================================================
@@ -367,7 +385,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
     retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
-    retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
+    retry_max_wait: int = Field(
+        default=64,
+        ge=0,
+        description=(
+            "Maximum retry wait in seconds. A longer provider Retry-After hint "
+            "stops retries instead of retrying before the requested delay."
+        ),
+        json_schema_extra=field_meta(),
+    )
 
     timeout: int | None = Field(
         default=300,
@@ -658,12 +684,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         exclude=True,
     )
-    _metrics: Metrics | None = PrivateAttr(default=None)
+    # Usage metrics and telemetry live in a session, not on the configuration.
+    # This is the one behind ``llm.metrics`` / ``llm.telemetry``; see
+    # ``session_for`` for how it relates to a conversation's.
+    _session: LLMSession | None = PrivateAttr(default=None)
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
-    _tokenizer: Any = PrivateAttr(default=None)
-    _chat_template_tokenizer: Any = PrivateAttr(default=None)
-    _telemetry: Telemetry | None = PrivateAttr(default=None)
+    _tokenizer: dict[str, object] | None = PrivateAttr(default=None)
+    _chat_template_tokenizer: ChatTemplateTokenizer | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
@@ -761,26 +789,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # OpenRouter ``HTTP-Referer`` / ``X-Title`` headers flow per-call
         # through ``_openrouter_headers()``.
 
-        # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
-        # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
-        # and replacing _telemetry would silently drop any callback callers
+        # Guarded: this validator re-runs whenever the LLM is passed into
+        # another Pydantic model (e.g. RegistryEvent), and a new session would
+        # silently drop the usage recorded so far and any callback callers
         # have attached via telemetry.set_*_callback().
-        if self._metrics is None:
-            self._metrics = Metrics(model_name=self.model)
-
-        if self._telemetry is None:
-            self._telemetry = Telemetry(
-                model_name=self.model,
-                log_enabled=self.log_completions,
-                log_dir=self.log_completions_folder if self.log_completions else None,
-                input_cost_per_token=self.input_cost_per_token,
-                output_cost_per_token=self.output_cost_per_token,
-                metrics=self._metrics,
-            )
+        if self._session is None:
+            self._session = LLMSession(self)
 
         # Tokenizer
         if self.custom_tokenizer:
-            self._chat_template_tokenizer = self._load_chat_template_tokenizer(
+            self._chat_template_tokenizer = load_chat_template_tokenizer(
                 self.custom_tokenizer
             )
             if self._chat_template_tokenizer is None:
@@ -826,6 +844,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if route_changed:
             copied._refresh_litellm_metadata()
             copied._reset_runtime_metadata_for_key()
+        if copied.usage_id != self.usage_id:
+            # Sessions follow the role. A copy made for another role is a
+            # different user of the model, so it starts its own accounting.
+            copied.reset_metrics()
+        elif not deep:
+            # Same role, same sessions: the shallow copy shares ``_session``
+            # already, and stays with the conversation the original is in.
+            copied._registry_session = self._registered_session()
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
@@ -889,8 +915,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Public API
     # =========================================================================
     @property
+    def session(self) -> LLMSession:
+        """The session of this LLM instance itself.
+
+        It counts everything recorded through this object. Once a conversation
+        registers the LLM this is that conversation's session for the LLM's
+        role (see :meth:`session_for`).
+        """
+        if self._session is None:
+            self._session = LLMSession(self)
+        return self._session
+
+    @property
     def metrics(self) -> Metrics:
         """Get usage metrics for this LLM instance.
+
+        These cover all the usage of this object. A conversation reports its
+        own usage through ``conversation.conversation_stats``; the two differ
+        when the same LLM object is used in more than one conversation.
 
         Returns:
             Metrics object containing token usage, costs, and other statistics.
@@ -901,9 +943,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             print(f"Total cost: ${cost}")
             ```
         """
-        if self._metrics is None:
-            self._metrics = Metrics(model_name=self.model)
-        return self._metrics
+        return self.session.metrics
 
     @property
     def telemetry(self) -> Telemetry:
@@ -917,16 +957,66 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             llm.telemetry.set_log_completions_callback(my_callback)
             ```
         """
-        if self._telemetry is None:
-            self._telemetry = Telemetry(
-                model_name=self.model,
-                log_enabled=self.log_completions,
-                log_dir=self.log_completions_folder if self.log_completions else None,
-                input_cost_per_token=self.input_cost_per_token,
-                output_cost_per_token=self.output_cost_per_token,
-                metrics=self.metrics,
-            )
-        return self._telemetry
+        return self.session.telemetry
+
+    def session_for(self, call_context: LLMCallContext | None = None) -> LLMSession:
+        """Return the session a call made with ``call_context`` records in.
+
+        That is the session the conversation keeps for this LLM's role
+        (``usage_id``). Without a conversation in the context it is the session
+        of the registry this object was last added to, and failing that the
+        object's own.
+
+        The first conversation to register an LLM takes the LLM's own session,
+        so there ``llm.metrics`` is the conversation's ledger. An object that
+        records in a second session keeps one of its own apart, and every
+        session it records in also counts there.
+        """
+        sessions = resolve_llm_call_context(call_context).sessions
+        session = sessions.get(self.usage_id) if sessions is not None else None
+        if session is None:
+            session = self._registered_session()
+        if session is None:
+            session = self.session
+        if session is not self._session:
+            self._keep_own_session_apart()
+        session.follow(self)
+        return session
+
+    def _registered_session(self) -> LLMSession | None:
+        try:
+            return self._registry_session
+        except AttributeError:  # never added to a registry: the slot is empty
+            return None
+
+    def _join_registry_session(self, session: LLMSession) -> None:
+        """Record in ``session``, which a registry keeps for this LLM's role."""
+        registered = self._registered_session()
+        if registered is session:
+            return
+        if registered is None:
+            # Not part of a conversation yet: its session is this object's own
+            # from now on, as if the usage had always been recorded there.
+            self._session = session
+        else:
+            self._keep_own_session_apart()
+        self._registry_session = session
+        session.follow(self)
+
+    def _keep_own_session_apart(self) -> None:
+        """Give this object a session of its own if a registry holds its current one.
+
+        Needed before it records in another session: usage of one conversation
+        must not land in the ledger of another. The new session starts from
+        what the shared one holds, so ``llm.metrics`` keeps its totals.
+        """
+        registered = self._registered_session()
+        if registered is None or self._session is not registered:
+            return
+        own = LLMSession(self)
+        own.metrics.merge(registered.metrics)
+        self._session = own
+        registered.follow(self)
 
     @computed_field(
         return_type=bool,
@@ -968,55 +1058,42 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             _serialized_is_subscription.reset(token)
 
     def restore_metrics(self, metrics: Metrics) -> None:
-        # Only used by ConversationStats to seed metrics
-        self._metrics = metrics
-        # Keep telemetry in sync so post-resume LLM calls record into
-        # the restored metrics object, not the stale one from __init__.
-        if self._telemetry is not None:
-            self._telemetry.metrics = metrics
+        """Make ``metrics`` the usage metrics of this LLM instance."""
+        self.session.restore_metrics(metrics)
 
     def reset_metrics(self) -> None:
-        """Reset metrics and telemetry to fresh instances.
+        """Give this LLM instance a fresh session of its own.
 
-        This is used by the LLMRegistry to ensure each registered LLM has
-        independent metrics, preventing metrics from being shared between
-        LLMs that were created via model_copy().
-
-        When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
-        Pydantic's model_copy() does a shallow copy of private attributes by default,
-        causing the original and copied LLM to share the same Metrics object.
-        This method allows the registry to fix this by creating fresh metrics and
-        telemetry immediately, so the copied LLM is ready for the next completion
-        call even if callers do not access ``metrics``/``telemetry`` first.
+        A copy made with ``model_copy()`` shares the session of the LLM it was
+        copied from unless it is given another ``usage_id``, so both count into
+        the same ``llm.metrics``. Call this on a copy that should be counted
+        apart, such as the LLM handed to a sub-agent. It also detaches the
+        instance from the session a conversation's registry opened for it.
         """
-        self._metrics = Metrics(model_name=self.model)
-        self._telemetry = Telemetry(
-            model_name=self.model,
-            log_enabled=self.log_completions,
-            log_dir=self.log_completions_folder if self.log_completions else None,
-            input_cost_per_token=self.input_cost_per_token,
-            output_cost_per_token=self.output_cost_per_token,
-            metrics=self._metrics,
-        )
+        self._session = LLMSession(self)
+        self._registry_session = None
 
     def _handle_error(
         self,
         error: Exception,
         fallback_call_fn: Callable[[LLM], LLMResponse],
+        session: LLMSession | None = None,
     ) -> LLMResponse:
         """Handle an error from completion/responses: try fallback, then map and raise.
 
         Must be called from within an except block. Either returns an
         LLMResponse (fallback succeeded) or re-raises (mapped or original).
         """
-        assert self._telemetry is not None
-        self._telemetry.on_error(error)
+        if session is None:
+            session = self.session
+        session.telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
             result = self.fallback_strategy.try_fallback(
                 primary_model=self.model,
                 primary_error=error,
-                primary_metrics=self.metrics,
+                primary_metrics=session.metrics,
                 call_fn=fallback_call_fn,
+                primary=self,
             )
             if result is not None:
                 return result
@@ -1029,25 +1106,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self,
         error: Exception,
         fallback_call_fn: Callable[[LLM], LLMResponse],
+        session: LLMSession | None = None,
     ) -> LLMResponse:
         """Async variant of :meth:`_handle_error`.
 
         The *fallback_call_fn* is synchronous (it calls the fallback LLM's
         sync ``completion``/``responses``), so the fallback attempt is
-        offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
+        offloaded to a thread via :func:`asyncio.to_thread` to
         avoid blocking the event loop.
         """
-        assert self._telemetry is not None
-        self._telemetry.on_error(error)
+        if session is None:
+            session = self.session
+        session.telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
+            result = await asyncio.to_thread(
                 self.fallback_strategy.try_fallback,
                 self.model,
                 error,
-                self.metrics,
+                session.metrics,
                 fallback_call_fn,
+                primary=self,
             )
             if result is not None:
                 return result
@@ -1134,13 +1212,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Exhausted allowances skip backoff. Provider quota errors may fall back;
         explicit budget denials stop without trying another model.
         """
-        retry_condition = (
-            retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
-            | retry_if_exception(is_transient_http_error)
-        ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=retry_condition,
+            retry_exceptions=transient_error_condition(LLM_RETRY_EXCEPTIONS),
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
@@ -1210,23 +1284,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 return
             yield item
 
-    def _build_completion_result(self, resp: ModelResponse) -> LLMResponse:
+    def _build_completion_result(
+        self, resp: ModelResponse, session: LLMSession | None = None
+    ) -> LLMResponse:
         """Convert a raw :class:`ModelResponse` into an :class:`LLMResponse`."""
+        if session is None:
+            session = self.session
         first_choice = resp["choices"][0]
         message = Message.from_llm_chat_message(first_choice["message"])
         return LLMResponse(
             message=message,
-            metrics=self.metrics.get_snapshot(),
+            metrics=session.metrics.get_snapshot(),
             raw_response=resp,
         )
 
-    def _build_responses_result(self, resp: ResponsesAPIResponse) -> LLMResponse:
+    def _build_responses_result(
+        self, resp: ResponsesAPIResponse, session: LLMSession | None = None
+    ) -> LLMResponse:
         """Convert a raw :class:`ResponsesAPIResponse` into an :class:`LLMResponse`."""
-        output_seq = cast(Sequence[Any], resp.output or [])
-        message = Message.from_llm_responses_output(output_seq)
+        if session is None:
+            session = self.session
+        message = Message.from_llm_responses_output(resp.output)
         return LLMResponse(
             message=message,
-            metrics=self.metrics.get_snapshot(),
+            metrics=session.metrics.get_snapshot(),
             raw_response=resp,
         )
 
@@ -1270,8 +1351,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     def _process_stream_event(
-        self, event: Any, *, emit_deltas: bool = True
-    ) -> tuple[Any | None, ModelResponseStream | None]:
+        self, event: ResponseStreamEvent, *, emit_deltas: bool = True
+    ) -> tuple[object | None, ModelResponseStream | None]:
         """Extract output item and delta chunk from a Responses stream event.
 
         Args:
@@ -1282,15 +1363,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             (output_item, delta_chunk) — either or both may be ``None``.
         """
-        output_item: Any | None = None
+        output_item: object | None = None
         delta_chunk: ModelResponseStream | None = None
 
         # Collect finished output items
-        evt_type = getattr(event, "type", None)
-        if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
-            item = getattr(event, "item", None)
-            if item is not None:
-                output_item = item
+        if (
+            isinstance(event, OutputItemEvent)
+            and event.type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
+        ):
+            output_item = event.item
 
         if emit_deltas and isinstance(
             event,
@@ -1313,8 +1394,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _finalize_stream_response(
         self,
-        completed_response: Any,
+        completed_response: ResponseCompletedEvent | None,
         collected_output_items: list[Any],
+        session: LLMSession | None = None,
     ) -> ResponsesAPIResponse:
         """Validate and patch the completed response from a Responses stream.
 
@@ -1336,8 +1418,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not completed_resp.output and collected_output_items:
             completed_resp.output = collected_output_items
 
-        assert self._telemetry is not None
-        self._telemetry.on_response(
+        if session is None:
+            session = self.session
+        session.telemetry.on_response(
             completed_resp,
             provider_info=self._provider_info,
         )
@@ -1471,7 +1554,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # 4) request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
-        telemetry = self.telemetry
+        telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0
         }
@@ -1607,7 +1690,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
-        telemetry = self.telemetry
+        telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0
         }
@@ -1632,6 +1715,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         formatted_messages: list[dict[str, Any]],
         cc_tools: list[ChatCompletionToolParam],
         add_security_risk_prediction: bool,
+        session: LLMSession | None = None,
     ) -> ModelResponse:
         """Post-process a chat completion response inside the retry boundary.
 
@@ -1654,8 +1738,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
         # 6) telemetry
-        assert self._telemetry is not None
-        self._telemetry.on_response(
+        if session is None:
+            session = self.session
+        session.telemetry.on_response(
             resp,
             raw_resp=raw_resp,
             provider_info=self._provider_info,
@@ -1773,6 +1858,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # cached (1h TTL) and negative-cached on failure, and the probe is a
         # no-op for providers without runtime metadata.
         self.resolve_runtime_metadata()
+        session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
@@ -1804,8 +1890,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
-            assert self._telemetry is not None
-            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
+            session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(
                 messages=formatted_messages,
@@ -1819,11 +1904,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 formatted_messages=formatted_messages,
                 cc_tools=cc_tools,
                 add_security_risk_prediction=add_security_risk_prediction,
+                session=session,
             )
             return resp
 
         try:
-            return self._build_completion_result(_one_attempt())
+            return self._build_completion_result(_one_attempt(), session)
         except Exception as e:
             # If the prompt cache content is too small for the provider's
             # minimum token threshold (e.g., Vertex AI requires ≥4096 tokens),
@@ -1839,6 +1925,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -1866,6 +1953,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 ),
+                session,
             )
 
     # =========================================================================
@@ -1892,6 +1980,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # probe is a no-op for providers without runtime metadata, so repeated
         # calls are cheap.
         await self.aresolve_runtime_metadata()
+        session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
@@ -1924,8 +2013,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
-            assert self._telemetry is not None
-            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
+            session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = await self._atransport_call(
                 messages=formatted_messages,
@@ -1939,11 +2027,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 formatted_messages=formatted_messages,
                 cc_tools=cc_tools,
                 add_security_risk_prediction=add_security_risk_prediction,
+                session=session,
             )
             return resp
 
         try:
-            return self._build_completion_result(await _one_attempt())
+            return self._build_completion_result(await _one_attempt(), session)
         except Exception as e:
             # If the prompt cache content is too small for the provider's
             # minimum token threshold (e.g., Vertex AI requires ≥4096 tokens),
@@ -1959,6 +2048,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -1992,6 +2082,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 ),
+                session,
             )
 
     # =========================================================================
@@ -2031,6 +2122,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Cached (1h TTL) / negative-cached; no-op for providers without runtime
         # metadata.
         self.resolve_runtime_metadata()
+        session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
@@ -2066,8 +2158,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
-            assert self._telemetry is not None
-            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
+            session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             litellm_kwargs = self._build_responses_call_kwargs(
                 input_items, instructions, resp_tools, final_kwargs
@@ -2081,7 +2172,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         "provider returned a non-streaming response; "
                         "no on_token deltas will be emitted."
                     )
-                self._telemetry.on_response(
+                session.telemetry.on_response(
                     ret,
                     provider_info=self._provider_info,
                 )
@@ -2099,12 +2190,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response.completed event has output=[].  We
                 # accumulate them here and patch the completed
                 # response if needed.
-                collected_output_items: list[Any] = []
-                completed_response = getattr(ret, "completed_response", None)
-                stream = cast(Iterable[Any], ret)
-                for event in stream:
-                    if event is None:
-                        continue
+                collected_output_items: list[object] = []
+                completed_response = get_completed_response(ret)
+                if not isinstance(ret, Iterable):
+                    raise TypeError(f"Expected a response stream, got {type(ret)}")
+                for event in response_events(ret):
                     if isinstance(event, ResponseCompletedEvent):
                         completed_response = event
                     output_item, delta_chunk = self._process_stream_event(
@@ -2115,17 +2205,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     if stream_callback is not None and delta_chunk is not None:
                         stream_callback(delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                completed_response = get_completed_response(ret, completed_response)
                 return self._finalize_stream_response(
-                    completed_response, collected_output_items
+                    completed_response, collected_output_items, session
                 )
 
             raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
         try:
-            return self._build_responses_result(_one_attempt())
+            return self._build_responses_result(_one_attempt(), session)
         except Exception as e:
             # If the prompt cache content is too small for the provider's
             # minimum token threshold (e.g., Vertex AI requires ≥4096 tokens),
@@ -2143,6 +2231,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -2174,6 +2263,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 ),
+                session,
             )
 
     # =========================================================================
@@ -2199,6 +2289,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # the first request so context management reads runtime (not model-level)
         # limits. No blocking network I/O in-process.
         await self.aresolve_runtime_metadata()
+        session = self.session_for(call_context)
 
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
@@ -2237,8 +2328,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:
-            assert self._telemetry is not None
-            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
+            session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             auth_values = await self._aget_litellm_auth_values()
             litellm_kwargs = self._build_responses_call_kwargs(
@@ -2257,7 +2347,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         "provider returned a non-streaming response; "
                         "no on_token deltas will be emitted."
                     )
-                self._telemetry.on_response(
+                session.telemetry.on_response(
                     ret,
                     provider_info=self._provider_info,
                 )
@@ -2276,13 +2366,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response.completed event has output=[].  We
                 # accumulate them here and patch the completed
                 # response if needed.
-                collected_output_items: list[Any] = []
-                completed_response = getattr(ret, "completed_response", None)
-                if hasattr(ret, "__aiter__"):
-                    stream = cast(AsyncIterable[Any], ret)
-                    async for event in self._aiter_with_idle_timeout(stream):
-                        if event is None:
-                            continue
+                collected_output_items: list[object] = []
+                completed_response = get_completed_response(ret)
+                if isinstance(ret, AsyncIterable):
+                    async for event in async_response_events(
+                        self._aiter_with_idle_timeout(ret)
+                    ):
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
@@ -2293,13 +2382,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
                 else:
+                    if not isinstance(ret, Iterable):
+                        raise TypeError(f"Expected a response stream, got {type(ret)}")
                     loop = asyncio.get_running_loop()
-                    events: list[Any] = await loop.run_in_executor(
-                        None, list, cast(Iterable[Any], ret)
+                    events = await loop.run_in_executor(
+                        None, list, response_events(ret)
                     )
                     for event in events:
-                        if event is None:
-                            continue
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
@@ -2310,17 +2399,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                completed_response = get_completed_response(ret, completed_response)
                 return self._finalize_stream_response(
-                    completed_response, collected_output_items
+                    completed_response, collected_output_items, session
                 )
 
             raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
         try:
-            return self._build_responses_result(await _one_attempt())
+            return self._build_responses_result(await _one_attempt(), session)
         except Exception as e:
             # If the prompt cache content is too small for the provider's
             # minimum token threshold (e.g., Vertex AI requires ≥4096 tokens),
@@ -2338,6 +2425,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -2373,6 +2461,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 ),
+                session,
             )
 
     # =========================================================================
@@ -2561,7 +2650,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             chunks: list[ModelResponseStream] = []
             # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
             # back a plain sync generator from ``litellm_acompletion``
-            if hasattr(ret, "__aiter__"):
+            if isinstance(ret, AsyncIterable):
                 stream = cast(AsyncIterable[ModelResponseStream], ret)
                 async for chunk in self._aiter_with_idle_timeout(stream):
                     await _invoke_token_callback(on_token, chunk)
@@ -3039,7 +3128,52 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         messages = copy.deepcopy(messages)
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
+        messages = self._apply_proxy_system_identity(messages)
         return messages, self.vision_is_active()
+
+    def _uses_openhands_proxy(self) -> bool:
+        """Whether this LLM's requests go to the OpenHands LLM proxy."""
+        call_kwargs = self._litellm_call_kwargs()
+        return is_openhands_proxy_base_url(call_kwargs["api_base"])
+
+    def _apply_proxy_system_identity(self, messages: list[Message]) -> list[Message]:
+        """Lead proxy calls with the default identity.
+
+        The OpenHands LLM proxy rejects requests whose leading system text
+        does not start with :data:`OPENHANDS_SYSTEM_IDENTITY` (HTTP 403
+        ``Request rejected by proxy policy``). Agent conversations always
+        lead with that identity via the SOUL prompt section, but bare
+        ``LLM.completion()`` / ``generate()`` calls (registry demos, hooks,
+        sub-LLM metering) send no system message — or a task-specific one
+        such as a hook policy — and are rejected. When the call does not
+        already lead with the identity, prepend it as its own system
+        message; caller messages are kept verbatim and in order.
+        """
+        if not self._uses_openhands_proxy():
+            return messages
+        if messages and messages[0].role == "system":
+            lead = "".join(
+                part.text
+                for part in messages[0].content
+                if isinstance(part, TextContent)
+            )
+            if lead.startswith(OPENHANDS_SYSTEM_IDENTITY):
+                return messages
+        identity = Message(
+            role="system",
+            content=[TextContent(text=OPENHANDS_SYSTEM_IDENTITY)],
+        )
+        return [identity, *messages]
+
+    def _proxy_instructions(self, instructions: str | None) -> str | None:
+        """Responses-API counterpart of :meth:`_apply_proxy_system_identity`."""
+        if not self._uses_openhands_proxy():
+            return instructions
+        if instructions is None:
+            return OPENHANDS_SYSTEM_IDENTITY
+        if instructions.startswith(OPENHANDS_SYSTEM_IDENTITY):
+            return instructions
+        return f"{OPENHANDS_SYSTEM_IDENTITY}\n\n{instructions}"
 
     def _prepare_chat_messages(self, messages: list[Message]) -> list[Message]:
         """Apply the cache+inline+resize passes, returning detached messages."""
@@ -3145,7 +3279,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         if self.is_subscription:
             return transform_for_subscription(system_chunks, input_items)
-        return instructions, input_items
+        return self._proxy_instructions(instructions), input_items
 
     def format_messages_for_responses(
         self, messages: list[Message]
@@ -3251,10 +3385,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         that supports ``apply_chat_template``, prefer that exact rendered prompt
         shape for condenser token checks and fall back to LiteLLM otherwise.
         """
-        tokenizer = self._chat_template_tokenizer or self._tokenizer
-        if isinstance(tokenizer, dict):
-            tokenizer = tokenizer.get("tokenizer")
-        if tokenizer is None or not hasattr(tokenizer, "apply_chat_template"):
+        tokenizer = chat_template_tokenizer(
+            self._chat_template_tokenizer or self._tokenizer
+        )
+        if tokenizer is None:
             return None
 
         try:
@@ -3266,7 +3400,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if tools:
                 kwargs["tools"] = tools
             tokenized = tokenizer.apply_chat_template(template_messages, **kwargs)
-            return self._count_tokenized_output(tokenized, tokenizer)
+            return count_tokenized_output(tokenized, tokenizer)
         except Exception:
             logger.warning(
                 "Chat-template token counting failed for %d messages and %d tools; "
@@ -3276,33 +3410,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 exc_info=True,
             )
             return None
-
-    @staticmethod
-    def _count_tokenized_output(tokenized: Any, tokenizer: Any) -> int:
-        if isinstance(tokenized, str):
-            encoded = tokenizer.encode(tokenized)
-            return LLM._count_tokenized_output(encoded, tokenizer)
-        if hasattr(tokenized, "shape") and len(tokenized.shape) > 0:
-            return int(tokenized.shape[-1])
-        if hasattr(tokenized, "ids"):
-            return len(tokenized.ids)
-        if isinstance(tokenized, dict) and "input_ids" in tokenized:
-            return LLM._count_tokenized_output(tokenized["input_ids"], tokenizer)
-        get_input_ids = getattr(tokenized, "get", None)
-        if callable(get_input_ids):
-            input_ids = get_input_ids("input_ids")
-            if input_ids is not None:
-                return LLM._count_tokenized_output(input_ids, tokenizer)
-        encodings = getattr(tokenized, "encodings", None)
-        if encodings:
-            return LLM._count_tokenized_output(encodings[0], tokenizer)
-        if isinstance(tokenized, Sequence):
-            if tokenized and hasattr(tokenized[0], "ids"):
-                return LLM._count_tokenized_output(tokenized[0], tokenizer)
-            if tokenized and isinstance(tokenized[0], Sequence):
-                return len(tokenized[0])
-            return len(tokenized)
-        raise TypeError(f"Unsupported tokenized output: {type(tokenized).__name__}")
 
     @staticmethod
     def _messages_for_chat_template(messages: list[dict]) -> list[dict]:
@@ -3333,34 +3440,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if isinstance(parsed_arguments, dict):
                     function["arguments"] = parsed_arguments
         return template_messages
-
-    @staticmethod
-    def _load_chat_template_tokenizer(identifier: str) -> Any | None:
-        try:
-            transformers = importlib.import_module("transformers")
-        except ModuleNotFoundError:
-            return None
-        except Exception:
-            logger.debug("Unable to import transformers", exc_info=True)
-            return None
-
-        auto_tokenizer = getattr(transformers, "AutoTokenizer", None)
-        if auto_tokenizer is None:
-            return None
-
-        try:
-            tokenizer = auto_tokenizer.from_pretrained(identifier)
-        except Exception:
-            logger.debug(
-                "Unable to load chat-template tokenizer for %s",
-                identifier,
-                exc_info=True,
-            )
-            return None
-
-        if hasattr(tokenizer, "apply_chat_template"):
-            return tokenizer
-        return None
 
     @classmethod
     def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:

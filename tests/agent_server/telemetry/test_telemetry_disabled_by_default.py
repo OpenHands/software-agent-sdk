@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,7 @@ from openhands.agent_server.telemetry import (
     get_event_factory,
     get_telemetry_sink,
 )
+from openhands.agent_server.telemetry.sanitizer import pseudonymize
 
 
 def test_default_config_yields_a_noop_sink(temp_persistence_dir):
@@ -38,6 +40,26 @@ async def test_building_sink_carries_configured_deployment_kind(
         factory = get_event_factory()
         assert factory is not None
         assert factory.runtime.deployment_kind == "remote"
+    finally:
+        await sink.aclose()
+
+
+async def test_salt_falls_back_to_the_secret_key_as_documented(
+    config_factory, secret_key
+):
+    """Without a salt, refs are keyed by the secret key, as `salt` documents."""
+    description = TelemetrySpec.model_fields["salt"].description or ""
+    assert "OH_SECRET_KEY" in description
+    assert "linkable across restarts" in description
+
+    conversation_id = uuid4()
+    sink = await build_telemetry_sink(config_factory())
+    try:
+        factory = get_event_factory()
+        assert factory is not None
+        assert factory.conversation_ref(conversation_id) == pseudonymize(
+            conversation_id.bytes, secret_key
+        )
     finally:
         await sink.aclose()
 
