@@ -627,21 +627,3 @@ class BashEventService:
     async def __aexit__(self, exc_type, exc_value, traceback):
         """Finish using this task service"""
         await self.close()
-
-
-_bash_event_service: BashEventService | None = None
-
-
-def get_default_bash_event_service() -> BashEventService:
-    """Get the default bash event service instance."""
-    global _bash_event_service
-    if _bash_event_service:
-        return _bash_event_service
-
-    from openhands.agent_server.config import get_default_config
-
-    config = get_default_config()
-    _bash_event_service = BashEventService(
-        bash_events_dir=config.bash_events_dir, cipher=config.cipher
-    )
-    return _bash_event_service
