@@ -28,7 +28,9 @@ class InMemoryFileStore(FileStore):
         max_size: int = _DEFAULT_MAX_SIZE,
         max_memory: int = _DEFAULT_MAX_MEMORY,
     ) -> None:
-        self.files = MemoryLRUCache(max_memory=max_memory, max_size=max_size)
+        self.files = MemoryLRUCache(
+            max_memory=max_memory, max_size=max_size, keep_oversize=True
+        )
         self._instance_id = uuid.uuid4().hex
         self._lock = threading.Lock()
         if files is not None:
