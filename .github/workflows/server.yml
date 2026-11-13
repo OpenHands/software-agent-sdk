@@ -49,7 +49,7 @@ jobs:
                   version: latest
                   python-version: '3.13'
             - name: Install dependencies
-              run: uv sync --dev
+              run: uv sync --frozen --group dev
 
             - name: Build binary (Unix)
               if: runner.os != 'Windows'
@@ -59,7 +59,16 @@ jobs:
             - name: Build binary (Windows)
               if: runner.os == 'Windows'
               shell: bash
-              run: uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
+              run: uv run --frozen pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
+
+            - name: Test packaged Windows App backend launcher
+              if: runner.os == 'Windows'
+              env:
+                  OPENHANDS_TEST_SERVER_BINARY: ${{ github.workspace }}/dist/openhands-agent-server.exe
+              run: >-
+                  uv run --frozen python -m pytest -v --timeout=120
+                  tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
+                  -k frozen_launcher
 
             - name: Test binary
               shell: bash

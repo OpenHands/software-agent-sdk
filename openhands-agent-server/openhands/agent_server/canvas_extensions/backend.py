@@ -18,7 +18,7 @@ import urllib.request
 import zlib
 from collections import deque
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final, Literal
 from urllib.parse import urljoin, urlsplit
 
@@ -431,7 +431,22 @@ class CanvasExtensionBackendManager:
         with tarfile.open(archive, mode="r:gz") as tar:
             for member in tar:
                 original = PurePosixPath(member.name)
-                if original.is_absolute() or ".." in original.parts:
+                if (
+                    original.is_absolute()
+                    or ".." in original.parts
+                    or (
+                        os.name == "nt"
+                        and (
+                            any(c in member.name for c in '\\:<>"|?*')
+                            or any(ord(c) < 32 for c in member.name)
+                            or any(
+                                part.endswith((".", " "))
+                                or PureWindowsPath(part).is_reserved()
+                                for part in original.parts
+                            )
+                        )
+                    )
+                ):
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
@@ -439,13 +454,18 @@ class CanvasExtensionBackendManager:
                 if not parts:
                     continue
                 relative = PurePosixPath(*parts)
-                if relative in seen or not (
+                identity = (
+                    PurePosixPath(str(relative).casefold())
+                    if os.name == "nt"
+                    else relative
+                )
+                if identity in seen or not (
                     member.isfile() or member.isdir() or member.issym()
                 ):
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
-                seen.add(relative)
+                seen.add(identity)
                 target = (root / Path(*relative.parts)).resolve()
                 if not target.is_relative_to(root):
                     raise ValueError(
@@ -453,9 +473,13 @@ class CanvasExtensionBackendManager:
                     )
                 if member.issym():
                     source_path = (target.parent / member.linkname).resolve()
-                    if Path(
-                        member.linkname
-                    ).is_absolute() or not source_path.is_relative_to(root):
+                    if (
+                        Path(member.linkname).is_absolute()
+                        or not source_path.is_relative_to(root)
+                        or (
+                            os.name == "nt" and any(c in member.linkname for c in "\\:")
+                        )
+                    ):
                         raise ValueError(
                             "backend artifact contains an unsafe archive entry"
                         )
@@ -730,6 +754,8 @@ class CanvasExtensionBackendManager:
                 "backend executable must be an executable regular file inside "
                 "the prepared artifact"
             )
+        if os.name == "nt" and executable.suffix.lower() != ".exe":
+            raise ValueError("Windows backends require a native .exe entrypoint")
         argv[0] = str(executable)
         return argv
 

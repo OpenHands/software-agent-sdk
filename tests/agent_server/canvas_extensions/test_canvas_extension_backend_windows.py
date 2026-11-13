@@ -14,12 +14,16 @@ from pathlib import Path
 
 import psutil
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from openhands.agent_server.canvas_extensions import backend
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
 )
 from openhands.agent_server.canvas_extensions.installed import install_canvas_extension
 from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
+from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 
 from .conftest import write_extension
 
@@ -38,7 +42,7 @@ with open(os.path.join(data, 'runtime.json'), 'w') as f:
 print('backend-ready', flush=True)
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
+        self.send_response(503 if self.path == "/unhealthy" else 200)
         self.end_headers()
         if self.path == '/exit':
             self.wfile.flush()
@@ -196,3 +200,177 @@ asyncio.run(main())
         if server.returncode is None:
             server.kill()
         await server.wait()
+
+
+@pytest.mark.parametrize(
+    "names",
+    [("file:stream",), ("NUL",), ("trailing.",), ("a\\..\\outside",), ("File", "file")],
+)
+def test_windows_archive_rejects_ambiguous_paths(tmp_path, names):
+    archive = tmp_path / "bad.tar.gz"
+    with tarfile.open(archive, "w:gz") as target:
+        for name in names:
+            member = tarfile.TarInfo(name)
+            member.size = 1
+            target.addfile(member, io.BytesIO(b"x"))
+    destination = tmp_path / "artifact"
+    destination.mkdir()
+    with pytest.raises(ValueError, match="unsafe archive entry"):
+        CanvasExtensionBackendManager._extract_archive(archive, destination)
+
+
+async def test_windows_assignment_failure_never_executes_backend(
+    installed_backend, monkeypatch
+):
+    captured = []
+    original = backend.create_windows_job
+
+    class RefusingJob:
+        def __init__(self):
+            self.job = original()
+
+        def assign(self, pid):
+            captured.append(pid)
+            raise OSError("job assignment refused")
+
+        def active_processes(self):
+            return self.job.active_processes()
+
+        def terminate(self):
+            self.job.terminate()
+
+        def close(self):
+            self.job.close()
+
+    monkeypatch.setattr(backend, "create_windows_job", RefusingJob)
+    manager = CanvasExtensionBackendManager(*installed_backend)
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    try:
+        await manager.prepare("my-extension", revision)
+        result = await manager.start("my-extension", revision)
+        assert result.state == "unhealthy"
+        assert "job assignment refused" in (result.detail or "")
+        assert len(captured) == 1
+        await _dead(*captured)
+        assert not (manager.data_dir / "my-extension" / "runtime.json").exists()
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("operation", ["disable", "uninstall"])
+def test_windows_http_removal_stops_owned_tree(
+    installed_backend, monkeypatch, operation
+):
+    installed, state = installed_backend
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions.installed.get_installed_canvas_extensions_dir",
+        lambda: installed,
+    )
+    manager = CanvasExtensionBackendManager(installed, state)
+    app = FastAPI()
+    app.state.canvas_extension_backend_manager = manager
+    app.include_router(canvas_extensions_router)
+    with TestClient(app) as client:
+        root = "/canvas-extensions/installed/my-extension"
+        revision = manager.revision("my-extension")
+        assert (
+            client.post(
+                root + "/backend/prepare", json={"revision": revision}
+            ).status_code
+            == 200
+        )
+        result = client.post(root + "/backend/start", json={"revision": revision})
+        assert result.json()["state"] == "ready", result.text
+        runtime_path = manager.data_dir / "my-extension" / "runtime.json"
+        runtime = json.loads(runtime_path.read_text())
+        response = (
+            client.patch(root, json={"enabled": False})
+            if operation == "disable"
+            else client.delete(root)
+        )
+        assert response.status_code == 200, response.text
+        assert not psutil.pid_exists(runtime["pid"])
+        assert not psutil.pid_exists(runtime["child"])
+        assert runtime_path.is_file()
+
+
+@pytest.mark.parametrize("operation", ["timeout", "stop"])
+async def test_windows_unhealthy_start_cleans_tree(installed_backend, operation):
+    installed, state = installed_backend
+    path = installed / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(path.read_text())
+    manifest["backend"]["health"].update(path="/unhealthy", timeout_seconds=2)
+    path.write_text(json.dumps(manifest))
+    manager = CanvasExtensionBackendManager(installed, state)
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    try:
+        await manager.prepare("my-extension", revision)
+        pending = asyncio.create_task(manager.start("my-extension", revision))
+        runtime_path = manager.data_dir / "my-extension" / "runtime.json"
+        deadline = time.monotonic() + 15
+        while not runtime_path.exists():
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.05)
+        if operation == "stop":
+            assert (await manager.stop("my-extension")).state == "stopped"
+        result = await pending
+        assert result.state == ("unhealthy" if operation == "timeout" else "stopped")
+        runtime = json.loads(runtime_path.read_text())
+        await _dead(runtime["pid"], runtime["child"])
+    finally:
+        await manager.shutdown()
+
+
+async def test_windows_backend_exit_reclaims_children(installed_backend):
+    manager = CanvasExtensionBackendManager(*installed_backend)
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    try:
+        await manager.prepare("my-extension", revision)
+        status = await manager.start("my-extension", revision)
+        assert status.state == "ready", status.detail
+        runtime = json.loads(
+            (manager.data_dir / "my-extension" / "runtime.json").read_text()
+        )
+        psutil.Process(runtime["pid"]).kill()
+        deadline = time.monotonic() + 10
+        while (await manager.status("my-extension")).state != "unhealthy":
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.05)
+        await _dead(runtime["pid"], runtime["child"])
+        assert manager.ready_endpoint("my-extension") is None
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OPENHANDS_TEST_SERVER_BINARY"),
+    reason="the packaged-server CI job supplies the built executable",
+)
+async def test_windows_frozen_launcher(installed_backend, monkeypatch):
+    binary = Path(os.environ["OPENHANDS_TEST_SERVER_BINARY"])
+    assert binary.is_file()
+    monkeypatch.setattr(
+        backend,
+        "launcher_argv",
+        lambda argv: [str(binary), "--canvas-backend-launcher", *argv],
+    )
+    manager = CanvasExtensionBackendManager(*installed_backend)
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    try:
+        await manager.prepare("my-extension", revision)
+        result = await manager.start("my-extension", revision)
+        assert result.state == "ready", (
+            result.detail,
+            (await manager.logs("my-extension", 4096)).logs,
+        )
+        runtime = json.loads(
+            (manager.data_dir / "my-extension" / "runtime.json").read_text()
+        )
+        await manager.shutdown()
+        await _dead(runtime["pid"], runtime["child"])
+    finally:
+        await manager.shutdown()
