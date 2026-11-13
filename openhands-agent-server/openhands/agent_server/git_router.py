@@ -6,9 +6,9 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Path as PathParam, Query, Request
+from fastapi import APIRouter, Depends, Path as PathParam, Query
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.dependencies import get_secrets_store
 from openhands.agent_server.errors import error_for_status, error_responses
 from openhands.agent_server.git_provider_service import (
     GitProviderAPIError,
@@ -17,6 +17,7 @@ from openhands.agent_server.git_provider_service import (
     get_provider_pull_request,
     search_provider_repositories,
 )
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.errors import Conflict, Invalid, RateLimited, Unprocessable
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
@@ -140,7 +141,6 @@ async def _get_commit_file_diff(path: str, commit: str) -> GitDiff:
 
 @git_router.get("/repositories/search", response_model=GitProviderRepositoryPage)
 async def git_repositories_search(
-    request: Request,
     provider: Annotated[GitProvider, Query(description="Git provider to search")],
     query: Annotated[
         str | None, Query(description="Optional repository name filter")
@@ -151,11 +151,12 @@ async def git_repositories_search(
     page_id: Annotated[
         str | None, Query(description="Provider-specific page cursor")
     ] = None,
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> GitProviderRepositoryPage:
     """List repositories accessible to a configured git provider token."""
     try:
         return await search_provider_repositories(
-            get_config(request),
+            secrets_store,
             provider,
             query=query,
             limit=limit,
@@ -188,20 +189,20 @@ MISSING_PROVIDER_TOKEN_CODE = "missing_provider_token"
     ),
 )
 async def git_pull_request_status(
-    request: Request,
     owner: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
     repo: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
     number: Annotated[int, PathParam(ge=1)],
     provider: Annotated[
         GitProvider, Query(description="Git provider hosting the repository")
     ],
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> GitPullRequestStatus:
     """Read a pull request's state and the combined CI result of its head commit."""
     if owner in _DOT_SEGMENTS or repo in _DOT_SEGMENTS:
         raise Unprocessable("'owner' and 'repo' must not be '.' or '..'")
     try:
         return await get_provider_pull_request(
-            get_config(request), provider, owner, repo, number
+            secrets_store, provider, owner, repo, number
         )
     except UnsupportedGitProviderError as e:
         raise Invalid(str(e)) from e
