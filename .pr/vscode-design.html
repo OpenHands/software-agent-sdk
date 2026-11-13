@@ -1,7 +1,7 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Native macOS App backends</title><style>body{font:16px/1.6 system-ui;color:#222;background:#fdfdfb;margin:0}main{max-width:960px;margin:auto;padding:40px}nav{padding:16px;background:#f3f1ec}a{color:#294eaa}h1{font-size:36px}h2{margin-top:42px}pre{overflow:auto;padding:18px;background:#f3f1ec;font:13px/1.5 monospace}.callout{border-left:4px solid #b25b0e;padding:16px;background:#fff2e5}svg{width:100%;height:auto}text{font:15px system-ui;fill:#222}rect{fill:#f7f6f1;stroke:#aaa}.changed{fill:#fff2e5;stroke:#b25b0e}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}section{border-top:1px solid #ddd;margin-top:24px}summary{cursor:pointer}</style><main><h1>Native macOS App backends</h1><p>Agent Server can select macOS artifacts, safely materialize archive file links, and own backend processes across stop and crash recovery. Linux keeps its existing process identity representation.</p><p class="callout">Compatibility: additional_artifacts is optional. The existing artifacts enum remains Linux-only, preserving the published OpenAPI response contract. Windows remains unsupported by this change.</p><nav><a href="#s0">An additive platform map preserves the API</a> · <a href="#s1">Extraction and lifecycle work on macOS</a> · <a href="#s2">Real process tests cover native cleanup</a> · <a href="#s3">Mac runners execute all suites</a></nav><h2>API before → after</h2><pre>Before: artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Native macOS App backends</title><style>body{font:16px/1.6 system-ui;color:#222;background:#fdfdfb;margin:0}main{max-width:960px;margin:auto;padding:40px}nav{padding:16px;background:#f3f1ec}a{color:#294eaa}h1{font-size:36px}h2{margin-top:42px}pre{overflow:auto;padding:18px;background:#f3f1ec;font:13px/1.5 monospace}.callout{border-left:4px solid #b25b0e;padding:16px;background:#fff2e5}svg{width:100%;height:auto}text{font:15px system-ui;fill:#222}rect{fill:#f7f6f1;stroke:#aaa}.changed{fill:#fff2e5;stroke:#b25b0e}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}section{border-top:1px solid #ddd;margin-top:24px}summary{cursor:pointer}</style><main><h1>Native macOS App backends</h1><p>Agent Server can select macOS artifacts, safely materialize archive file links, and own backend processes across stop and crash recovery. Linux keeps its existing process identity representation.</p><p class="callout">Compatibility: additional_artifacts is optional. The existing artifacts enum remains Linux-only, preserving the published OpenAPI response contract. Windows remains unsupported by this change.</p><nav><a href="#s0">An additive platform map preserves the API</a> · <a href="#s1">Extraction and lifecycle work on macOS</a> · <a href="#s2">Real process tests cover native cleanup</a> · <a href="#s3">Mac runners execute all suites</a> · <a href="#s4">Give the PTY a real viewport</a> · <a href="#s5">Use an available UTF-8 locale</a> · <a href="#s6">Test inherited priority correctly</a></nav><h2>API before → after</h2><pre>Before: artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
 After:  artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
         additional_artifacts?: Record&lt;string, Artifact&gt;
-Resolution: additional_artifacts, then canonical artifacts win overlaps.</pre><section id="s0"><h2>An additive platform map preserves the API</h2><p>CanvasExtensionBackend keeps canonical Linux keys. Additional platform keys are validated artifacts; unknown platforms are inert.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">artifacts: Linux keys only</text><text x="485" y="80">artifacts + optional additional_artifacts</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
+Resolution: additional_artifacts, then canonical artifacts win overlaps.</pre><section id="s0"><h2>An additive platform map preserves the API</h2><p>CanvasExtensionBackend keeps canonical Linux keys. Additional platform keys are validated artifacts; unknown platforms are inert.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">artifacts: Linux keys only</text><text x="485" y="80">artifacts + optional additional_artifacts</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
 index dcc4493a..8edd5119 100644
 --- a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
 +++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
@@ -28,7 +28,7 @@ index dcc4493a..8edd5119 100644
 +        description=&quot;Additional platform artifacts; unknown platforms are ignored.&quot;,
      )
      argv: list[str] = Field(min_length=1)
-     health: CanvasExtensionBackendHealth = Field(</pre></details></section><section id="s1"><h2>Extraction and lifecycle work on macOS</h2><p>current_platform selects Darwin x64/arm64. _extract_archive copies contained regular-file links after extraction; absolute, escaping, cyclic and unresolved links fail. Root chmod follows atomic rename. _process_start_time and _record_is_owned use psutil on Darwin. _group_alive confirms that an EPERM group has no live members.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Reject macOS and archive file links</text><text x="485" y="80">Select Darwin; materialize contained files</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L191">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:191</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L197">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:197</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
+     health: CanvasExtensionBackendHealth = Field(</pre></details></section><section id="s1"><h2>Extraction and lifecycle work on macOS</h2><p>current_platform selects Darwin x64/arm64. _extract_archive copies contained regular-file links after extraction; absolute, escaping, cyclic and unresolved links fail. Root chmod follows atomic rename. _process_start_time and _record_is_owned use psutil on Darwin. _group_alive confirms that an EPERM group has no live members.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Reject macOS and archive file links</text><text x="485" y="80">Select Darwin; materialize contained files</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L191">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:191</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L197">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:197</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
 index a387fe0b..854b4fe1 100644
 --- a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
 +++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
@@ -213,8 +213,8 @@ index a387fe0b..854b4fe1 100644
 +        return any(argument.startswith(prefix) for argument in arguments)
  
      async def reap_orphans(self) -&gt; None:
-         &quot;&quot;&quot;Stop backends left running by a server that died without teardown.</pre></details></section><section id="s2"><h2>Real process tests cover native cleanup</h2><p>Existing lifecycle tests now run on macOS with the active Python interpreter. Regression tests exercise contained archive links and a real exited, unreaped process group. Focused Mac validation: 44 passed, one skip including MCP cleanup tests.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Linux fixture; no zombie-group regression</text><text x="485" y="80">Darwin fixture + real zombie regression</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1280">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1280</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
-index 305e52ec..6c46666c 100644
+         &quot;&quot;&quot;Stop backends left running by a server that died without teardown.</pre></details></section><section id="s2"><h2>Real process tests cover native cleanup</h2><p>Existing lifecycle tests now run on macOS with the active Python interpreter. Regression tests exercise contained archive links and a real exited, unreaped process group. Focused Mac validation: 44 passed, one skip including MCP cleanup tests.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Linux fixture; no zombie-group regression</text><text x="485" y="80">Darwin fixture + real zombie regression</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1287">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1287</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
+index 305e52ec..4ec299b5 100644
 --- a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
 +++ b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
 @@ -5,6 +5,7 @@ import io
@@ -241,7 +241,7 @@ index 305e52ec..6c46666c 100644
      _Runtime,
  )
  from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
-@@ -40,7 +43,9 @@ from openhands.agent_server.persistence.store import FileSecretsStore
+@@ -40,8 +43,13 @@ from openhands.agent_server.persistence.store import FileSecretsStore
  from .conftest import write_extension
  
  
@@ -250,9 +250,13 @@ index 305e52ec..6c46666c 100644
 +    f&quot;#!{sys.executable}\n&quot;
 +    + &quot;&quot;&quot;
  import http.server
++import socket
++# Loopback test servers do not need reverse DNS (runner-images#14409).
++socket.getfqdn = lambda name=&#x27;&#x27;: name
  import json
  import os
-@@ -74,6 +79,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
+ import subprocess
+@@ -74,6 +82,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
  print(\&quot;backend-ready\&quot;, flush=True)
  http.server.HTTPServer((\&quot;127.0.0.1\&quot;, port), Handler).serve_forever()
  &quot;&quot;&quot;
@@ -260,7 +264,7 @@ index 305e52ec..6c46666c 100644
  
  
  def _write_backend_extension(directory: Path, *, timeout: float = 3) -&gt; Path:
-@@ -94,6 +100,10 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -&gt; Path:
+@@ -94,6 +103,10 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -&gt; Path:
              &quot;linux-amd64&quot;: {&quot;path&quot;: archive.name, &quot;sha256&quot;: checksum},
              &quot;linux-arm64&quot;: {&quot;path&quot;: archive.name, &quot;sha256&quot;: checksum},
          },
@@ -271,7 +275,7 @@ index 305e52ec..6c46666c 100644
          &quot;argv&quot;: [
              &quot;{artifact_dir}/server.py&quot;,
              &quot;{port}&quot;,
-@@ -127,7 +137,7 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
+@@ -127,7 +140,7 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
  
  requires_linux_backend = pytest.mark.skipif(
      CanvasExtensionBackendManager.current_platform() is None,
@@ -280,7 +284,7 @@ index 305e52ec..6c46666c 100644
  )
  
  
-@@ -136,7 +146,7 @@ requires_linux_backend = pytest.mark.skipif(
+@@ -136,7 +149,7 @@ requires_linux_backend = pytest.mark.skipif(
      CanvasExtensionBackendManager.current_platform() is not None,
      reason=&quot;backend artifacts are supported on this platform&quot;,
  )
@@ -289,7 +293,7 @@ index 305e52ec..6c46666c 100644
      source = _write_backend_extension(tmp_path / &quot;source&quot; / &quot;my-extension&quot;)
      installed_dir = tmp_path / &quot;installed&quot;
      install_canvas_extension(str(source), installed_dir=installed_dir)
-@@ -324,7 +334,9 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
+@@ -324,7 +337,9 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
      manifest_path = source / MANIFEST_FILENAME
      manifest = json.loads(manifest_path.read_text())
      checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -300,7 +304,7 @@ index 305e52ec..6c46666c 100644
          artifact[&quot;sha256&quot;] = checksum
      manifest_path.write_text(json.dumps(manifest))
      unsafe_installed = tmp_path / &quot;unsafe-installed&quot;
-@@ -348,7 +360,9 @@ def _install_with_artifact_bytes(
+@@ -348,7 +363,9 @@ def _install_with_artifact_bytes(
      manifest_path = source / MANIFEST_FILENAME
      manifest = json.loads(manifest_path.read_text())
      checksum = hashlib.sha256(payload).hexdigest()
@@ -311,7 +315,16 @@ index 305e52ec..6c46666c 100644
          artifact[&quot;sha256&quot;] = checksum
      manifest_path.write_text(json.dumps(manifest))
      installed_dir = tmp_path / &quot;installed&quot;
-@@ -453,7 +467,9 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
+@@ -444,7 +461,7 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
+     installed_script_archive = (
+         installed_dir / &quot;my-extension&quot; / &quot;backend-linux-amd64.tar.gz&quot;
+     )
+-    payload = b&quot;#!/usr/bin/python3\nimport time\ntime.sleep(300)\n&quot;
++    payload = f&quot;#!{sys.executable}\nimport time\ntime.sleep(300)\n&quot;.encode()
+     with tarfile.open(installed_script_archive, &quot;w:gz&quot;) as tar:
+         info = tarfile.TarInfo(&quot;server.py&quot;)
+         info.mode = 0o755
+@@ -453,7 +470,9 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
      manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
      manifest = json.loads(manifest_path.read_text())
      checksum = hashlib.sha256(installed_script_archive.read_bytes()).hexdigest()
@@ -322,7 +335,16 @@ index 305e52ec..6c46666c 100644
          artifact[&quot;sha256&quot;] = checksum
      manifest_path.write_text(json.dumps(manifest))
  
-@@ -507,7 +523,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
+@@ -498,7 +517,7 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
+     # health probe never succeeds and `start()` would otherwise block for the
+     # whole 30s timeout while holding the name lock.
+     archive = installed_dir / &quot;my-extension&quot; / &quot;backend-linux-amd64.tar.gz&quot;
+-    payload = b&quot;#!/usr/bin/python3\nimport time\ntime.sleep(300)\n&quot;
++    payload = f&quot;#!{sys.executable}\nimport time\ntime.sleep(300)\n&quot;.encode()
+     with tarfile.open(archive, &quot;w:gz&quot;) as tar:
+         info = tarfile.TarInfo(&quot;server.py&quot;)
+         info.mode = 0o755
+@@ -507,7 +526,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
      manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
      manifest = json.loads(manifest_path.read_text())
      checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -333,7 +355,7 @@ index 305e52ec..6c46666c 100644
          artifact[&quot;sha256&quot;] = checksum
      manifest_path.write_text(json.dumps(manifest))
  
-@@ -541,7 +559,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
+@@ -541,8 +562,13 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
      assert (await manager.delete_data(&quot;my-extension&quot;)).state == &quot;stopped&quot;
  
  
@@ -342,9 +364,13 @@ index 305e52ec..6c46666c 100644
 +    f&quot;#!{sys.executable}\n&quot;
 +    + &quot;&quot;&quot;
  import http.server
++import socket
++# Loopback test servers do not need reverse DNS (runner-images#14409).
++socket.getfqdn = lambda name=&#x27;&#x27;: name
  import sys
  import time
-@@ -562,6 +582,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
+ 
+@@ -562,6 +588,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
  server = http.server.ThreadingHTTPServer((&quot;127.0.0.1&quot;, int(sys.argv[1])), Handler)
  server.serve_forever()
  &quot;&quot;&quot;
@@ -352,7 +378,7 @@ index 305e52ec..6c46666c 100644
  
  
  @requires_linux_backend
-@@ -581,7 +602,9 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
+@@ -581,7 +608,9 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
      manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
      manifest = json.loads(manifest_path.read_text())
      checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -363,7 +389,20 @@ index 305e52ec..6c46666c 100644
          artifact[&quot;sha256&quot;] = checksum
      manifest_path.write_text(json.dumps(manifest))
  
-@@ -742,7 +765,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
+@@ -716,9 +745,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
+     # A backend whose descendant survives SIGTERM: the leader exits promptly,
+     # so escalating only on the leader&#x27;s exit code would leak the descendant.
+     archive = installed_dir / &quot;my-extension&quot; / &quot;backend-linux-amd64.tar.gz&quot;
+-    payload = (
+-        b&quot;#!/usr/bin/python3\n&quot;
+-        b&quot;import http.server, os, signal, subprocess, sys\n&quot;
++    payload = f&quot;#!{sys.executable}\n&quot;.encode() + (
++        b&quot;import http.server, os, signal, socket, subprocess, sys\n&quot;
++        b&quot;socket.getfqdn = lambda name=&#x27;&#x27;: name\n&quot;
+         b&quot;port = int(sys.argv[1])\n&quot;
+         b&quot;data_dir = sys.argv[2]\n&quot;
+         b&quot;os.makedirs(data_dir, exist_ok=True)\n&quot;
+@@ -742,7 +771,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
      manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
      manifest = json.loads(manifest_path.read_text())
      checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -374,7 +413,17 @@ index 305e52ec..6c46666c 100644
          artifact[&quot;sha256&quot;] = checksum
      manifest_path.write_text(json.dumps(manifest))
  
-@@ -793,11 +818,9 @@ asyncio.run(main())
+@@ -750,7 +781,8 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
+     revision = manager.revision(&quot;my-extension&quot;)
+     assert revision is not None
+     await manager.prepare(&quot;my-extension&quot;, revision)
+-    assert (await manager.start(&quot;my-extension&quot;, revision)).state == &quot;ready&quot;
++    started = await manager.start(&quot;my-extension&quot;, revision)
++    assert started.state == &quot;ready&quot;, (started, await manager.logs(&quot;my-extension&quot;, 8192))
+     child_pid = int((manager.data_dir / &quot;my-extension&quot; / &quot;child&quot;).read_text())
+     runtime = manager._runtimes[&quot;my-extension&quot;]
+     assert runtime.process is not None
+@@ -793,11 +825,9 @@ asyncio.run(main())
  
  def _alive(pid: int) -&gt; bool:
      try:
@@ -388,7 +437,7 @@ index 305e52ec..6c46666c 100644
  
  
  @requires_linux_backend
-@@ -835,10 +858,7 @@ async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path)
+@@ -835,10 +865,7 @@ async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path)
          &quot;/bin/sleep&quot;, &quot;300&quot;, start_new_session=True
      )
      forged = state_dir / &quot;run&quot; / f&quot;{bystander.pid}.json&quot;
@@ -400,7 +449,7 @@ index 305e52ec..6c46666c 100644
      forged.write_text(json.dumps(record))
  
      manager = CanvasExtensionBackendManager(installed_dir, state_dir)
-@@ -1229,3 +1249,43 @@ async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
+@@ -1229,3 +1256,43 @@ async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
      assert &quot;&lt;secret-hidden&gt;&quot; in output
      assert &quot;é&quot; in output
      assert &quot;\ufffd&quot; not in output
@@ -443,26 +492,31 @@ index 305e52ec..6c46666c 100644
 +        assert not CanvasExtensionBackendManager._group_alive(process.pid)
 +        CanvasExtensionBackendManager._signal_group(process.pid, signal.SIGTERM)
 +    finally:
-+        process.wait(timeout=10)</pre></details></section><section id="s3"><h2>Mac runners execute all suites</h2><p>Install tmux and verify the runner-provided Chrome. Run browser tests separately without fork to avoid macOS framework crashes; keep terminal process isolation. No test coverage is removed.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No tmux; browsers inherit forked runtime</text><text x="485" y="80">Prerequisites + separate browser suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/tests-macos.yml b/.github/workflows/tests-macos.yml
-index b0513c42..b5814342 100644
++        process.wait(timeout=10)</pre></details></section><section id="s3"><h2>Mac runners execute all suites</h2><p>Install tmux and verify the runner-provided Chrome. Fork only terminal tests; browser and other tools call macOS frameworks that crash after fork. Keep all suites enabled, with per-test diagnostics for hangs.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No tmux; browsers inherit forked runtime</text><text x="485" y="80">Prerequisites + isolated terminal suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/tests-macos.yml b/.github/workflows/tests-macos.yml
+index b0513c42..d5ab71b7 100644
 --- a/.github/workflows/tests-macos.yml
 +++ b/.github/workflows/tests-macos.yml
-@@ -35,9 +35,12 @@ jobs:
+@@ -35,9 +35,17 @@ jobs:
                  include:
                      - suite: sdk
                        args: -n auto tests/sdk
 -                    # --forked: terminal tests conflict when run in parallel
-+                    # Isolate terminal state, but do not fork initialized macOS
-+                    # browser/Objective-C frameworks (which can crash after fork).
++                    # Only terminal tests need fork isolation. Other tools can
++                    # load macOS frameworks that are unsafe after fork.
++                    - suite: terminal
++                      args: --forked --timeout=180 --timeout-method=thread tests/tools/terminal
                      - suite: tools
 -                      args: --forked tests/tools
-+                      args: --forked --ignore=tests/tools/browser_use tests/tools
++                      args: &gt;-
++                          --timeout=180 --timeout-method=thread
++                          --ignore=tests/tools/browser_use
++                          --ignore=tests/tools/terminal tests/tools
 +                    - suite: browser
 +                      args: tests/tools/browser_use
                      - suite: agent_server
                        args: -n auto tests/agent_server
                      - suite: workspace
-@@ -58,8 +61,15 @@ jobs:
+@@ -58,8 +66,15 @@ jobs:
                    enable-cache: true
                    python-version: &#x27;3.13&#x27;
  
@@ -472,9 +526,85 @@ index b0513c42..b5814342 100644
              - name: Install deps
                run: uv sync --frozen --group dev
  
-+            - name: Install browser prerequisite
++            - name: Verify runner browser prerequisite
 +              if: matrix.suite == &#x27;browser&#x27;
-+              run: uv run --frozen playwright install chromium
++              run: &#x27;&quot;/Applications/Google Chrome.app/Contents/MacOS/Google Chrome&quot; --version&#x27;
 +
              - name: Run ${{ matrix.suite }} tests
-               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}</pre></details></section><h2>Supporting files</h2><table><tr><th>File</th><th>Change</th></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/.github/workflows/tests-macos.yml">.github/workflows/tests-macos.yml</a></td><td>+12 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py</a></td><td>+72 / −14</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py</a></td><td>+7 / −3</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/pyproject.toml">openhands-agent-server/pyproject.toml</a></td><td>+1 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py</a></td><td>+78 / −18</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py</a></td><td>+3 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/uv.lock">uv.lock</a></td><td>+2 / −0</td></tr></table><p>Temporary PR review aid. The repository release workflow removes root .pr artifacts after merge.</p></main></html>
+               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}</pre></details></section><section id="s4"><h2>Give the PTY a real viewport</h2><p>Native Mac CI exposed zero-sized PTYs: readline inserted spaces into echoed completion markers. Set the same bounded viewport used by tmux before starting the shell. Existing heredoc integration tests exercise the regression.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Zero-sized PTY; corrupted marker echoes</text><text x="485" y="80">Explicit viewport; intact completion markers</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L160">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:160</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L163">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:163</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
+index 2672b7fc..7a70526d 100644
+--- a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
++++ b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
+@@ -21,12 +21,15 @@ if platform.system() == &quot;Windows&quot;:
+ import fcntl
+ import pty
+ import select
++import termios
+ 
+ from openhands.sdk.logger import get_logger
+ from openhands.tools.terminal.constants import (
+     CMD_OUTPUT_PS1_BEGIN,
+     CMD_OUTPUT_PS1_END,
+     HISTORY_LIMIT,
++    TMUX_SESSION_HEIGHT,
++    TMUX_SESSION_WIDTH,
+ )
+ from openhands.tools.terminal.env import (
+     build_terminal_env,
+@@ -158,6 +161,9 @@ class SubprocessTerminal(TerminalInterface):
+ 
+         # Create a PTY; give the slave to the child, keep the master
+         master_fd, slave_fd = pty.openpty()
++        # A new PTY has a zero-sized viewport on macOS. Readline otherwise
++        # inserts wrapping spaces into echoed commands and completion markers.
++        termios.tcsetwinsize(slave_fd, (TMUX_SESSION_HEIGHT, TMUX_SESSION_WIDTH))
+ 
+         logger.debug(&quot;Initializing PTY terminal with: %s&quot;, &quot; &quot;.join(bash_cmd))
+         try:</pre></details></section><section id="s5"><h2>Use an available UTF-8 locale</h2><p>Use en_US.UTF-8 on macOS, retaining C.UTF-8 elsewhere. The integration test checks the shell encoding, rather than a particular locale name.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">One fallback locale for all platforms</text><text x="485" y="80">Platform-available UTF-8 fallback</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-tools/openhands/tools/terminal/env.py#L16">openhands-tools/openhands/tools/terminal/env.py:16</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/env.py#L18">openhands-tools/openhands/tools/terminal/env.py:18</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/env.py b/openhands-tools/openhands/tools/terminal/env.py
+index 20243ba8..23756e0c 100644
+--- a/openhands-tools/openhands/tools/terminal/env.py
++++ b/openhands-tools/openhands/tools/terminal/env.py
+@@ -4,6 +4,7 @@ import codecs
+ import locale
+ import os
+ import re
++import sys
+ from collections.abc import Mapping
+ 
+ from openhands.sdk.logger import get_logger
+@@ -13,7 +14,8 @@ from openhands.sdk.utils import sanitized_env
+ logger = get_logger(__name__)
+ 
+ ENV_VAR_NAME_RE = re.compile(r&quot;^[a-zA-Z_][a-zA-Z0-9_]*$&quot;)
+-UTF8_FALLBACK_LOCALE = &quot;C.UTF-8&quot;
++# C.UTF-8 is unavailable on older supported macOS releases.
++UTF8_FALLBACK_LOCALE = &quot;en_US.UTF-8&quot; if sys.platform == &quot;darwin&quot; else &quot;C.UTF-8&quot;
+ 
+ 
+ def normalize_terminal_env(</pre></details></section><section id="s6"><h2>Test inherited priority correctly</h2><p>Hosted Mac runners already use utility QoS. Compare the resulting priority against an independently launched utility-clamped process and the inherited server priority; a clamp cannot lower a priority already below its ceiling. Local tests pass under both default and utility parent priority.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Require a strict priority decrease</text><text x="485" y="80">Verify the inherited utility ceiling</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_process_priority.py b/tests/tools/terminal/test_process_priority.py
+index 4aafd9c8..e5ea271d 100644
+--- a/tests/tools/terminal/test_process_priority.py
++++ b/tests/tools/terminal/test_process_priority.py
+@@ -83,7 +83,22 @@ def _server_priority() -&gt; int:
+ 
+ def _assert_lowered(agent: int, server: int) -&gt; None:
+     if SYSTEM == &quot;Darwin&quot;:
+-        assert agent &lt; server
++        # Hosted runners may already run at utility QoS. A clamp cannot lower
++        # an inherited priority that is already at or below its ceiling.
++        utility = int(
++            subprocess.check_output(
++                [
++                    &quot;/usr/sbin/taskpolicy&quot;,
++                    &quot;-c&quot;,
++                    &quot;utility&quot;,
++                    &quot;sh&quot;,
++                    &quot;-c&quot;,
++                    &quot;ps -o pri= -p $$&quot;,
++                ],
++                text=True,
++            )
++        )
++        assert agent == min(server, utility)
+     else:
+         assert agent == min(19, server + 10)</pre></details></section><h2>Supporting files</h2><table><tr><th>File</th><th>Change</th></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/.github/workflows/tests-macos.yml">.github/workflows/tests-macos.yml</a></td><td>+17 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py</a></td><td>+72 / −14</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py</a></td><td>+7 / −3</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/pyproject.toml">openhands-agent-server/pyproject.toml</a></td><td>+1 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/env.py">openhands-tools/openhands/tools/terminal/env.py</a></td><td>+3 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py</a></td><td>+6 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py</a></td><td>+91 / −24</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/cross/test_verify_agent_server_skill.py">tests/cross/test_verify_agent_server_skill.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py</a></td><td>+3 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/browser_use/test_browser_executor_e2e.py">tests/tools/browser_use/test_browser_executor_e2e.py</a></td><td>+6 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_process_priority.py">tests/tools/terminal/test_process_priority.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_terminal_exit_code_top_level.py">tests/tools/terminal/test_terminal_exit_code_top_level.py</a></td><td>+2 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_terminal_session.py">tests/tools/terminal/test_terminal_session.py</a></td><td>+19 / −13</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_tmux_pane_pool.py">tests/tools/terminal/test_tmux_pane_pool.py</a></td><td>+3 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/uv.lock">uv.lock</a></td><td>+2 / −0</td></tr></table><p>Temporary PR review aid. The repository release workflow removes root .pr artifacts after merge.</p></main></html>
