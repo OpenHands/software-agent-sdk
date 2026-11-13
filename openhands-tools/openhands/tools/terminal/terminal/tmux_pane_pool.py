@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 import libtmux
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
@@ -58,6 +59,15 @@ class PooledTmuxTerminal(TmuxTerminal):
             with suppress(Exception):
                 self.window.kill()
             self._closed = True
+
+    def read_screen(self) -> str:
+        # tmux reports a vanished pane or server on stderr instead of raising.
+        # Raise it, so the pool recovers at the next read rather than waiting
+        # out the command timeout on a screen that will never change.
+        result = self.pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.returncode != 0:
+            raise LibTmuxException(*result.stderr)
+        return "\n".join(line.rstrip() for line in result.stdout)
 
 
 @dataclass(slots=True)
@@ -255,13 +265,13 @@ class TmuxPanePool:
                 return prefer
             if self._available:
                 terminal = self._available.popleft()
-                logger.debug(f"Checked out existing pane: {terminal.pane}")
+                logger.debug("Checked out existing pane: %s", terminal.pane)
                 return terminal
 
             # Create a new pane (still under max_panes thanks to semaphore)
             terminal = self._create_pane()
             self._all_panes.append(terminal)
-            logger.debug(f"Checked out new pane: {terminal.pane}")
+            logger.debug("Checked out new pane: %s", terminal.pane)
             return terminal
 
     def checkin(self, terminal: PooledTmuxTerminal) -> None:
@@ -274,7 +284,7 @@ class TmuxPanePool:
                 self._available.append(terminal)
 
         self._semaphore.release()
-        logger.debug(f"Checked in pane: {terminal.pane}")
+        logger.debug("Checked in pane: %s", terminal.pane)
 
     def replace(self, old_terminal: PooledTmuxTerminal) -> PooledTmuxTerminal:
         """Replace a checked-out pane with a fresh one.
