@@ -88,6 +88,7 @@ def test_openhands_profile_round_trips() -> None:
         llm_profile_ref="default",
         revision=3,
         mcp_server_refs=["fetch"],
+        mcp_tool_policy={"fetch": {"include": ["get"], "exclude": ["delete"]}},
         disabled_skills=["pdf-tools"],
         system_message_suffix="be terse",
         tool_concurrency_limit=4,
@@ -101,6 +102,8 @@ def test_openhands_profile_round_trips() -> None:
     assert reloaded.llm_profile_ref == "default"
     assert reloaded.revision == 3
     assert reloaded.mcp_server_refs == ["fetch"]
+    assert reloaded.mcp_tool_policy["fetch"].include == ["get"]
+    assert reloaded.mcp_tool_policy["fetch"].exclude == ["delete"]
     assert reloaded.disabled_skills == ["pdf-tools"]
     assert reloaded.tool_concurrency_limit == 4
 
@@ -359,6 +362,21 @@ def test_mcp_server_refs_null_vs_empty_are_distinct() -> None:
 def test_mcp_server_refs_default_is_null() -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
     assert profile.mcp_server_refs is None
+
+
+def test_mcp_tool_policy_defaults_and_rejects_invalid_rules() -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
+    assert profile.mcp_tool_policy == {}
+    empty = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="d", mcp_tool_policy={"docs": {"include": []}}
+    )
+    assert empty.mcp_tool_policy["docs"].include == []
+    with pytest.raises(ValidationError):
+        OpenHandsAgentProfile(
+            name="oh", llm_profile_ref="d", mcp_tool_policy={"docs": {"regex": ".*"}}
+        )
+    with pytest.raises(ValidationError):
+        ACPAgentProfile(name="acp", mcp_tool_policy={"docs": {"include": []}})
 
 
 # ---------------------------------------------------------------------------

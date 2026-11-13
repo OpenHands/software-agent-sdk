@@ -80,6 +80,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.gateway import MCPToolGateway
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -387,6 +388,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_gateway: MCPToolGateway | None = None
         self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -492,7 +494,7 @@ class LocalConversation(BaseConversation):
             with self._state:
                 self._state.ambient_plugin_skills = []
                 self._state.ambient_plugin_mcp_servers = []
-        self.agent = agent
+        self.agent = self._state.agent
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -1698,14 +1700,55 @@ class LocalConversation(BaseConversation):
     ) -> None:
         self.agent._on_mcp_tools_reconciled(client, tools)
 
+    def _prepare_mcp_gateway(self) -> None:
+        from openhands.sdk.agent.agent import Agent
+
+        if (
+            not isinstance(self.agent, Agent)
+            or not self.agent.mcp_config
+            or not self.agent.mcp_gateway
+        ):
+            return
+        gateway = MCPToolGateway(
+            self._state.mcp_gateway_selected_tools,
+            filter_tools_regex=self.agent.filter_tools_regex,
+            tool_policy=self.agent.mcp_tool_policy,
+        )
+        gateway.connect(self.agent.mcp_config, self._mcp_tool_provider)
+        self._mcp_gateway = self._state._mcp_gateway = gateway
+
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+        from openhands.sdk.agent.agent import Agent
+
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
+            return []
+        if isinstance(self.agent, Agent) and self.agent.mcp_gateway:
             return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
             on_tools_reconciled=self._on_mcp_tools_reconciled,
         )
+
+    @property
+    def mcp_gateway(self) -> MCPToolGateway:
+        self._ensure_agent_ready()
+        if self._mcp_gateway is None:
+            raise ValueError("MCP gateway is not enabled for this conversation")
+        return self._mcp_gateway
+
+    def select_mcp_tools(self, names: Sequence[str] | None) -> None:
+        """Change the selected gateway tools while the conversation is not running."""
+        gateway = self.mcp_gateway
+        with self._state:
+            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
+                raise RuntimeError(
+                    "Pause the conversation before changing MCP selection"
+                )
+            gateway.select_tools(names)
+            self._state.mcp_gateway_selected_tools = (
+                sorted(set(names)) if names is not None else None
+            )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -1746,6 +1789,10 @@ class LocalConversation(BaseConversation):
             repo_path=spec.repo_path,
         )
         plugin = Plugin.load(path)
+        if self._agent_ready and self._mcp_gateway and plugin.mcp_config:
+            raise ValueError(
+                "Runtime plugin MCP servers are not supported by the MCP gateway"
+            )
         logger.info(
             f"Loaded plugin '{plugin.manifest.name}'"
             + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
@@ -1863,6 +1910,7 @@ class LocalConversation(BaseConversation):
             runtime_mcp_tools: list[ToolDefinition] = []
             try:
                 if self.agent.supports_openhands_tools:
+                    self._prepare_mcp_gateway()
                     self.agent._initialize(self._state)
                     runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
                     self.agent.add_runtime_tools(runtime_mcp_tools)
@@ -1880,6 +1928,9 @@ class LocalConversation(BaseConversation):
                     self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
+                if self._mcp_gateway is not None:
+                    self._mcp_gateway.close()
+                    self._mcp_gateway = self._state._mcp_gateway = None
                 raise
 
             # Register LLMs in the registry (still holding lock).

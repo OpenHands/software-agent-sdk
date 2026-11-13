@@ -279,6 +279,7 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
+        "mcp_tool_policy": profile.mcp_tool_policy,
         "tools": _scope_sub_agents(
             profile,
             profile.tools

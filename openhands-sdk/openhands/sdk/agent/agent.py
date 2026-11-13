@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -74,6 +74,8 @@ from openhands.sdk.llm.exceptions import (
 )
 from openhands.sdk.llm.router.base import RouterLLM
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
     observe,
@@ -85,18 +87,17 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
-    from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
     ThinkAction,
 )
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
+    from openhands.sdk.tool import ToolDefinition
 
 
 logger = get_logger(__name__)
@@ -476,6 +477,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "template receives it as the `persona` kwarg."
         ),
     )
+    mcp_gateway: bool = Field(
+        default=True,
+        description=(
+            "Expose configured MCP servers through stable list_mcp_tools and "
+            "call_mcp_tool tools instead of registering each downstream tool. "
+            "Set to False to use the legacy per-tool registration mode."
+        ),
+    )
+    mcp_tool_policy: dict[str, MCPToolPolicy] = Field(
+        default_factory=dict,
+        description="Per-server MCP gateway tool rules resolved from agent settings.",
+    )
+    mcp_gateway_startup_catalog: bool = Field(
+        default=False,
+        description=(
+            "Include the initial selected MCP tool schemas in the system prompt. "
+            "Off by default to avoid large catalogs consuming context."
+        ),
+    )
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
         default_factory=ParallelToolExecutor
     )
@@ -485,6 +505,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self._parallel_executor = ParallelToolExecutor(
             max_workers=self.tool_concurrency_limit
         )
+
+    def verify(
+        self, persisted: AgentBase, events: Sequence[Any] | None = None
+    ) -> AgentBase:
+        super().verify(persisted, events=events)
+        if (
+            isinstance(persisted, Agent)
+            and self.mcp_gateway != persisted.mcp_gateway
+            and (self.mcp_config or persisted.mcp_config)
+        ):
+            # Omitted means the new default, not a request to rename old tool calls.
+            if "mcp_gateway" not in self.model_fields_set:
+                return self.model_copy(update={"mcp_gateway": persisted.mcp_gateway})
+            raise ValueError(
+                "Cannot resume conversation: MCP exposure mode changed. "
+                "Resume with the persisted mcp_gateway value or start a new "
+                "conversation."
+            )
+        return self
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         template_kwargs = super()._resolved_template_kwargs()
