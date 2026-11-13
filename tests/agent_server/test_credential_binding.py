@@ -1033,8 +1033,8 @@ async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
     """An older server could leave a start-time secret only in meta.json. The
     credential scrub rewrites that file during a load, so the secret is moved
     to base_state.json first and a load that fails afterwards keeps it."""
-    store = FileSecretsStore(tmp_path / "settings")
-    store.set_secret("CODEX_AUTH_JSON", "canonical")
+    stores = _server_stores(tmp_path / "settings")
+    stores.secrets.set_secret("CODEX_AUTH_JSON", "canonical")
     cipher = Cipher("legacy-meta-key")
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
@@ -1044,7 +1044,7 @@ async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
     )
 
     async with ConversationService(
-        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
     ) as service:
         info, _ = await service.start_conversation(request)
 
@@ -1060,7 +1060,7 @@ async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
     workspace_dir.write_text("not a directory")
 
     async with ConversationService(
-        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
     ) as service:
         with pytest.raises(OSError):
             await service.get_event_service(info.id)
@@ -1272,7 +1272,7 @@ async def test_resume_takes_legacy_meta_secrets_but_not_a_bound_credential(
     """An older server's meta.json can hold the Codex credential next to other
     start-time secrets. With a managed credential bound, the first resume takes
     over the others and keeps that one out of base_state.json."""
-    store = FileSecretsStore(tmp_path / "settings")
+    stores = _server_stores(tmp_path / "settings")
     cipher = Cipher("legacy-binding-key")
     conversations_dir = tmp_path / "conversations"
     request = StartConversationRequest(
@@ -1280,7 +1280,7 @@ async def test_resume_takes_legacy_meta_secrets_but_not_a_bound_credential(
         workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
     )
     async with ConversationService(
-        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
     ) as service:
         info, _ = await service.start_conversation(request)
 
@@ -1297,13 +1297,13 @@ async def test_resume_takes_legacy_meta_secrets_but_not_a_bound_credential(
         }.items()
     }
     meta_file.write_text(json.dumps(meta))
-    store.set_secret(
+    stores.secrets.set_secret(
         "CODEX_AUTH_JSON",
         json.dumps({"auth_mode": "chatgpt", "tokens": {"refresh_token": "r"}}),
     )
 
     async with ConversationService(
-        conversations_dir=conversations_dir, secrets_store=store, cipher=cipher
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
     ) as service:
         resumed = await service.get_event_service(info.id)
         assert resumed is not None
