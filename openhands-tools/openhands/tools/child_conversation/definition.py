@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.event.types import UnmaskedID
 from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.tool.tool import (
     Action,
@@ -55,8 +56,8 @@ class StartChildConversationAction(Action):
 class StartChildConversationObservation(Observation):
     """Result of a child conversation launch."""
 
-    conversation_id: str | None = None
-    parent_conversation_id: str | None = None
+    conversation_id: UnmaskedID | None = None
+    parent_conversation_id: UnmaskedID | None = None
     status: str | None = None
     title: str | None = None
     url: str | None = None

@@ -3,15 +3,15 @@
 from pydantic import Field
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.types import SourceType, UnmaskedID
 
 
 class LLMCompletionLogEvent(Event):
     """Event containing LLM completion log data.
 
-    When an LLM is configured with log_completions=True in a remote conversation,
-    this event streams the completion log data back to the client through WebSocket
-    instead of writing it to a file inside the Docker container.
+    When an LLM is configured with log_completions_to_file=True in a remote
+    conversation, this event streams the completion log data back to the client
+    through WebSocket instead of writing it to a file inside the Docker container.
     """
 
     source: SourceType = "environment"
@@ -27,7 +27,7 @@ class LLMCompletionLogEvent(Event):
         default="unknown",
         description="The model name for context",
     )
-    usage_id: str = Field(
+    usage_id: UnmaskedID = Field(
         default="default",
         description="The LLM usage_id that produced this log",
     )

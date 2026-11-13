@@ -899,6 +899,16 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         usage_error("--keep-previous-secret-key needs an earlier --rotate-secret-key")
     # Per restart: a later restart without the flag drops the previous key.
     run.data["keep_previous_secret_key"] = bool(args.keep_previous_secret_key)
+    if args.checkout:
+        # Upgrade or downgrade: another version of the server on the same state.
+        checkout = Path(args.checkout).resolve()
+        if not (checkout / "openhands-agent-server").is_dir():
+            usage_error(f"{checkout} is not an agent-sdk checkout")
+        run.data["checkout"] = str(checkout)
+        run.data["checkout_sha"] = git("rev-parse", "HEAD", cwd=checkout)
+        run.data["checkout_ref"] = git(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=checkout
+        )
     if args.reset_config:
         run.data["config_overrides"] = {}
         run.data["extra_env"] = {}
@@ -2561,7 +2571,7 @@ def fixture_mcp_server(run: Run, name: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / f"{name}.py"
     script.write_text(
-        "from mcp.server.fastmcp import FastMCP\n\n"
+        "from fastmcp import FastMCP\n\n"
         f"mcp = FastMCP({name!r})\n\n\n"
         "@mcp.tool()\n"
         "def qa_echo(text: str) -> str:\n"
@@ -2791,7 +2801,10 @@ def serve_llm_stub(port: int, script: Path, out: Path) -> None:
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             del format, args
 
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    # A Docker-network fixture can bind its container interface. The default
+    # remains loopback for fixtures launched on the host.
+    bind_host = os.environ.get("QA_LLM_STUB_BIND", "127.0.0.1")
+    ThreadingHTTPServer((bind_host, port), Handler).serve_forever()
 
 
 def parse_stub_step(text: str) -> dict[str, Any]:
@@ -3675,7 +3688,7 @@ def route_templates(checkout: Path | None = None) -> list[dict[str, Any]]:
         "from fastapi.routing import APIRoute, APIWebSocketRoute\n"
         "from starlette.routing import Route\n"
         "from openhands.agent_server.api import create_app\n"
-        "from openhands.agent_server.config import get_default_config\n"
+        "from openhands.agent_server.config import load_config\n"
         "def table(app):\n"
         "    out = []\n"
         "    for r in app.routes:\n"
@@ -3695,7 +3708,7 @@ def route_templates(checkout: Path | None = None) -> list[dict[str, Any]]:
         "    return out\n"
         "out = table(create_app())\n"
         "seen = {(r['method'], r['path']) for r in out}\n"
-        "docker = get_default_config().model_copy(update={'conversation_runtime': 'docker'})\n"
+        "docker = load_config().model_copy(update={'conversation_runtime': 'docker'})\n"
         "for r in table(create_app(docker)):\n"
         "    if (r['method'], r['path']) not in seen:\n"
         "        out.append({**r, 'config': 'conversation_runtime=docker'})\n"
@@ -5503,6 +5516,11 @@ secret key all private to the run. Without --new, an already-live run
         "--hard",
         action="store_true",
         help="SIGKILL instead of a graceful stop (crash recovery)",
+    )
+    p.add_argument(
+        "--checkout",
+        help="restart on another agent-sdk checkout (an upgrade or downgrade "
+        "over the same settings and conversations)",
     )
     p.add_argument("--env", action="append", metavar="K=V")
     p.add_argument("--config-json")

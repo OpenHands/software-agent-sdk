@@ -787,3 +787,57 @@ def test_default_provider_store_is_sibling_of_base_dir(tmp_path: Path) -> None:
     resolved = store.load("linked")
     assert isinstance(resolved.api_key, SecretStr)
     assert resolved.api_key.get_secret_value() == "sk-shared"
+
+
+# ── Cipher key mismatch (#5317) ─────────────────────────────────────────────
+
+
+def _save_under_key_a(store: LLMProfileStore, name: str) -> bytes:
+    from openhands.sdk.utils.cipher import Cipher
+
+    llm = LLM(usage_id="rotate", model="openai/qa-rotate", api_key=SecretStr("sk-a"))
+    store.save(name, llm, include_secrets=True, cipher=Cipher("qa-key-a"))
+    return (store.base_dir / f"{name}.json").read_bytes()
+
+
+def test_load_wrong_cipher_is_lenient_by_default(profile_store: LLMProfileStore):
+    from openhands.sdk.utils.cipher import Cipher
+
+    _save_under_key_a(profile_store, "rotate")
+    llm = profile_store.load("rotate", cipher=Cipher("qa-key-b"))
+    assert llm.api_key is None
+
+
+def test_load_wrong_cipher_strict_raises(profile_store: LLMProfileStore):
+    from openhands.sdk.utils.cipher import Cipher
+    from openhands.sdk.utils.pydantic_secrets import SecretDecryptionError
+
+    _save_under_key_a(profile_store, "rotate")
+    with pytest.raises(SecretDecryptionError):
+        profile_store.load("rotate", cipher=Cipher("qa-key-b"), strict=True)
+    llm = profile_store.load("rotate", cipher=Cipher("qa-key-a"), strict=True)
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-a"
+
+
+def test_save_over_undecryptable_profile_refused(profile_store: LLMProfileStore):
+    """Overwriting a profile whose stored key the cipher cannot read is refused."""
+    from openhands.sdk.utils.cipher import Cipher
+    from openhands.sdk.utils.pydantic_secrets import SecretDecryptionError
+
+    before = _save_under_key_a(profile_store, "rotate")
+    cipher_b = Cipher("qa-key-b")
+    keyless = profile_store.load("rotate", cipher=cipher_b)
+    with pytest.raises(SecretDecryptionError):
+        profile_store.save("rotate", keyless, include_secrets=True, cipher=cipher_b)
+    assert (profile_store.base_dir / "rotate.json").read_bytes() == before
+
+    # The original key still reads the stored value.
+    llm = profile_store.load("rotate", cipher=Cipher("qa-key-a"))
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-a"
+
+    # Other profiles and deletes are unaffected.
+    profile_store.save("other", keyless, include_secrets=True, cipher=cipher_b)
+    profile_store.delete("rotate")
+    assert not (profile_store.base_dir / "rotate.json").exists()

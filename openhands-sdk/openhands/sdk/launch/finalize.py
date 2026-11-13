@@ -34,7 +34,9 @@ class LaunchRuntime(BaseModel):
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
         description=(
-            "'native': an ACP CLI reads its own skills, so none are injected. "
+            "'native': an ACP CLI reads its own skills, so no managed skills "
+            "are injected. Skills a client supplies at launch are kept either "
+            "way. "
             "'openhands_managed': inject the resolved skill catalog."
         ),
     )
@@ -66,6 +68,7 @@ def finalize(
     additions: AgentLaunchAdditions | None = None,
     extra_suffixes: Sequence[str] = (),
     client_tools: Sequence[Tool] = (),
+    experimental_feature_tools: Sequence[Tool] = (),
     load_memory: bool = False,
     managed_secrets: Collection[str] = (),
     launched_at: datetime | None = None,
@@ -76,6 +79,10 @@ def finalize(
     runtime can run it), ``current_datetime``, ``load_memory``, ACP skill
     sourcing, launch additions, client tools and credentials the runtime
     manages itself.
+
+    ``experimental_feature_tools`` are tools the user turned on through a feature flag.
+    Only an OpenHands :class:`~openhands.sdk.agent.Agent` gets them: an ACP
+    agent runs its own tools, so it is left as it is.
     """
     if isinstance(source, ResolvedLaunch):
         settings = _settings_for_runtime(source.settings, runtime)
@@ -95,13 +102,15 @@ def finalize(
     for suffix in (appended, *extra_suffixes):
         if suffix.strip():
             agent = _append_system_message_suffix(agent, suffix.strip())
+    agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if additions and additions.skills:
         agent = _with_launch_skills(agent, additions.skills)
-    agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if managed_secrets:
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:
         agent = _with_client_tools(agent, client_tools)
+    if experimental_feature_tools and not isinstance(agent, ACPAgent):
+        agent = _with_client_tools(agent, experimental_feature_tools)
     return LaunchedAgent(agent=agent, profile=profile, _token=_FINALIZE_TOKEN)
 
 

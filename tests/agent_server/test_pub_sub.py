@@ -902,3 +902,30 @@ class TestPubSubMaxSubscribers:
         for _ in range(100):
             pubsub.subscribe(_Sub())
         assert len(pubsub._subscribers) == 100
+
+
+async def test_close_survives_a_failing_subscriber_close():
+    from openhands.agent_server.pub_sub import PubSub, Subscriber
+
+    closed: list[Subscriber[str]] = []
+
+    class _Sub(Subscriber[str]):
+        def __init__(self, fail_close: bool = False):
+            self.fail_close = fail_close
+
+        async def __call__(self, event: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            closed.append(self)
+            if self.fail_close:
+                raise RuntimeError("subscriber close failed")
+
+    pubsub: PubSub[str] = PubSub()
+    for fail_close in (False, True, False):
+        pubsub.subscribe(_Sub(fail_close))
+
+    await pubsub.close()
+
+    assert len(closed) == 3
+    assert pubsub.subscriber_ids() == set()

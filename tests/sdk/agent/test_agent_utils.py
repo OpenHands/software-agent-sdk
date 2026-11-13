@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from openhands.sdk.agent.utils import prepare_llm_messages
+from openhands.sdk.agent.utils import aprepare_llm_messages, prepare_llm_messages
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event import Condensation, MessageEvent
@@ -198,3 +198,36 @@ def test_prepare_llm_messages_does_not_rebuild_view(monkeypatch, sample_events) 
     assert enforce_calls == 0, (
         "prepare_llm_messages must not call enforce_properties on the hot path"
     )
+
+
+def test_prepare_llm_messages_appends_user_turn_after_trailing_assistant(
+    sample_events,
+):
+    """A history ending with the agent's reply is sent with a closing user turn.
+
+    This happens when a user message lands while the agent's final reply is
+    still in flight: the reply is recorded after it and the continued run would
+    otherwise send a request ending with the assistant, which Anthropic rejects
+    as unsupported prefill.
+    """
+    view = View(events=sample_events)  # last event is an agent message
+
+    result = prepare_llm_messages(view)
+
+    assert [m.role for m in result] == ["assistant", "user", "assistant", "user"]
+    closing = result[-1].content[0]
+    assert isinstance(closing, TextContent) and "previous response" in closing.text
+    assert len(view.events) == 3, "the closing turn is request-only, never stored"
+
+
+async def test_aprepare_llm_messages_appends_user_turn_after_trailing_assistant(
+    sample_events,
+):
+    """Async variant: same closing user turn, same untouched view."""
+    view = View(events=sample_events)
+
+    result = await aprepare_llm_messages(view)
+
+    assert isinstance(result, list)
+    assert [m.role for m in result] == ["assistant", "user", "assistant", "user"]
+    assert len(view.events) == 3

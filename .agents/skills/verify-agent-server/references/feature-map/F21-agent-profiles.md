@@ -238,7 +238,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     --check name eq qa-f21-coder --check message eq "Agent profile 'qa-f21-coder' saved" --save F21.save-create/save
   CODER=$(control-agent-server api GET /api/agent-profiles/qa-f21-coder --expect 200 \
     --check name eq qa-f21-coder --check profile.name eq qa-f21-coder --check profile.id ne 11111111-1111-4111-8111-111111111111 \
-    --check profile.revision eq 0 --check profile.schema_version eq 3 --check profile.agent_kind eq openhands \
+    --check profile.revision eq 0 --check profile.schema_version eq 4 --check profile.agent_kind eq openhands \
     --check profile.llm_profile_ref eq deepseek-pro --check profile.tools len-eq 0 --check profile.mcp_server_refs len-eq 0 \
     --check profile.system_message_suffix eq 'QA F21 suffix' --check profile.agent eq CodeActAgent \
     --save F21.save-create/get --field profile.id)
@@ -872,30 +872,31 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   ```
   The create waits out the 30-second lock timeout and answers 503
   (`exception` `503: Agent profile store is busy`, the retryable launch-store
-  failure) and no conversation is created. Unlike the profile routes
+  failure) and no conversation is created. Like the profile routes
   (`F21.busy-blocks-server`), the launch resolves the profile in a worker
   thread, so `/alive` answers within two seconds while the create waits
   (the bare `sleep 5` only lets the create reach the server).
-- **Lock wait stalls the server (`F21.busy-blocks-server`), known bug.**
-  The handlers are `async` but take the store's file lock synchronously, so
-  the event loop waits with them.
+- **Lock wait does not stall the server (`F21.busy-blocks-server`).**
+  The handlers are plain `def` (and `materialize` loads the profile with
+  `asyncio.to_thread`), so the store's synchronous file-lock wait runs in a
+  worker thread, never on the event loop.
   ```sh
   control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 2000
+  control-agent-server api GET /api/agent-profiles --expect 200 --quiet > /dev/null  # creates the store dir under --only
   LOCK="$AGENT_SERVER_VERIFY_RUN/home/.openhands/agent-profiles/.agent-profiles.lock"
   exec 9>>"$LOCK"
   flock -w 5 9
   (exec 9>&- >/dev/null 2>&1; control-agent-server api GET /api/agent-profiles/qa-f21-coder --timeout 90 --quiet) &
   sleep 5
-  control-agent-server api GET /alive --auth none --expect 200 --timeout 60 --expect-max-ms 2000 --save F21.busy-blocks-server/alive  # bug: status eq 200 && elapsed_ms gt 2000
+  control-agent-server api GET /alive --auth none --expect 200 --timeout 60 --expect-max-ms 2000 --save F21.busy-blocks-server/alive
   flock -u 9
   wait
   ```
-  Correct behavior: `/alive` answers within two seconds while the profile
-  request waits for the lock (the bare `sleep 5` only lets that request
-  reach the server). Today `/alive`, like every other route and socket,
-  hangs until the 30-second lock wait ends, so orchestrator probes fail
-  while any other process holds the lock. The background request does not
-  inherit the lock, so the server recovers as soon as the shell exits.
+  `/alive` answers within two seconds while the profile request waits for
+  the lock (the bare `sleep 5` only lets that request reach the server), so
+  orchestrator probes keep passing while another process holds the lock.
+  The background request does not inherit the lock, so it finishes as soon
+  as the shell lets go.
 - **How a dangling LLM reference is reported (`F21.dangling-llm-report`).**
   The server's seed code (`_seed_default_llm_profile` in the checkout that
   serves the run) documents how materialize reports a seeded `default`
@@ -926,7 +927,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
   not name `dangling_llm_profile_ref`, which only the launch's 422 carries
   (#5871).
-- **TypeScript payload types (`F21.ts-payload-types`), known bug.** The
+- **TypeScript payload types (`F21.ts-payload-types`).** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
@@ -961,7 +962,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
   $TSC "$D/contract.ts"
-  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'  # bug: value contains TS2353 && value contains public_skills && value contains 'Shape<OpenHandsAgentProfile>' && value contains 'Shape<AgentProfileDiagnostics>'
+  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
   Canvas's profile editor) can read every field the server sends under its
@@ -973,11 +974,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
   `acp_startup_timeout`. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
-  generated contract. A later `public_skills` field is now present in live
-  OpenHands profiles and materialize reports and in the generated contract,
-  but absent from both exported types. The generated positive control still
-  passes; the exported types fail with TS2353 naming `public_skills`
-  ([OpenHands/software-agent-sdk#6183](https://github.com/OpenHands/software-agent-sdk/issues/6183)).
+  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`
+  (#6187, which closed #6183).
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.
@@ -1028,10 +1026,9 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - A create keeps a client-supplied `revision` (a body with `"revision": 7`
   starts at 7); only overwrites ignore it. The recipes leave it out of
   creates.
-- `PATCH /api/settings` that switches `agent_kind` rebuilds
-  `agent_settings` from a fresh base and drops `mcp_config` (F18), so the
-  ACP bullet adds `qa-f21-mcp` after the switch; deleting the active
-  profile, in contrast, keeps it.
+- `PATCH /api/settings` that switches `agent_kind` and deleting the active
+  profile both rebuild `agent_settings` from a fresh base that keeps the
+  server-wide settings (F18).
 - Materialize discovers user and public skills; the public catalog may be
   cloned from GitHub into `OH_PERSISTENCE_DIR/cache/skills` on first use
   (tolerated when offline). The recipes assert only on the run's own
@@ -1057,10 +1054,9 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   launch on a local run carries no OpenHands skills where the same profile
   in the image carries the whole catalog. `restart --env` overrides stay
   until `restart --reset-config`.
-- The profile routes wait for the store lock on the event loop (the
-  `F21.busy-blocks-server` bug), but `POST /api/conversations` resolves the
-  profile in a worker thread: a held lock stalls the whole server only when
-  a profile route is waiting.
+- The profile routes and `POST /api/conversations` wait for the store lock
+  in a worker thread: a held lock delays only the requests that need the
+  store, never `/alive` (`F21.busy-blocks-server`).
 - `agent_launch_additions` act once, at start: they are not a stored
   conversation field and the profile is not modified, so only the agent
   state (`base_state.json`, the `SystemPromptEvent`) shows the appended

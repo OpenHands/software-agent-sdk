@@ -55,6 +55,8 @@ The server can be configured using environment variables or a JSON configuration
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
 | `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** Falls back to the first session API key. | None |
 | `OH_PREVIOUS_SECRET_KEYS` | Earlier secret keys, used only to decrypt, as a JSON list (or `OH_PREVIOUS_SECRET_KEYS_0`, `_1`, ...). See [Rotating the key](#rotating-the-key). | None |
+| `OH_CONVERSATION_RUNTIME` | Conversation runtime execution mode: `local` (in-process) or `docker` (isolated per-conversation containers). | `local` |
+| `OH_CONVERSATION_IDLE_TTL_SECONDS` | Seconds an idle terminal conversation runtime stays active before suspension (Docker) or in-memory eviction (local). Set to empty/null to disable. | `1200.0` |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
 | `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
 | `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
@@ -110,10 +112,22 @@ It is **disabled by default** and does nothing unless a deployment opts in.
 | Feature | What it collects | Where it goes |
 |---|---|---|
 | **Telemetry** (this section) | Allowlisted lifecycle/failure events. Never prompts, messages, file contents, paths, secrets, request/response bodies, or tracebacks. | PostHog, when configured |
-| **LLM completion logging** (`log_completions`) | Full prompts, responses, and raw provider payloads — deliberately high fidelity for debugging. | Local disk only |
-| **Laminar / OpenTelemetry tracing** | Distributed traces and spans for latency analysis. | Your OTel/Laminar backend |
+| **LLM completion logging** (`LLM.log_completions_to_file`) | Full prompts, responses, and raw provider payloads for debugging. | The configured folder or completion-log callback. Agent-server can stream these records through completion-log events. |
+| **Laminar / OpenTelemetry tracing** | Model/tool spans, timing, usage and SDK LLM message content when tracing is configured. | Your configured OTel/Laminar backend |
 
 Nothing from completion logging or tracing is ever forwarded to telemetry.
+
+The completion-logging option belongs to the SDK and also works in standalone
+SDK programs. Its default is `false`. Tracing is enabled separately through
+observability configuration, such as an OTLP endpoint or Laminar initialization.
+Completion logging remains useful for debugging with a folder or callback.
+
+`log_completions` is a deprecated alias for `log_completions_to_file`. Internally,
+`Telemetry.completion_logging_enabled` replaces `Telemetry.log_enabled`. Both old
+names remain accepted during the deprecation period. The SDK keeps old and new
+values synchronized and includes the old keys in serialized settings for older
+SDK/server consumers. Supplying conflicting values for both names raises an
+error. Deprecation begins in v1.63.0, with removal scheduled for v1.68.0.
 
 #### Consent
 
@@ -449,6 +463,27 @@ workspace/
 └── project/                    # Agent workspace
     └── (agent files and outputs)
 ```
+
+## Docker Conversation Runtime Lifecycle
+
+When the agent server is configured with `OH_CONVERSATION_RUNTIME=docker`, each conversation executes in an isolated Docker container running an internal agent-server instance. This architecture ensures complete execution isolation, private workspace mounts, and dedicated credential boundaries.
+
+### Container Lifecycle & Automatic Suspension
+
+1. **On-Demand Provisioning**: Containers are not pre-warmed for every conversation in storage. Instead, `DockerConversationRegistry.get_or_create()` starts a container on-demand when the conversation is first created or accessed by an incoming request.
+2. **Active Lease Tracking**: When an HTTP request is received (such as sending a message, updating settings, or proxying workspace files) or a WebSocket subscriber connects, an active lease is acquired on the runtime. As long as any request is actively streaming or any socket is connected, the container is never suspended.
+3. **Idle Detection**: A background task periodically checks running containers against `OH_CONVERSATION_IDLE_TTL_SECONDS`. It stops a container only when the persisted execution status is terminal (`finished`, `error`, or `stuck`), the idle TTL has elapsed, and no request lease or attached WebSocket session is held. Conversations that are `running`, `idle`, `paused`, or `waiting_for_confirmation` keep their containers.
+4. **Stop coordination**: Before `docker stop`, the registry re-checks the lease, the attached session, the idle deadline, and the lease generation under its lock. A request that arrives while the status is being read keeps the container. If `docker stop` fails, the container stays tracked and the next access reuses it.
+5. **Transparent Resume**: When an interaction occurs on a suspended conversation, `get_or_create()` recreates the container, mounts the existing workspace and persistence data, and resumes seamlessly.
+
+### Runtime Suspension vs. Conversation Deletion
+
+It is essential to distinguish between **suspending a runtime** and **deleting a conversation**:
+
+| Operation | Trigger | What Happens to Docker Container | Persisted Conversation Data & Workspace | Resumable? |
+|---|---|---|---|---|
+| **Runtime Suspension** | Automatic after idle timeout (`OH_CONVERSATION_IDLE_TTL_SECONDS`) or manual runtime release | Stopped and released to reclaim CPU, RAM, and writable layers | **Preserved intact** on the host filesystem (bind-mounted events, metadata, workspace files, credentials) | **Yes** — automatically recreated on next request with same conversation ID and full history |
+| **Conversation Deletion** | `DELETE /api/conversations/{id}` | Stopped and destroyed immediately | **Permanently removed** from the host filesystem (conversation directory, metadata, and outer-owned state) | **No** — conversation is deleted from the catalog |
 
 ## Development
 

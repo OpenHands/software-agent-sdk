@@ -144,7 +144,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 6
+PERSISTED_SETTINGS_SCHEMA_VERSION = 7
 
 
 class PersistedSettings(BaseModel):
@@ -197,6 +197,15 @@ class PersistedSettings(BaseModel):
         description="Name of the currently active meta-profile used for "
         "intelligent model routing.",
     )
+    experimental_features: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Experimental features the user turned on or off, by feature key. "
+            "An absent key means off. Changed through "
+            "PATCH /api/settings/experimental/{key}; see "
+            "openhands.agent_server.experimental_features for the known features."
+        ),
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -246,8 +255,9 @@ class PersistedSettings(BaseModel):
         ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
         RFC 7386 merge-patch semantics with kind-switch awareness. When
         ``agent_kind`` changes, the diff is applied onto a fresh base of the
-        target variant. Same-kind diffs deep-merge within the variant. A
-        ``None`` value at any level removes that key and resets it to default.
+        target variant that keeps only the server-wide settings.
+        Same-kind diffs deep-merge within the variant. A ``None`` value at any
+        level removes that key and resets it to default.
 
         ``conversation_settings_diff`` uses :func:`_deep_merge`: ``None`` inside
         a nested map removes that entry; ``None`` on a top-level field flows to
@@ -402,8 +412,14 @@ class PersistedSettings(BaseModel):
           (dropped the deprecated ``llm`` from ACP settings).
         - **v5**: nested ``agent_settings`` advanced to schema v8
           (retired tool switches folded into ``tools``).
-        - **v6** (current): nested ``agent_settings`` advanced to schema v9
+        - **v6**: nested ``agent_settings`` advanced to schema v9
           (removed deprecated live input paths; persisted inputs still migrate).
+        - **v7** (current): nested ``agent_settings`` advanced to schema v10
+          (MCP servers with neither ``command`` nor ``url`` are dropped).
+
+        ``experimental_features`` was added within v7 without a bump: it is
+        additive and defaults to empty. An older server ignores it and drops
+        it on its next save, so after a downgrade every feature is off again.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
