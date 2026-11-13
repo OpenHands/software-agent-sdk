@@ -126,6 +126,7 @@ async def _start(service: EventService, tmp_path, *agent_turns: str) -> None:
     """Start the service and install a scripted agent LLM (one reply per run)."""
     (tmp_path / "workspace").mkdir(exist_ok=True)
     await service.start()
+    await service.save_meta()
     service.get_conversation().switch_llm(_scripted(*agent_turns, usage_id="agent"))
 
 

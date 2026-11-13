@@ -1,0 +1,289 @@
+{
+  "base_commit": "4011cb5d4fd508964fe210df9a50af7d2f19d29d",
+  "platform": "macOS arm64, Python 3.12.13, SDK/server 1.54.0",
+  "model_requests": 0,
+  "fix_product_file_sha256": {
+    "openhands-agent-server/openhands/agent_server/conversation_service.py": "e78dd65c1f31aaa3281ae48ab82012d402effb8526ffdd767fb1bafe23439d20",
+    "openhands-agent-server/openhands/agent_server/event_service.py": "be7ef588387067de5528bb459089c62691c5789e1c175a8139fbc89daee27eba"
+  },
+  "runs": [
+    {
+      "revision": "base",
+      "mode": "graceful",
+      "attempt": 1,
+      "result": "fail",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142402-aad3-metadata-observer",
+      "lease_generation": 1,
+      "lease_owner_pid": 43165,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:24:14.493981Z"
+      },
+      "metadata_after_takeover": {
+        "title": "before B",
+        "tags": {},
+        "updated_at": "2026-10-13T14:24:01.646643Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "before B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:24:17.050135Z"
+      }
+    },
+    {
+      "revision": "base",
+      "mode": "graceful",
+      "attempt": 2,
+      "result": "fail",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142433-bbd0-metadata-observer",
+      "lease_generation": 1,
+      "lease_owner_pid": 43419,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:24:43.374578Z"
+      },
+      "metadata_after_takeover": {
+        "title": "before B",
+        "tags": {},
+        "updated_at": "2026-10-13T14:24:32.758359Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "before B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:24:45.144297Z"
+      }
+    },
+    {
+      "revision": "base",
+      "mode": "hard",
+      "attempt": 1,
+      "result": "fail",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142458-fcf4-metadata-observer",
+      "lease_generation": 2,
+      "lease_owner_pid": 43608,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:25:07.466845Z"
+      },
+      "metadata_after_takeover": {
+        "title": "before B",
+        "tags": {},
+        "updated_at": "2026-10-13T14:24:57.993401Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "before B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:25:16.305104Z"
+      }
+    },
+    {
+      "revision": "base",
+      "mode": "hard",
+      "attempt": 2,
+      "result": "fail",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142528-7c00-metadata-observer",
+      "lease_generation": 2,
+      "lease_owner_pid": 44193,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:25:39.095532Z"
+      },
+      "metadata_after_takeover": {
+        "title": "before B",
+        "tags": {},
+        "updated_at": "2026-10-13T14:25:28.677631Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "before B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:25:48.251007Z"
+      }
+    },
+    {
+      "revision": "fix working tree",
+      "mode": "graceful",
+      "attempt": 1,
+      "result": "pass",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142138-4923-metadata-observer",
+      "lease_generation": 1,
+      "lease_owner_pid": 39689,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:21:47.626773Z"
+      },
+      "metadata_after_takeover": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:21:47.626773Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:21:50.362145Z"
+      }
+    },
+    {
+      "revision": "fix working tree",
+      "mode": "graceful",
+      "attempt": 2,
+      "result": "pass",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142204-69ee-metadata-observer",
+      "lease_generation": 1,
+      "lease_owner_pid": 39920,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:22:13.862300Z"
+      },
+      "metadata_after_takeover": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:22:13.862300Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:22:16.278441Z"
+      }
+    },
+    {
+      "revision": "fix working tree",
+      "mode": "hard",
+      "attempt": 1,
+      "result": "pass",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142230-b4de-metadata-observer",
+      "lease_generation": 2,
+      "lease_owner_pid": 40935,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:22:41.494498Z"
+      },
+      "metadata_after_takeover": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:22:41.494498Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:22:51.245246Z"
+      }
+    },
+    {
+      "revision": "fix working tree",
+      "mode": "hard",
+      "attempt": 2,
+      "result": "pass",
+      "server_doctors_ok": true,
+      "run_id": "20261013-142306-ac04-metadata-observer",
+      "lease_generation": 2,
+      "lease_owner_pid": 42311,
+      "owner_final_metadata": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:23:16.322945Z"
+      },
+      "metadata_after_takeover": {
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:23:16.322945Z"
+      },
+      "get_after_takeover": {
+        "status": 200,
+        "title": "after B",
+        "tags": {
+          "stage": "latest"
+        },
+        "updated_at": "2026-10-13T14:23:25.293929Z"
+      }
+    }
+  ],
+  "suite_comparison": {
+    "baseline": {
+      "tests": 2583,
+      "passed": 2569,
+      "failed": 14
+    },
+    "fix": {
+      "tests": 2586,
+      "passed": 2572,
+      "failed": 14
+    },
+    "new_failures": [],
+    "resolved_baseline_failures": [],
+    "baseline_failures": [
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_backend_http_lifecycle_and_data_deletion",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_cleanup_kills_sigterm_ignoring_descendant[False]",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_cleanup_kills_sigterm_ignoring_descendant[True]",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_exited_leader_descendant_does_not_block_recovery[restart]",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_exited_leader_descendant_does_not_block_recovery[status]",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_exited_leader_descendant_does_not_block_recovery[stop]",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_failed_start_cleanup_and_unsupported_states",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_prepare_rejects_revision_checksum_and_unsafe_archive",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_prepare_start_logs_stop_and_preserve_data",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_start_rejects_executable_that_resolves_outside_artifact",
+      "tests.agent_server.canvas_extensions.test_canvas_extension_backend::test_status_reports_starting_and_stop_abandons_hung_backend",
+      "tests.agent_server.canvas_extensions.test_canvas_extensions_entrypoint_containment::test_rejects_symlink_cycle",
+      "tests.agent_server.test_api::test_cleanup_stale_tmux_sessions_includes_isolated_sockets",
+      "tests.agent_server.test_api::test_ensure_server_tmux_tmpdir_replaces_too_deep_env"
+    ]
+  }
+}
