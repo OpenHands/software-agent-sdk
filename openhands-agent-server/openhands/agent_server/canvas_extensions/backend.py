@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 import zlib
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Final, Literal
 from urllib.parse import urljoin, urlsplit
@@ -34,7 +35,7 @@ from openhands.agent_server.canvas_extensions.manifest import (
     CanvasExtensionBackendArtifact,
     CanvasExtensionManifest,
 )
-from openhands.agent_server.persistence.store import SecretsStore, get_secrets_store
+from openhands.agent_server.persistence.store import SecretsStore
 from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -150,8 +151,11 @@ class CanvasExtensionBackendManager:
         *,
         allow_insecure_artifact_urls: bool = False,
         max_artifact_bytes: int = _MAX_ARTIFACT_BYTES,
-        secrets_store: SecretsStore | None = None,
+        secrets_store: Callable[[], SecretsStore] | None = None,
     ) -> None:
+        """``secrets_store`` returns the store a backend's ``secret_refs`` are
+        read from. It is called at each start, so a manager that outlives a
+        server (re)initialisation reads the store of the current one."""
         self.installed_dir = installed_dir or get_installed_canvas_extensions_dir()
         root = (
             state_dir or get_user_persistence_dir() / "canvas-extensions" / "backends"
@@ -807,7 +811,9 @@ class CanvasExtensionBackendManager:
                     await self._terminate_runtime(runtime)
                 secret_environment: dict[str, str] = {}
                 if backend.secret_refs:
-                    store = self.secrets_store or get_secrets_store()
+                    if self.secrets_store is None:
+                        raise ValueError("Backend secret store is not available")
+                    store = self.secrets_store()
                     for secret_name in backend.secret_refs:
                         try:
                             value = await asyncio.to_thread(

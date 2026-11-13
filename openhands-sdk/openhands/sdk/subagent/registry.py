@@ -256,14 +256,14 @@ def agent_definition_to_factory(
 
         # Sub-agents get a summarizing condenser by default (parity with the
         # top-level agent) so deep runs auto-compact instead of erroring on context
-        # overflow. The condenser LLM needs a distinct usage_id or its tokens get
-        # deduped out of conversation stats. A NoOpCondenser disables condensation.
+        # overflow. The condenser LLM needs a distinct usage_id or its tokens are
+        # reported together with the agent's. A NoOpCondenser disables condensation.
         if agent_def.condenser is not None:
             condenser = agent_def.condenser
             if isinstance(condenser, LLMSummarizingCondenser):
                 # Freshen per spawn: a distinct LLM with its own metrics (so
                 # sub-agents don't share/double-count condenser cost) and a
-                # usage_id distinct from the agent's, else its tokens get deduped.
+                # usage_id distinct from the agent's, so its tokens show apart.
                 cond_llm = condenser.llm
                 usage_id = (
                     cond_llm.usage_id

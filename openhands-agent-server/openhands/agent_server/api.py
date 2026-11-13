@@ -6,9 +6,10 @@ import tempfile
 import threading
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
 )
@@ -41,23 +42,14 @@ from openhands.agent_server.config import (
     V1_SESSION_API_KEY_ENV,
     Config,
     export_session_api_key,
-    get_default_config,
+    load_config,
 )
-from openhands.agent_server.conversation_lease import (
-    ConversationOwnershipLostError,
-    _is_pid_alive,
-)
-from openhands.agent_server.conversation_registry import (
-    create_conversation_registry,
-)
+from openhands.agent_server.conversation_lease import _is_pid_alive
 from openhands.agent_server.conversation_router import (
     conversation_catalog_router,
     conversation_router,
 )
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    CredentialBindingActivationRequired,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
 )
@@ -65,7 +57,7 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.experimental_features_router import (
     experimental_features_router,
 )
@@ -92,6 +84,11 @@ from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
 )
+from openhands.agent_server.server_context import (
+    build_server_context,
+    install_server_context,
+    server_context_of,
+)
 from openhands.agent_server.server_details_router import (
     get_server_info,
     mark_initialization_complete,
@@ -117,11 +114,11 @@ from openhands.agent_server.telemetry.models import (
     RequestFailedProperties,
 )
 from openhands.agent_server.telemetry.sanitizer import normalize_exception
-from openhands.agent_server.tool_preload_service import get_tool_preload_service
+from openhands.agent_server.tool_preload_service import ToolPreloadService
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
-from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
+from openhands.sdk.errors import DomainError
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
@@ -319,28 +316,31 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         if backend_manager is not None:
             await backend_manager.reap_orphans()
 
-        config: Config = api.state.config
+        context = server_context_of(api)
+        config = context.config
         deferred = config.deferred_init
-        conversation_registry = getattr(
-            api.state, "conversation_registry", None
-        ) or create_conversation_registry(config)
-        api.state.conversation_registry = conversation_registry
+        conversation_registry = context.conversation_registry
 
         # Answer our own LookupSecret URLs in-process; a loopback fetch made
-        # from the event loop cannot be served by the loop blocked on it.
-        secret_resolution = local_secret_resolution(config)
+        # from the event loop cannot be served by the loop blocked on it. The
+        # store is looked up per resolution: POST /api/init replaces it.
+        secret_resolution = local_secret_resolution(
+            lambda: server_context_of(api).stores.secrets
+        )
         secret_resolution.__enter__()
 
         # Deferred pods boot with telemetry disabled and are rebuilt by
         # InitService, so they emit `server_started` there instead.
-        api.state.telemetry_sink = await build_telemetry_sink(config)
+        api.state.telemetry_sink = await build_telemetry_sink(
+            config, context.stores.settings
+        )
         if not deferred:
             emit_server_started()
 
         seal_tool_catalog()
 
-        vscode_service = get_vscode_service()
-        tool_preload_service = get_tool_preload_service()
+        vscode_service = context.vscode_service
+        tool_preload_service = ToolPreloadService() if config.preload_tools else None
 
         # Define async functions for starting each service
         async def start_vscode_service():
@@ -419,29 +419,35 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
-        await asyncio.to_thread(reencrypt_stale_stores, config)
+        await asyncio.to_thread(reencrypt_stale_stores, context.stores)
         #
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.
         export_session_api_key(config)
-        # Not get_default_conversation_service(): it rebuilds config from OH_*
-        # env, ignoring the config passed to create_app().
-        service = ConversationService.get_instance(config)
+        service = ConversationService.get_instance(config, context.stores)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
-        bash_svc = get_default_bash_event_service()
-        api.state.bash_event_service = bash_svc
+        bash_svc = BashEventService(
+            bash_events_dir=config.bash_events_dir, cipher=config.cipher
+        )
 
         conversation_registry.configure_service(service)
         # Runtime cleanup must precede external-catalog recovery so stale
         # runtime owners cannot lose their expired leases to the outer service.
         await conversation_registry.start()
 
-        async with service:
-            api.state.conversation_service = service
+        async with bash_svc, service:
+            # The same config, stores and registry, now with their services.
+            install_server_context(
+                api,
+                replace(
+                    context,
+                    conversation_service=service,
+                    bash_event_service=bash_svc,
+                ),
+            )
 
-            config = api.state.config
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
@@ -573,7 +579,7 @@ class AgentServerApp(FastAPI):
     def build_middleware_stack(self) -> ASGIApp:
         # ServerErrorMiddleware creates unhandled 500 responses outside user
         # middleware, so CORS must wrap the complete stack to decorate them.
-        config = self.state.config
+        config = server_context_of(self).config
         return CORSDispatcher(
             super().build_middleware_stack(),
             allow_origins=config.allow_cors_origins,
@@ -598,17 +604,19 @@ def _create_fastapi_instance(config: Config) -> FastAPI:
     )
 
 
-def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
-    """Helper function to find HTTPException in ExceptionGroup.
+def _find_http_exception(
+    exc: BaseExceptionGroup,
+) -> HTTPException | DomainError | None:
+    """Find the first HTTPException or domain error in an ExceptionGroup.
 
     Args:
-        exc: BaseExceptionGroup to search for HTTPException.
+        exc: BaseExceptionGroup to search.
 
     Returns:
-        HTTPException if found, None otherwise.
+        The first HTTPException or DomainError found, None otherwise.
     """
     for inner_exc in exc.exceptions:
-        if isinstance(inner_exc, HTTPException):
+        if isinstance(inner_exc, (HTTPException, DomainError)):
             return inner_exc
         # Recursively search nested ExceptionGroups
         if isinstance(inner_exc, BaseExceptionGroup):
@@ -620,7 +628,7 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
 
 def _add_api_routes(app: FastAPI) -> None:
     """Add all API routes to the FastAPI application."""
-    conversation_registry = app.state.conversation_registry
+    conversation_registry = server_context_of(app).conversation_registry
     app.include_router(server_details_router)
 
     # The /api/init endpoint bypasses both the session-key auth and the
@@ -635,8 +643,8 @@ def _add_api_routes(app: FastAPI) -> None:
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
     # here so that we don't expand the CSRF surface across the whole API.
-    # check_session_api_key reads config from request.app.state at request time,
-    # so keys delivered via POST /api/init are honoured without re-registering routes.
+    # check_session_api_key reads the server context at request time, so keys
+    # delivered via POST /api/init are honoured without re-registering routes.
     dependencies = [
         # Dormant gate: 503s every /api/* route until POST /api/init completes.
         # No-op for non-deferred deployments.
@@ -768,43 +776,28 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
     return sanitized
 
 
+async def _domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
+    """Map a domain error to its status from ``ERROR_STATUS``, the only map."""
+    headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+    return _error_response(
+        request,
+        HTTPException(status_for(exc), exc.detail, headers),
+        exc.extra,
+    )
+
+
+def add_domain_error_handler(app: FastAPI) -> None:
+    """Answer ``openhands.sdk.errors`` categories with their mapped status.
+
+    ``create_app`` installs it with the other handlers; an app that mounts
+    agent-server routers on its own needs it too, or those errors become 500s.
+    """
+    app.exception_handler(DomainError)(_domain_error_handler)
+
+
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
-
-    @api.exception_handler(ConversationRunLimitExceeded)
-    async def _run_limit_handler(
-        _request: Request, exc: ConversationRunLimitExceeded
-    ) -> JSONResponse:
-        return JSONResponse(status_code=429, content={"detail": str(exc)})
-
-    @api.exception_handler(ConversationOwnershipLostError)
-    async def _ownership_lost_handler(
-        _request: Request, _exc: ConversationOwnershipLostError
-    ) -> JSONResponse:
-        # Another server instance took over this conversation's lease, so the
-        # guarded write was refused: a conflict, not a server fault.
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": (
-                    "Conversation is owned by another agent server instance; "
-                    "the write was refused"
-                )
-            },
-        )
-
-    @api.exception_handler(CredentialBindingActivationRequired)
-    async def _credential_binding_activation_required_handler(
-        _request: Request,
-        exc: CredentialBindingActivationRequired,
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": str(exc),
-                "retryable": True,
-            },
-        )
+    add_domain_error_handler(api)
 
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(
@@ -861,12 +854,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Check if this is an HTTPException that should be handled directly
         if isinstance(exc, HTTPException):
             return await _http_exception_handler(request, exc)
+        if isinstance(exc, DomainError):
+            return await _domain_error_handler(request, exc)
 
         # Check if this is a BaseExceptionGroup with HTTPExceptions
         if isinstance(exc, BaseExceptionGroup):
             http_exc = _find_http_exception(exc)
-            if http_exc:
+            if isinstance(http_exc, HTTPException):
                 return await _http_exception_handler(request, http_exc)
+            if isinstance(http_exc, DomainError):
+                return await _domain_error_handler(request, http_exc)
             # If no HTTPException found, treat as unhandled exception
             logger.error(
                 "Unhandled ExceptionGroup on %s %s [error_id=%s]",
@@ -894,70 +891,79 @@ def _add_exception_handlers(api: FastAPI) -> None:
     async def _http_exception_handler(
         request: Request, exc: HTTPException
     ) -> JSONResponse:
-        """Handle HTTPExceptions with appropriate logging."""
-        # Log 4xx errors at info level (expected client errors like auth failures)
-        if 400 <= exc.status_code < 500:
-            logger.info(
-                "HTTPException %d on %s %s: %s",
-                exc.status_code,
-                request.method,
-                request.url.path,
-                exc.detail,
-            )
-        # Log 5xx errors at error level. HTTPException is intentionally
-        # raised flow control — the route picked this status and detail
-        # on purpose — so a stack trace adds no information beyond
-        # `exc.detail` and makes routine upstream blips look
-        # indistinguishable from a process crash. Unhandled exceptions
-        # still get a full traceback via _unhandled_exception_handler
-        # above. Include the traceback only when DEBUG is on, as an
-        # opt-in debugging aid.
-        elif exc.status_code >= 500:
-            logger.error(
-                "HTTPException %d on %s %s: %s",
-                exc.status_code,
-                request.method,
-                request.url.path,
-                exc.detail,
-                exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
-            )
-            content = {
-                "detail": "Internal Server Error",
-                "exception": str(exc),
-            }
-            if DEBUG:
-                content["traceback"] = traceback.format_exc()
-            # Don't leak internal details to clients for 5xx errors in production
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=content,
-                headers=exc.headers,
-            )
+        """Handle HTTPExceptions raised by FastAPI itself (routing, security)."""
+        return _error_response(request, exc, {})
 
-        # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
-        # exception's headers (e.g. Retry-After, WWW-Authenticate).
+
+def _error_response(
+    request: Request, exc: HTTPException, extra: Mapping[str, object]
+) -> JSONResponse:
+    """Render an error with logging; 5xx details are not shown to clients."""
+    # Log 4xx errors at info level (expected client errors like auth failures)
+    if 400 <= exc.status_code < 500:
+        logger.info(
+            "HTTPException %d on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+        )
+    # Log 5xx errors at error level. HTTPException is intentionally
+    # raised flow control — the route picked this status and detail
+    # on purpose — so a stack trace adds no information beyond
+    # `exc.detail` and makes routine upstream blips look
+    # indistinguishable from a process crash. Unhandled exceptions
+    # still get a full traceback via _unhandled_exception_handler
+    # above. Include the traceback only when DEBUG is on, as an
+    # opt-in debugging aid.
+    elif exc.status_code >= 500:
+        logger.error(
+            "HTTPException %d on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+            exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
+        )
+        content = {
+            "detail": "Internal Server Error",
+            "exception": str(exc),
+        }
+        if DEBUG:
+            content["traceback"] = traceback.format_exc()
+        # Don't leak internal details to clients for 5xx errors in production
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": exc.detail},
+            content=content,
             headers=exc.headers,
         )
+
+    # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
+    # exception's headers (e.g. Retry-After, WWW-Authenticate).
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, **extra},
+        headers=exc.headers,
+    )
 
 
 def create_app(config: Config | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
-        config: Configuration object. If None, uses default config.
+        config: Configuration object. If None, it is loaded from the config
+            file and the ``OH_*`` environment variables.
 
     Returns:
         Configured FastAPI application.
     """
     if config is None:
-        config = get_default_config()
+        config = load_config()
     app = _create_fastapi_instance(config)
-    app.state.config = config
-    app.state.conversation_registry = create_conversation_registry(config)
-    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
+    install_server_context(app, build_server_context(config))
+    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager(
+        secrets_store=lambda: server_context_of(app).stores.secrets
+    )
     app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)

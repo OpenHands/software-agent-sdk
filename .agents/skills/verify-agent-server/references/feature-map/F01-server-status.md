@@ -202,7 +202,7 @@ Preconditions:
   control-agent-server logs --grep 'DEBUG mode: ENABLED' --expect-min $((N + 1))
   control-agent-server api GET /api/workspaces --expect 500 --check detail eq 'Internal Server Error' \
     --check exception contains 'Failed to read workspaces' \
-    --check traceback contains 'HTTPException: 500: Failed to read workspaces' --save F01.debug-tracebacks/on
+    --check traceback contains 'OperationFailed: Failed to read workspaces' --save F01.debug-tracebacks/on
   control-agent-server api GET /api/conversations/count --auth none --expect 401 --check traceback missing
   control-agent-server restart --reset-config
   control-agent-server api GET /api/workspaces --expect 500 --check traceback missing
@@ -211,8 +211,8 @@ Preconditions:
   ```
   Without `DEBUG` the 500 body is `detail`, `exception` and nothing else; with
   `DEBUG=true` the server prints `DEBUG mode: ENABLED` and the same 500 adds a
-  `traceback` string whose last line is the `HTTPException`, while the 401
-  stays `{"detail": ...}`. After `--reset-config` the trace is gone again and
+  `traceback` string whose last line is the `OperationFailed` domain error,
+  while the 401 stays `{"detail": ...}`. After `--reset-config` the trace is gone again and
   the registry reads normally once the directory is removed.
 - **Tool preload (`F01.preload-tools`).** Restart with `preload_tools` on,
   first with whatever Chromium the server finds on its own, then with the

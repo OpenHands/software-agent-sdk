@@ -13,7 +13,7 @@ dependencies = [
   "openhands-sdk",
   "openhands-tools",
   "openai>=2.33.0,<3",
-  "pydantic>=2.13.5",
+  "pydantic>=2.14.3",
   "sqlalchemy>=2.1.6",
   "uvicorn>=0.54.0",
   "websockets>=12",
@@ -25,7 +25,7 @@ dependencies = [
 # library/headless consumer must be able to run without a vendor analytics SDK
 # on the import path. Constrained to the major already resolved in uv.lock so
 # installing the extra cannot force a resolver conflict.
-posthog = ["posthog>=7.82.2,<8"]
+posthog = ["posthog>=7.83.2,<8"]
 
 [project.urls]
 Source = "https://github.com/OpenHands/software-agent-sdk"
@@ -34,7 +34,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 "Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
-requires = ["setuptools>=83.0.0", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 
