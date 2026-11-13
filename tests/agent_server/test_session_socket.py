@@ -3,12 +3,13 @@
 import asyncio
 import contextlib
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from fastapi import WebSocketDisconnect
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.agent_server.session_socket import (
     _ConnectionWriter,
@@ -623,19 +624,19 @@ async def test_a_message_sent_while_a_step_runs_is_saved_after_the_client_leaves
     service = _LockedEventService()
     ws = _ClientSocket([_user_frame("wait, actually")])
 
-    async def accept(websocket, key):
+    async def accept(websocket, key, config):
         return True
 
     monkeypatch.setattr(module, "_accept_authenticated_websocket", accept)
-    monkeypatch.setattr(
-        module,
-        "_get_conversation_service",
-        lambda websocket: type(
-            "S", (), {"get_event_service": AsyncMock(return_value=service)}
-        )(),
-    )
 
-    task = asyncio.ensure_future(module.session_socket(uuid4(), ws))  # type: ignore[arg-type]
+    task = asyncio.ensure_future(
+        module.session_socket(
+            uuid4(),
+            ws,  # type: ignore[arg-type]
+            config=Config(),
+            conv_service=MagicMock(get_event_service=AsyncMock(return_value=service)),
+        )
+    )
     # The frame is taken while the step still runs; then the client leaves.
     await asyncio.wait_for(service.sending.wait(), timeout=5)
     task.cancel()

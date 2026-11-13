@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -25,15 +25,15 @@ from pydantic import (
     model_validator,
 )
 
-from openhands.agent_server._secrets_exposure import (
+from openhands.agent_server.dependencies import (
     get_cipher,
-    get_config,
+    get_provider_connections_store,
+    get_stores,
 )
 from openhands.agent_server.persistence import (
     ProviderConnection,
-    get_llm_profile_store,
-    get_provider_connections_store,
-    get_settings_store,
+    ProviderConnectionStore,
+    ServerStores,
 )
 from openhands.sdk.errors import Conflict, NotFound, Unprocessable
 from openhands.sdk.llm.provider_connection_store import (
@@ -42,6 +42,7 @@ from openhands.sdk.llm.provider_connection_store import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
@@ -119,16 +120,18 @@ def _to_response(connection: ProviderConnection) -> ProviderConnectionResponse:
     )
 
 
-def _linked_profile_names(connection_id: str) -> list[str]:
+def _linked_profile_names(stores: ServerStores, connection_id: str) -> list[str]:
     return sorted(
         str(summary["name"])
-        for summary in get_llm_profile_store().list_summaries()
+        for summary in stores.llm_profiles.list_summaries()
         if summary.get("provider_connection_id") == connection_id
     )
 
 
-def _active_settings_references_connection(config, connection_id: str) -> bool:
-    settings = get_settings_store(config).load()
+def _active_settings_references_connection(
+    stores: ServerStores, connection_id: str
+) -> bool:
+    settings = stores.settings.load()
     if settings is None or not isinstance(
         settings.agent_settings, OpenHandsAgentSettings
     ):
@@ -136,15 +139,17 @@ def _active_settings_references_connection(config, connection_id: str) -> bool:
     return settings.agent_settings.llm.provider_connection_id == connection_id
 
 
-def _raise_if_connection_is_referenced(config, connection_id: str) -> None:
+def _raise_if_connection_is_referenced(
+    stores: ServerStores, connection_id: str
+) -> None:
     """Block deletion while any profile or the active settings still point here.
 
     Deleting a referenced connection would leave those references dangling; a
     linked profile with no inline key raises on its next load. So the delete is
     rejected until the references are removed first.
     """
-    profile_names = _linked_profile_names(connection_id)
-    active_reference = _active_settings_references_connection(config, connection_id)
+    profile_names = _linked_profile_names(stores, connection_id)
+    active_reference = _active_settings_references_connection(stores, connection_id)
     if not profile_names and not active_reference:
         return
 
@@ -162,10 +167,9 @@ def _raise_if_connection_is_referenced(config, connection_id: str) -> None:
 
 @provider_connections_router.get("", response_model=list[ProviderConnectionResponse])
 def list_provider_connections(
-    request: Request,
+    store: ProviderConnectionStore = Depends(get_provider_connections_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> list[ProviderConnectionResponse]:
-    cipher = get_cipher(request)
-    store = get_provider_connections_store(get_config(request))
     connections = store.list(cipher=cipher)
     return [_to_response(c) for c in connections]
 
@@ -174,10 +178,10 @@ def list_provider_connections(
     "", response_model=ProviderConnectionResponse, status_code=status.HTTP_201_CREATED
 )
 def create_provider_connection(
-    request: Request, body: ProviderConnectionCreateRequest
+    body: ProviderConnectionCreateRequest,
+    store: ProviderConnectionStore = Depends(get_provider_connections_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProviderConnectionResponse:
-    cipher = get_cipher(request)
-    store = get_provider_connections_store(get_config(request))
     now = _now()
     connection = ProviderConnection(
         id=uuid.uuid4().hex,
@@ -202,14 +206,15 @@ def create_provider_connection(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
 def update_provider_connection(
-    request: Request, connection_id: str, body: ProviderConnectionUpdateRequest
+    connection_id: str,
+    body: ProviderConnectionUpdateRequest,
+    store: ProviderConnectionStore = Depends(get_provider_connections_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProviderConnectionResponse:
     fields = body.model_fields_set
     if not fields:
         raise Unprocessable("Provide at least one provider connection field to update")
 
-    cipher = get_cipher(request)
-    store = get_provider_connections_store(get_config(request))
     connection = store.get(connection_id, cipher=cipher)
     if connection is None:
         raise NotFound(f"Provider connection '{connection_id}' not found")
@@ -245,15 +250,15 @@ def update_provider_connection(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
 def delete_provider_connection(
-    request: Request, connection_id: str
+    connection_id: str,
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProviderConnectionResponse:
-    config = get_config(request)
-    cipher = get_cipher(request)
-    store = get_provider_connections_store(config)
+    store = stores.provider_connections
     connection = store.get(connection_id, cipher=cipher)
     if connection is None:
         raise NotFound(f"Provider connection '{connection_id}' not found")
-    _raise_if_connection_is_referenced(config, connection_id)
+    _raise_if_connection_is_referenced(stores, connection_id)
 
     # See update handler: keep the delete-race as 404, map infra errors.
     try:
