@@ -19,6 +19,7 @@ def launcher_argv(argv: list[str]) -> list[str]:
 def run_backend(argv: list[str]) -> int:
     if os.name != "nt" or not argv:
         raise RuntimeError("The backend launcher requires Windows and an executable")
+    print(f"OPENHANDS_BACKEND_LAUNCHER:{os.getpid()}", flush=True)
     # EOF also covers server death before job assignment, with no backend spawned.
     if sys.stdin.buffer.read(1) != b"G":
         return 1

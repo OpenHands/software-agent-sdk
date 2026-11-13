@@ -165,11 +165,17 @@ async def test_windows_backend_lifecycle(installed_backend, monkeypatch):
 async def test_windows_server_crash_kills_descendants(installed_backend):
     installed, state = installed_backend
     script = """
-import asyncio, sys
+import asyncio, os, sys
 from pathlib import Path
+from openhands.agent_server.canvas_extensions import backend as backend_module
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
 )
+binary = os.environ.get("OPENHANDS_TEST_SERVER_BINARY")
+if binary:
+    backend_module.launcher_argv = lambda argv: [
+        binary, "--canvas-backend-launcher", *argv
+    ]
 async def main():
     manager = CanvasExtensionBackendManager(Path(sys.argv[1]), Path(sys.argv[2]))
     revision = manager.revision('my-extension')
@@ -300,7 +306,7 @@ async def test_windows_unhealthy_start_cleans_tree(installed_backend, operation)
     installed, state = installed_backend
     path = installed / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(path.read_text())
-    manifest["backend"]["health"].update(path="/unhealthy", timeout_seconds=2)
+    manifest["backend"]["health"].update(path="/unhealthy", timeout_seconds=5)
     path.write_text(json.dumps(manifest))
     manager = CanvasExtensionBackendManager(installed, state)
     revision = manager.revision("my-extension")
@@ -335,11 +341,9 @@ async def test_windows_backend_exit_reclaims_children(installed_backend):
             (manager.data_dir / "my-extension" / "runtime.json").read_text()
         )
         psutil.Process(runtime["pid"]).kill()
-        deadline = time.monotonic() + 10
-        while (await manager.status("my-extension")).state != "unhealthy":
-            assert time.monotonic() < deadline
-            await asyncio.sleep(0.05)
+        # No polling or reaping call may be needed to reclaim the orphan.
         await _dead(runtime["pid"], runtime["child"])
+        assert (await manager.status("my-extension")).state == "unhealthy"
         assert manager.ready_endpoint("my-extension") is None
     finally:
         await manager.shutdown()
@@ -374,3 +378,31 @@ async def test_windows_frozen_launcher(installed_backend, monkeypatch):
         await _dead(runtime["pid"], runtime["child"])
     finally:
         await manager.shutdown()
+
+
+async def test_windows_launcher_eof_does_not_run_backend(tmp_path):
+    marker = tmp_path / "executed"
+    script = "from pathlib import Path; import sys; Path(sys.argv[1]).touch()"
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "openhands.agent_server.canvas_extensions.windows_launcher",
+        sys.executable,
+        "-c",
+        script,
+        str(marker),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert process.stdout is not None
+        greeting = await asyncio.wait_for(process.stdout.readline(), 30)
+        assert greeting.startswith(b"OPENHANDS_BACKEND_LAUNCHER:")
+        assert process.stdin is not None
+        process.stdin.close()
+        assert await asyncio.wait_for(process.wait(), 10) == 1
+        assert not marker.exists()
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()

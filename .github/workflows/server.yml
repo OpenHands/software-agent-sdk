@@ -68,7 +68,7 @@ jobs:
               run: >-
                   uv run --frozen python -m pytest -v --timeout=120
                   tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
-                  -k frozen_launcher
+                  -k "frozen_launcher or server_crash"
 
             - name: Test binary
               shell: bash

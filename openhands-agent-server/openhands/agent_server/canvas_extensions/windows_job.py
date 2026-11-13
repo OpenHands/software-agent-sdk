@@ -79,6 +79,12 @@ if os.name == "nt":
             self._api.QueryInformationJobObject.restype = boolean
             self._api.AssignProcessToJobObject.argtypes = [handle, handle]
             self._api.AssignProcessToJobObject.restype = boolean
+            self._api.IsProcessInJob.argtypes = [
+                handle,
+                handle,
+                ctypes.POINTER(boolean),
+            ]
+            self._api.IsProcessInJob.restype = boolean
             self._api.TerminateJobObject.argtypes = [handle, ctypes.c_uint]
             self._api.TerminateJobObject.restype = boolean
             self._api.OpenProcess.argtypes = [dword, boolean, dword]
@@ -99,10 +105,17 @@ if os.name == "nt":
 
         def assign(self, pid: int) -> None:
             """Assign the waiting launcher; fail closed when nesting is prohibited."""
-            process = self._api.OpenProcess(0x0100 | 0x0001, False, pid)
+            process = self._api.OpenProcess(0x0100 | 0x0001 | 0x1000, False, pid)
             if not process:
                 raise ctypes.WinError(ctypes.get_last_error())
             try:
+                assigned = ctypes.c_int()
+                if not self._api.IsProcessInJob(
+                    process, self._handle, ctypes.byref(assigned)
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if assigned.value:
+                    return
                 if not self._api.AssignProcessToJobObject(self._handle, process):
                     raise ctypes.WinError(ctypes.get_last_error())
             finally:

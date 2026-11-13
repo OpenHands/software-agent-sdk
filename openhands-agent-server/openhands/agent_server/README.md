@@ -356,7 +356,8 @@ The executable must be inside `{artifact_dir}`. The generic `{port}`,
 `{data_dir}`, and `{artifact_dir}` placeholders let launchers use the prepared
 artifact while the process working directory remains the installed package.
 Preparation verifies the selected platform archive's SHA-256, safely extracts
-regular files and directories into a content-addressed read-only location, and
+regular files and directories into a content-addressed read-only location,
+materializes contained file links as regular copies, and
 records approval for the exact installed revision. Updating or replacing the
 App invalidates that approval.
 
@@ -372,16 +373,47 @@ client must call `prepare` and then `start`, each with the revision returned by
 - `DELETE .../backend/data`
 
 Status is one of `missing`, `stopped`, `starting`, `ready`, `unhealthy`, or
-`unsupported`. Linux amd64 and arm64 are supported when the matching artifact
-is declared. The server runs one owned process group per installed App, drains
-bounded logs continuously, and stops it on disable, uninstall, failed startup,
-or server shutdown. Disable and uninstall preserve mutable data; only the
-separate data endpoint deletes it.
+`unsupported`. Supported targets are Linux amd64/arm64, macOS amd64/arm64,
+and native Windows amd64. Keep Linux entries in `artifacts`; add
+`darwin-amd64`, `darwin-arm64`, or `windows-amd64` entries in the optional
+`additional_artifacts` map, using the same artifact shape. Canonical entries
+win overlaps and unknown platform keys are ignored. Schema 1 still requires
+at least one Linux entry; this preserves the published response contract.
+A missing artifact for the current platform reports `unsupported` and never
+falls back to an artifact for another OS.
+
+The server owns one process tree per installed App, drains bounded logs, and
+stops the tree on disable, uninstall, failed startup, or server shutdown.
+Navigating away from an App does not stop its backend. Disable and uninstall
+preserve mutable data; only the separate data endpoint deletes it.
+
+Windows artifacts must contain a native `.exe` entrypoint, with all required
+runtime files bundled beside it. The shared `argv` is expanded without a shell;
+`.bat` and `.cmd` launchers are not supported. Archives cannot contain Windows
+reserved names, alternate data streams, or case-colliding paths.
+
+On Linux/macOS, ownership uses POSIX process groups. On Windows, an unnamed,
+non-inheritable Job Object owns the launcher and its descendants. The launcher
+waits for a pipe handshake before executing backend code: the server first
+assigns the job and records ownership, then grants launch. If assignment fails,
+startup fails without running backend code. If the server dies before the
+handshake, pipe EOF releases the waiting launcher; after assignment,
+`KILL_ON_JOB_CLOSE` terminates the entire tree. Recovery drops stale Windows
+records without signaling PIDs from disk. Hosts that prohibit nested Job Objects
+fail startup rather than silently weakening process ownership.
+
+The same launch path is included in the packaged Windows Agent Server. Native
+Windows CI covers lifecycle, crash cleanup, failure paths and the packaged
+launcher; Mac CI runs the full suite on Mac runners. These platform capabilities
+do not supply Windows binaries for extensions whose upstream releases lack them:
+code-server currently publishes only Linux/macOS standalone artifacts.
 
 Backends receive no ambient agent-server environment. A manifest may inherit
 only the supported non-credential variables (`LANG`, `LC_ALL`, `LC_CTYPE`,
-`PATH`, `TMPDIR`, and `TZ`). Backend subprocesses are owned and constrained by
-these launch rules, but they are not OS-isolated; use a sandboxed Agent Server
+`PATH`, `TMPDIR`, and `TZ`). Windows additionally receives non-secret host
+variables (`SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `COMSPEC`, `PATHEXT`), while
+`USERPROFILE`, `TEMP` and `TMP` point into the App's data directory.
+Backend subprocesses are owned and constrained by these launch rules, but they are not OS-isolated; use a sandboxed Agent Server
 when operating untrusted code. Authenticated HTTP/WebSocket routing to a ready
 backend is intentionally outside this lifecycle contract.
 

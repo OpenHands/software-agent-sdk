@@ -138,6 +138,7 @@ class _Runtime:
     def __init__(self) -> None:
         self.process: asyncio.subprocess.Process | None = None
         self.windows_job: WindowsJob | None = None
+        self.exit_task: asyncio.Task[None] | None = None
         self.port: int | None = None
         self.revision: str | None = None
         self.state: BackendState = "stopped"
@@ -953,6 +954,27 @@ class CanvasExtensionBackendManager:
                     )
                     if runtime.windows_job is not None:
                         runtime.windows_job.assign(runtime.process.pid)
+                        assert runtime.process.stdout is not None
+                        greeting = await asyncio.wait_for(
+                            runtime.process.stdout.readline(), timeout=30
+                        )
+                        match = re.fullmatch(
+                            rb"OPENHANDS_BACKEND_LAUNCHER:(\d+)\r?\n", greeting
+                        )
+                        if match is None:
+                            raise RuntimeError("Backend launcher handshake failed")
+                        launcher_pid = int(match[1])
+                        # A one-file binary has a bootloader parent. Its Python
+                        # child may predate assignment of that parent to the job.
+                        if launcher_pid != runtime.process.pid:
+                            parents = psutil.Process(launcher_pid).parents()
+                            if not any(
+                                parent.pid == runtime.process.pid for parent in parents
+                            ):
+                                raise RuntimeError(
+                                    "Backend launcher is not an owned child"
+                                )
+                            runtime.windows_job.assign(launcher_pid)
                     self._write_run_record(name, runtime.process.pid)
                     if runtime.windows_job is not None:
                         assert runtime.process.stdin is not None
@@ -980,6 +1002,10 @@ class CanvasExtensionBackendManager:
                         self._drain(runtime, runtime.process.stderr, b"[stderr] ")
                     ),
                 ]
+                if runtime.windows_job is not None:
+                    runtime.exit_task = asyncio.create_task(
+                        self._watch_windows_exit(name, runtime, runtime.process)
+                    )
                 task = asyncio.create_task(self._await_healthy(runtime, backend, port))
                 runtime.start_task = task
         if task is not None:
@@ -992,6 +1018,22 @@ class CanvasExtensionBackendManager:
             if runtime.state == "unhealthy":
                 await self._terminate_runtime(runtime)
             return self._status_unlocked(name)
+
+    async def _watch_windows_exit(
+        self, name: str, runtime: _Runtime, process: asyncio.subprocess.Process
+    ) -> None:
+        # Process.wait() also waits for pipe EOF, which surviving children can
+        # hold open. Observe the leader's exit independently of its pipes.
+        while process.returncode is None:
+            await asyncio.sleep(0.05)
+        async with self._lock(name):
+            if runtime.process is not process:
+                return
+            if runtime.start_task is not None:
+                runtime.start_task.cancel()
+                await asyncio.gather(runtime.start_task, return_exceptions=True)
+                runtime.start_task = None
+            await self._refresh_unlocked(name)
 
     async def _finish_runtime(self, runtime: _Runtime) -> None:
         if runtime.process is not None:
@@ -1051,7 +1093,14 @@ class CanvasExtensionBackendManager:
             await asyncio.sleep(0.05)
 
     async def _terminate_runtime(self, runtime: _Runtime) -> None:
+        watcher = runtime.exit_task
+        runtime.exit_task = None
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         process = runtime.process
+        if process is not None and process.stdin is not None:
+            process.stdin.close()
         if runtime.windows_job is not None:
             runtime.windows_job.terminate()
             runtime.windows_job.close()
