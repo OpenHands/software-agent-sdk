@@ -13,6 +13,7 @@ from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_settings_store,
+    load_settings_or_defaults,
 )
 from openhands.sdk.errors import (
     Conflict,
@@ -102,7 +103,7 @@ def _set_active_meta_profile_if_matches(
 ) -> bool:
     config = get_config(request)
     settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    settings = settings_store.load_existing() or PersistedSettings()
     if settings.active_meta_profile != old_name:
         return False
 
@@ -124,12 +125,15 @@ def _set_active_meta_profile_if_matches(
     return True
 
 
-@meta_profiles_router.get("", response_model=MetaProfileListResponse)
+@meta_profiles_router.get(
+    "",
+    response_model=MetaProfileListResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 def list_meta_profiles(request: Request) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
     config = get_config(request)
-    settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    settings = load_settings_or_defaults(config)
 
     store = _get_meta_profile_store()
     summaries = store.list_summaries()

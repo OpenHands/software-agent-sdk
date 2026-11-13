@@ -33,6 +33,7 @@ from openhands.agent_server.persistence import (
     get_agent_profile_store,
     get_llm_profile_store,
     get_settings_store,
+    load_settings_or_defaults,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
 from openhands.sdk.errors import Conflict, NotFound, OperationFailed, Unprocessable
@@ -235,7 +236,7 @@ def _ensure_active_profile(
     """
     settings_store = get_settings_store(config)
     with store.lock():
-        settings = settings_store.load() or PersistedSettings()
+        settings = settings_store.load_existing() or PersistedSettings()
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
             return
@@ -308,7 +309,7 @@ def active_agent_profile(
     """Return the active Agent Profile, activating ``default`` when none is."""
     store = get_agent_profile_store()
     _ensure_active_profile(store, config, cipher)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = load_settings_or_defaults(config)
     if settings.active_agent_profile_id is None:
         return None
     name = store.name_for_id(settings.active_agent_profile_id)
@@ -330,7 +331,11 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     return None
 
 
-@agent_profiles_router.get("", response_model=AgentProfileListResponse)
+@agent_profiles_router.get(
+    "",
+    response_model=AgentProfileListResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     """List all stored agent profiles and the active pointer.
 
@@ -338,12 +343,11 @@ def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     activated, and seeded from the current ``agent_settings`` when absent.
     """
     config = get_config(request)
-    settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    settings = load_settings_or_defaults(config)
 
     store = get_agent_profile_store()
     _ensure_active_profile(store, config, get_cipher(request))
-    settings = settings_store.load() or settings
+    settings = load_settings_or_defaults(config)
 
     summaries = store.list_summaries()
 
@@ -447,7 +451,7 @@ def delete_agent_profile(
     if deleted_id is not None:
         config = get_config(request)
         settings_store = get_settings_store(config)
-        settings = settings_store.load() or PersistedSettings()
+        settings = settings_store.load_existing() or PersistedSettings()
         if settings.active_agent_profile_id == deleted_id:
 
             def clear_pointer_and_reset_settings(
@@ -576,7 +580,7 @@ async def materialize_agent_profile(
             raise NotFound(f"Agent profile '{name}' not found")
 
     config = get_config(request)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = load_settings_or_defaults(config)
     context = settings.agent_settings.agent_context
     return await asyncio.to_thread(
         lambda: preview_launch(

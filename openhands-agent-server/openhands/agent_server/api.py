@@ -80,7 +80,10 @@ from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
-from openhands.agent_server.persistence import reencrypt_stale_stores
+from openhands.agent_server.persistence import (
+    SettingsFileUnreadableError,
+    reencrypt_stale_stores,
+)
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
@@ -787,6 +790,21 @@ def add_domain_error_handler(app: FastAPI) -> None:
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
     add_domain_error_handler(api)
+
+    @api.exception_handler(SettingsFileUnreadableError)
+    async def _settings_unreadable_handler(
+        _request: Request, _exc: SettingsFileUnreadableError
+    ) -> JSONResponse:
+        # ``settings.json`` exists but cannot be parsed, validated, or
+        # decrypted. Serving defaults here would drop the operator's
+        # confirmation policy, so the reads that build conversations report
+        # the same integrity error the profile-activation routes already use.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Settings file is corrupted or encrypted with a different key"
+            },
+        )
 
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(

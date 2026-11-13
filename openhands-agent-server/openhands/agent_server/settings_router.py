@@ -20,6 +20,7 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_secrets_store,
     get_settings_store,
+    load_settings_or_defaults,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
@@ -122,7 +123,11 @@ def _validate_secret_name(name: str) -> None:
         )
 
 
-@settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
+@settings_router.get(
+    SETTINGS_PATH,
+    response_model=SettingsResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 async def get_settings(request: Request) -> SettingsResponse:
     """Get current settings.
 
@@ -156,8 +161,7 @@ async def get_settings(request: Request) -> SettingsResponse:
     """
     expose_mode = parse_expose_secrets_header(request)
     config = get_config(request)
-    store = get_settings_store(config)
-    settings = store.load() or PersistedSettings()
+    settings = load_settings_or_defaults(config)
 
     # Audit log all settings access for security visibility
     # Use WARNING level for plaintext mode to highlight security-sensitive operations

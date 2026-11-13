@@ -148,8 +148,8 @@ def test_api_writes_refuse_under_wrong_cipher(persistence_dir):
     for response in (patch, put, delete):
         assert "gAAAAA" not in response.text
 
-    # Reads under the wrong key still answer.
-    assert client.get("/api/settings").status_code == 200
+    # Reads under the wrong key: settings now fail closed, secrets stay lenient.
+    assert client.get("/api/settings").status_code == 409
     assert client.get("/api/settings/secrets").status_code == 200
 
     assert (persistence_dir / "settings.json").read_bytes() == settings_before
