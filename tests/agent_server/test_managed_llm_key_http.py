@@ -9,7 +9,7 @@ from threading import Event, Thread
 import pytest
 
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.exceptions import LLMAuthenticationError, LLMRateLimitError
 
@@ -124,7 +124,7 @@ def managed_llm(recovery_provider):
         retry_max_wait=0,
         timeout=5,
     )
-    assert register_managed_llm_key_refresh(Agent(llm=llm, tools=[])) == 1
+    assert register_managed_llm_key_refresh([llm]) == 1
     return llm
 
 
