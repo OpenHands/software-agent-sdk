@@ -22,6 +22,7 @@ from openhands.sdk.git.models import (
     GitProviderRepository,
     GitProviderRepositoryPage,
 )
+from openhands.sdk.workspace.repo import GitProvider
 
 
 @pytest.fixture
@@ -719,3 +720,95 @@ def test_git_empty_path_is_rejected(client, tmp_path, monkeypatch, endpoint):
     response = client.get(f"/api/git/{endpoint}", params={"path": ""})
 
     assert response.status_code == 400
+
+
+_PR_PATH = "/api/git/repositories/o/r/pull-requests/7"
+
+
+def test_git_pull_request_status_success(client):
+    """GET .../repositories/{owner}/{repo}/pull-requests/{number} returns a badge."""
+    from openhands.sdk.git.models import (
+        GitPullRequestChecks,
+        GitPullRequestState,
+        GitPullRequestStatus,
+    )
+
+    status = GitPullRequestStatus(
+        git_provider="github",
+        repository="o/r",
+        number=7,
+        state=GitPullRequestState.OPEN,
+        draft=False,
+        title="Add projects",
+        url="https://github.com/o/r/pull/7",
+        head_sha="abc",
+        checks=GitPullRequestChecks.PENDING,
+    )
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+    ) as get_pr:
+        get_pr.return_value = status
+        response = client.get(_PR_PATH, params={"provider": "github"})
+
+    assert response.status_code == 200
+    assert response.json() == status.model_dump(mode="json")
+    await_args = get_pr.await_args
+    assert await_args is not None
+    assert await_args.args[1:] == (GitProvider.GITHUB, "o", "r", 7)
+
+
+def test_git_pull_request_status_requires_provider(client):
+    assert client.get(_PR_PATH).status_code == 422
+
+
+def test_git_pull_request_status_without_token_is_409_with_code(client):
+    from openhands.agent_server.git_provider_service import (
+        MissingGitProviderTokenError,
+    )
+
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+        side_effect=MissingGitProviderTokenError("No github token is configured"),
+    ):
+        response = client.get(_PR_PATH, params={"provider": "github"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "missing_provider_token",
+        "message": "No github token is configured",
+    }
+
+
+def test_git_pull_request_status_rate_limit_is_429(client):
+    """The route sets GitHub's Retry-After on the exception (kept by #6706)."""
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+        side_effect=GitProviderAPIError(
+            "GitHub rate limit reached", status_code=429, retry_after="30"
+        ),
+    ):
+        response = client.get(_PR_PATH, params={"provider": "github"})
+
+    assert response.status_code == 429
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/git/repositories/o%20x/r/pull-requests/7",
+        "/api/git/repositories/o/%2E%2E/pull-requests/7",
+        "/api/git/repositories/%2E/r/pull-requests/7",
+        "/api/git/repositories/o/r/pull-requests/0",
+    ],
+)
+def test_git_pull_request_status_rejects_bad_path(client, path):
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+    ) as get_pr:
+        response = client.get(path, params={"provider": "github"})
+    assert response.status_code in {404, 422}
+    get_pr.assert_not_awaited()

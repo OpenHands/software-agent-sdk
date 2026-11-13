@@ -4,17 +4,20 @@ Unlike LLM profiles, meta-profiles hold no secrets — they are plain JSON
 documents persisted via :class:`MetaProfileStore`.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi import APIRouter, Path, Request, status
 from pydantic import AfterValidator, BaseModel
 
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_settings_store,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    NotFound,
+    OperationFailed,
 )
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.llm.meta_profile_store import (
@@ -94,26 +97,6 @@ class ActivateMetaProfileResponse(BaseModel):
     activation)."""
 
 
-@contextmanager
-def _store_errors() -> Iterator[None]:
-    """Map ``MetaProfileStore`` errors to HTTP responses."""
-    try:
-        yield
-    except TimeoutError:
-        # save()/delete() can raise TimeoutError from the file lock under
-        # contention; surface a retryable 503 instead of a generic 500
-        # (mirrors profiles_router._store_errors()).
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Meta-profile store is busy. Please retry.",
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
 def _set_active_meta_profile_if_matches(
     request: Request, old_name: str, new_name: str | None
 ) -> bool:
@@ -149,8 +132,7 @@ def list_meta_profiles(request: Request) -> MetaProfileListResponse:
     settings = settings_store.load() or PersistedSettings()
 
     store = _get_meta_profile_store()
-    with _store_errors():
-        summaries = store.list_summaries()
+    summaries = store.list_summaries()
 
     return MetaProfileListResponse(
         meta_profiles=[MetaProfileInfo(**s) for s in summaries],
@@ -163,13 +145,9 @@ def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     """Get a meta-profile's full configuration."""
     store = _get_meta_profile_store()
     try:
-        with _store_errors():
-            meta_profile = store.load(name)
+        meta_profile = store.load(name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meta-profile '{name}' not found",
-        )
+        raise NotFound(f"Meta-profile '{name}' not found")
 
     return MetaProfileDetailResponse(name=name, config=meta_profile)
 
@@ -190,15 +168,11 @@ def save_meta_profile(
     """
     store = _get_meta_profile_store()
     try:
-        with _store_errors():
-            store.save(name, body, max_profiles=MAX_META_PROFILES)
+        store.save(name, body, max_profiles=MAX_META_PROFILES)
     except MetaProfileLimitExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Meta-profile limit reached ({MAX_META_PROFILES}). "
-                "Delete a meta-profile before saving a new one."
-            ),
+        raise Conflict(
+            f"Meta-profile limit reached ({MAX_META_PROFILES}). "
+            "Delete a meta-profile before saving a new one."
         )
 
     logger.info(f"Saved meta-profile '{name}'")
@@ -217,8 +191,7 @@ def delete_meta_profile(
     cleared.
     """
     store = _get_meta_profile_store()
-    with _store_errors():
-        store.delete(name)
+    store.delete(name)
     if _set_active_meta_profile_if_matches(request, name, None):
         logger.info(f"Cleared active_meta_profile for deleted meta-profile '{name}'")
     logger.info(f"Deleted meta-profile '{name}'")
@@ -245,13 +218,9 @@ def activate_meta_profile(
     # Verify the meta-profile exists (and is valid) before activating.
     store = _get_meta_profile_store()
     try:
-        with _store_errors():
-            meta_profile = store.load(name)
+        meta_profile = store.load(name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meta-profile '{name}' not found",
-        )
+        raise NotFound(f"Meta-profile '{name}' not found")
 
     config = get_config(request)
     settings_store = get_settings_store(config)
@@ -279,13 +248,10 @@ def activate_meta_profile(
         settings_store.update(apply_active)
     except (OSError, PermissionError):
         logger.error("Failed to activate meta-profile - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to activate meta-profile")
+        raise OperationFailed("Failed to activate meta-profile")
     except RuntimeError as e:
         logger.error(f"Failed to activate meta-profile: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
-        )
+        raise Conflict("Settings file is corrupted or encrypted with a different key")
 
     if not applied:
         logger.info(f"Meta-profile '{name}' not activated: agent cannot route")
