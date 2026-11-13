@@ -12,6 +12,7 @@ from typing import Literal
 from unittest.mock import MagicMock, patch
 
 import httpx
+import httpx2
 import pytest
 import uvicorn
 from fastmcp import FastMCP
@@ -42,6 +43,25 @@ from openhands.sdk.mcp.utils import _prepare_mcp_config
 logger = logging.getLogger(__name__)
 
 MCPTransport = Literal["http", "streamable-http", "sse"]
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+@pytest.mark.parametrize("literal_values", [False, True])
+def test_create_mcp_tools_preserves_http_error_body(
+    rejecting_mcp_url: str, transport: MCPTransport, literal_values: bool
+):
+    server = MCPServer(
+        url=rejecting_mcp_url,
+        transport=transport,
+        headers={"X-Probe": SecretStr("test")},
+    )
+    if literal_values:
+        server = server.as_literal()
+    with pytest.raises(httpx2.HTTPStatusError) as raised:
+        create_mcp_tools({"forbidden": server}, timeout=5.0)
+
+    assert raised.value.response.status_code == 403
+    assert "not enabled" in raised.value.response.text
 
 
 def native_mcp_config(config: dict) -> dict:
