@@ -11,9 +11,12 @@ from pydantic_core import PydanticSerializationError
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
+
+logger = get_logger(__name__)
 
 ExposeSecretsMode = Literal["encrypted", "plaintext"]
 
@@ -148,4 +151,26 @@ def store_errors() -> Iterator[None]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
+        )
+
+
+@contextmanager
+def settings_integrity_error() -> Iterator[None]:
+    """Map a present-but-unreadable settings file to HTTP 409 (#6370).
+
+    ``FileSettingsStore.load_fail_closed()`` — like ``update()`` — raises
+    ``RuntimeError`` when ``settings.json`` exists but cannot be parsed,
+    validated, or decrypted. Reads that serve or build conversations answer
+    with the same integrity error the profile-activation endpoints return,
+    so a corrupt file can never silently substitute default settings. The
+    response detail deliberately names neither the file path nor the
+    decryption failure reason; both stay in the server logs.
+    """
+    try:
+        yield
+    except RuntimeError as e:
+        logger.error(f"Settings file is unreadable; refusing defaults: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settings file is corrupted or encrypted with a different key",
         )

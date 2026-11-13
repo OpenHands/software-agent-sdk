@@ -395,6 +395,37 @@ class FileSettingsStore(SettingsStore):
             logger.error("Failed to load settings", exc_info=True)
             return None
 
+    def load_fail_closed(self) -> PersistedSettings | None:
+        """Load settings, refusing to fall back when the file is unreadable.
+
+        Read paths that serve or build conversations use this instead of
+        plain :meth:`load`: a ``settings.json`` that exists but cannot be
+        parsed, validated, or decrypted raises the same ``RuntimeError`` as
+        :meth:`update`, so callers fail closed instead of silently
+        substituting ``PersistedSettings()`` defaults — whose
+        ``confirmation_mode=False`` would drop the operator's approval
+        boundary (#6370). Returns ``None`` only when the file is absent
+        (first run), where defaults are correct.
+
+        The strict loading context applies, so secrets the configured
+        cipher cannot decrypt are an integrity error here, not a
+        per-field ``None``.
+        """
+        settings = self.load(strict=True)
+        if settings is None and self._path.exists():
+            logger.error(
+                f"Refusing to serve default settings: {self._path} exists but "
+                "cannot be loaded (corrupted or encrypted with a different key "
+                f"({_KEY_HINT}))"
+            )
+            raise RuntimeError(
+                f"Cannot load settings from {self._path}. "
+                "File may be corrupted or encrypted with a different key "
+                f"({_KEY_HINT}). "
+                "Refusing to fall back to default settings."
+            )
+        return settings
+
     def save(self, settings: PersistedSettings) -> None:
         """Save settings to file atomically with secure permissions.
 

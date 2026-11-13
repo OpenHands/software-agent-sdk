@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
+from openhands.agent_server._secrets_exposure import settings_integrity_error
 from openhands.agent_server.agent_profiles_router import active_agent_profile
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
@@ -265,13 +266,18 @@ def _create_conversation_request(
 ) -> StartConversationRequest:
     llm_profile = _profile_name_from_model(model)
     _require_llm_profile(llm_profile, config)
-    profile = active_agent_profile(config, config.cipher)
+    # Both reads touch settings.json and must fail closed: a corrupt or
+    # differently-encrypted file answers 409 instead of building the request
+    # from default settings (whose confirmation_mode=False would remove the
+    # operator's approval boundary, #6370).
+    with settings_integrity_error():
+        profile = active_agent_profile(config, config.cipher)
+        settings = get_settings_store(config).load_fail_closed() or PersistedSettings()
     if profile is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No active Agent Profile; activate one to use the gateway",
         )
-    settings = get_settings_store(config).load() or PersistedSettings()
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, PlainValidator, ValidationErr
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
+    settings_integrity_error,
     store_errors,
 )
 from openhands.agent_server.config import Config
@@ -236,7 +237,9 @@ def _ensure_active_profile(
     """
     settings_store = get_settings_store(config)
     with store_errors(), store.lock():
-        settings = settings_store.load() or PersistedSettings()
+        # Fail closed on a corrupt settings.json (#6370): seeding a default
+        # profile from substitute defaults would misrecord the active pointer.
+        settings = settings_store.load_fail_closed() or PersistedSettings()
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
             return
@@ -309,7 +312,7 @@ def active_agent_profile(
     """Return the active Agent Profile, activating ``default`` when none is."""
     store = get_agent_profile_store()
     _ensure_active_profile(store, config, cipher)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = get_settings_store(config).load_fail_closed() or PersistedSettings()
     if settings.active_agent_profile_id is None:
         return None
     with store_errors():
@@ -342,14 +345,17 @@ def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     """
     config = get_config(request)
     settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    # Every read below can touch settings.json; a corrupt file answers 409
+    # instead of listing profiles against substitute defaults (#6370).
+    with settings_integrity_error():
+        settings = settings_store.load_fail_closed() or PersistedSettings()
 
-    store = get_agent_profile_store()
-    _ensure_active_profile(store, config, get_cipher(request))
-    settings = settings_store.load() or settings
+        store = get_agent_profile_store()
+        _ensure_active_profile(store, config, get_cipher(request))
+        settings = settings_store.load_fail_closed() or settings
 
-    with store_errors():
-        summaries = store.list_summaries()
+        with store_errors():
+            summaries = store.list_summaries()
 
     return AgentProfileListResponse(
         profiles=[AgentProfileInfo(**s) for s in summaries],
@@ -467,32 +473,35 @@ def delete_agent_profile(
     if deleted_id is not None:
         config = get_config(request)
         settings_store = get_settings_store(config)
-        settings = settings_store.load() or PersistedSettings()
-        if settings.active_agent_profile_id == deleted_id:
+        # Fail closed on a corrupt settings.json (#6370): resetting the active
+        # pointer against substitute defaults would misrecord it.
+        with settings_integrity_error():
+            settings = settings_store.load_fail_closed() or PersistedSettings()
+            if settings.active_agent_profile_id == deleted_id:
 
-            def clear_pointer_and_reset_settings(
-                s: PersistedSettings,
-            ) -> PersistedSettings:
-                s.active_agent_profile_id = None
-                # Stale non-OpenHands settings outlive their profile. Reset to
-                # a fresh OpenHands base rather than merging across the variant
-                # boundary (see _apply_agent_settings_diff), except for
-                # ``mcp_config``: it is the server-wide MCP registry every other
-                # profile resolves ``mcp_server_refs`` against, not ACP state.
-                prior_kind = s.agent_settings.agent_kind
-                if prior_kind != "openhands":
-                    s.agent_settings = OpenHandsAgentSettings(
-                        mcp_config=s.agent_settings.mcp_config
-                    )
-                    logger.info(
-                        f"Reset agent_settings to default "
-                        f"(agent_settings was agent_kind='{prior_kind}')"
-                    )
-                return s
+                def clear_pointer_and_reset_settings(
+                    s: PersistedSettings,
+                ) -> PersistedSettings:
+                    s.active_agent_profile_id = None
+                    # Stale non-OpenHands settings outlive their profile. Reset to
+                    # a fresh OpenHands base rather than merging across the variant
+                    # boundary (see _apply_agent_settings_diff), except for
+                    # ``mcp_config``: it is the server-wide MCP registry every other
+                    # profile resolves ``mcp_server_refs`` against, not ACP state.
+                    prior_kind = s.agent_settings.agent_kind
+                    if prior_kind != "openhands":
+                        s.agent_settings = OpenHandsAgentSettings(
+                            mcp_config=s.agent_settings.mcp_config
+                        )
+                        logger.info(
+                            f"Reset agent_settings to default "
+                            f"(agent_settings was agent_kind='{prior_kind}')"
+                        )
+                    return s
 
-            settings_store.update(clear_pointer_and_reset_settings)
-            logger.info(f"Cleared active pointer for deleted profile '{name}'")
-            _ensure_active_profile(store, config, get_cipher(request))
+                settings_store.update(clear_pointer_and_reset_settings)
+                logger.info(f"Cleared active pointer for deleted profile '{name}'")
+                _ensure_active_profile(store, config, get_cipher(request))
 
     logger.info(f"Deleted agent profile '{name}'")
     return AgentProfileMutationResponse(
@@ -619,7 +628,10 @@ async def materialize_agent_profile(
             )
 
     config = get_config(request)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    # Fail closed on a corrupt settings.json (#6370): the preview must not
+    # report against substitute defaults.
+    with settings_integrity_error():
+        settings = get_settings_store(config).load_fail_closed() or PersistedSettings()
     context = settings.agent_settings.agent_context
     return await asyncio.to_thread(
         lambda: preview_launch(

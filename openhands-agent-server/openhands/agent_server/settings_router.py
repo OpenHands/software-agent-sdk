@@ -10,6 +10,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    settings_integrity_error,
     store_errors,
     translate_missing_cipher,
 )
@@ -150,7 +151,11 @@ async def get_settings(request: Request) -> SettingsResponse:
     expose_mode = parse_expose_secrets_header(request)
     config = get_config(request)
     store = get_settings_store(config)
-    settings = store.load() or PersistedSettings()
+    # A present-but-unreadable settings.json must surface as 409, not as the
+    # defaults (whose confirmation_mode=False would hide a corruption from
+    # the UI, #6370). An absent file still means first-run defaults.
+    with settings_integrity_error():
+        settings = store.load_fail_closed() or PersistedSettings()
 
     # Audit log all settings access for security visibility
     # Use WARNING level for plaintext mode to highlight security-sensitive operations

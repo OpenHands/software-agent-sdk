@@ -148,8 +148,11 @@ def test_api_writes_refuse_under_wrong_cipher(persistence_dir):
     for response in (patch, put, delete):
         assert "gAAAAA" not in response.text
 
-    # Reads under the wrong key still answer.
-    assert client.get("/api/settings").status_code == 200
+    # Reads under the wrong key still answer for the secrets listing, but
+    # GET /api/settings fails closed (#6370): answering with default-looking
+    # settings (secrets silently None) would hide the key mismatch from the
+    # UI — and a truncated file would drop confirmation_mode with it.
+    assert client.get("/api/settings").status_code == 409
     assert client.get("/api/settings/secrets").status_code == 200
 
     assert (persistence_dir / "settings.json").read_bytes() == settings_before

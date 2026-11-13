@@ -11,7 +11,10 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import AfterValidator, BaseModel
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server._secrets_exposure import (
+    get_config,
+    settings_integrity_error,
+)
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_settings_store,
@@ -119,7 +122,9 @@ def _set_active_meta_profile_if_matches(
 ) -> bool:
     config = get_config(request)
     settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    # Fail closed on a corrupt settings.json (#6370): rewriting the pointer
+    # against substitute defaults would misrecord it.
+    settings = settings_store.load_fail_closed() or PersistedSettings()
     if settings.active_meta_profile != old_name:
         return False
 
@@ -146,11 +151,14 @@ def list_meta_profiles(request: Request) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
     config = get_config(request)
     settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    # Fail closed on a corrupt settings.json (#6370): the active pointer must
+    # not be reported from substitute defaults.
+    with settings_integrity_error():
+        settings = settings_store.load_fail_closed() or PersistedSettings()
 
-    store = _get_meta_profile_store()
-    with _store_errors():
-        summaries = store.list_summaries()
+        store = _get_meta_profile_store()
+        with _store_errors():
+            summaries = store.list_summaries()
 
     return MetaProfileListResponse(
         meta_profiles=[MetaProfileInfo(**s) for s in summaries],
@@ -219,8 +227,13 @@ def delete_meta_profile(
     store = _get_meta_profile_store()
     with _store_errors():
         store.delete(name)
-    if _set_active_meta_profile_if_matches(request, name, None):
-        logger.info(f"Cleared active_meta_profile for deleted meta-profile '{name}'")
+    # Reads settings.json to clear a matching active pointer; a corrupt file
+    # answers 409 instead of silently leaving the pointer stale (#6370).
+    with settings_integrity_error():
+        if _set_active_meta_profile_if_matches(request, name, None):
+            logger.info(
+                f"Cleared active_meta_profile for deleted meta-profile '{name}'"
+            )
     logger.info(f"Deleted meta-profile '{name}'")
     return MetaProfileMutationResponse(
         name=name, message=f"Meta-profile '{name}' deleted"
