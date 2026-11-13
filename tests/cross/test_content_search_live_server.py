@@ -20,6 +20,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.config import load_config
+from openhands.agent_server.server_context import server_context_of
 from openhands.sdk import LLM, Agent
 from tests.cross.conftest import live_server_env
 from tests.search.conftest import write_conversation
@@ -155,7 +156,7 @@ def test_rename_reindexes_title(tmp_path, monkeypatch: pytest.MonkeyPatch):
             conv_id = resp.json()["id"]
             # On-disk conversation dirs use the undashed hex form of the id.
             meta_dir = Path(
-                env["app"].state.config.conversations_path
+                server_context_of(env["app"]).config.conversations_path
             ) / conv_id.replace("-", "")
 
             # The real conversation has no title until set, and no events
