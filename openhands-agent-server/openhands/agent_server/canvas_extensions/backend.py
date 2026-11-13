@@ -224,7 +224,11 @@ class CanvasExtensionBackendManager:
         current_platform = self.current_platform()
         if manifest is None or manifest.backend is None or current_platform is None:
             return None
-        artifact = manifest.backend.artifacts.get(current_platform)
+        artifacts: dict[str, CanvasExtensionBackendArtifact] = {
+            **manifest.backend.additional_artifacts,
+            **manifest.backend.artifacts,
+        }
+        artifact = artifacts.get(current_platform)
         if artifact is None:
             return None
         return manifest.backend, artifact, current_platform

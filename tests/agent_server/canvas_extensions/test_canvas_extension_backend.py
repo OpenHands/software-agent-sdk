@@ -95,6 +95,8 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
         "artifacts": {
             "linux-amd64": {"path": archive.name, "sha256": checksum},
             "linux-arm64": {"path": archive.name, "sha256": checksum},
+        },
+        "additional_artifacts": {
             "darwin-amd64": {"path": archive.name, "sha256": checksum},
             "darwin-arm64": {"path": archive.name, "sha256": checksum},
         },
@@ -328,7 +330,9 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
     manifest_path = source / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
     unsafe_installed = tmp_path / "unsafe-installed"
@@ -352,7 +356,9 @@ def _install_with_artifact_bytes(
     manifest_path = source / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(payload).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
     installed_dir = tmp_path / "installed"
@@ -457,7 +463,9 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(installed_script_archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -511,7 +519,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -585,7 +595,9 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -746,7 +758,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
