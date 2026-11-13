@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import add_domain_error_handler
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     ConversationService,
@@ -29,6 +30,7 @@ from openhands.agent_server.models import (
     StartChildConversationResponse,
     StartConversationRequest,
 )
+from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.project_prompts import WORKER_GUIDANCE_MARKER
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
@@ -343,6 +345,7 @@ async def _launch_child(
         async with ConversationService(
             conversations_dir=tmp_path / "conversations",
             conversation_worktree_root=worktree_root,
+            stores=ServerStores.from_config(Config()),
         ) as service:
             parent_info, _ = await service.start_conversation(parent_request)
             parent_service = services[parent_info.id]
@@ -683,12 +686,11 @@ async def test_project_child_gets_the_project_memory(
     from uuid import uuid4
 
     from openhands.agent_server import conversation_service as module
-    from openhands.agent_server.persistence import ProjectItem, reset_stores
+    from openhands.agent_server.persistence import ProjectItem
     from openhands.agent_server.project_memory import ProjectMemoryStore
 
     persistence_dir = tmp_path / "persist"
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(persistence_dir))
-    reset_stores()
     project_id = uuid4()
     ProjectMemoryStore(persistence_dir).write(
         project_id, "MEMORY.md", "- Engel prefers squash merges.", None
@@ -697,17 +699,14 @@ async def test_project_child_gets_the_project_memory(
     monkeypatch.setattr(
         module,
         "_load_project",
-        lambda project_hex: project if project_hex == project_id.hex else None,
+        lambda stores, project_hex: project if project_hex == project_id.hex else None,
     )
-    try:
-        launch = await _launch_child(
-            tmp_path,
-            workspace_dir,
-            StartChildConversationRequest(task="Write the docs"),
-            parent_tags={"project": project_id.hex},
-        )
-    finally:
-        reset_stores()
+    launch = await _launch_child(
+        tmp_path,
+        workspace_dir,
+        StartChildConversationRequest(task="Write the docs"),
+        parent_tags={"project": project_id.hex},
+    )
 
     # The memory index is in the worker's <PROJECT> block, not its brief.
     _, task = _first_message(launch)
@@ -810,9 +809,8 @@ async def test_a_child_outside_projects_still_copies_its_parent(
 
 @pytest.mark.asyncio
 async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, server_stores
 ):
-    from openhands.agent_server import persistence
     from openhands.agent_server.models import StoredConversation
     from openhands.agent_server.persistence import (
         PersistedProjects,
@@ -823,24 +821,9 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
     named, active = uuid4(), uuid4()
     with_profile = ProjectItem(name="A", worker_agent_profile_id=named)
     without = ProjectItem(name="B")
-    projects = PersistedProjects(projects=[with_profile, without])
-    monkeypatch.setattr(
-        persistence,
-        "get_projects_store",
-        lambda: SimpleNamespace(load=lambda: projects),
-    )
+    server_stores.projects.save(PersistedProjects(projects=[with_profile, without]))
+    server_stores.settings.save(PersistedSettings(active_agent_profile_id=str(active)))
     from openhands.agent_server import conversation_service as module
-
-    monkeypatch.setattr(
-        module, "get_projects_store", lambda: SimpleNamespace(load=lambda: projects)
-    )
-    monkeypatch.setattr(
-        persistence,
-        "get_settings_store",
-        lambda: SimpleNamespace(
-            load=lambda: PersistedSettings(active_agent_profile_id=str(active))
-        ),
-    )
 
     def stored(tags):
         return StoredConversation(
@@ -850,9 +833,13 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
         )
 
     predefined: list[UUID | None] = [None]
-    monkeypatch.setattr(module, "ensure_project_profile", lambda role: predefined[0])
+    monkeypatch.setattr(
+        module, "ensure_project_profile", lambda role, stores: predefined[0]
+    )
 
-    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations", stores=server_stores
+    )
     pick = service._project_worker_profile
 
     assert await pick(stored({"project": with_profile.id.hex})) == named
@@ -944,6 +931,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
         async with ConversationService(
             conversations_dir=tmp_path / "conversations",
             conversation_worktree_root=tmp_path / "worktrees",
+            stores=ServerStores.from_config(Config()),
         ) as service:
             info = await service.start_project_coordinator(
                 project_hex,
@@ -971,10 +959,11 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
 async def test_a_new_coordinator_needs_a_profile(tmp_path, workspace_dir, monkeypatch):
     from openhands.agent_server import conversation_service as module
 
-    monkeypatch.setattr(module, "_active_agent_profile_id", lambda: None)
-    monkeypatch.setattr(module, "ensure_project_profile", lambda role: None)
+    monkeypatch.setattr(module, "_active_agent_profile_id", lambda stores: None)
+    monkeypatch.setattr(module, "ensure_project_profile", lambda role, stores: None)
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
+        stores=ServerStores.from_config(Config()),
     ) as service:
         with pytest.raises(ValueError, match="No agent profile"):
             await service.start_project_coordinator(uuid4().hex, str(workspace_dir))
@@ -1009,6 +998,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
         async with ConversationService(
             conversations_dir=tmp_path / "conversations",
             conversation_worktree_root=tmp_path / "worktrees",
+            stores=ServerStores.from_config(Config()),
         ) as service:
             info = await service.start_project_coordinator(
                 project_hex,
@@ -1054,7 +1044,7 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
     predefined = uuid4()
     roles: list[str] = []
 
-    def ensure(role):
+    def ensure(role, stores):
         roles.append(role)
         return predefined
 
@@ -1063,7 +1053,7 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
     monkeypatch.setattr(
         module,
         "_load_project",
-        lambda project_hex: project if project_hex == project.id.hex else None,
+        lambda stores, project_hex: project if project_hex == project.id.hex else None,
     )
     sources: list = []
 
@@ -1080,6 +1070,7 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
         async with ConversationService(
             conversations_dir=tmp_path / "conversations",
             conversation_worktree_root=tmp_path / "worktrees",
+            stores=ServerStores.from_config(Config()),
         ) as service:
             info = await service.start_project_coordinator(
                 project.id.hex, str(workspace_dir)

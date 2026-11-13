@@ -35,7 +35,6 @@ from fastapi import (
     File,
     Form,
     Query,
-    Request,
     Response,
     UploadFile,
     status,
@@ -43,17 +42,20 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_settings_store,
+    get_stores,
+)
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.persistence import (
     FileProjectsStore,
+    FileSettingsStore,
     PersistedProjects,
     ProjectItem,
-    get_agent_profile_store,
-    get_projects_store,
+    ServerStores,
 )
 from openhands.agent_server.project_artifacts import (
     MAX_ARTIFACT_BYTES,
@@ -113,13 +115,15 @@ from openhands.sdk.utils.datetime import OpenHandsUUID
 logger = get_logger(__name__)
 
 
-async def _require_projects(request: Request) -> None:
+async def _require_projects(
+    settings_store: Annotated[FileSettingsStore, Depends(get_settings_store)],
+) -> None:
     """Answer 404 while the user has the Projects feature off.
 
     404 reads as "this server has no projects", which clients already handle;
     the projects on disk are kept and come back when it is turned on again.
     """
-    if not await feature_enabled_now("projects", get_config(request)):
+    if not await feature_enabled_now("projects", settings_store):
         raise NotFound(PROJECTS_OFF_DETAIL)
 
 
@@ -354,8 +358,11 @@ class DeleteResponse(BaseModel):
 # Helpers
 
 
-def _store(request: Request) -> FileProjectsStore:
-    return get_projects_store(get_config(request))
+_Stores = Annotated[ServerStores, Depends(get_stores)]
+
+
+def _store(stores: ServerStores) -> FileProjectsStore:
+    return stores.projects
 
 
 async def _load(store: FileProjectsStore) -> PersistedProjects:
@@ -522,9 +529,9 @@ def _conversation(
 
 
 @projects_router.get("", response_model=ProjectsListResponse)
-async def list_projects(request: Request) -> ProjectsListResponse:
+async def list_projects(stores: _Stores) -> ProjectsListResponse:
     """List all projects, oldest first."""
-    return ProjectsListResponse(projects=list((await _load(_store(request))).projects))
+    return ProjectsListResponse(projects=list((await _load(_store(stores))).projects))
 
 
 @projects_router.post(
@@ -537,7 +544,7 @@ async def list_projects(request: Request) -> ProjectsListResponse:
     },
 )
 async def create_project(
-    request: Request,
+    stores: _Stores,
     payload: CreateProjectRequest,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectItem:
@@ -548,8 +555,8 @@ async def create_project(
         payload.coordinator is not None
         and payload.coordinator.agent_profile_id is not None
     ):
-        await _require_agent_profile(payload.coordinator.agent_profile_id)
-    store = _store(request)
+        await _require_agent_profile(stores, payload.coordinator.agent_profile_id)
+    store = _store(stores)
     project = ProjectItem(
         id=uuid4(),
         name=payload.name,
@@ -561,7 +568,7 @@ async def create_project(
     if coordinator_id is not None:
         await _require_conversation(service, coordinator_id)
     if payload.worker_agent_profile_id is not None:
-        await _require_agent_profile(payload.worker_agent_profile_id)
+        await _require_agent_profile(stores, payload.worker_agent_profile_id)
 
     def apply(current: PersistedProjects) -> PersistedProjects:
         if coordinator_id is not None:
@@ -624,9 +631,11 @@ async def _start_new_coordinator(
     return updated
 
 
-async def _require_agent_profile(profile_id: UUID) -> None:
+async def _require_agent_profile(stores: ServerStores, profile_id: UUID) -> None:
+    store = stores.agent_profiles
+
     def exists() -> bool:
-        return get_agent_profile_store().name_for_id(profile_id) is not None
+        return store.name_for_id(profile_id) is not None
 
     if not await asyncio.to_thread(exists):
         raise NotFound(f"Agent profile {profile_id} not found")
@@ -637,9 +646,9 @@ async def _require_agent_profile(profile_id: UUID) -> None:
     response_model=ProjectItem,
     responses={404: {"description": "Project not found"}},
 )
-async def get_project(project_id: UUID, request: Request) -> ProjectItem:
+async def get_project(project_id: UUID, stores: _Stores) -> ProjectItem:
     """Get one project."""
-    return _find(await _load(_store(request)), project_id)
+    return _find(await _load(_store(stores)), project_id)
 
 
 @projects_router.patch(
@@ -656,12 +665,12 @@ async def get_project(project_id: UUID, request: Request) -> ProjectItem:
 )
 async def update_project(
     project_id: UUID,
-    request: Request,
+    stores: _Stores,
     payload: UpdateProjectRequest,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectItem:
     """Rename a project, change its description, or set or clear its coordinator."""
-    store = _store(request)
+    store = _store(stores)
     previous = _find(await _load(store), project_id)
 
     update: dict = {}
@@ -677,7 +686,7 @@ async def update_project(
         update["coordinator_conversation_id"] = coordinator_id
     if "worker_agent_profile_id" in payload.model_fields_set:
         if payload.worker_agent_profile_id is not None:
-            await _require_agent_profile(payload.worker_agent_profile_id)
+            await _require_agent_profile(stores, payload.worker_agent_profile_id)
         update["worker_agent_profile_id"] = payload.worker_agent_profile_id
 
     updated: ProjectItem | None = None
@@ -721,7 +730,7 @@ async def update_project(
     response_model=DeleteResponse,
     responses={404: {"description": "Project not found"}},
 )
-async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
+async def delete_project(project_id: UUID, stores: _Stores) -> DeleteResponse:
     """Delete a project.
 
     Conversations are left as they are, including their ``project`` tag; the
@@ -736,10 +745,10 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
         removed = remaining is not current
         return remaining
 
-    await _update(_store(request), apply)
+    await _update(_store(stores), apply)
     if not removed:
         raise NotFound("Project not found")
-    await asyncio.to_thread(_artifacts(request).delete_project, project_id)
+    await asyncio.to_thread(_artifacts(stores).delete_project, project_id)
     return DeleteResponse()
 
 
@@ -750,7 +759,7 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
 )
 async def list_project_conversations(
     project_id: UUID,
-    request: Request,
+    stores: _Stores,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectConversationsResponse:
     """List a project's conversations, grouped by what they need from the user.
@@ -760,7 +769,7 @@ async def list_project_conversations(
     ``working``; finished and idle are ``idle``: nothing runs and nothing
     waits on the user, but it is not resolved either.
     """
-    project = _find(await _load(_store(request)), project_id)
+    project = _find(await _load(_store(stores)), project_id)
     members = await service.list_tagged_conversations(PROJECT_TAG, project_id.hex)
 
     coordinator: ProjectConversation | None = None
@@ -791,7 +800,7 @@ async def list_project_conversations(
 async def add_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
-    request: Request,
+    stores: _Stores,
     service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
     """Add an existing conversation to a project. Idempotent.
@@ -800,7 +809,7 @@ async def add_project_conversation(
     conversation belongs to at most one project, so this moves it from any
     other project, unless it coordinates that one.
     """
-    persisted = await _load(_store(request))
+    persisted = await _load(_store(stores))
     _find(persisted, project_id)
     _check_not_coordinating_elsewhere(persisted, project_id, conversation_id)
     if not await _join(service, project_id, conversation_id):
@@ -819,7 +828,7 @@ async def add_project_conversation(
 async def remove_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
-    request: Request,
+    stores: _Stores,
     service: ConversationService = Depends(get_conversation_service),
 ) -> DeleteResponse:
     """Remove a conversation from a project by clearing its ``project`` tag.
@@ -827,7 +836,7 @@ async def remove_project_conversation(
     The conversation itself is not changed otherwise. Child conversations keep
     their own tag. Clear the coordinator before removing it.
     """
-    project = _find(await _load(_store(request)), project_id)
+    project = _find(await _load(_store(stores)), project_id)
     if project.coordinator_conversation_id == conversation_id:
         raise Conflict("Conversation is the project's coordinator")
     try:
@@ -856,12 +865,12 @@ class ResolveConversationRequest(BaseModel):
 async def _set_member_resolved(
     project_id: UUID,
     conversation_id: UUID,
-    request: Request,
+    stores: ServerStores,
     service: ConversationService,
     resolved: bool,
     by: Literal["user", "agent"] = "user",
 ) -> Response:
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     info = await service.get_conversation(conversation_id)
     if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
         raise NotFound("Conversation not in project")
@@ -886,7 +895,7 @@ async def _set_member_resolved(
 async def resolve_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
-    request: Request,
+    stores: _Stores,
     body: ResolveConversationRequest | None = None,
     service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
@@ -900,7 +909,7 @@ async def resolve_project_conversation(
     """
     by = body.by if body is not None else "user"
     return await _set_member_resolved(
-        project_id, conversation_id, request, service, True, by
+        project_id, conversation_id, stores, service, True, by
     )
 
 
@@ -912,12 +921,12 @@ async def resolve_project_conversation(
 async def reopen_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
-    request: Request,
+    stores: _Stores,
     service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
     """Reopen a resolved member: removes ``resolved`` and its note. Idempotent."""
     return await _set_member_resolved(
-        project_id, conversation_id, request, service, False
+        project_id, conversation_id, stores, service, False
     )
 
 
@@ -984,7 +993,7 @@ def _transcript(events: list[Event], limit: int) -> list[ProjectTranscriptMessag
 async def read_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
-    request: Request,
+    stores: _Stores,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectTranscriptResponse:
@@ -994,7 +1003,7 @@ async def read_project_conversation(
     agent's `finish` on the active branch, oldest first, so a coordinator can
     catch up on a conversation without reading every event.
     """
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     event_service = await service.get_event_service(conversation_id)
     if (
         event_service is None
@@ -1035,8 +1044,8 @@ class SaveConversationArtifactRequest(BaseModel):
     )
 
 
-def _artifacts(request: Request) -> ProjectArtifactStore:
-    return ProjectArtifactStore(_store(request).persistence_dir)
+def _artifacts(stores: ServerStores) -> ProjectArtifactStore:
+    return ProjectArtifactStore(_store(stores).persistence_dir)
 
 
 def _artifact_name(name: str) -> str:
@@ -1078,11 +1087,11 @@ async def _save_artifact(
     responses={404: {"description": "Project not found"}},
 )
 async def list_project_artifacts(
-    project_id: UUID, request: Request
+    project_id: UUID, stores: _Stores
 ) -> ProjectArtifactsResponse:
     """List the files the user uploaded to the project or its agents saved."""
-    _find(await _load(_store(request)), project_id)
-    artifacts = await asyncio.to_thread(_artifacts(request).list, project_id)
+    _find(await _load(_store(stores)), project_id)
+    artifacts = await asyncio.to_thread(_artifacts(stores).list, project_id)
     return ProjectArtifactsResponse(artifacts=artifacts)
 
 
@@ -1098,19 +1107,19 @@ async def list_project_artifacts(
 )
 async def upload_project_artifact(
     project_id: UUID,
-    request: Request,
+    stores: _Stores,
     file: Annotated[UploadFile, File()],
     name: Annotated[str | None, Form()] = None,
 ) -> ProjectArtifact:
     """Upload a file to the project. An artifact of the same name is replaced."""
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     # Starlette has already spooled the body; still refuse an oversized one
     # before copying it again.
     if (file.size or 0) > MAX_ARTIFACT_BYTES:
         raise TooLarge(f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes")
     artifact_name = _artifact_name(name or Path(file.filename or "").name)
     return await _save_artifact(
-        _artifacts(request), project_id, artifact_name, file.file, source="user"
+        _artifacts(stores), project_id, artifact_name, file.file, source="user"
     )
 
 
@@ -1127,7 +1136,7 @@ async def upload_project_artifact(
 async def save_conversation_artifact(
     project_id: UUID,
     payload: SaveConversationArtifactRequest,
-    request: Request,
+    stores: _Stores,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectArtifact:
     """Copy a file from a member conversation's workspace into the project.
@@ -1135,7 +1144,7 @@ async def save_conversation_artifact(
     The path must stay inside the conversation's working directory, symlinks
     included. An artifact of the same name is replaced.
     """
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     event_service = await service.get_event_service(payload.conversation_id)
     if (
         event_service is None
@@ -1150,7 +1159,7 @@ async def save_conversation_artifact(
     with stream:
         artifact_name = _artifact_name(payload.name or Path(payload.path).name)
         return await _save_artifact(
-            _artifacts(request),
+            _artifacts(stores),
             project_id,
             artifact_name,
             stream,
@@ -1174,7 +1183,7 @@ async def save_conversation_artifact(
     },
 )
 async def download_project_artifact(
-    project_id: UUID, name: str, request: Request
+    project_id: UUID, name: str, stores: _Stores
 ) -> FileResponse:
     """Download an artifact as an attachment.
 
@@ -1184,9 +1193,9 @@ async def download_project_artifact(
     origin.
     """
     update_last_execution_time()
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     found = await asyncio.to_thread(
-        _artifacts(request).get, project_id, _artifact_name(name)
+        _artifacts(stores).get, project_id, _artifact_name(name)
     )
     if found is None:
         raise NotFound("Artifact not found")
@@ -1205,12 +1214,12 @@ async def download_project_artifact(
     responses={404: {"description": "Project or artifact not found"}},
 )
 async def delete_project_artifact(
-    project_id: UUID, name: str, request: Request
+    project_id: UUID, name: str, stores: _Stores
 ) -> DeleteResponse:
     """Delete an artifact."""
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     if not await asyncio.to_thread(
-        _artifacts(request).delete, project_id, _artifact_name(name)
+        _artifacts(stores).delete, project_id, _artifact_name(name)
     ):
         raise NotFound("Artifact not found")
     return DeleteResponse()
@@ -1237,8 +1246,8 @@ class WriteMemoryRequest(BaseModel):
     )
 
 
-def _memory(request: Request) -> ProjectMemoryStore:
-    return ProjectMemoryStore(_store(request).persistence_dir)
+def _memory(stores: ServerStores) -> ProjectMemoryStore:
+    return ProjectMemoryStore(_store(stores).persistence_dir)
 
 
 def _memory_name(name: str) -> str:
@@ -1265,12 +1274,12 @@ def _memory_conflict(exc: MemoryConflict) -> Conflict:
     responses={404: {"description": "Project not found"}},
 )
 async def list_project_memory(
-    project_id: UUID, request: Request
+    project_id: UUID, stores: _Stores
 ) -> ProjectMemoryResponse:
     """List the project's memory files."""
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     return ProjectMemoryResponse(
-        files=await asyncio.to_thread(_memory(request).list, project_id)
+        files=await asyncio.to_thread(_memory(stores).list, project_id)
     )
 
 
@@ -1280,13 +1289,11 @@ async def list_project_memory(
     responses={404: {"description": "Project or memory file not found"}},
 )
 async def read_project_memory(
-    project_id: UUID, name: str, request: Request
+    project_id: UUID, name: str, stores: _Stores
 ) -> MemoryFileContent:
     """Read one memory file with its revision."""
-    _find(await _load(_store(request)), project_id)
-    found = await asyncio.to_thread(
-        _memory(request).get, project_id, _memory_name(name)
-    )
+    _find(await _load(_store(stores)), project_id)
+    found = await asyncio.to_thread(_memory(stores).get, project_id, _memory_name(name))
     if found is None:
         raise NotFound("Memory file not found")
     return found
@@ -1302,13 +1309,13 @@ async def read_project_memory(
     },
 )
 async def write_project_memory(
-    project_id: UUID, name: str, payload: WriteMemoryRequest, request: Request
+    project_id: UUID, name: str, payload: WriteMemoryRequest, stores: _Stores
 ) -> MemoryFileContent:
     """Create or replace a memory file, based on the revision last read."""
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     try:
         return await asyncio.to_thread(
-            _memory(request).write,
+            _memory(stores).write,
             project_id,
             _memory_name(name),
             payload.content,
@@ -1331,14 +1338,14 @@ async def write_project_memory(
 async def delete_project_memory(
     project_id: UUID,
     name: str,
-    request: Request,
+    stores: _Stores,
     base_revision: Annotated[str | None, Query()] = None,
 ) -> DeleteResponse:
     """Delete a memory file; with ``base_revision``, only if it is unchanged."""
-    _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(stores)), project_id)
     try:
         deleted = await asyncio.to_thread(
-            _memory(request).delete, project_id, _memory_name(name), base_revision
+            _memory(stores).delete, project_id, _memory_name(name), base_revision
         )
     except MemoryConflict as exc:
         raise _memory_conflict(exc)

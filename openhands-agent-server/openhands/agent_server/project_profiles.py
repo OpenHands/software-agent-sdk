@@ -18,8 +18,7 @@ from uuid import UUID, uuid4
 
 from openhands.agent_server.persistence import (
     PersistedSettings,
-    get_agent_profile_store,
-    get_settings_store,
+    ServerStores,
 )
 from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.logger import get_logger
@@ -77,7 +76,7 @@ def _profile(role: ProjectRole, base: OpenHandsAgentProfile) -> OpenHandsAgentPr
     )
 
 
-def ensure_project_profile(role: ProjectRole) -> UUID | None:
+def ensure_project_profile(role: ProjectRole, stores: ServerStores) -> UUID | None:
     """The id of the predefined profile for ``role``, creating it if missing.
 
     ``None`` when it cannot be made: no active OpenHands agent profile to build
@@ -87,12 +86,12 @@ def ensure_project_profile(role: ProjectRole) -> UUID | None:
     """
     from openhands.agent_server.agent_profiles_router import MAX_AGENT_PROFILES
 
-    store = get_agent_profile_store()
+    store = stores.agent_profiles
     name = PROJECT_PROFILE_NAMES[role]
     with store.lock():
         if f"{name}.json" in store.list():
             return store.load(name).id
-        settings = get_settings_store().load() or PersistedSettings()
+        settings = stores.settings.load() or PersistedSettings()
         active_id = settings.active_agent_profile_id
         active_name = store.name_for_id(active_id) if active_id else None
         if active_name is None:

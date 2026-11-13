@@ -32,7 +32,7 @@ from openhands.agent_server.event_service import (
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.models import EventSortOrder
-from openhands.agent_server.persistence import get_projects_store
+from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_board import (
     TurnOutcome,
     describe_action,
@@ -82,9 +82,18 @@ class SenderError(ValueError):
     """The ``sender_conversation_id`` of a message cannot send it."""
 
 
-async def _coordinator_id(project_hex: str) -> UUID | None:
+async def _load_projects(service: "ConversationService") -> PersistedProjects | None:
+    """The server's projects; ``None`` when it keeps none or has no stores."""
+    if service.stores is None:
+        return None
+    return await asyncio.to_thread(service.stores.projects.load)
+
+
+async def _coordinator_id(
+    service: "ConversationService", project_hex: str
+) -> UUID | None:
     try:
-        persisted = await asyncio.to_thread(get_projects_store().load)
+        persisted = await _load_projects(service)
     except OSError:
         logger.warning("Projects read failed; sender named as a member")
         return None
@@ -116,7 +125,7 @@ async def sender_message_header(
     if project_hex:
         if target_tags.get(PROJECT_TAG_KEY) != project_hex:
             raise SenderError("Sender is not a conversation of this project")
-        coordinator = await _coordinator_id(project_hex) == sender_id
+        coordinator = await _coordinator_id(service, project_hex) == sender_id
         role = "coordinator" if coordinator else "member"
     return sender_header(sender.title, sender_id, role=role)
 
@@ -125,7 +134,7 @@ async def _coordinator(
     service: "ConversationService", member_id: UUID, project_hex: str
 ) -> tuple[UUID, "EventService"] | None:
     """The coordinator a member's news goes to, when there is one to tell."""
-    persisted = await asyncio.to_thread(get_projects_store().load)
+    persisted = await _load_projects(service)
     if persisted is None:
         return None
     project = next((p for p in persisted.projects if p.id.hex == project_hex), None)
@@ -491,9 +500,10 @@ async def reconcile_coordinator_updates(service: "ConversationService") -> int:
     as it would have been when the turn ended. Turns the user started are
     not replayed: the user saw those. Returns how many were delivered.
     """
-    if not await feature_enabled_now("projects"):
+    stores = service.stores
+    if stores is None or not await feature_enabled_now("projects", stores.settings):
         return 0
-    persisted = await asyncio.to_thread(get_projects_store().load)
+    persisted = await _load_projects(service)
     if persisted is None:
         return 0
     delivered = 0

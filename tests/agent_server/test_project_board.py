@@ -260,9 +260,9 @@ async def test_a_failing_tag_write_does_not_break_publishing():
 
 
 @pytest.fixture
-async def service(tmp_path) -> AsyncIterator[ConversationService]:
+async def service(tmp_path, server_stores) -> AsyncIterator[ConversationService]:
     async with ConversationService(
-        conversations_dir=tmp_path / "conversations"
+        conversations_dir=tmp_path / "conversations", stores=server_stores
     ) as service:
         yield service
 

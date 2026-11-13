@@ -14,7 +14,7 @@ from openhands.agent_server.experimental_features import (
     find_experimental_feature,
     is_enabled,
 )
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.event import MessageEvent
@@ -59,21 +59,21 @@ def test_projects_api_follows_the_switch_at_once(tmp_path):
 @pytest.mark.asyncio
 async def test_feature_enabled_now_reads_the_stored_switch(tmp_path, monkeypatch):
     monkeypatch.delenv("OH_RUNTIME_EXPERIMENTAL_FEATURES", raising=False)
-    store = get_settings_store(Config(conversations_path=tmp_path / "c"))
-    assert await feature_enabled_now("projects") is False
+    store = ServerStores.from_config(Config(conversations_path=tmp_path / "c")).settings
+    assert await feature_enabled_now("projects", store) is False
     settings = store.load() or PersistedSettings()
     store.save(
         settings.model_copy(update={"experimental_features": {"projects": True}})
     )
-    assert await feature_enabled_now("projects") is True
+    assert await feature_enabled_now("projects", store) is True
 
 
 @pytest.mark.asyncio
 async def test_feature_enabled_now_uses_host_switches_in_a_runtime(monkeypatch):
     monkeypatch.setenv("OH_RUNTIME_EXPERIMENTAL_FEATURES", '{"projects": true}')
-    assert await feature_enabled_now("projects") is True
+    assert await feature_enabled_now("projects", None) is True
     monkeypatch.setenv("OH_RUNTIME_EXPERIMENTAL_FEATURES", "{}")
-    assert await feature_enabled_now("projects") is False
+    assert await feature_enabled_now("projects", None) is False
 
 
 @pytest.mark.asyncio

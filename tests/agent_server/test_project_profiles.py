@@ -1,10 +1,8 @@
 """The predefined project-coordinator and project-worker agent profiles."""
 
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_agent_profile_store,
-    get_settings_store,
-)
+import pytest
+
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.agent_server.project_profiles import (
     COORDINATOR_PROFILE_TOOLS,
     PROJECT_PROFILE_NAMES,
@@ -15,9 +13,14 @@ from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.tool import Tool
 
 
-def _activate(profile: OpenHandsAgentProfile) -> None:
-    get_agent_profile_store().save(profile)
-    store = get_settings_store()
+@pytest.fixture
+def stores(server_stores) -> ServerStores:
+    return server_stores
+
+
+def _activate(stores: ServerStores, profile: OpenHandsAgentProfile) -> None:
+    stores.agent_profiles.save(profile)
+    store = stores.settings
     settings = store.load() or PersistedSettings()
     store.save(settings.model_copy(update={"active_agent_profile_id": profile.id}))
 
@@ -37,18 +40,18 @@ def _user_profile() -> OpenHandsAgentProfile:
     )
 
 
-def test_without_an_active_profile_there_is_nothing_to_build_from():
-    assert ensure_project_profile("coordinator") is None
-    assert ensure_project_profile("worker") is None
+def test_without_an_active_profile_there_is_nothing_to_build_from(stores):
+    assert ensure_project_profile("coordinator", stores) is None
+    assert ensure_project_profile("worker", stores) is None
 
 
-def test_the_profiles_are_built_from_the_users_active_profile():
-    _activate(_user_profile())
+def test_the_profiles_are_built_from_the_users_active_profile(stores):
+    _activate(stores, _user_profile())
 
-    coordinator_id = ensure_project_profile("coordinator")
-    worker_id = ensure_project_profile("worker")
+    coordinator_id = ensure_project_profile("coordinator", stores)
+    worker_id = ensure_project_profile("worker", stores)
 
-    store = get_agent_profile_store()
+    store = stores.agent_profiles
     coordinator = store.load(PROJECT_PROFILE_NAMES["coordinator"])
     worker = store.load(PROJECT_PROFILE_NAMES["worker"])
     assert isinstance(coordinator, OpenHandsAgentProfile)
@@ -67,26 +70,26 @@ def test_the_profiles_are_built_from_the_users_active_profile():
     assert [t.name for t in worker.tools or []] == ["terminal", "file_editor"]
 
 
-def test_an_existing_profile_is_kept_as_the_user_edited_it():
-    _activate(_user_profile())
-    first = ensure_project_profile("worker")
-    store = get_agent_profile_store()
+def test_an_existing_profile_is_kept_as_the_user_edited_it(stores):
+    _activate(stores, _user_profile())
+    first = ensure_project_profile("worker", stores)
+    store = stores.agent_profiles
     edited = store.load(PROJECT_PROFILE_NAMES["worker"]).model_copy(
         update={"llm_profile_ref": "cheap-model"}
     )
     store.save(edited)
 
-    assert ensure_project_profile("worker") == first
+    assert ensure_project_profile("worker", stores) == first
     kept = store.load(PROJECT_PROFILE_NAMES["worker"])
     assert isinstance(kept, OpenHandsAgentProfile)
     assert kept.llm_profile_ref == "cheap-model"
 
 
-def test_a_user_on_the_standard_tool_set_keeps_it_for_workers():
-    _activate(_user_profile().model_copy(update={"tools": None}))
+def test_a_user_on_the_standard_tool_set_keeps_it_for_workers(stores):
+    _activate(stores, _user_profile().model_copy(update={"tools": None}))
 
-    ensure_project_profile("worker")
+    ensure_project_profile("worker", stores)
 
-    worker = get_agent_profile_store().load(PROJECT_PROFILE_NAMES["worker"])
+    worker = stores.agent_profiles.load(PROJECT_PROFILE_NAMES["worker"])
     assert isinstance(worker, OpenHandsAgentProfile)
     assert worker.tools is None

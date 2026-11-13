@@ -31,7 +31,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.project_wake import (
     notify_coordinator,
     notify_coordinator_of_stop,
@@ -43,33 +43,39 @@ from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context, update_test_context
 
 
 @pytest.fixture
 def persistence_dir(tmp_path, monkeypatch) -> Iterator[Path]:
     path = tmp_path / "persist"
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(path))
-    reset_stores()
     yield path
-    reset_stores()
 
 
 @pytest.fixture
-async def service(tmp_path) -> AsyncIterator[ConversationService]:
+def stores(persistence_dir) -> ServerStores:
+    return ServerStores.from_config(Config())
+
+
+@pytest.fixture
+async def service(tmp_path, stores) -> AsyncIterator[ConversationService]:
     async with ConversationService(
-        conversations_dir=tmp_path / "conversations"
+        conversations_dir=tmp_path / "conversations", stores=stores
     ) as service:
         yield service
 
 
 @pytest.fixture
-async def client(service, persistence_dir) -> AsyncIterator[httpx.AsyncClient]:
+async def client(service, stores) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=None
+    install_test_context(
+        app,
+        Config(static_files_path=None, session_api_keys=[], secret_key=None),
+        conversation_service=service,
     )
-    app.state.conversation_service = service
+    update_test_context(app, stores=stores)
     app.include_router(projects_router, prefix="/api")
     app.include_router(event_router, prefix="/api")
     app.dependency_overrides[get_conversation_service] = lambda: service
@@ -1520,16 +1526,10 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
 
 
 @pytest.mark.asyncio
-async def test_a_project_names_its_workers_agent_profile(client, monkeypatch):
-    from openhands.agent_server import projects_router as module
-
+async def test_a_project_names_its_workers_agent_profile(client, stores):
     known = uuid4()
-    monkeypatch.setattr(
-        module,
-        "get_agent_profile_store",
-        lambda: SimpleNamespace(
-            name_for_id=lambda pid: "worker" if pid == known else None
-        ),
+    stores._built["agent_profiles"] = SimpleNamespace(
+        name_for_id=lambda pid: "worker" if pid == known else None
     )
 
     unknown = await client.post(

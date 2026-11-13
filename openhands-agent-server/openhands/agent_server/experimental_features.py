@@ -32,7 +32,7 @@ from openhands.sdk.tool.spec import Tool
 
 
 if TYPE_CHECKING:
-    from openhands.agent_server.config import Config
+    from openhands.agent_server.persistence import SettingsStore
 
 
 @dataclass(frozen=True)
@@ -132,23 +132,22 @@ def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[st
     return [] if is_enabled(features, PROJECTS.key) else list(PROJECT_TOOL_NAMES)
 
 
-async def feature_enabled_now(key: str, config: "Config | None" = None) -> bool:
+async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:
     """Whether the user has ``key`` on right now (host switches in a runtime).
 
     For server behavior that follows the switch at once, such as a route or a
-    wake-up. An unreadable settings file counts as off.
+    wake-up. An unreadable settings file, or no store, counts as off.
     """
     host_features = host_experimental_features()
     if host_features is not None:
         return is_enabled(host_features, key)
-    from openhands.agent_server.persistence import (
-        PersistedSettings,
-        get_settings_store,
-    )
+    if settings_store is None:
+        return False
+    from openhands.agent_server.persistence import PersistedSettings
 
     try:
         settings = await asyncio.to_thread(
-            lambda: get_settings_store(config).load() or PersistedSettings()
+            lambda: settings_store.load() or PersistedSettings()
         )
     except (PermissionError, OSError):
         return False
