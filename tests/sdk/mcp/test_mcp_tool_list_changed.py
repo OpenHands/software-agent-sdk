@@ -58,7 +58,7 @@ def _wait_for_port(port: int, timeout: float = 10.0) -> None:
     import httpx
 
     deadline = time.time() + timeout
-    url = f"http://127.0.0.1:{port}/mcp"
+    url = f"http://127.0.0.1:{port}/"
     last_error: Exception | None = None
     while time.time() < deadline:
         try:
@@ -268,7 +268,8 @@ def progressive_server():
 
     Calling ``register_extra_tool`` adds a second tool and sends a
     ``notifications/tools/list_changed`` notification to the current session,
-    mimicking Datadog's progressive-disclosure behavior.
+    mimicking Datadog's progressive-disclosure behavior. Legacy-only SSE makes
+    auto negotiation retain the notification stream for this test.
     """
     mcp = FastMCP("progressive-test-server")
 
@@ -317,9 +318,9 @@ def progressive_server():
             mcp.run_http_async(
                 host="127.0.0.1",
                 port=port,
-                transport="http",
+                transport="sse",
                 show_banner=False,
-                path="/mcp",
+                path="/sse",
             )
         )
 
@@ -336,8 +337,8 @@ def test_no_callback_still_connects(progressive_server: int):
         {
             "mcpServers": {
                 "progressive": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -363,8 +364,8 @@ def test_default_provider_wires_on_tools_reconciled_before_connect(
         {
             "mcpServers": {
                 "progressive": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -391,8 +392,8 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
         {
             "mcpServers": {
                 "progressive": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -496,8 +497,8 @@ def test_list_changed_in_multi_server_conversation_keeps_server_prefix(
             mcp_config=_native_config(
                 {
                     "progressive": {
-                        "transport": "http",
-                        "url": f"http://127.0.0.1:{progressive_server}/mcp",
+                        "transport": "sse",
+                        "url": f"http://127.0.0.1:{progressive_server}/sse",
                     },
                     "docs": {
                         "command": sys.executable,

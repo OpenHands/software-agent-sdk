@@ -628,7 +628,7 @@ Preconditions:
   holds one subscription of its own), every other one closes with 1013
   `Too many connections for this conversation`, and once they close a new
   socket is admitted.
-- **Deleting closes the socket (`F07.deleted-close`), known bug.**
+- **Deleting closes the socket (`F07.deleted-close`).**
   A client attached to a conversation that gets deleted should be told.
   A background capture is subscribed (its `full_state` snapshot arrived and
   it is open) before the DELETE; the DELETE, a 404 on REST and a 4004 for a
@@ -640,17 +640,14 @@ Preconditions:
   control-agent-server api DELETE "/api/conversations/$DEL" --expect 200 --save "F07.deleted-close/delete-$DEL"
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
   control-agent-server ws listen "/sockets/session/$DEL" --duration 5 --expect-close 4004 --expect-frames 0
-  control-agent-server ws stop "del-$DEL" --save "F07.deleted-close/socket-$DEL" | control-agent-server assert --check close.code exists  # bug: value.opened eq true && value.stopped eq stopped && value.close missing
+  control-agent-server ws stop "del-$DEL" --save "F07.deleted-close/socket-$DEL" | control-agent-server assert --check close.code eq 4004
   ```
-  Correct behavior: the server closes the open socket (with any close code)
-  while it deletes the conversation; `EventService.close()` awaits
-  `PubSub.close()` before the DELETE answers, so the close has arrived by
-  the time the capture is stopped. Today the capture is still open with no
-  close frame (`close: null`) and nothing after the snapshot, although REST
-  answers 404 and a new socket gets 4004: `PubSub.close()` calls
-  `Subscriber.close()`, which `_SessionSubscriber` does not implement
-  (`pub_sub.py`, `session_socket.py`), so the client waits forever. The same
-  bug holds the legacy events socket open (`F06.ws-delete-close`).
+  The server closes the open socket with 4004 while it deletes the
+  conversation: `delete_conversation` calls `EventService.close_connections`,
+  which sends the frames already queued, closes the `_SessionSubscriber`'s
+  socket and stops its writer, before the DELETE answers, so the close has
+  arrived by the time the capture is stopped. The legacy events socket is
+  closed the same way (`F06.ws-delete-close`).
 
 ## Gotchas
 
