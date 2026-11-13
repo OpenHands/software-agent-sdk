@@ -183,16 +183,9 @@ describe('Agent Server generated contract aliases', () => {
     expect(cleared.auth).toBeNull();
   });
 
-  it('preserves generated MCP patch fields without exposing protocol mode', () => {
-    assertType<Equal<keyof MCPServerPatch, keyof McpServerPatchWritable>>(true);
-    assertType<Equal<MCPConfigPatch, Record<string, MCPServerPatch | null>>>(true);
-    assertType<
-      Equal<
-        keyof NonNullable<MCPConfigPatch[string]>,
-        keyof NonNullable<McpConfigPatchWritable[string]>
-      >
-    >(true);
-    assertType<Equal<'protocol_mode' extends keyof MCPServer ? true : false, false>>(true);
+  it('derives every MCP patch field from the generated server contract', () => {
+    assertType<Equal<MCPServerPatch, McpServerPatchWritable>>(true);
+    assertType<Equal<MCPConfigPatch, McpConfigPatchWritable>>(true);
     assertType<Equal<MCPServerPatch['env'], Record<string, string | null> | null | undefined>>(
       true
     );

@@ -18,7 +18,7 @@ from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 
@@ -271,7 +271,6 @@ def test_create_mcp_tools_skips_disabled_servers():
 
     prepared = mock_client_class.call_args.args[0]
     assert list(prepared.mcpServers) == ["kept"]
-    assert mock_client_class.call_args.kwargs["mode"] == "auto"
 
 
 def test_create_mcp_tools_all_servers_disabled():
@@ -305,21 +304,6 @@ def test_to_fastmcp_mcp_config_strips_enabled():
     prepared = to_fastmcp_mcp_config(config)
 
     assert "enabled" not in prepared["mcpServers"]["switched_off"]
-
-
-def test_to_fastmcp_mcp_config_does_not_expose_protocol_mode():
-    config = native_mcp_config(
-        {"mcpServers": {"remote": {"url": "https://mcp.example.com/mcp"}}}
-    )
-
-    server = to_fastmcp_mcp_config(config)["mcpServers"]["remote"]
-    assert "mode" not in server
-    assert "protocol_mode" not in server
-
-    with pytest.raises(ValidationError, match="protocol_mode"):
-        MCPServer.model_validate(
-            {"url": "https://mcp.example.com/mcp", "protocol_mode": "legacy"}
-        )
 
 
 def test_prepare_mcp_config_converts_bare_oauth_credential():
@@ -511,6 +495,8 @@ def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
 
     tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
 
+    assert tools.mode == "auto"
+    assert tools.initialize_result is None
     assert len(tools) == 2
     tool_names = {t.name for t in tools}
     assert "greet" in tool_names

@@ -438,12 +438,7 @@ def create_mcp_tools(
         client=None,  # type: ignore[arg-type]
         on_tools_changed=on_tools_changed,
     )
-    client = MCPClient(
-        config,
-        log_handler=log_handler,
-        message_handler=handler,
-        mode="auto",
-    )
+    client = MCPClient(config, log_handler=log_handler, message_handler=handler)
     handler._client = client
     client._tools_reconciled_callback = on_tools_reconciled
 

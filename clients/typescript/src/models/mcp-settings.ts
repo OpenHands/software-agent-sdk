@@ -6,6 +6,7 @@
  * RFC 7386 mutation semantics expected by client callers.
  */
 import type {
+  McpConfigPatchWritable,
   McpServerInputWritable,
   McpServerPatchWritable,
   McpoAuthAuthenticationInputWritable,
@@ -16,7 +17,7 @@ type GeneratedMCPServer = McpServerInputWritable;
 type GeneratedMCPTransport = NonNullable<GeneratedMCPServer['transport']>;
 type GeneratedMCPAuthCredential = NonNullable<GeneratedMCPServer['auth']>;
 
-type MCPCommonFields = Pick<GeneratedMCPServer, 'description' | 'icon' | 'timeout'>;
+type MCPDisplayFields = Pick<GeneratedMCPServer, 'description' | 'icon' | 'timeout'>;
 type MCPStdioFields = Pick<GeneratedMCPServer, 'args' | 'env' | 'cwd'>;
 type MCPRemoteFields = Pick<
   GeneratedMCPServer,
@@ -29,14 +30,14 @@ export type MCPAuthCredential = GeneratedMCPAuthCredential;
 export type MCPOAuthAuthentication = McpoAuthAuthenticationInputWritable;
 export type MCPOAuthState = McpoAuthStateInputWritable;
 
-export type StdioMCPServer = MCPCommonFields &
+export type StdioMCPServer = MCPDisplayFields &
   MCPStdioFields & {
     transport: 'stdio';
     command: string;
     url?: never;
   };
 
-export type RemoteMCPServer = MCPCommonFields &
+export type RemoteMCPServer = MCPDisplayFields &
   MCPRemoteFields & {
     transport: RemoteMCPTransport;
     url: string;
@@ -46,4 +47,4 @@ export type RemoteMCPServer = MCPCommonFields &
 export type MCPServer = StdioMCPServer | RemoteMCPServer;
 export type MCPConfig = Record<string, MCPServer>;
 export type MCPServerPatch = McpServerPatchWritable;
-export type MCPConfigPatch = Record<string, MCPServerPatch | null>;
+export type MCPConfigPatch = McpConfigPatchWritable;

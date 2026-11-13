@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 import httpx
 import mcp.types
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -78,7 +78,6 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 
 _DEFAULT_SERVER_NAME = "test-server"
 _OAUTH_PROBE_JOB_TTL_SECONDS = 15 * 60
-_SSE_DEPRECATION = "SSE MCP transport is deprecated; use streamable HTTP."
 
 
 class _StdioMCPServerSpec(BaseModel):
@@ -228,14 +227,6 @@ class MCPTestRequest(BaseModel):
 
     def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
         return {self.name: self.resolved_server.with_decrypted_secrets(cipher=cipher)}
-
-
-def _set_mcp_deprecation_headers(response: Response, request: MCPTestRequest) -> None:
-    server = request.resolved_server
-    if server.transport != "sse":
-        return
-    response.headers["Deprecation"] = "true"
-    response.headers["X-OpenHands-Deprecation"] = _SSE_DEPRECATION
 
 
 class MCPToolCallResult(BaseModel):
@@ -832,12 +823,10 @@ def _probe_with_secret_references(
 )
 async def test_mcp_server(
     request: MCPTestRequest,
-    http_response: Response,
     cipher: Cipher | None = Depends(get_cipher),
     secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> MCPTestResponse:
     """Probe a single MCP server config and report whether it works."""
-    _set_mcp_deprecation_headers(http_response, request)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
@@ -891,12 +880,9 @@ def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
     summary="Start an MCP OAuth install probe",
 )
 async def start_mcp_oauth(
-    request: MCPTestRequest,
-    http_response: Response,
-    cipher: Cipher | None = Depends(get_cipher),
+    request: MCPTestRequest, cipher: Cipher | None = Depends(get_cipher)
 ) -> MCPOAuthStartResponse:
     """Start OAuth for a candidate MCP server and return the authorization URL."""
-    _set_mcp_deprecation_headers(http_response, request)
     if request.resolved_server.oauth_auth is None:
         raise Invalid("MCP OAuth start requires auth.strategy='oauth2'")
 
@@ -951,15 +937,11 @@ async def start_mcp_oauth(
     response_model_exclude_none=True,
     summary="Get an MCP OAuth install probe status",
 )
-async def get_mcp_oauth_status(
-    job_id: str, http_response: Response
-) -> MCPOAuthStatusResponse:
-    job = _get_oauth_job(job_id)
-    _set_mcp_deprecation_headers(http_response, job.request)
-    return job.to_status_response()
+async def get_mcp_oauth_status(job_id: str) -> MCPOAuthStatusResponse:
+    return _get_oauth_job(job_id).to_status_response()
 
 
-def _validate_callback_url(callback_url: str, expected: str) -> str:
+def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> tuple[str, str]:
     try:
         parsed = urlparse(callback_url)
     except ValueError:  # e.g. an unclosed IPv6 bracket
@@ -971,6 +953,11 @@ def _validate_callback_url(callback_url: str, expected: str) -> str:
     }:
         raise Invalid("Invalid OAuth callback URL")
 
+    with job.lock:
+        expected = job.callback_url
+    if expected is None:
+        raise Conflict("OAuth callback is not ready")
+
     expected_parsed = urlparse(expected)
     try:
         port = parsed.port
@@ -978,7 +965,7 @@ def _validate_callback_url(callback_url: str, expected: str) -> str:
         raise Invalid("Unexpected OAuth callback URL") from None
     if port != expected_parsed.port or parsed.path != expected_parsed.path:
         raise Invalid("Unexpected OAuth callback URL")
-    return parsed.query
+    return expected, parsed.query
 
 
 @mcp_router.post(
@@ -988,15 +975,10 @@ def _validate_callback_url(callback_url: str, expected: str) -> str:
     summary="Submit an MCP OAuth callback URL",
 )
 async def submit_mcp_oauth_callback(
-    job_id: str, request: MCPOAuthCallbackRequest, http_response: Response
+    job_id: str, request: MCPOAuthCallbackRequest
 ) -> MCPOAuthStatusResponse:
     job = _get_oauth_job(job_id)
-    _set_mcp_deprecation_headers(http_response, job.request)
-    with job.lock:
-        callback_base = job.callback_url
-    if callback_base is None:
-        raise Conflict("OAuth callback is not ready")
-    query = _validate_callback_url(request.callback_url, callback_base)
+    callback_base, query = _validate_callback_url(request.callback_url, job)
     if job.done.is_set():
         # A replayed or late callback: the probe finished and its callback
         # server is closed, so report the outcome instead of forwarding.

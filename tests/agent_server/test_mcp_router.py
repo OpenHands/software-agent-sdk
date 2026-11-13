@@ -36,7 +36,6 @@ from openhands.agent_server.persistence import (
     ServerStores,
 )
 from openhands.agent_server.persistence.store import FileSecretsStore
-from openhands.sdk.mcp.config import to_fastmcp_mcp_config
 from tests.agent_server.conftest import FakeMCPTools
 
 # Reuse the real FastMCP-based test-server helper from the SDK tests; spinning
@@ -127,43 +126,6 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
     assert set(body["tools"]) == {"echo", "add"}
     # No tool_call requested -> no tool_result (back-compat with old clients).
     assert body.get("tool_result") is None
-
-
-def test_mcp_test_uses_automatic_negotiation_without_exposing_mode():
-    request = MCPTestRequest.model_validate(
-        {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
-    )
-
-    fastmcp_config = to_fastmcp_mcp_config(request.to_mcp_config())
-    assert "mode" not in fastmcp_config["mcpServers"]["test-server"]
-
-
-def test_mcp_test_adds_deprecation_headers_for_sse_transport(
-    client: TestClient, fake_mcp_tools: FakeMCPTools
-):
-    response = client.post(
-        "/api/mcp/test",
-        json={"server": {"transport": "sse", "url": "https://mcp.example.com/sse"}},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["ok"] is True
-    assert response.headers["deprecation"] == "true"
-    assert "SSE MCP transport" in response.headers["x-openhands-deprecation"]
-
-
-def test_mcp_test_omits_deprecation_headers_for_http_transport(
-    client: TestClient, fake_mcp_tools: FakeMCPTools
-):
-    response = client.post(
-        "/api/mcp/test",
-        json={"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["ok"] is True
-    assert "deprecation" not in response.headers
-    assert "x-openhands-deprecation" not in response.headers
 
 
 def test_mcp_test_http_transport_is_accepted(
