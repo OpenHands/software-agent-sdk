@@ -16,6 +16,7 @@ from openhands.sdk.llm import (
     MessageToolCall,
     TextContent,
 )
+from openhands.sdk.llm.exceptions import LLMBadRequestError
 from openhands.sdk.llm.router.impl.multimodal import MultimodalRouter
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.testing import TestLLM
@@ -251,6 +252,79 @@ def test_nonvision_model_can_use_vision_profile_tool(monkeypatch):
     assert "It shows a cat." in observation_content.text
 
 
+def test_vision_profile_tool_keeps_image_for_deepseek_vision_model(monkeypatch):
+    """The vision tool must hand the image to a DeepSeek vision profile.
+
+    Regression for #5523: the profile is now selected, but a forced string
+    serializer would drop the image before it reaches the model.
+    """
+    monkeypatch.setattr(
+        "openhands.sdk.agent.base.has_vision_profile_available", lambda: True
+    )
+    monkeypatch.setattr(
+        "openhands.sdk.tool.builtins.vision_inspect._candidate_vision_profiles",
+        lambda: ["Default"],
+    )
+    parent = cast(
+        CapturingTestLLM,
+        CapturingTestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="I will inspect the image.")],
+                    tool_calls=[
+                        MessageToolCall(
+                            id="call_vision",
+                            name="inspect_image_with_vision",
+                            arguments=(
+                                '{"image_index": 0, "question": "What is shown?"}'
+                            ),
+                            origin="completion",
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="The image shows a cat.")],
+                ),
+            ],
+            model="text-only-model",
+            disable_vision=True,
+        ),
+    )
+    vision = cast(
+        CapturingTestLLM,
+        CapturingTestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="It shows a cat.")])],
+            model="openhands/deepseek-v4.1-flash",
+        ),
+    )
+
+    def fake_get_or_create_profile_llm(self, profile_name, usage_id):
+        return vision
+
+    monkeypatch.setattr(
+        LocalConversation,
+        "get_or_create_profile_llm",
+        fake_get_or_create_profile_llm,
+    )
+
+    conversation = Conversation(agent=Agent(llm=parent, tools=[]))
+    conversation.send_message(_image_message())
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert vision.call_count == 1
+    vision_messages, _ = vision.calls[0]
+    user_message = next(m for m in vision_messages if m.role == "user")
+    assert user_message.contains_image
+
+    serialized = vision.format_messages_for_llm(vision_messages)
+    user_payload = next(m for m in serialized if m["role"] == "user")
+    assert isinstance(user_payload["content"], list)
+    assert any(part.get("type") == "image_url" for part in user_payload["content"])
+
+
 def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
     monkeypatch.setattr(
         "openhands.sdk.agent.base.has_vision_profile_available", lambda: False
@@ -274,3 +348,109 @@ def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
 
     assert loaded is conversation.llm_registry.get(usage_id)
     assert conversation.state.stats.usage_to_metrics[usage_id] is loaded.metrics
+
+
+def _tool_image_message() -> Message:
+    return Message(
+        role="tool",
+        content=[
+            TextContent(text="screenshot"),
+            ImageContent(image_urls=["https://example.com/tool.png"]),
+        ],
+        name="browser_use",
+        tool_call_id="call_browser",
+    )
+
+
+def test_llm_image_guard_scoped_to_latest_user_message():
+    llm = TestLLM.from_messages([], model="text-only-model", disable_vision=True)
+    with pytest.raises(LLMBadRequestError):
+        llm._validate_image_request([_image_message()])
+    # Tool-observation and older-user images are dropped by the formatter,
+    # not hard-failed: they cannot be delegated after the fact.
+    llm._validate_image_request(
+        [
+            _image_message(),
+            Message(role="user", content=[TextContent(text="continue")]),
+            _tool_image_message(),
+        ]
+    )
+    llm._validate_image_request([_tool_image_message()])
+
+
+def test_image_references_cover_tool_and_older_user_images():
+    from openhands.sdk.agent.agent import _replace_images_with_references
+
+    rewritten = _replace_images_with_references(
+        [
+            _image_message(),
+            Message(role="user", content=[TextContent(text="continue")]),
+            _tool_image_message(),
+        ]
+    )
+    assert not any(message.contains_image for message in rewritten)
+    older_user_text = " ".join(
+        content.text
+        for content in rewritten[0].content
+        if isinstance(content, TextContent)
+    )
+    tool_text = " ".join(
+        content.text
+        for content in rewritten[2].content
+        if isinstance(content, TextContent)
+    )
+    assert "image_index=0" in older_user_text
+    assert "image_index=1" in tool_text
+
+
+def test_vision_executor_resolves_tool_observation_image(monkeypatch):
+    monkeypatch.setattr(
+        "openhands.sdk.tool.builtins.vision_inspect._candidate_vision_profiles",
+        lambda: ["vision-profile"],
+    )
+    vision = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="It shows a cat.")])],
+        model="gpt-4o",
+        base_url="https://vision.example.test/",
+    )
+    parent = TestLLM.from_messages([], model="text-only-model", disable_vision=True)
+    conversation = Conversation(agent=Agent(llm=parent, tools=[]))
+    conversation._ensure_agent_ready()
+    monkeypatch.setattr(
+        LocalConversation,
+        "get_or_create_profile_llm",
+        lambda self, profile_name, usage_id: vision,
+    )
+    conversation.state.append_event(
+        ObservationEvent(
+            source="environment",
+            tool_name="browser_use",
+            tool_call_id="call_browser",
+            action_id="action_browser",
+            observation=VisionInspectObservation.from_text(
+                text="placeholder",
+                image_index=0,
+                question="placeholder",
+            ).model_copy(
+                update={
+                    "content": [
+                        ImageContent(image_urls=["https://example.com/tool.png"])
+                    ]
+                }
+            ),
+        )
+    )
+
+    from openhands.sdk.tool.builtins.vision_inspect import (
+        VisionInspectAction,
+        VisionInspectExecutor,
+    )
+
+    result = VisionInspectExecutor(["vision-profile"])(
+        VisionInspectAction(image_index=0, question="What is shown?"),
+        conversation=cast(LocalConversation, conversation),
+    )
+    assert not result.is_error
+    assert result.answer == "It shows a cat."
+    assert vision.call_count == 1
+    conversation.close()

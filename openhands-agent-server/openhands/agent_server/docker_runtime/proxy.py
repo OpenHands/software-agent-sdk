@@ -11,12 +11,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import websockets
-from fastapi import HTTPException, status
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 from websockets.typing import Subprotocol
 
+from openhands.sdk.errors import Unprocessable, UpstreamFailed
 from openhands.sdk.logger import get_logger
 
 
@@ -57,10 +57,6 @@ _HOP_BY_HOP_HEADERS = frozenset(
 # The serving uvicorn adds its own ``date`` and ``server`` to every response
 # without de-duplicating, so copying the upstream's would send two of each.
 _RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
-
-# Stream chunk size for request/response bodies. Set it explicitly so proxy
-# behavior does not depend on an httpx implementation default.
-_CHUNK_SIZE = 64 * 1024
 
 
 def _filter_headers(headers) -> dict[str, str]:
@@ -130,7 +126,7 @@ async def proxy_http(
         story trivial.
     """
     if request.headers.get("x-expose-secrets"):
-        raise HTTPException(422, "Runtime secret exposure is unsupported")
+        raise Unprocessable("Runtime secret exposure is unsupported")
     url = workspace.host + strip_auth_query(upstream_path)
     headers = _filter_headers(request.headers)
     # If the client authenticated via the workspace-session cookie (used by
@@ -173,18 +169,12 @@ async def proxy_http(
         if not isinstance(exc, httpx.HTTPError):
             raise
         logger.warning("Conversation upstream connection failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Conversation container unreachable",
-        ) from exc
+        raise UpstreamFailed("Conversation container unreachable") from exc
 
     if reject_redirects and upstream.is_redirect:
         await stack.aclose()
         await _invoke_close(on_close)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Upstream redirect is not allowed",
-        )
+        raise UpstreamFailed("Upstream redirect is not allowed")
 
     async def _response_body() -> AsyncIterator[bytes]:
         try:
