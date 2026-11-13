@@ -302,6 +302,70 @@ class TestTaskManager:
         assert len(factory_called_with) == 1
         assert factory_called_with[0].stream is False
 
+    def test_inherited_subscription_llm_keeps_streaming(self, tmp_path):
+        """A sub-agent inheriting a ChatGPT subscription LLM keeps streaming on.
+
+        The subscription (Codex) transport rejects stream=False.
+        """
+        factory_called_with: list[LLM] = []
+
+        def factory(llm: LLM) -> Agent:
+            factory_called_with.append(llm)
+            return Agent(llm=llm, tools=[])
+
+        register_agent(
+            name="test_inherit_subscription",
+            factory_func=factory,
+            description="test",
+        )
+
+        subscription_llm = _make_llm().model_copy(update={"stream": True})
+        subscription_llm.is_subscription = True
+        parent = LocalConversation(
+            agent=Agent(llm=subscription_llm, tools=[]),
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+
+        agent = manager._get_sub_agent("test_inherit_subscription")
+        assert factory_called_with[0].requires_streaming is True
+        assert factory_called_with[0].stream is True
+        assert agent.llm.requires_streaming is True
+        assert agent.llm.stream is True
+        assert agent.llm is not subscription_llm
+
+    def test_named_subscription_profile_keeps_streaming(self, tmp_path):
+        """A sub-agent whose own LLM requires streaming keeps it enabled,
+        while the parent's non-subscription LLM is still copied without it."""
+        factory_called_with: list[LLM] = []
+        profile_llm = LLM(
+            model="gpt-5.1-codex",
+            api_key=SecretStr("test-key"),
+            usage_id="profile-llm",
+            stream=True,
+        )
+        profile_llm.is_subscription = True
+
+        def factory(llm: LLM) -> Agent:
+            factory_called_with.append(llm)
+            return Agent(llm=profile_llm, tools=[])
+
+        register_agent(
+            name="test_subscription_profile",
+            factory_func=factory,
+            description="test",
+        )
+
+        manager, _ = _manager_with_parent(tmp_path)
+        agent = manager._get_sub_agent("test_subscription_profile")
+        assert factory_called_with[0].stream is False
+        assert agent.llm.usage_id == "profile-llm"
+        assert agent.llm.requires_streaming is True
+        assert agent.llm.stream is True
+
     def test_unknown_agent_type_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         with pytest.raises(ValueError, match="Unknown agent"):
