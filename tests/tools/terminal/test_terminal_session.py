@@ -11,7 +11,9 @@ and run the parametrized tests for each one.
 
 import logging
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -687,6 +689,15 @@ def _run_bash_action(session, command: str, **kwargs):
     return obs
 
 
+def _http_server_command(port: int) -> str:
+    # HTTPServer reverse DNS can block for 35 seconds on macOS runners.
+    script = (
+        "import runpy, socket; socket.getfqdn = lambda name='': name; "
+        "runpy.run_module('http.server', run_name='__main__')"
+    )
+    return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(script)} {port}"
+
+
 @parametrize_terminal_types
 def test_bash_server(terminal_type):
     """Test running a server with timeout and interrupt."""
@@ -698,9 +709,7 @@ def test_bash_server(terminal_type):
         try:
             # Use python -u for unbuffered output, potentially helping
             # capture initial output on Windows
-            obs = _run_bash_action(
-                session, "python -u -m http.server 8081", timeout=1.0
-            )
+            obs = _run_bash_action(session, _http_server_command(8081), timeout=1.0)
             assert obs.metadata.exit_code == -1
             assert "Serving HTTP on" in obs.text
 
@@ -714,9 +723,7 @@ def test_bash_server(terminal_type):
             assert obs.metadata.exit_code == 0
 
             # Run server again to verify it works
-            obs = _run_bash_action(
-                session, "python -u -m http.server 8081", timeout=1.0
-            )
+            obs = _run_bash_action(session, _http_server_command(8081), timeout=1.0)
             assert obs.metadata.exit_code == -1
             assert "Serving HTTP on" in obs.text
 
@@ -735,7 +742,7 @@ def test_bash_background_server(terminal_type):
         server_port = 8081
         try:
             # Start the server in background
-            obs = _run_bash_action(session, f"python3 -m http.server {server_port} &")
+            obs = _run_bash_action(session, f"{_http_server_command(server_port)} &")
             assert obs.metadata.exit_code == 0
 
             # Give the server a moment to be ready
@@ -1174,7 +1181,7 @@ def test_long_output_from_nested_directories(terminal_type):
         try:
             # Create nested directories with many files
             setup_cmd = (
-                "mkdir -p /tmp/test_dir && cd /tmp/test_dir && "
+                "mkdir -p test_dir && cd test_dir && "
                 'for i in $(seq 1 100); do mkdir -p "folder_$i"; '
                 'for j in $(seq 1 100); do touch "folder_$i/file_$j.txt"; done; done'
             )
@@ -1182,7 +1189,7 @@ def test_long_output_from_nested_directories(terminal_type):
             assert obs.metadata.exit_code == 0
 
             # List the directory structure recursively
-            obs = _run_bash_action(session, "ls -R /tmp/test_dir", timeout=60)
+            obs = _run_bash_action(session, "ls -R test_dir", timeout=60)
             assert obs.metadata.exit_code == 0
 
             # Verify output contains expected files
@@ -1205,8 +1212,7 @@ def test_command_backslash(terminal_type):
         try:
             # Create a file with the content "implemented_function"
             cmd = (
-                "mkdir -p /tmp/test_dir && "
-                'echo "implemented_function" > /tmp/test_dir/file_1.txt'
+                'mkdir -p test_dir && echo "implemented_function" > test_dir/file_1.txt'
             )
             obs = _run_bash_action(session, cmd)
             assert obs.metadata.exit_code == 0
@@ -1218,12 +1224,12 @@ def test_command_backslash(terminal_type):
                 semicolon = "\\;"  # Escape for tmux
 
             cmd = (
-                "find /tmp/test_dir -type f -exec grep"
+                "find test_dir -type f -exec grep"
                 + f' -l "implemented_function" {{}} {semicolon}'
             )
             obs = _run_bash_action(session, cmd)
             assert obs.metadata.exit_code == 0
-            assert "/tmp/test_dir/file_1.txt" in obs.text
+            assert "test_dir/file_1.txt" in obs.text
         finally:
             session.close()
 

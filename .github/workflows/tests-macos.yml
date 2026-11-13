@@ -35,12 +35,15 @@ jobs:
                 include:
                     - suite: sdk
                       args: -n auto tests/sdk
-                    # Isolate terminal state, but do not fork initialized macOS
-                    # browser/Objective-C frameworks (which can crash after fork).
+                    # Only terminal tests need fork isolation. Other tools can
+                    # load macOS frameworks that are unsafe after fork.
+                    - suite: terminal
+                      args: --forked --timeout=180 --timeout-method=thread tests/tools/terminal
                     - suite: tools
                       args: >-
-                          --forked --timeout=180 --timeout-method=thread
-                          --ignore=tests/tools/browser_use tests/tools
+                          --timeout=180 --timeout-method=thread
+                          --ignore=tests/tools/browser_use
+                          --ignore=tests/tools/terminal tests/tools
                     - suite: browser
                       args: tests/tools/browser_use
                     - suite: agent_server

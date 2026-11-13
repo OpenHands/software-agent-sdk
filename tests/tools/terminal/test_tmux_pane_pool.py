@@ -372,8 +372,9 @@ def test_first_terminal_shell_gets_fallback_locale(
     session = create_terminal_session(work_dir=str(tmp_path), terminal_type="tmux")
     session.initialize()
     try:
-        obs = session.execute(TerminalAction(command='echo "ctype=$LC_CTYPE"'))
+        obs = session.execute(TerminalAction(command="locale charmap"))
     finally:
         session.close()
 
-    assert "ctype=C.UTF-8" in obs.text
+    assert obs.metadata.exit_code == 0
+    assert obs.text.strip() == "UTF-8"
