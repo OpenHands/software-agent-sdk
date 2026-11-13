@@ -259,6 +259,7 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     assert body["conversation_settings"] == {
         "schema_version": CONVERSATION_SETTINGS_SCHEMA_VERSION,
         "max_iterations": 42,
+        "max_budget_per_run": None,
         "confirmation_mode": True,
         "security_analyzer": "llm",
         "default_runtime": "local",
