@@ -47,9 +47,9 @@ class GitProvider(str, Enum):
 
 # Mapping of provider to secret name used in sandbox settings
 PROVIDER_TOKEN_NAMES: dict[GitProvider, str] = {
-    GitProvider.GITHUB: "github_token",
-    GitProvider.GITLAB: "gitlab_token",
-    GitProvider.BITBUCKET: "bitbucket_token",
+    GitProvider.GITHUB: "GITHUB_TOKEN",
+    GitProvider.GITLAB: "GITLAB_TOKEN",
+    GitProvider.BITBUCKET: "BITBUCKET_TOKEN",
     GitProvider.AZURE_DEVOPS: "azure_devops_token",
     GitProvider.BITBUCKET_DATA_CENTER: "bitbucket_data_center_token",
 }
@@ -553,6 +553,10 @@ class _TokenCache:
         self._fetcher = fetcher
         self._cache: dict[str, str | None] = {}
 
+    def get_provider_token(self, token_name: str) -> str | None:
+        # Older app servers serve provider tokens under lowercase names.
+        return self.get(token_name) or self.get(token_name.lower())
+
     def get(self, token_name: str) -> str | None:
         if token_name not in self._cache:
             try:
@@ -575,7 +579,7 @@ def clone_repos(
     Args:
         repos: List of RepoSource configurations (each specifies provider)
         target_dir: Directory to clone repositories into
-        token_fetcher: Callable that takes a token name (e.g., 'github_token')
+        token_fetcher: Callable that takes a token name (e.g., 'GITHUB_TOKEN')
             and returns the token value, or None if not available
 
     Returns:
@@ -623,7 +627,7 @@ def clone_repos(
 
             # Clone with provider-specific token (None if provider unknown)
             try:
-                token = tokens.get(repo.get_token_name())
+                token = tokens.get_provider_token(repo.get_token_name())
             except ValueError:
                 # No provider (e.g., file:// URLs) - proceed without token
                 token = None

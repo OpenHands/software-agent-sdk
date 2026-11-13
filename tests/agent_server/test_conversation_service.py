@@ -54,14 +54,52 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    get_agent_factory,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+
+
+@pytest.mark.parametrize("missing_worktree", ["sibling", "owned"])
+def test_worktree_creation_preserves_unmounted_sibling(tmp_path, missing_worktree):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    workspace = LocalWorkspace(working_dir=repo)
+    root = tmp_path / "worktrees"
+    sibling_id, conversation_id = uuid4(), uuid4()
+    sibling_plan = _plan_conversation_worktree(workspace, sibling_id, root, None)
+    owned_plan = _plan_conversation_worktree(workspace, conversation_id, root, None)
+    assert sibling_plan is not None
+    assert owned_plan is not None
+    sibling = _create_conversation_worktree(sibling_plan)
+    missing_root = Path(sibling.working_dir)
+    if missing_worktree == "owned":
+        owned = _create_conversation_worktree(owned_plan)
+        missing_root = Path(owned.working_dir)
+    hidden_root = tmp_path / "unmounted"
+    missing_root.rename(hidden_root)
+
+    created = _create_conversation_worktree(owned_plan)
+
+    assert created is not None
+    if missing_worktree == "sibling":
+        hidden_root.rename(missing_root)
+    assert run_git_command(
+        ["git", "branch", "--show-current"], sibling.working_dir
+    ) == (f"openhands/{sibling_id}")
+    assert run_git_command(
+        ["git", "branch", "--show-current"], created.working_dir
+    ) == (f"openhands/{conversation_id}")
 
 
 @pytest.fixture
@@ -209,6 +247,90 @@ async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     assert meta["tool_module_qualnames"]["terminal"] == (
         "openhands.tools.terminal.definition"
     )
+
+
+def _encrypted_profile_subagent(tmp_path: Path, cipher: Cipher) -> AgentDefinition:
+    """Save profile ``enc`` encrypted at rest and return a sub-agent that uses it."""
+    profiles = tmp_path / "profiles"
+    LLMProfileStore(base_dir=profiles).save(
+        "enc",
+        LLM(model="gpt-4o", api_key=SecretStr("sk-profile-secret"), usage_id="enc"),
+        include_secrets=True,
+        cipher=cipher,
+    )
+    return AgentDefinition(
+        name="profile-subagent", model="enc", profile_store_dir=str(profiles)
+    )
+
+
+@pytest.fixture
+def clean_agent_registry():
+    _reset_registry_for_tests()
+    yield
+    _reset_registry_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_registers_subagents_with_server_cipher(
+    tmp_path, clean_agent_registry
+):
+    """A forwarded sub-agent definition decrypts its profile with the server key."""
+    cipher = Cipher("server-secret-key")
+    agent_def = _encrypted_profile_subagent(tmp_path, cipher)
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        await service.start_conversation(request)
+        sub_agent = get_agent_factory("profile-subagent").factory_func(
+            LLM(model="gpt-4o", usage_id="parent")
+        )
+
+    assert isinstance(sub_agent.llm.api_key, SecretStr)
+    assert sub_agent.llm.api_key.get_secret_value() == "sk-profile-secret"
+
+
+@pytest.mark.asyncio
+async def test_resumed_conversation_registers_subagents_with_server_cipher(
+    tmp_path, clean_agent_registry
+):
+    """Definitions restored from meta.json decrypt their profile after a restart."""
+    cipher = Cipher("server-secret-key")
+    agent_def = _encrypted_profile_subagent(tmp_path, cipher)
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+    # A restarted server starts with an empty in-process registry.
+    _reset_registry_for_tests()
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as restarted:
+        await restarted.get_event_service(info.id)
+        sub_agent = get_agent_factory("profile-subagent").factory_func(
+            LLM(model="gpt-4o", usage_id="parent")
+        )
+
+    assert isinstance(sub_agent.llm.api_key, SecretStr)
+    assert sub_agent.llm.api_key.get_secret_value() == "sk-profile-secret"
 
 
 @pytest.mark.asyncio
@@ -4444,6 +4566,33 @@ class TestConversationSearchScaling:
                 )
                 == 2
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "corrupt_payload",
+        [
+            pytest.param('{"execution_status": "idl', id="truncated"),
+            pytest.param('{"execution_status": "no-such-status"}', id="bad-enum"),
+            pytest.param("[]", id="non-object"),
+        ],
+    )
+    async def test_status_index_keeps_cached_status_for_corrupt_state(
+        self, tmp_path, corrupt_payload
+    ):
+        """A corrupt base_state.json must not break status-filtered listing."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        ids = self._seed(conversations_dir, 2, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            idle = ConversationExecutionStatus.IDLE
+            assert await svc.count_conversations(execution_status=idle) == 2
+
+            base_state = conversations_dir / ids[0].hex / "base_state.json"
+            base_state.write_text(corrupt_payload)
+
+            assert await svc.count_conversations(execution_status=idle) == 2
 
     @pytest.mark.asyncio
     async def test_live_conversation_status_is_read_from_memory(self, tmp_path):

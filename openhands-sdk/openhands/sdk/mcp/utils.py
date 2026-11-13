@@ -2,11 +2,13 @@
 
 import asyncio
 import inspect
+import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
+from functools import partial
+from typing import Any, Protocol
 
-import httpx
+import httpx2
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
@@ -15,6 +17,7 @@ from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
+from pydantic import ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -119,31 +122,90 @@ def _oauth_auth_from_authentication_config(
     )
 
 
-async def _read_http_error_body(response: httpx.Response) -> None:
-    if response.is_error:
-        try:
-            await response.aread()
-        except (httpx.HTTPError, httpx.StreamError):
-            pass
+async def _read_http_error_body(
+    response: httpx2.Response, *, auth_configured: bool
+) -> None:
+    """Keep a failed response readable, then surface a client error.
+
+    Remote MCP transports raise after the response stream has closed, so the
+    body is gone by the time a caller inspects the exception. Reading it in
+    this hook preserves the server's explanation. The streamable-HTTP
+    transport also rewrites a 4xx response into a generic JSON-RPC error
+    ("Server returned an error response"), which loses the status and body;
+    raising ``HTTPStatusError`` here keeps both available to callers.
+
+    Only 4xx responses are raised. The transport has its own recovery
+    behavior for 5xx and for 404, and a JSON-RPC error delivered at a 4xx
+    status is already more specific than the HTTP status. 401 responses and
+    ``insufficient_scope`` 403 responses belong to the OAuth flow when auth
+    is configured. Only requests that accept an event stream are MCP
+    transport requests; OAuth discovery and token requests must see their
+    own 4xx responses.
+    """
+    if not response.is_error:
+        return
+    try:
+        await response.aread()
+    except (httpx2.HTTPError, httpx2.StreamError):
+        return
+    status = response.status_code
+    if not 400 <= status < 500 or status == 404:
+        return
+    if _is_jsonrpc_error(response):
+        return
+    accept = response.request.headers.get("accept", "")
+    if "text/event-stream" not in accept:
+        return
+    if auth_configured:
+        if status == 401:
+            return
+        if status == 403 and "insufficient_scope" in response.headers.get(
+            "www-authenticate", ""
+        ):
+            return
+    raise httpx2.HTTPStatusError(
+        f"Client error '{status} {response.reason_phrase}' for url "
+        f"'{response.request.url}'",
+        request=response.request,
+        response=response,
+    )
+
+
+def _is_jsonrpc_error(response: httpx2.Response) -> bool:
+    content_type = response.headers.get("content-type", "").lower()
+    if not content_type.startswith("application/json"):
+        return False
+    try:
+        payload = json.loads(response.content)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("jsonrpc") == "2.0"
+        and isinstance(payload.get("error"), dict)
+    )
 
 
 def _mcp_http_client_factory(
     headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
     **_: object,
-) -> httpx.AsyncClient:
+) -> httpx2.AsyncClient:
     client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-    client.event_hooks["response"].append(_read_http_error_body)
+    client.event_hooks["response"].append(
+        partial(_read_http_error_body, auth_configured=auth is not None)
+    )
     return client
 
 
 class _RemoteMCPServer(RemoteMCPServer):
     """Remote server whose HTTP error responses remain readable."""
 
-    def to_transport(self) -> StreamableHttpTransport | SSETransport:
+    def to_transport(self):  # type: ignore[override]
         transport = super().to_transport()
-        transport.httpx_client_factory = _mcp_http_client_factory
+        if isinstance(transport, (StreamableHttpTransport, SSETransport)):
+            transport.httpx_client_factory = _mcp_http_client_factory
         return transport
 
 
@@ -156,7 +218,7 @@ class _PackageRemoteMCPServer(_RemoteMCPServer):
     that leaves the configured origin.
     """
 
-    def to_transport(self) -> StreamableHttpTransport | SSETransport:
+    def to_transport(self):  # type: ignore[override]
         transport = super().to_transport()
         if isinstance(transport, StreamableHttpTransport) and self.headers:
             transport.httpx_client_factory = _origin_bound_client_factory(
@@ -166,9 +228,9 @@ class _PackageRemoteMCPServer(_RemoteMCPServer):
 
 
 def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
-    origin = _origin(httpx.URL(url))
+    origin = _origin(httpx2.URL(url))
 
-    async def drop_headers_off_origin(request: httpx.Request) -> None:
+    async def drop_headers_off_origin(request: httpx2.Request) -> None:
         # Request hooks run on every redirect hop, after httpx has copied the
         # previous request's headers onto the next one.
         if _origin(request.url) != origin:
@@ -177,10 +239,10 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
 
     def factory(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         **_: object,
-    ) -> httpx.AsyncClient:
+    ) -> httpx2.AsyncClient:
         client = _mcp_http_client_factory(headers=headers, timeout=timeout, auth=auth)
         client.event_hooks["request"].append(drop_headers_off_origin)
         return client
@@ -188,7 +250,7 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
     return factory
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
     default_port = {"http": 80, "https": 443}.get(url.scheme)
     return url.scheme, url.host, url.port or default_port
 
@@ -200,8 +262,27 @@ def _prepare_mcp_config(
     mcp_oauth_factory: MCPOAuthFactory | None = None,
     mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> FastMCPConfig:
-    """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
+    """Validate MCP config and apply explicit OpenHands runtime auth metadata.
+
+    Servers are validated one by one: a server FastMCP rejects is skipped with
+    a warning naming it, so it cannot cost its siblings their tools.
+    """
+    servers = to_fastmcp_mcp_config(mcp_config)["mcpServers"]
+    valid: dict[str, Any] = {}
+    for server_name, server in servers.items():
+        try:
+            FastMCPConfig.model_validate({"mcpServers": {server_name: server}})
+        except ValidationError as exc:
+            logger.warning(
+                "Skipping invalid MCP server %s; continuing without its tools: %s",
+                server_name,
+                exc,
+            )
+            continue
+        valid[server_name] = server
+    if servers and not valid:
+        raise ValueError(f"No valid MCP servers among: {', '.join(sorted(servers))}")
+    prepared = FastMCPConfig.model_validate({"mcpServers": valid})
 
     for server_name, server_spec in mcp_config.items():
         server = prepared.mcpServers.get(server_name)

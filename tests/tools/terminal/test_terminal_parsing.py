@@ -338,60 +338,40 @@ echo "Done"
     assert split_bash_commands(input_commands) == [input_commands.strip()]
 
 
-def test_split_commands_with_backslash_continuation():
-    input_commands = """
-echo "This is a long \
-command that spans \
-multiple lines"
-echo "Next command"
-"""
-    expected_output = [
-        'echo "This is a long command that spans multiple lines"',
-        'echo "Next command"',
-    ]
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
-
-
-def test_split_commands_with_empty_lines():
-    input_commands = """
-ls -l
-
-echo "Hello"
-
-cd /tmp
-"""
-    expected_output = ["ls -l", 'echo "Hello"', "cd /tmp"]
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
-
-
-def test_split_commands_with_comments():
-    input_commands = """
-echo "Hello" # This is a comment
-# This is another comment
-ls -l
-"""
-    expected_output = [
-        'echo "Hello" # This is a comment\n# This is another comment',
-        "ls -l",
-    ]
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
-
-
-def test_split_commands_with_complex_quoting():
-    input_commands = """
-echo "This is a \\"quoted\\" string"
-echo "Mixed 'quotes' in \\"double quotes\\""
-"""
-    # echo 'This is a '\''single-quoted'\'' string'
-
-    expected_output = [
-        'echo "This is a \\"quoted\\" string"',
-        'echo "Mixed \'quotes\' in \\"double quotes\\""',
-    ]
-    # "echo 'This is a '\\''single-quoted'\\'' string'",
+@pytest.mark.parametrize(
+    ("input_commands", "expected_output"),
+    [
+        pytest.param(
+            '\necho "This is a long command that spans multiple lines"\n'
+            'echo "Next command"\n',
+            [
+                'echo "This is a long command that spans multiple lines"',
+                'echo "Next command"',
+            ],
+            id="backslash_continuation",
+        ),
+        pytest.param(
+            '\nls -l\n\necho "Hello"\n\ncd /tmp\n',
+            ["ls -l", 'echo "Hello"', "cd /tmp"],
+            id="empty_lines",
+        ),
+        pytest.param(
+            '\necho "Hello" # This is a comment\n# This is another comment\nls -l\n',
+            ['echo "Hello" # This is a comment\n# This is another comment', "ls -l"],
+            id="comments",
+        ),
+        pytest.param(
+            '\necho "This is a \\"quoted\\" string"\n'
+            'echo "Mixed \'quotes\' in \\"double quotes\\""\n',
+            [
+                'echo "This is a \\"quoted\\" string"',
+                'echo "Mixed \'quotes\' in \\"double quotes\\""',
+            ],
+            id="complex_quoting",
+        ),
+    ],
+)
+def test_split_commands(input_commands, expected_output):
     result = split_bash_commands(input_commands)
     assert result == expected_output, f"Expected {expected_output}, got {result}"
 

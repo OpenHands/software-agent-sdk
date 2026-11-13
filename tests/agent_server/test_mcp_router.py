@@ -12,6 +12,7 @@ from collections.abc import Generator
 from urllib.parse import unquote
 
 import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -975,35 +976,38 @@ def test_mcp_test_surfaces_http_error_status(
     assert "not enabled" in body["error"]
 
 
-def test_http_error_detail_prefers_body_when_readable():
-    request = httpx.Request("POST", "http://127.0.0.1/mcp")
-    response = httpx.Response(
+@pytest.mark.parametrize("http", [httpx, httpx2], ids=["httpx", "httpx2"])
+def test_http_error_detail_prefers_body_when_readable(http):
+    request = http.Request("POST", "http://127.0.0.1/mcp")
+    response = http.Response(
         403, content=b'{"message": "MCP server not enabled"}', request=request
     )
-    exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+    exc = http.HTTPStatusError("forbidden", request=request, response=response)
     detail = _http_error_detail(exc)
     assert detail is not None
     assert "HTTP 403 from MCP server" in detail
     assert "not enabled" in detail
 
 
-def test_http_error_detail_falls_back_to_hint_when_body_empty():
-    request = httpx.Request("POST", "http://127.0.0.1/mcp")
-    response = httpx.Response(403, request=request)
-    exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+@pytest.mark.parametrize("http", [httpx, httpx2], ids=["httpx", "httpx2"])
+def test_http_error_detail_falls_back_to_hint_when_body_empty(http):
+    request = http.Request("POST", "http://127.0.0.1/mcp")
+    response = http.Response(403, request=request)
+    exc = http.HTTPStatusError("forbidden", request=request, response=response)
     assert _http_error_detail(exc) == (
         "HTTP 403 from MCP server: "
         "request refused - check the server-side permission settings"
     )
 
 
-def test_http_error_detail_finds_wrapped_cause():
-    request = httpx.Request("POST", "http://127.0.0.1/mcp")
-    response = httpx.Response(404, content=b"no such session", request=request)
-    http_exc = httpx.HTTPStatusError("missing", request=request, response=response)
+@pytest.mark.parametrize("http", [httpx, httpx2], ids=["httpx", "httpx2"])
+def test_http_error_detail_finds_wrapped_cause(http):
+    request = http.Request("POST", "http://127.0.0.1/mcp")
+    response = http.Response(404, content=b"no such session", request=request)
+    http_exc = http.HTTPStatusError("missing", request=request, response=response)
     try:
         raise http_exc
-    except httpx.HTTPStatusError as e:
+    except http.HTTPStatusError as e:
         wrapped = RuntimeError("probe failed")
         wrapped.__cause__ = e
     detail = _http_error_detail(wrapped)

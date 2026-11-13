@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import openhands.agent_server.event_service as event_service_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_service import (
     ConversationService,
     CredentialBindingActivationRequired,
@@ -199,6 +200,7 @@ def test_activation_route_installs_http_binding(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_service = service
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
@@ -229,6 +231,7 @@ def test_activation_route_rejects_unavailable_binding(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_service = service
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
@@ -257,6 +260,7 @@ def test_activation_route_retries_transient_binding_failure(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_service = service
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
@@ -303,6 +307,7 @@ def test_activation_route_rejects_terminal_binding_failure(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_service = service
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
@@ -336,6 +341,7 @@ def test_activation_route_rejects_invalid_binding_url(
 ) -> None:
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.conversation_service = service
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()

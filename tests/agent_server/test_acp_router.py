@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server import acp_router as acp_router_module
 from openhands.agent_server.acp_router import acp_router
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.credential_binding import LocalVersionedCredentialBinding
 from openhands.agent_server.local_secret_resolver import local_secret_resolution
@@ -41,6 +42,7 @@ def config(tmp_path: Path) -> Config:
 @pytest.fixture
 def client(config: Config) -> Iterator[TestClient]:
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.config = config
     app.include_router(acp_router, prefix="/api")
     with local_secret_resolution(config):
