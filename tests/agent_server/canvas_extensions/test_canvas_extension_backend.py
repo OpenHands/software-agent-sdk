@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.canvas_extensions.backend import (
     BackendSecretGrantRequest,
     CanvasExtensionBackendManager,
@@ -395,6 +396,7 @@ async def test_prepare_rejects_artifact_that_is_not_a_gzip_tarball(
 def test_prepare_endpoint_refuses_non_gzip_artifact_with_409(tmp_path: Path):
     manager, revision = _install_with_artifact_bytes(tmp_path, b"not a tarball\n")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.canvas_extension_backend_manager = manager
     app.include_router(canvas_extensions_router)
 
@@ -885,6 +887,7 @@ def test_backend_http_lifecycle_and_data_deletion(
     )
     manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.canvas_extension_backend_manager = manager
     app.include_router(canvas_extensions_router)
 
@@ -1041,6 +1044,7 @@ def test_secret_grant_api_requires_exact_names_and_revokes(tmp_path: Path):
     install_canvas_extension(str(source), installed_dir=installed)
     manager = CanvasExtensionBackendManager(installed, tmp_path / "state")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.canvas_extension_backend_manager = manager
     app.include_router(canvas_extensions_router, prefix="/api")
     base = "/api/canvas-extensions/installed/my-extension/backend"
@@ -1082,6 +1086,7 @@ async def test_secret_revoke_api_invalidates_bridge_session(tmp_path: Path):
     manager = CanvasExtensionBackendManager(tmp_path / "installed", tmp_path / "state")
     sessions = AppBackendSessionStore()
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.canvas_extension_backend_manager = manager
     app.state.app_backend_session_store = sessions
     app.include_router(canvas_extensions_router, prefix="/api")
@@ -1141,6 +1146,7 @@ async def test_enable_orchestrates_backend_and_retains_revision_consent(
         installed, tmp_path / "state", secrets_store=store
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.canvas_extension_backend_manager = manager
     app.state.app_backend_session_store = AppBackendSessionStore()
     app.include_router(canvas_extensions_router, prefix="/api")

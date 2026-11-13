@@ -20,6 +20,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.storage import trash as trash_module
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import ConversationContainerOptions
@@ -648,6 +649,23 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("HOME") - 1 : command.index("HOME") + 1
     ]
     assert env["OH_SECRET_KEY"] != "outer-key"
+
+
+def test_container_gets_the_hosts_experimental_feature_switches(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+
+    def turn_on(settings: PersistedSettings) -> PersistedSettings:
+        settings.experimental_features = {"conversation_reactions": True}
+        return settings
+
+    get_settings_store(runtime.config).update(turn_on)
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert json.loads(env["OH_RUNTIME_EXPERIMENTAL_FEATURES"]) == {
+        "conversation_reactions": True
+    }
+    assert "OH_RUNTIME_EXPERIMENTAL_FEATURES" in command
 
 
 def test_worktree_root_resolves_identically_on_host_and_in_container(

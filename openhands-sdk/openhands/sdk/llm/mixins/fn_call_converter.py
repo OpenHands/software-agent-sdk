@@ -341,21 +341,6 @@ def _append_to_content(content: Content, suffix: str) -> Content:
     )
 
 
-def _prepend_to_content(content: Content, prefix: str) -> Content:
-    """Prepend text to content (string or list format)."""
-    if isinstance(content, str):
-        return prefix + content
-    if isinstance(content, list):
-        if content and content[0]["type"] == "text":
-            content[0]["text"] = prefix + content[0]["text"]
-        else:
-            content = [cast(TextPart, {"type": "text", "text": prefix})] + content
-        return content
-    raise FunctionCallConversionError(
-        f"Unexpected content type {type(content)}. Expected str or list."
-    )
-
-
 def _wrap_content_with_example(
     content: Content,
     prefix: str,
