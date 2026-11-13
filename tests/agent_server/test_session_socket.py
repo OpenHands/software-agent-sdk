@@ -3,12 +3,13 @@
 import asyncio
 import contextlib
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from fastapi import WebSocketDisconnect
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.agent_server.session_socket import (
     _ConnectionWriter,
@@ -44,6 +45,10 @@ class _FakeWebSocket:
         self.sent: list[str] = []
         self.gate: asyncio.Event | None = None
         self.send_started = asyncio.Event()
+        self.closed_with: tuple[int, str] | None = None
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.closed_with = (code, reason or "")
 
     async def send_text(self, payload: str) -> None:
         if self.gate is not None:
@@ -471,6 +476,84 @@ async def test_a_dropped_progress_frame_does_not_drop_the_connection():
     assert writer.closed
 
 
+@pytest.mark.asyncio
+async def test_subscriber_close_closes_socket_and_ends_inbound_loop():
+    """Delete and shutdown close the socket with their code, not leave it silent."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    await sub.close_connection(4004, "Conversation deleted")
+
+    assert ws.closed_with == (4004, "Conversation deleted")
+    # The handler's inbound loop races this event; it must now be set.
+    assert writer.closed_event.is_set()
+    assert writer.drop_reason == "closing"
+
+
+@pytest.mark.asyncio
+async def test_subscriber_close_sends_queued_frames_before_closing():
+    """Frames already admitted reach the client ahead of the close code."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    sent_before_close: list[int] = []
+    original_close = ws.close
+
+    async def close(code: int = 1000, reason: str | None = None) -> None:
+        sent_before_close.append(len(ws.sent))
+        await original_close(code, reason)
+
+    original_send = ws.send_text
+
+    async def slow_send(payload: str) -> None:
+        await asyncio.sleep(0.01)  # a real socket send yields to the loop
+        await original_send(payload)
+
+    ws.close = close  # type: ignore[method-assign]
+    ws.send_text = slow_send  # type: ignore[method-assign]
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+    for i in range(3):
+        event = _msg(f"q{i}")
+        log.add(event)
+        await sub(event)
+
+    await sub.close_connection(4004, "Conversation deleted")
+
+    assert sent_before_close == [3]
+    assert ws.closed_with == (4004, "Conversation deleted")
+
+
+@pytest.mark.asyncio
+async def test_subscriber_close_is_bounded_for_stalled_peer(monkeypatch):
+    """A peer that stopped reading cannot hold up the delete or the shutdown."""
+    monkeypatch.setattr(
+        "openhands.agent_server.sockets.SUBSCRIBER_CLOSE_TIMEOUT_SECONDS", 0.05
+    )
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    ws.gate = asyncio.Event()  # never set: the writer is stuck mid-send
+
+    async def hang(code: int = 1000, reason: str | None = None) -> None:
+        await asyncio.Event().wait()
+
+    ws.close = hang  # type: ignore[method-assign]
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+    await sub(_msg("stuck"))
+    await _drain(writer)
+
+    await asyncio.wait_for(
+        sub.close_connection(4004, "Conversation deleted"), timeout=2
+    )
+
+    assert writer.closed_event.is_set()
+
+
 class _LockedEventService:
     """A running conversation: subscribing and sending both wait for its step."""
 
@@ -541,19 +624,19 @@ async def test_a_message_sent_while_a_step_runs_is_saved_after_the_client_leaves
     service = _LockedEventService()
     ws = _ClientSocket([_user_frame("wait, actually")])
 
-    async def accept(websocket, key):
+    async def accept(websocket, key, config):
         return True
 
     monkeypatch.setattr(module, "_accept_authenticated_websocket", accept)
-    monkeypatch.setattr(
-        module,
-        "_get_conversation_service",
-        lambda websocket: type(
-            "S", (), {"get_event_service": AsyncMock(return_value=service)}
-        )(),
-    )
 
-    task = asyncio.ensure_future(module.session_socket(uuid4(), ws))  # type: ignore[arg-type]
+    task = asyncio.ensure_future(
+        module.session_socket(
+            uuid4(),
+            ws,  # type: ignore[arg-type]
+            config=Config(),
+            conv_service=MagicMock(get_event_service=AsyncMock(return_value=service)),
+        )
+    )
     # The frame is taken while the step still runs; then the client leaves.
     await asyncio.wait_for(service.sending.wait(), timeout=5)
     task.cancel()

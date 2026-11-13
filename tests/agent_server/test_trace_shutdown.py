@@ -25,15 +25,13 @@ async def test_trace_flush_is_bounded_off_loop_and_best_effort(
 
     monkeypatch.setattr(provider, "force_flush", flush)
     monkeypatch.setattr("opentelemetry.trace.get_tracer_provider", lambda: provider)
-    monkeypatch.setattr("openhands.agent_server.api.get_vscode_service", lambda: None)
-    monkeypatch.setattr(
-        "openhands.agent_server.api.get_tool_preload_service", lambda: None
-    )
     app = create_app(
         Config(
             deferred_init=True,
             conversations_path=tmp_path / "conversations",
             bash_events_dir=tmp_path / "bash",
+            enable_vscode=False,
+            preload_tools=False,
         )
     )
     try:
@@ -59,10 +57,6 @@ async def test_no_flush_when_tracing_is_not_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "opentelemetry.trace.get_tracer_provider", lambda: ProxyTracerProvider()
     )
-    monkeypatch.setattr("openhands.agent_server.api.get_vscode_service", lambda: None)
-    monkeypatch.setattr(
-        "openhands.agent_server.api.get_tool_preload_service", lambda: None
-    )
     flushed = []
     monkeypatch.setattr(
         TracerProvider, "force_flush", lambda self, *a, **k: flushed.append(1)
@@ -72,6 +66,8 @@ async def test_no_flush_when_tracing_is_not_configured(monkeypatch, tmp_path):
             deferred_init=True,
             conversations_path=tmp_path / "conversations",
             bash_events_dir=tmp_path / "bash",
+            enable_vscode=False,
+            preload_tools=False,
         )
     )
     async with api_lifespan(app):
