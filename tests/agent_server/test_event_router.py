@@ -14,6 +14,9 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server import event_router as event_router_module
 from openhands.agent_server.api import add_domain_error_handler
+from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_event_service,
     get_read_event_service,
@@ -23,13 +26,14 @@ from openhands.agent_server.event_router import (
     normalize_datetime_to_server_timezone,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import SendMessageRequest
-from openhands.sdk import Message
+from openhands.agent_server.models import SendMessageRequest, StartConversationRequest
+from openhands.sdk import LLM, Agent, Message
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.errors import NotFound
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def test_normalize_datetime_naive_passthrough():
@@ -868,6 +872,26 @@ class TestReadEventServiceSeam:
     """
 
     @pytest.mark.asyncio
+    async def test_real_local_registry_preserves_runtime_reads(self, tmp_path):
+        service = ConversationService(conversations_dir=tmp_path / "conversations")
+        async with service:
+            info, _ = await service.start_conversation(
+                StartConversationRequest(
+                    agent=Agent(llm=LLM(model="openai/gpt-4o"), tools=[]),
+                    workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                )
+            )
+            request = SimpleNamespace(
+                app=SimpleNamespace(
+                    state=SimpleNamespace(
+                        conversation_registry=ConversationRegistry(Config())
+                    )
+                )
+            )
+            resolved = await get_read_event_service(info.id, request, service)
+            assert resolved is await service.get_event_service(info.id)
+
+    @pytest.mark.asyncio
     async def test_archived_conversation_reads_from_persisted_log(self):
         conversation_id = uuid4()
         persisted = MagicMock(spec=EventService)
@@ -907,7 +931,6 @@ class TestReadEventServiceSeam:
 
         with pytest.raises(NotFound):
             await get_read_event_service(uuid4(), request, service)
-
 
 
 def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):

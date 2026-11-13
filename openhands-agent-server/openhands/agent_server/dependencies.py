@@ -137,10 +137,9 @@ async def get_read_event_service(
     from the shared persisted event log rather than 404ing.
     """
     registry = getattr(request.app.state, "conversation_registry", None)
-    if (
-        isinstance(registry, ConversationRegistry)
-        and registry.serves_persisted_event_reads
-    ):
+    if isinstance(
+        registry, ConversationRegistry
+    ) and registry.serves_persisted_event_reads(conversation_id):
         event_service = await conversation_service.get_persisted_event_service(
             conversation_id
         )

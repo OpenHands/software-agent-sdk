@@ -95,6 +95,7 @@ from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -2103,7 +2104,7 @@ class ConversationService:
                 context={"cipher": self._cipher_for(conversation_id)}
             )
             meta_file = self.conversations_dir / conversation_id.hex / "meta.json"
-            await asyncio.to_thread(meta_file.write_text, metadata)
+            await asyncio.to_thread(atomic_write_text, meta_file, metadata)
 
             if archived and live_service is not None:
                 await live_service.close()
