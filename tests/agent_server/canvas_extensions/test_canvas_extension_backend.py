@@ -1242,3 +1242,28 @@ async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
     assert "<secret-hidden>" in output
     assert "é" in output
     assert "\ufffd" not in output
+
+
+@pytest.mark.parametrize("link_target", ["../bin/server", "../../outside", "loop"])
+def test_archive_links_are_materialized_only_within_artifact(tmp_path, link_target):
+    archive = tmp_path / "links.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo("package/bin/server")
+        entry.mode = 0o755
+        entry.size = 4
+        tar.addfile(entry, io.BytesIO(b"test"))
+        link = tarfile.TarInfo("package/aliases/loop")
+        link.type = tarfile.SYMTYPE
+        link.linkname = link_target
+        tar.addfile(link)
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+    if link_target == "../bin/server":
+        CanvasExtensionBackendManager._extract_archive(archive, destination, 1)
+        result = destination / "aliases/loop"
+        assert result.read_bytes() == b"test"
+        assert not result.is_symlink()
+        assert result.stat().st_mode & 0o111
+    else:
+        with pytest.raises(ValueError, match="unsafe archive"):
+            CanvasExtensionBackendManager._extract_archive(archive, destination, 1)

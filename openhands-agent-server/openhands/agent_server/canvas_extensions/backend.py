@@ -415,6 +415,7 @@ class CanvasExtensionBackendManager:
         root = destination.resolve()
         seen: set[PurePosixPath] = set()
         extracted = 0
+        links: list[tuple[Path, Path]] = []
         with tarfile.open(archive, mode="r:gz") as tar:
             for member in tar:
                 original = PurePosixPath(member.name)
@@ -426,7 +427,9 @@ class CanvasExtensionBackendManager:
                 if not parts:
                     continue
                 relative = PurePosixPath(*parts)
-                if relative in seen or not (member.isfile() or member.isdir()):
+                if relative in seen or not (
+                    member.isfile() or member.isdir() or member.issym()
+                ):
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
@@ -436,7 +439,16 @@ class CanvasExtensionBackendManager:
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
-                if member.isdir():
+                if member.issym():
+                    source_path = (target.parent / member.linkname).resolve()
+                    if Path(
+                        member.linkname
+                    ).is_absolute() or not source_path.is_relative_to(root):
+                        raise ValueError(
+                            "backend artifact contains an unsafe archive entry"
+                        )
+                    links.append((target, source_path))
+                elif member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     source = tar.extractfile(member)
@@ -449,6 +461,20 @@ class CanvasExtensionBackendManager:
                         shutil.copyfileobj(source, output)
                     target.chmod(member.mode & 0o555)
                 extracted += 1
+        # Materialize only in-archive regular-file links. Never create symlinks
+        # that could redirect subsequent writes outside the extraction root.
+        while links:
+            remaining = []
+            for target, source_path in links:
+                if source_path.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source_path, target)
+                    target.chmod(source_path.stat().st_mode & 0o555)
+                else:
+                    remaining.append((target, source_path))
+            if len(remaining) == len(links):
+                raise ValueError("backend artifact contains an unsafe archive entry")
+            links = remaining
         if not extracted:
             raise ValueError("backend artifact contains no files after stripping")
         for path in sorted(destination.rglob("*"), reverse=True):
