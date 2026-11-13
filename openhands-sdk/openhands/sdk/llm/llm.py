@@ -1874,12 +1874,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # A content-free completion is a provider failure, not agent behaviour
         # (#6085): returning it would persist an empty agent message whose
         # corrective nudge does not break the stuck detector's agent streak.
-        message = Message.from_llm_chat_message(resp["choices"][0]["message"])
+        # A completion cut off by the output-token cap (e.g. the profile
+        # pre-flight ping with max_tokens=1) is deterministic, so retrying it
+        # would only repeat the same empty answer.
+        choice = resp["choices"][0]
+        message = Message.from_llm_chat_message(choice["message"])
         has_content = any(
             isinstance(c, TextContent) and bool(c.text.strip()) for c in message.content
         )
         if not (
-            has_content
+            choice.get("finish_reason") == "length"
+            or has_content
             or message.tool_calls
             or message.reasoning_content
             or message.thinking_blocks

@@ -222,6 +222,26 @@ def test_content_free_response_exhausts_retries(mock_completion, base_llm: LLM) 
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_length_capped_empty_response_is_not_retried(
+    mock_completion, base_llm: LLM
+) -> None:
+    """An empty completion cut off by the token cap (finish_reason="length",
+    e.g. the profile pre-flight ping with max_tokens=1) is deterministic and
+    must be returned rather than retried."""
+    capped = create_content_free_response("capped-1")
+    capped.choices[0].finish_reason = "length"  # type: ignore[union-attr]
+    mock_completion.return_value = capped
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        max_tokens=1,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_completion.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_reasoning_only_response_is_not_retried(mock_completion, base_llm: LLM) -> None:
     """Reasoning without visible content is agent behaviour, not a provider
     failure: it must be returned so the corrective-nudge path still sees it."""
