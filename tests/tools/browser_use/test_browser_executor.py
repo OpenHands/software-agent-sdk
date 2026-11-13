@@ -7,7 +7,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.request import urlopen
 
 import pytest
@@ -539,3 +539,56 @@ async def test_stop_recording_without_active_session_returns_error():
 
     assert "Error" in result
     assert "Not recording" in result
+
+
+def _session_with_navigate_handler(handler):
+    from browser_use.browser.events import NavigateToUrlEvent
+    from bubus import EventBus
+
+    bus = EventBus()
+    bus.on(NavigateToUrlEvent, handler)
+    session = MagicMock()
+    session.id = "session-1"
+    session.event_bus = bus
+    return session
+
+
+async def test_navigate_blocked_by_security_policy_is_an_error(mock_browser_executor):
+    """A navigation the security watchdog refuses must not report success."""
+
+    async def refuse(event):
+        raise ValueError(f"Navigation to {event.url} blocked by security policy")
+
+    mock_browser_executor._initialized = True
+    mock_browser_executor._server.browser_session = _session_with_navigate_handler(
+        refuse
+    )
+
+    action = BrowserNavigateAction(url="https://example.com/")
+    try:
+        result = await mock_browser_executor._execute_action(action)
+    finally:
+        await mock_browser_executor._server.browser_session.event_bus.stop()
+
+    assert_browser_observation_error(result, "blocked by security policy")
+    assert "https://example.com/" in result.text
+    assert "Navigated to" not in result.text
+
+
+async def test_navigate_allowed_reports_success(mock_browser_executor):
+    async def allow(event):
+        return None
+
+    mock_browser_executor._initialized = True
+    mock_browser_executor._server.browser_session = _session_with_navigate_handler(
+        allow
+    )
+
+    action = BrowserNavigateAction(url="http://127.0.0.1/page.html")
+    try:
+        result = await mock_browser_executor._execute_action(action)
+    finally:
+        await mock_browser_executor._server.browser_session.event_bus.stop()
+
+    assert_browser_observation_success(result)
+    assert "Navigated to: http://127.0.0.1/page.html" in result.text

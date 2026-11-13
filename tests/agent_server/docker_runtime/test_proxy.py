@@ -89,9 +89,9 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
     monkeypatch, failure
 ):
     import httpx
-    from fastapi import HTTPException
 
     from openhands.agent_server.docker_runtime import proxy
+    from openhands.sdk.errors import UpstreamFailed
 
     errors = {
         "ReadTimeout": httpx.ReadTimeout,
@@ -105,11 +105,9 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
-    expected = asyncio.CancelledError if failure == "cancel" else HTTPException
-    with pytest.raises(expected) as raised:
+    expected = asyncio.CancelledError if failure == "cancel" else UpstreamFailed
+    with pytest.raises(expected):
         await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
-    if isinstance(raised.value, HTTPException):
-        assert raised.value.status_code == 502
     assert client.is_closed
 
 

@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.agent.base import AgentBase
@@ -20,6 +20,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -336,8 +337,8 @@ def test_conversation_state_corrupted_event_handling():
             valid_event2.model_dump_json(exclude_none=True)
         )
 
-        # Load conversation - EventLog indexes files during init but doesn't
-        # validate content until events are accessed
+        # Load conversation - EventLog indexes files during init and reads
+        # them when events are accessed
         conversation = Conversation(
             agent=agent,
             workspace=LocalWorkspace(working_dir="/tmp"),
@@ -345,10 +346,18 @@ def test_conversation_state_corrupted_event_handling():
             conversation_id=conv_id,
         )
 
-        # Accessing events triggers validation - corrupted JSON will fail
-        with pytest.raises((ValidationError, json.JSONDecodeError)):
-            # Iterate through all events to trigger loading
-            list(conversation._state.events)
+        # The corrupt and the empty file read as stand-in error events; the
+        # readable events stay (#6649).
+        events = list(conversation._state.events)
+        assert [e.id for e in events[:4]] == [
+            "abcdef01",
+            "abcdef02",
+            "abcdef03",
+            "abcdef04",
+        ]
+        assert isinstance(events[1], ConversationErrorEvent)
+        assert isinstance(events[2], ConversationErrorEvent)
+        assert isinstance(events[3], MessageEvent)
 
 
 def test_conversation_state_empty_filestore():
