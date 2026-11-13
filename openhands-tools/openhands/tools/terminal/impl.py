@@ -24,6 +24,7 @@ from openhands.tools.terminal.env import (
     ENV_VAR_NAME_RE,
     normalize_terminal_env,
 )
+from openhands.tools.terminal.git_credentials import git_credential_env
 from openhands.tools.terminal.terminal.factory import (
     _is_tmux_available,
     create_terminal_session,
@@ -349,6 +350,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             try:
                 secret_registry = conversation.state.secret_registry
                 env_vars = secret_registry.get_secrets_as_env_vars(action.command)
+                env_vars.update(git_credential_env(action.command, secret_registry))
             except Exception:
                 env_vars = {}
 
