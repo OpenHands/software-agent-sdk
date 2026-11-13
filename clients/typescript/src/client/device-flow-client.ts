@@ -237,14 +237,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new DOMException('Aborted', 'AbortError'));
       return;
     }
-    const timeoutId = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timeoutId);
-        reject(new DOMException('Aborted', 'AbortError'));
-      },
-      { once: true }
-    );
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
