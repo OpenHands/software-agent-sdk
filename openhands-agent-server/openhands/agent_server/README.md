@@ -12,6 +12,39 @@ The OpenHands Agent Server is a minimal REST API and WebSocket server that provi
 - **Webhooks**: Configurable webhook notifications for events
 - **Auto-reload**: Development mode with automatic code reloading
 
+
+## Conversation lifecycle
+
+Conversation metadata separates retained history from runtime availability:
+
+- `runtime_status` reports whether execution infrastructure is available; it does not imply archive state.
+- `POST /api/conversations/{id}/archive` sets `archived_at`, hides the conversation from the default search, and stops only runtime infrastructure owned by this server. It does not delete history or workspace files; separately configured runtime retention still applies.
+- `POST /api/conversations/{id}/unarchive` clears `archived_at` without provisioning infrastructure or starting agent execution.
+- `GET /api/conversations/search?archived=true` returns archived conversations; the default `archived=false` returns active conversations. `GET /api/conversations/count` accepts the same `archived` filter and default.
+- `DELETE /api/conversations/{id}` permanently removes the conversation rather than retaining it as archived.
+
+Runtime retention is **expiration**, not conversation archive. When
+`conversation_storage_retention_days` is configured, an inactive Docker runtime
+can expire: its server-owned home and workspace are deleted, while conversation
+history and its encryption identity remain readable. Caller-owned workspaces are
+not deleted. Expiration does not change `archived_at` or search membership.
+The runtime reports `runtime_status: "missing"`, `can_resume: false`, and
+`runtime_error.code: "runtime_expired"`; unarchive cannot restore expired storage,
+and resume/reprovision returns HTTP 410. The legacy `.archived.json` runtime marker
+is retained on disk for rollback compatibility; it is not the conversation's
+`meta.json.archived_at` field. Retention is disabled by default.
+
+`can_resume` describes runtime recovery capability, not permission to execute now:
+an explicitly archived conversation must first be unarchived even when
+`can_resume` is true. Unarchive only restores catalog visibility; it does not
+start compute or guarantee that runtime storage is still available.
+
+Search and count select disjoint archive partitions. A UI's "Show archived", a
+backup inventory, or a bulk-cleanup client that needs **all** conversations must
+query both `archived=false` and `archived=true` and paginate each independently.
+Do not infer archive intent from a missing runtime or substitute a provider's
+destructive sandbox-delete operation for a history-preserving archive.
+
 ## Quick Start
 
 ### Prerequisites

@@ -298,7 +298,7 @@ def test_a_reclaimed_conversation_resumes_and_works(server):
         assert out.split() == ["print(1)", "init", "ok"]
 
 
-def test_an_archived_conversation_is_read_only_until_deleted(server):
+def test_an_expired_runtime_is_read_only_until_deleted(server):
     with server(OH_CONVERSATION_STORAGE_RETENTION_DAYS="1") as client:
         registry = _registry(client)
         old, recent = _start(client), _start(client)
@@ -311,9 +311,9 @@ def test_an_archived_conversation_is_read_only_until_deleted(server):
 
         _pass(client)
 
-        assert registry.is_archived(old)
+        assert registry.is_expired(old)
         assert not registry.provisioning.runtime_dir(old).exists()
-        assert not registry.is_archived(recent)
+        assert not registry.is_expired(recent)
         assert (_workspace(client, recent) / "main.py").is_file()
         # History stays readable; the runtime cannot come back.
         assert client.get(f"/api/conversations/{old}").status_code == 200
@@ -324,5 +324,5 @@ def test_an_archived_conversation_is_read_only_until_deleted(server):
         assert registry.get(old) is None
 
         assert client.delete(f"/api/conversations/{old}").status_code in (200, 204)
-        assert not registry.is_archived(old)
+        assert not registry.is_expired(old)
         assert not registry.conversation_dir(old).exists()

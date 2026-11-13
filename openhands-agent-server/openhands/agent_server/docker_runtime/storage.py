@@ -79,14 +79,14 @@ class DockerRuntimeStorage:
     def idle(self, conversation_id: UUID) -> AbstractAsyncContextManager[bool]:
         return self.registry.runtime_idle(conversation_id)
 
-    def archive(self, conversation_id: UUID) -> list[Path]:
+    def expire(self, conversation_id: UUID) -> list[Path]:
         # Marker first: if the move never happens, the next pass retries it.
-        self.registry.archived_marker(conversation_id).write_text(
+        self.registry.expired_marker(conversation_id).write_text(
             json.dumps({"archived_at": datetime.now(UTC).isoformat()})
         )
         return [self.provisioning.runtime_dir(conversation_id)]
 
-    async def on_archived(self, conversation_id: UUID) -> None:
+    async def on_expired(self, conversation_id: UUID) -> None:
         await self.registry.refresh_conversation(conversation_id)
 
 

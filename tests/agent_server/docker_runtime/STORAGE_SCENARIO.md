@@ -37,7 +37,7 @@ to what must go:
 4. **A reclaimed conversation resumes and works**: reading a workspace file
    through the API restarts it, its commit is there, and it can write caches
    and dependencies again.
-5. **An archived conversation is read-only until deleted** (retention 1 day,
+5. **An expired runtime stays read-only until deleted** (retention 1 day,
    one conversation aged 2 days): its runtime is gone, its history still reads,
    the runtime routes answer 410, the recent one is kept, and delete still
    removes everything.
