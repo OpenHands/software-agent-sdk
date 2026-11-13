@@ -26,7 +26,7 @@ from openhands.sdk.mcp.config import (
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -392,6 +392,30 @@ class _ToolListChangedHandler(MessageHandler):
             )
 
 
+def _close_after_failure(client: MCPClient) -> None:
+    # A failing close must not replace the error that made us close.
+    try:
+        client.sync_close()
+    except Exception as close_exc:
+        logger.warning(
+            "Failed to close MCP client during error cleanup", exc_info=close_exc
+        )
+
+
+def _describe_mcp_targets(config: FastMCPConfig) -> str:
+    """Name each server with its origin or command, never a path or query:
+    those can carry credentials (e.g. a token in a hosted server's URL path)."""
+    targets: list[str] = []
+    for name, server in config.mcpServers.items():
+        if isinstance(server, RemoteMCPServer):
+            url = httpx2.URL(server.url)
+            port = f":{url.port}" if url.port else ""
+            targets.append(f"{name} ({url.scheme}://{url.host}{port})")
+        else:
+            targets.append(f"{name} (command: {server.command})")
+    return ", ".join(targets) or "unknown"
+
+
 def create_mcp_tools(
     mcp_config: dict[str, MCPServer],
     timeout: float = 30.0,
@@ -463,13 +487,17 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
+    except MCPError as e:
+        _close_after_failure(client)
+        raise MCPError(
+            f"{e}\n"
+            f"MCP servers configured: {_describe_mcp_targets(config)}\n\n"
+            "Possible solutions:\n"
+            "  1. Check that the MCP server is running and reachable from the agent\n"
+            "  2. Check the server's URL or command in the MCP configuration\n"
+        ) from (e.__cause__ or e)
     except BaseException:
-        try:
-            client.sync_close()
-        except Exception as close_exc:
-            logger.warning(
-                "Failed to close MCP client during error cleanup", exc_info=close_exc
-            )
+        _close_after_failure(client)
         raise
 
     logger.info("Created %d MCP tools", len(client.tools))
