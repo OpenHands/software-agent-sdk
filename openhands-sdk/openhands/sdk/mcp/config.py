@@ -496,6 +496,8 @@ MCPAuthCredential = Annotated[
 ]
 
 MCPTransport = Literal["stdio", "http", "streamable-http", "sse"]
+
+
 class MCPServer(_MCPBaseModel):
     """One MCP server in the settings DataModel.
 
