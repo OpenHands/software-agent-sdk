@@ -1,0 +1,480 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Native macOS App backends</title><style>body{font:16px/1.6 system-ui;color:#222;background:#fdfdfb;margin:0}main{max-width:960px;margin:auto;padding:40px}nav{padding:16px;background:#f3f1ec}a{color:#294eaa}h1{font-size:36px}h2{margin-top:42px}pre{overflow:auto;padding:18px;background:#f3f1ec;font:13px/1.5 monospace}.callout{border-left:4px solid #b25b0e;padding:16px;background:#fff2e5}svg{width:100%;height:auto}text{font:15px system-ui;fill:#222}rect{fill:#f7f6f1;stroke:#aaa}.changed{fill:#fff2e5;stroke:#b25b0e}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}section{border-top:1px solid #ddd;margin-top:24px}summary{cursor:pointer}</style><main><h1>Native macOS App backends</h1><p>Agent Server can select macOS artifacts, safely materialize archive file links, and own backend processes across stop and crash recovery. Linux keeps its existing process identity representation.</p><p class="callout">Compatibility: additional_artifacts is optional. The existing artifacts enum remains Linux-only, preserving the published OpenAPI response contract. Windows remains unsupported by this change.</p><nav><a href="#s0">An additive platform map preserves the API</a> · <a href="#s1">Extraction and lifecycle work on macOS</a> · <a href="#s2">Real process tests cover native cleanup</a> · <a href="#s3">Mac runners execute all suites</a></nav><h2>API before → after</h2><pre>Before: artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
+After:  artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
+        additional_artifacts?: Record&lt;string, Artifact&gt;
+Resolution: additional_artifacts, then canonical artifacts win overlaps.</pre><section id="s0"><h2>An additive platform map preserves the API</h2><p>CanvasExtensionBackend keeps canonical Linux keys. Additional platform keys are validated artifacts; unknown platforms are inert.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">artifacts: Linux keys only</text><text x="485" y="80">artifacts + optional additional_artifacts</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
+index dcc4493a..8edd5119 100644
+--- a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
++++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
+@@ -90,7 +90,7 @@ class CanvasExtensionContributes(BaseModel):
+         return v
+ 
+ 
+-BackendPlatform = Literal[&quot;linux-amd64&quot;, &quot;linux-arm64&quot;]
++BackendPlatform = Literal[&quot;linux-amd64&quot;, &quot;linux-arm64&quot;, &quot;darwin-amd64&quot;, &quot;darwin-arm64&quot;]
+ 
+ 
+ class CanvasExtensionBackendArtifact(BaseModel):
+@@ -163,8 +163,12 @@ class CanvasExtensionBackend(BaseModel):
+     &quot;&quot;&quot;Optional trusted backend declaration for schema-1 Canvas Apps.&quot;&quot;&quot;
+ 
+     schema_version: Literal[1]
+-    artifacts: dict[BackendPlatform, CanvasExtensionBackendArtifact] = Field(
+-        min_length=1
++    artifacts: dict[
++        Literal[&quot;linux-amd64&quot;, &quot;linux-arm64&quot;], CanvasExtensionBackendArtifact
++    ] = Field(min_length=1)
++    additional_artifacts: dict[str, CanvasExtensionBackendArtifact] = Field(
++        default_factory=dict,
++        description=&quot;Additional platform artifacts; unknown platforms are ignored.&quot;,
+     )
+     argv: list[str] = Field(min_length=1)
+     health: CanvasExtensionBackendHealth = Field(</pre></details></section><section id="s1"><h2>Extraction and lifecycle work on macOS</h2><p>current_platform selects Darwin x64/arm64. _extract_archive copies contained regular-file links after extraction; absolute, escaping, cyclic and unresolved links fail. Root chmod follows atomic rename. _process_start_time and _record_is_owned use psutil on Darwin. _group_alive confirms that an EPERM group has no live members.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Reject macOS and archive file links</text><text x="485" y="80">Select Darwin; materialize contained files</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L191">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:191</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L197">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:197</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
+index a387fe0b..854b4fe1 100644
+--- a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
++++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
+@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
+ from typing import Final, Literal
+ from urllib.parse import urljoin, urlsplit
+ 
++import psutil
+ from pydantic import BaseModel, Field
+ 
+ from openhands.agent_server.canvas_extensions.installed import (
+@@ -114,6 +115,11 @@ class _RunRecord(BaseModel):
+ 
+ def _process_start_time(pid: int) -&gt; int | None:
+     &quot;&quot;&quot;Return a process&#x27;s start time in clock ticks since boot (Linux).&quot;&quot;&quot;
++    if platform.system() == &quot;Darwin&quot;:
++        try:
++            return int(psutil.Process(pid).create_time() * 1_000_000)
++        except psutil.Error:
++            return None
+     try:
+         stat = Path(f&quot;/proc/{pid}/stat&quot;).read_text()
+     except OSError:
+@@ -189,9 +195,15 @@ class CanvasExtensionBackendManager:
+ 
+     @staticmethod
+     def current_platform() -&gt; BackendPlatform | None:
+-        if platform.system() != &quot;Linux&quot;:
+-            return None
++        system = platform.system()
+         machine = platform.machine().lower()
++        if system == &quot;Darwin&quot;:
++            if machine in {&quot;x86_64&quot;, &quot;amd64&quot;}:
++                return &quot;darwin-amd64&quot;
++            if machine in {&quot;aarch64&quot;, &quot;arm64&quot;}:
++                return &quot;darwin-arm64&quot;
++        if system != &quot;Linux&quot;:
++            return None
+         if machine in {&quot;x86_64&quot;, &quot;amd64&quot;}:
+             return &quot;linux-amd64&quot;
+         if machine in {&quot;aarch64&quot;, &quot;arm64&quot;}:
+@@ -212,7 +224,11 @@ class CanvasExtensionBackendManager:
+         current_platform = self.current_platform()
+         if manifest is None or manifest.backend is None or current_platform is None:
+             return None
+-        artifact = manifest.backend.artifacts.get(current_platform)
++        artifacts: dict[str, CanvasExtensionBackendArtifact] = {
++            **manifest.backend.additional_artifacts,
++            **manifest.backend.artifacts,
++        }
++        artifact = artifacts.get(current_platform)
+         if artifact is None:
+             return None
+         return manifest.backend, artifact, current_platform
+@@ -399,6 +415,7 @@ class CanvasExtensionBackendManager:
+         root = destination.resolve()
+         seen: set[PurePosixPath] = set()
+         extracted = 0
++        links: list[tuple[Path, Path]] = []
+         with tarfile.open(archive, mode=&quot;r:gz&quot;) as tar:
+             for member in tar:
+                 original = PurePosixPath(member.name)
+@@ -410,7 +427,9 @@ class CanvasExtensionBackendManager:
+                 if not parts:
+                     continue
+                 relative = PurePosixPath(*parts)
+-                if relative in seen or not (member.isfile() or member.isdir()):
++                if relative in seen or not (
++                    member.isfile() or member.isdir() or member.issym()
++                ):
+                     raise ValueError(
+                         &quot;backend artifact contains an unsafe archive entry&quot;
+                     )
+@@ -420,7 +439,16 @@ class CanvasExtensionBackendManager:
+                     raise ValueError(
+                         &quot;backend artifact contains an unsafe archive entry&quot;
+                     )
+-                if member.isdir():
++                if member.issym():
++                    source_path = (target.parent / member.linkname).resolve()
++                    if Path(
++                        member.linkname
++                    ).is_absolute() or not source_path.is_relative_to(root):
++                        raise ValueError(
++                            &quot;backend artifact contains an unsafe archive entry&quot;
++                        )
++                    links.append((target, source_path))
++                elif member.isdir():
+                     target.mkdir(parents=True, exist_ok=True)
+                 else:
+                     source = tar.extractfile(member)
+@@ -433,12 +461,27 @@ class CanvasExtensionBackendManager:
+                         shutil.copyfileobj(source, output)
+                     target.chmod(member.mode &amp; 0o555)
+                 extracted += 1
++        # Materialize only in-archive regular-file links. Never create symlinks
++        # that could redirect subsequent writes outside the extraction root.
++        while links:
++            remaining = []
++            for target, source_path in links:
++                if source_path.is_file():
++                    target.parent.mkdir(parents=True, exist_ok=True)
++                    shutil.copyfile(source_path, target)
++                    target.chmod(source_path.stat().st_mode &amp; 0o555)
++                else:
++                    remaining.append((target, source_path))
++            if len(remaining) == len(links):
++                raise ValueError(&quot;backend artifact contains an unsafe archive entry&quot;)
++            links = remaining
+         if not extracted:
+             raise ValueError(&quot;backend artifact contains no files after stripping&quot;)
+         for path in sorted(destination.rglob(&quot;*&quot;), reverse=True):
+             if path.is_dir():
+                 path.chmod(0o555)
+-        destination.chmod(0o555)
++        # macOS requires write permission on a directory when renaming it.
++        destination.chmod(0o755)
+ 
+     async def prepare(self, name: str, revision: str) -&gt; BackendStatus:
+         async with self._lock(name):
+@@ -501,6 +544,7 @@ class CanvasExtensionBackendManager:
+                         ) from exc
+                     try:
+                         os.replace(temporary, artifact_dir)
++                        artifact_dir.chmod(0o555)
+                     except OSError:
+                         if not artifact_dir.is_dir():
+                             raise
+@@ -891,12 +935,15 @@ class CanvasExtensionBackendManager:
+             await asyncio.gather(*runtime.drain_tasks, return_exceptions=True)
+         runtime.drain_tasks = []
+ 
+-    @staticmethod
+-    def _signal_group(pgid: int, sig: int) -&gt; None:
++    @classmethod
++    def _signal_group(cls, pgid: int, sig: int) -&gt; None:
+         try:
+             os.killpg(pgid, sig)
+         except ProcessLookupError:
+             pass
++        except PermissionError:
++            if cls._group_alive(pgid):
++                raise
+ 
+     @staticmethod
+     def _group_alive(pgid: int) -&gt; bool:
+@@ -905,6 +952,20 @@ class CanvasExtensionBackendManager:
+             return True
+         except ProcessLookupError:
+             return False
++        except PermissionError:
++            if platform.system() != &quot;Darwin&quot;:
++                raise
++            # XNU excludes zombies from killpg&#x27;s eligible targets and returns
++            # EPERM when none remain. Confirm that there are no live members;
++            # preserve a genuine permission failure instead of hiding it.
++            for pid in psutil.pids():
++                try:
++                    if os.getpgid(pid) == pgid:
++                        if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
++                            raise PermissionError(f&quot;Cannot signal process group {pgid}&quot;)
++                except (ProcessLookupError, psutil.NoSuchProcess):
++                    continue
++            return False
+ 
+     def _runtime_group_alive(self, runtime: _Runtime) -&gt; bool:
+         process = runtime.process
+@@ -973,14 +1034,11 @@ class CanvasExtensionBackendManager:
+         if _process_start_time(record.pgid) != record.start_time:
+             return False
+         try:
+-            cmdline = Path(f&quot;/proc/{record.pgid}/cmdline&quot;).read_bytes()
+-        except OSError:
++            arguments = psutil.Process(record.pgid).cmdline()
++        except psutil.Error:
+             return False
+         prefix = f&quot;{(self.artifacts_dir / record.name).resolve()}/&quot;
+-        return any(
+-            argument.decode(errors=&quot;replace&quot;).startswith(prefix)
+-            for argument in cmdline.split(b&quot;\0&quot;)
+-        )
++        return any(argument.startswith(prefix) for argument in arguments)
+ 
+     async def reap_orphans(self) -&gt; None:
+         &quot;&quot;&quot;Stop backends left running by a server that died without teardown.</pre></details></section><section id="s2"><h2>Real process tests cover native cleanup</h2><p>Existing lifecycle tests now run on macOS with the active Python interpreter. Regression tests exercise contained archive links and a real exited, unreaped process group. Focused Mac validation: 44 passed, one skip including MCP cleanup tests.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Linux fixture; no zombie-group regression</text><text x="485" y="80">Darwin fixture + real zombie regression</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1280">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1280</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
+index 305e52ec..6c46666c 100644
+--- a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
++++ b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
+@@ -5,6 +5,7 @@ import io
+ import json
+ import os
+ import signal
++import subprocess
+ import sys
+ import tarfile
+ import threading
+@@ -13,6 +14,7 @@ import urllib.request
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from pathlib import Path
+ 
++import psutil
+ import pytest
+ from fastapi import FastAPI
+ from fastapi.testclient import TestClient
+@@ -22,6 +24,7 @@ from openhands.agent_server.api import add_domain_error_handler
+ from openhands.agent_server.canvas_extensions.backend import (
+     BackendSecretGrantRequest,
+     CanvasExtensionBackendManager,
++    _process_start_time,
+     _Runtime,
+ )
+ from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
+@@ -40,7 +43,9 @@ from openhands.agent_server.persistence.store import FileSecretsStore
+ from .conftest import write_extension
+ 
+ 
+-_SERVER = &quot;&quot;&quot;#!/usr/bin/python3
++_SERVER = (
++    f&quot;#!{sys.executable}\n&quot;
++    + &quot;&quot;&quot;
+ import http.server
+ import json
+ import os
+@@ -74,6 +79,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
+ print(\&quot;backend-ready\&quot;, flush=True)
+ http.server.HTTPServer((\&quot;127.0.0.1\&quot;, port), Handler).serve_forever()
+ &quot;&quot;&quot;
++)
+ 
+ 
+ def _write_backend_extension(directory: Path, *, timeout: float = 3) -&gt; Path:
+@@ -94,6 +100,10 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -&gt; Path:
+             &quot;linux-amd64&quot;: {&quot;path&quot;: archive.name, &quot;sha256&quot;: checksum},
+             &quot;linux-arm64&quot;: {&quot;path&quot;: archive.name, &quot;sha256&quot;: checksum},
+         },
++        &quot;additional_artifacts&quot;: {
++            &quot;darwin-amd64&quot;: {&quot;path&quot;: archive.name, &quot;sha256&quot;: checksum},
++            &quot;darwin-arm64&quot;: {&quot;path&quot;: archive.name, &quot;sha256&quot;: checksum},
++        },
+         &quot;argv&quot;: [
+             &quot;{artifact_dir}/server.py&quot;,
+             &quot;{port}&quot;,
+@@ -127,7 +137,7 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
+ 
+ requires_linux_backend = pytest.mark.skipif(
+     CanvasExtensionBackendManager.current_platform() is None,
+-    reason=&quot;backend artifact fixture only supports Linux amd64/arm64&quot;,
++    reason=&quot;backend artifact fixture requires a supported Unix platform&quot;,
+ )
+ 
+ 
+@@ -136,7 +146,7 @@ requires_linux_backend = pytest.mark.skipif(
+     CanvasExtensionBackendManager.current_platform() is not None,
+     reason=&quot;backend artifacts are supported on this platform&quot;,
+ )
+-async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
++async def test_backend_is_unsupported_on_other_platform(tmp_path: Path):
+     source = _write_backend_extension(tmp_path / &quot;source&quot; / &quot;my-extension&quot;)
+     installed_dir = tmp_path / &quot;installed&quot;
+     install_canvas_extension(str(source), installed_dir=installed_dir)
+@@ -324,7 +334,9 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
+     manifest_path = source / MANIFEST_FILENAME
+     manifest = json.loads(manifest_path.read_text())
+     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+-    for artifact in manifest[&quot;backend&quot;][&quot;artifacts&quot;].values():
++    for artifact in list(manifest[&quot;backend&quot;][&quot;artifacts&quot;].values()) + list(
++        manifest[&quot;backend&quot;][&quot;additional_artifacts&quot;].values()
++    ):
+         artifact[&quot;sha256&quot;] = checksum
+     manifest_path.write_text(json.dumps(manifest))
+     unsafe_installed = tmp_path / &quot;unsafe-installed&quot;
+@@ -348,7 +360,9 @@ def _install_with_artifact_bytes(
+     manifest_path = source / MANIFEST_FILENAME
+     manifest = json.loads(manifest_path.read_text())
+     checksum = hashlib.sha256(payload).hexdigest()
+-    for artifact in manifest[&quot;backend&quot;][&quot;artifacts&quot;].values():
++    for artifact in list(manifest[&quot;backend&quot;][&quot;artifacts&quot;].values()) + list(
++        manifest[&quot;backend&quot;][&quot;additional_artifacts&quot;].values()
++    ):
+         artifact[&quot;sha256&quot;] = checksum
+     manifest_path.write_text(json.dumps(manifest))
+     installed_dir = tmp_path / &quot;installed&quot;
+@@ -453,7 +467,9 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
+     manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
+     manifest = json.loads(manifest_path.read_text())
+     checksum = hashlib.sha256(installed_script_archive.read_bytes()).hexdigest()
+-    for artifact in manifest[&quot;backend&quot;][&quot;artifacts&quot;].values():
++    for artifact in list(manifest[&quot;backend&quot;][&quot;artifacts&quot;].values()) + list(
++        manifest[&quot;backend&quot;][&quot;additional_artifacts&quot;].values()
++    ):
+         artifact[&quot;sha256&quot;] = checksum
+     manifest_path.write_text(json.dumps(manifest))
+ 
+@@ -507,7 +523,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
+     manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
+     manifest = json.loads(manifest_path.read_text())
+     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+-    for artifact in manifest[&quot;backend&quot;][&quot;artifacts&quot;].values():
++    for artifact in list(manifest[&quot;backend&quot;][&quot;artifacts&quot;].values()) + list(
++        manifest[&quot;backend&quot;][&quot;additional_artifacts&quot;].values()
++    ):
+         artifact[&quot;sha256&quot;] = checksum
+     manifest_path.write_text(json.dumps(manifest))
+ 
+@@ -541,7 +559,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
+     assert (await manager.delete_data(&quot;my-extension&quot;)).state == &quot;stopped&quot;
+ 
+ 
+-_SLOW_HEALTH_SERVER = &quot;&quot;&quot;#!/usr/bin/python3
++_SLOW_HEALTH_SERVER = (
++    f&quot;#!{sys.executable}\n&quot;
++    + &quot;&quot;&quot;
+ import http.server
+ import sys
+ import time
+@@ -562,6 +582,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
+ server = http.server.ThreadingHTTPServer((&quot;127.0.0.1&quot;, int(sys.argv[1])), Handler)
+ server.serve_forever()
+ &quot;&quot;&quot;
++)
+ 
+ 
+ @requires_linux_backend
+@@ -581,7 +602,9 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
+     manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
+     manifest = json.loads(manifest_path.read_text())
+     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+-    for artifact in manifest[&quot;backend&quot;][&quot;artifacts&quot;].values():
++    for artifact in list(manifest[&quot;backend&quot;][&quot;artifacts&quot;].values()) + list(
++        manifest[&quot;backend&quot;][&quot;additional_artifacts&quot;].values()
++    ):
+         artifact[&quot;sha256&quot;] = checksum
+     manifest_path.write_text(json.dumps(manifest))
+ 
+@@ -742,7 +765,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
+     manifest_path = installed_dir / &quot;my-extension&quot; / MANIFEST_FILENAME
+     manifest = json.loads(manifest_path.read_text())
+     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+-    for artifact in manifest[&quot;backend&quot;][&quot;artifacts&quot;].values():
++    for artifact in list(manifest[&quot;backend&quot;][&quot;artifacts&quot;].values()) + list(
++        manifest[&quot;backend&quot;][&quot;additional_artifacts&quot;].values()
++    ):
+         artifact[&quot;sha256&quot;] = checksum
+     manifest_path.write_text(json.dumps(manifest))
+ 
+@@ -793,11 +818,9 @@ asyncio.run(main())
+ 
+ def _alive(pid: int) -&gt; bool:
+     try:
+-        os.kill(pid, 0)
+-    except ProcessLookupError:
++        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
++    except psutil.NoSuchProcess:
+         return False
+-    # A zombie child of this test process is dead too.
+-    return Path(f&quot;/proc/{pid}/stat&quot;).read_text().rsplit(&quot;)&quot;, 1)[1].split()[0] != &quot;Z&quot;
+ 
+ 
+ @requires_linux_backend
+@@ -835,10 +858,7 @@ async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path)
+         &quot;/bin/sleep&quot;, &quot;300&quot;, start_new_session=True
+     )
+     forged = state_dir / &quot;run&quot; / f&quot;{bystander.pid}.json&quot;
+-    stat = Path(f&quot;/proc/{bystander.pid}/stat&quot;).read_text()
+-    record.update(
+-        pgid=bystander.pid, start_time=int(stat.rsplit(&quot;)&quot;, 1)[1].split()[19])
+-    )
++    record.update(pgid=bystander.pid, start_time=_process_start_time(bystander.pid))
+     forged.write_text(json.dumps(record))
+ 
+     manager = CanvasExtensionBackendManager(installed_dir, state_dir)
+@@ -1229,3 +1249,43 @@ async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
+     assert &quot;&lt;secret-hidden&gt;&quot; in output
+     assert &quot;é&quot; in output
+     assert &quot;\ufffd&quot; not in output
++
++
++@pytest.mark.parametrize(&quot;link_target&quot;, [&quot;../bin/server&quot;, &quot;../../outside&quot;, &quot;loop&quot;])
++def test_archive_links_are_materialized_only_within_artifact(tmp_path, link_target):
++    archive = tmp_path / &quot;links.tar.gz&quot;
++    with tarfile.open(archive, &quot;w:gz&quot;) as tar:
++        entry = tarfile.TarInfo(&quot;package/bin/server&quot;)
++        entry.mode = 0o755
++        entry.size = 4
++        tar.addfile(entry, io.BytesIO(b&quot;test&quot;))
++        link = tarfile.TarInfo(&quot;package/aliases/loop&quot;)
++        link.type = tarfile.SYMTYPE
++        link.linkname = link_target
++        tar.addfile(link)
++    destination = tmp_path / &quot;extracted&quot;
++    destination.mkdir()
++    if link_target == &quot;../bin/server&quot;:
++        CanvasExtensionBackendManager._extract_archive(archive, destination, 1)
++        result = destination / &quot;aliases/loop&quot;
++        assert result.read_bytes() == b&quot;test&quot;
++        assert not result.is_symlink()
++        assert result.stat().st_mode &amp; 0o111
++    else:
++        with pytest.raises(ValueError, match=&quot;unsafe archive&quot;):
++            CanvasExtensionBackendManager._extract_archive(archive, destination, 1)
++
++
++@pytest.mark.skipif(sys.platform != &quot;darwin&quot;, reason=&quot;macOS zombie group semantics&quot;)
++def test_exited_unreaped_backend_group_can_be_stopped():
++    process = subprocess.Popen([sys.executable, &quot;-c&quot;, &quot;pass&quot;], start_new_session=True)
++    try:
++        deadline = time.monotonic() + 10
++        while psutil.Process(process.pid).status() != psutil.STATUS_ZOMBIE:
++            assert time.monotonic() &lt; deadline
++            time.sleep(0.01)
++
++        assert not CanvasExtensionBackendManager._group_alive(process.pid)
++        CanvasExtensionBackendManager._signal_group(process.pid, signal.SIGTERM)
++    finally:
++        process.wait(timeout=10)</pre></details></section><section id="s3"><h2>Mac runners execute all suites</h2><p>Install tmux and locked Chromium. Run browser tests separately without fork to avoid macOS framework crashes; keep terminal process isolation. No test coverage is removed.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No tmux; browsers inherit forked runtime</text><text x="485" y="80">Prerequisites + separate browser suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/tests-macos.yml b/.github/workflows/tests-macos.yml
+index b0513c42..b5814342 100644
+--- a/.github/workflows/tests-macos.yml
++++ b/.github/workflows/tests-macos.yml
+@@ -35,9 +35,12 @@ jobs:
+                 include:
+                     - suite: sdk
+                       args: -n auto tests/sdk
+-                    # --forked: terminal tests conflict when run in parallel
++                    # Isolate terminal state, but do not fork initialized macOS
++                    # browser/Objective-C frameworks (which can crash after fork).
+                     - suite: tools
+-                      args: --forked tests/tools
++                      args: --forked --ignore=tests/tools/browser_use tests/tools
++                    - suite: browser
++                      args: tests/tools/browser_use
+                     - suite: agent_server
+                       args: -n auto tests/agent_server
+                     - suite: workspace
+@@ -58,8 +61,15 @@ jobs:
+                   enable-cache: true
+                   python-version: &#x27;3.13&#x27;
+ 
++            - name: Install terminal prerequisite
++              run: brew install tmux
++
+             - name: Install deps
+               run: uv sync --frozen --group dev
+ 
++            - name: Install browser prerequisite
++              if: matrix.suite == &#x27;browser&#x27;
++              run: uv run --frozen playwright install chromium
++
+             - name: Run ${{ matrix.suite }} tests
+               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}</pre></details></section><h2>Supporting files</h2><table><tr><th>File</th><th>Change</th></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/.github/workflows/tests-macos.yml">.github/workflows/tests-macos.yml</a></td><td>+12 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py</a></td><td>+72 / −14</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py</a></td><td>+7 / −3</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/openhands-agent-server/pyproject.toml">openhands-agent-server/pyproject.toml</a></td><td>+1 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py</a></td><td>+78 / −18</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py</a></td><td>+3 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/03d698324c14b8bc3706965e9e570983dfe2ee9c/uv.lock">uv.lock</a></td><td>+2 / −0</td></tr></table><p>Temporary PR review aid. The repository release workflow removes root .pr artifacts after merge.</p></main></html>
