@@ -1107,6 +1107,28 @@ def test_mcp_server_crud_endpoints_preserve_sibling_credentials(client_with_sett
     assert "auth" not in cleared_auth.json()["agent_settings"]["mcp_config"]["github"]
 
 
+def test_mcp_server_patch_updates_protocol_mode(client_with_settings):
+    created = client_with_settings.post(
+        "/api/settings/mcp/docs",
+        json={"transport": "http", "url": "https://docs.example/mcp"},
+    )
+    assert created.status_code == 201, created.text
+
+    updated = client_with_settings.patch(
+        "/api/settings/mcp/docs", json={"protocol_mode": "legacy"}
+    )
+    assert updated.status_code == 200, updated.text
+    assert (
+        updated.json()["agent_settings"]["mcp_config"]["docs"]["protocol_mode"]
+        == "legacy"
+    )
+
+    invalid = client_with_settings.patch(
+        "/api/settings/mcp/docs", json={"protocol_mode": "unsupported"}
+    )
+    assert invalid.status_code == 422
+
+
 def test_mcp_server_patch_toggles_enabled_without_dropping_config(
     client_with_settings,
 ):

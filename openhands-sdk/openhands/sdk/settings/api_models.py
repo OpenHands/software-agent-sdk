@@ -42,7 +42,12 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
-from openhands.sdk.mcp.config import MCPAuthCredential, MCPServer, MCPTransport
+from openhands.sdk.mcp.config import (
+    MCPAuthCredential,
+    MCPProtocolMode,
+    MCPServer,
+    MCPTransport,
+)
 
 
 # An AgentProfile's stable id is a UUID (the pointer target); reject malformed
@@ -80,6 +85,7 @@ class MCPServerPatch(BaseModel):
     timeout: float | None = None
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
+    protocol_mode: MCPProtocolMode | None = None
     headers: dict[str, SecretStr | None] | None = None
     auth: MCPAuthCredential | None = None
     enabled: bool | None = Field(

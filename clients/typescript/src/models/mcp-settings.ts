@@ -6,7 +6,6 @@
  * RFC 7386 mutation semantics expected by client callers.
  */
 import type {
-  McpConfigPatchWritable,
   McpServerInputWritable,
   McpServerPatchWritable,
   McpoAuthAuthenticationInputWritable,
@@ -17,10 +16,10 @@ type GeneratedMCPServer = McpServerInputWritable;
 type GeneratedMCPTransport = NonNullable<GeneratedMCPServer['transport']>;
 type GeneratedMCPAuthCredential = NonNullable<GeneratedMCPServer['auth']>;
 
-type MCPCommonFields = Pick<
-  GeneratedMCPServer,
-  'description' | 'icon' | 'timeout' | 'protocol_mode'
->;
+export type MCPProtocolMode = 'legacy' | 'auto' | '2026-07-28';
+type MCPCommonFields = Pick<GeneratedMCPServer, 'description' | 'icon' | 'timeout'> & {
+  protocol_mode?: MCPProtocolMode | null;
+};
 type MCPStdioFields = Pick<GeneratedMCPServer, 'args' | 'env' | 'cwd'>;
 type MCPRemoteFields = Pick<
   GeneratedMCPServer,
@@ -49,5 +48,7 @@ export type RemoteMCPServer = MCPCommonFields &
 
 export type MCPServer = StdioMCPServer | RemoteMCPServer;
 export type MCPConfig = Record<string, MCPServer>;
-export type MCPServerPatch = McpServerPatchWritable;
-export type MCPConfigPatch = McpConfigPatchWritable;
+export type MCPServerPatch = McpServerPatchWritable & {
+  protocol_mode?: MCPProtocolMode | null;
+};
+export type MCPConfigPatch = Record<string, MCPServerPatch | null>;

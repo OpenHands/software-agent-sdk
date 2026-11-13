@@ -966,7 +966,7 @@ async def get_mcp_oauth_status(
     return job.to_status_response()
 
 
-def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
+def _validate_callback_url(callback_url: str, expected: str) -> str:
     try:
         parsed = urlparse(callback_url)
     except ValueError:  # e.g. an unclosed IPv6 bracket
@@ -978,11 +978,6 @@ def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
     }:
         raise Invalid("Invalid OAuth callback URL")
 
-    with job.lock:
-        expected = job.callback_url
-    if expected is None:
-        raise Conflict("OAuth callback is not ready")
-
     expected_parsed = urlparse(expected)
     try:
         port = parsed.port
@@ -990,6 +985,7 @@ def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
         raise Invalid("Unexpected OAuth callback URL") from None
     if port != expected_parsed.port or parsed.path != expected_parsed.path:
         raise Invalid("Unexpected OAuth callback URL")
+    return parsed.query
 
 
 @mcp_router.post(
@@ -1003,14 +999,18 @@ async def submit_mcp_oauth_callback(
 ) -> MCPOAuthStatusResponse:
     job = _get_oauth_job(job_id)
     _set_mcp_deprecation_headers(http_response, job.request)
-    _validate_callback_url(request.callback_url, job)
+    with job.lock:
+        callback_base = job.callback_url
+    if callback_base is None:
+        raise Conflict("OAuth callback is not ready")
+    query = _validate_callback_url(request.callback_url, callback_base)
     if job.done.is_set():
         # A replayed or late callback: the probe finished and its callback
         # server is closed, so report the outcome instead of forwarding.
         return job.to_status_response()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            response = await client.get(request.callback_url)
+        async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
+            response = await client.get(callback_base, params=query)
     except httpx.TransportError as exc:
         # The probe may have finished while we were forwarding.
         if job.done.is_set():

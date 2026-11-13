@@ -43,6 +43,7 @@ import type {
   MCPAuthCredential,
   MCPConfig,
   MCPConfigPatch,
+  MCPProtocolMode,
   MCPServer,
   MCPServerPatch,
 } from '../models/mcp-settings';
@@ -183,9 +184,17 @@ describe('Agent Server generated contract aliases', () => {
     expect(cleared.auth).toBeNull();
   });
 
-  it('derives every MCP patch field from the generated server contract', () => {
-    assertType<Equal<MCPServerPatch, McpServerPatchWritable>>(true);
-    assertType<Equal<MCPConfigPatch, McpConfigPatchWritable>>(true);
+  it('preserves generated MCP patch fields and exposes the new protocol mode', () => {
+    assertType<Equal<keyof MCPServerPatch, keyof McpServerPatchWritable | 'protocol_mode'>>(true);
+    assertType<Equal<MCPConfigPatch, Record<string, MCPServerPatch | null>>>(true);
+    assertType<
+      Equal<
+        keyof NonNullable<MCPConfigPatch[string]>,
+        keyof NonNullable<McpConfigPatchWritable[string]> | 'protocol_mode'
+      >
+    >(true);
+    assertType<Equal<MCPProtocolMode, 'legacy' | 'auto' | '2026-07-28'>>(true);
+    assertType<Equal<MCPServerPatch['protocol_mode'], MCPProtocolMode | null | undefined>>(true);
     assertType<Equal<MCPServerPatch['env'], Record<string, string | null> | null | undefined>>(
       true
     );

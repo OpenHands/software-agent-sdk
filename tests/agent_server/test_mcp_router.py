@@ -7,8 +7,10 @@ import base64
 import json
 import logging
 import sys
+import threading
 import time
 from collections.abc import Generator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote
 
 import httpx
@@ -1471,6 +1473,45 @@ def test_mcp_oauth_callback_server_gone_on_live_job_returns_409(
     assert response.status_code == 409
     assert response.json()["detail"] == "OAuth callback server is not listening"
     assert closed_callback_job.status == "authorizing"
+
+
+def test_mcp_oauth_callback_does_not_follow_redirect(
+    client: TestClient, closed_callback_job: _MCPOAuthProbeJob
+):
+    paths: list[str] = []
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            paths.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/private")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), RedirectHandler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            closed_callback_job.set_callback_ready(
+                f"http://127.0.0.1:{server.server_port}/callback"
+            )
+            response = client.post(
+                f"/api/mcp/oauth/callback/{closed_callback_job.id}",
+                json={
+                    "callback_url": (
+                        f"http://localhost:{server.server_port}/callback?code=x&state=s"
+                    )
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join()
+
+    assert paths == ["/callback?code=x&state=s"]
+    assert response.status_code == 200
+    assert response.json()["status"] == "authorizing"
 
 
 def test_register_oauth_job_sweeps_expired_jobs():

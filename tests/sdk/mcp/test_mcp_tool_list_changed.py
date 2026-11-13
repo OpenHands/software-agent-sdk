@@ -393,6 +393,7 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
                 "progressive": {
                     "transport": "http",
                     "url": f"http://127.0.0.1:{port}/mcp",
+                    "protocol_mode": "legacy",
                 }
             }
         }
@@ -498,6 +499,7 @@ def test_list_changed_in_multi_server_conversation_keeps_server_prefix(
                     "progressive": {
                         "transport": "http",
                         "url": f"http://127.0.0.1:{progressive_server}/mcp",
+                        "protocol_mode": "legacy",
                     },
                     "docs": {
                         "command": sys.executable,
