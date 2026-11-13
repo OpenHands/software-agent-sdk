@@ -1136,7 +1136,8 @@ class EventService:
 
         Set on the conversation's registry, so it covers every LLM session of
         the conversation, including those opened by a later ``switch_llm`` /
-        ``switch_profile``. Only LLMs with ``log_completions`` on produce logs.
+        ``switch_profile``. Only LLMs with ``log_completions_to_file`` on
+        produce logs.
         """
 
         def log_callback(
