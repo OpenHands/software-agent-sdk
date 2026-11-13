@@ -115,13 +115,18 @@ export async function startDeviceFlow(
       );
     }
 
+    let verificationUriComplete = data.verification_uri_complete;
+    if (verificationUriComplete == null) {
+      const verificationUrl = new URL(data.verification_uri);
+      verificationUrl.searchParams.set('user_code', data.user_code);
+      verificationUriComplete = verificationUrl.toString();
+    }
+
     return {
       device_code: data.device_code,
       user_code: data.user_code,
       verification_uri: data.verification_uri,
-      verification_uri_complete:
-        data.verification_uri_complete ??
-        `${data.verification_uri}?user_code=${encodeURIComponent(data.user_code)}`,
+      verification_uri_complete: verificationUriComplete,
       expires_in: data.expires_in ?? 600,
       interval: data.interval ?? 5,
     };

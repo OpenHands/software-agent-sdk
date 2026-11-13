@@ -49,6 +49,53 @@ describe('device flow request metadata', () => {
     expect(headers.get('X-OpenHands-Client')).toBe('agent_canvas');
   });
 
+  it.each([
+    'https://cloud.example.com/device',
+    'https://cloud.example.com/device?tenant=example',
+    'https://cloud.example.com/device?tenant=example#authorize',
+  ])('preserves the verification URI components when adding the user code: %s', async (uri) => {
+    const userCode = 'code &?/+';
+    global.fetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        device_code: 'device-code',
+        user_code: userCode,
+        verification_uri: uri,
+        expires_in: 600,
+        interval: 5,
+      })
+    ) as typeof fetch;
+    const client = new CloudClient({ host: 'https://cloud.example.com' });
+
+    const response = await client.startDeviceFlow();
+
+    const original = new URL(uri);
+    const complete = new URL(response.verification_uri_complete);
+    expect(complete.origin).toBe(original.origin);
+    expect(complete.pathname).toBe(original.pathname);
+    expect(complete.hash).toBe(original.hash);
+    expect(complete.searchParams.get('tenant')).toBe(original.searchParams.get('tenant'));
+    expect(complete.searchParams.get('user_code')).toBe(userCode);
+  });
+
+  it('preserves a complete verification URI supplied by the server', async () => {
+    const complete = 'https://cloud.example.com/device?code=server-value#authorize';
+    global.fetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        device_code: 'device-code',
+        user_code: 'user-code',
+        verification_uri: 'https://cloud.example.com/device',
+        verification_uri_complete: complete,
+        expires_in: 600,
+        interval: 5,
+      })
+    ) as typeof fetch;
+    const client = new CloudClient({ host: 'https://cloud.example.com' });
+
+    const response = await client.startDeviceFlow();
+
+    expect(response.verification_uri_complete).toBe(complete);
+  });
+
   it('forwards additional headers while polling for a token', async () => {
     global.fetch = vi
       .fn()
