@@ -71,32 +71,38 @@ def _preflight(
 # Workspace cookie routes accept any http(s) origin with credentials.
 
 
-def test_workspace_session_preflight_accepts_any_origin(tmp_path):
+@pytest.mark.parametrize(
+    "origin",
+    [REMOTE_ORIGIN, OTHER_ORIGIN, "https://random.example"],
+    ids=["remote", "other", "random"],
+)
+def test_workspace_session_preflight_accepts_any_origin(tmp_path, origin):
     client = _build_client(
         tmp_path, conversation_id=uuid4(), config=Config(session_api_keys=[SESSION_KEY])
     )
-    for origin in (REMOTE_ORIGIN, OTHER_ORIGIN, "https://random.example"):
-        resp = _preflight(client, "/api/auth/workspace-session", origin=origin)
-        assert resp.status_code == 200, origin
-        assert resp.headers["access-control-allow-origin"] == origin, origin
-        assert resp.headers["access-control-allow-credentials"] == "true", origin
+    resp = _preflight(client, "/api/auth/workspace-session", origin=origin)
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == origin
+    assert resp.headers["access-control-allow-credentials"] == "true"
 
 
-def test_workspace_static_preflight_accepts_any_origin(tmp_path):
+@pytest.mark.parametrize(
+    "origin", [REMOTE_ORIGIN, OTHER_ORIGIN], ids=["remote", "other"]
+)
+def test_workspace_static_preflight_accepts_any_origin(tmp_path, origin):
     cid = uuid4()
     client = _build_client(
         tmp_path, conversation_id=cid, config=Config(session_api_keys=[SESSION_KEY])
     )
-    for origin in (REMOTE_ORIGIN, OTHER_ORIGIN):
-        resp = _preflight(
-            client,
-            f"/api/conversations/{cid}/workspace/report.html",
-            origin=origin,
-            method="GET",
-        )
-        assert resp.status_code == 200, origin
-        assert resp.headers["access-control-allow-origin"] == origin, origin
-        assert resp.headers["access-control-allow-credentials"] == "true", origin
+    resp = _preflight(
+        client,
+        f"/api/conversations/{cid}/workspace/report.html",
+        origin=origin,
+        method="GET",
+    )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == origin
+    assert resp.headers["access-control-allow-credentials"] == "true"
 
 
 def test_workspace_session_post_response_echoes_origin_no_cookie(tmp_path):

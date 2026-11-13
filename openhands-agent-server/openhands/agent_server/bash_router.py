@@ -9,13 +9,12 @@ from uuid import UUID
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Query,
-    status,
 )
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.dependencies import get_bash_event_service
+from openhands.agent_server.errors import error_responses
 from openhands.agent_server.models import (
     BashCommand,
     BashEventBase,
@@ -26,6 +25,7 @@ from openhands.agent_server.models import (
     Success,
 )
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.sdk.errors import NotFound, Unprocessable
 
 
 bash_router = APIRouter(prefix="/bash", tags=["Bash"])
@@ -73,7 +73,7 @@ async def search_bash_events(
 
 
 @bash_router.get(
-    "/bash_events/{event_id}", responses={404: {"description": "Item not found"}}
+    "/bash_events/{event_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def get_bash_event(
     event_id: str,
@@ -82,7 +82,7 @@ async def get_bash_event(
     """Get a bash event event given an id"""
     event = await bash_event_service.get_bash_event(event_id)
     if event is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     return event
 
 
@@ -168,7 +168,7 @@ async def clear_all_bash_events(
 
 @bash_router.post(
     "/bash_commands/{command_id}/stop",
-    responses={404: {"description": "Item not found"}},
+    responses=error_responses({NotFound: "Item not found"}),
 )
 async def stop_bash_command(
     command_id: UUID,
@@ -185,7 +185,7 @@ async def stop_bash_command(
         return Success()
     if await bash_event_service.get_bash_event(command_id.hex) is not None:
         return Success()
-    raise HTTPException(status.HTTP_404_NOT_FOUND)
+    raise NotFound()
 
 
 def _validate_cwd(request: ExecuteBashRequest, service: BashEventService) -> None:
@@ -195,4 +195,4 @@ def _validate_cwd(request: ExecuteBashRequest, service: BashEventService) -> Non
             .resolve()
             .is_relative_to(Path(service.default_cwd).resolve())
         ):
-            raise HTTPException(422, "cwd must be inside the conversation workspace")
+            raise Unprocessable("cwd must be inside the conversation workspace")

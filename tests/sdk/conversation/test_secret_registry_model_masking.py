@@ -191,7 +191,7 @@ def test_preserves_mcp_image_data_url():
     registry.get_secret_value("TOKEN")
     result = mcp.types.CallToolResult(
         content=[
-            mcp.types.ImageContent(type="image", data=payload, mimeType="image/png")
+            mcp.types.ImageContent(type="image", data=payload, mime_type="image/png")
         ]
     )
     observation = MCPToolObservation.from_call_tool_result("image_tool", result)

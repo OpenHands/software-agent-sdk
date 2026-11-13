@@ -1,7 +1,9 @@
 """Tests for event_router.py endpoints."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -10,6 +12,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import event_router as event_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import (
     event_router,
@@ -67,6 +71,7 @@ def test_normalize_datetime_fixed_offset_timezone():
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(event_router, prefix="/api")
     return TestClient(app)
 
@@ -83,6 +88,27 @@ def mock_event_service():
     service = AsyncMock(spec=EventService)
     service.send_message = AsyncMock()
     return service
+
+
+def test_gateway_deadline_includes_cold_conversation_load(client, monkeypatch):
+    monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.02)
+    event_service = AsyncMock(spec=EventService)
+    event_service._gateway_run_lock = asyncio.Lock()
+
+    async def slow_load(conversation_id):
+        await asyncio.sleep(0.04)
+        return event_service
+
+    client.app.state.conversation_service = SimpleNamespace(get_event_service=slow_load)
+    client.app.state.conversation_registry = None
+
+    response = client.post(
+        f"/api/conversations/{uuid4()}/events/_gateway/run",
+        json={"content": [{"type": "text", "text": "Do not save"}]},
+    )
+
+    assert response.status_code == 504
+    event_service.send_message.assert_not_awaited()
 
 
 class TestSendMessageEndpoint:
