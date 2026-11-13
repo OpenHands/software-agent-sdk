@@ -101,10 +101,7 @@ Preconditions:
     --check ask_prompt_tokens_delta eq 100 \
     --check ask_cost_delta eq 0.05 --check ask_warnings len-eq 0 --check ask_seconds lt 1.5
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): the fork's cost is lost and every `ask_agent` call stalls. The client bridge (`_OpenHandsACPBridge.session_update`) routes every update for the fork session to the fork branch, which keeps only message chunks and `return`s before the `UsageUpdate` branch. As a result:
-  - `ask_agent` waits the full `ACP_USAGE_UPDATE_TIMEOUT` and logs `UsageUpdate not received within 2.0s for fork session ...`.
-  - It records no cost: `ask_cost_delta` is 0.0, `ask_seconds` is 2.01, and `ask_warnings` holds that line.
-  - Token usage from the prompt response is still recorded.
+  Expected: the fork's cost (0.05) is billed, no warning, and `ask_agent` returns as soon as the fork answers. Before #6646, the client bridge routed every fork-session update to a branch that kept only message chunks, so the `usage_update` was dropped and each call waited out the 2 s usage timeout.
 - **Resume a persisted session (`S21.session-resume`, `S21.model-selection`).** A conversation with `persistence_dir` runs a turn and closes. The program then reopens it by id with a new `ACPAgent` (a new subprocess). A third agent carries `acp_resume_session_id` with no saved state, and a fourth an id the server has forgotten.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

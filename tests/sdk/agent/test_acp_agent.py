@@ -4946,6 +4946,66 @@ class TestACPAgentAskAgent:
         assert mock_client._fork_session_id is None
         assert mock_client._fork_accumulated_text == []
 
+    def test_ask_agent_records_fork_usage_update_without_waiting(self, caplog):
+        """A UsageUpdate for the fork session is billed and releases the wait."""
+        from acp.schema import AgentMessageChunk, TextContentBlock, UsageUpdate
+
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        client._context_window = 200000
+        agent._client = client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-usage"
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = None
+
+        async def _fake_prompt(*args, **kwargs):
+            await client.session_update(
+                "fork-session-usage",
+                AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=TextContentBlock(type="text", text="Fork answer"),
+                ),
+            )
+            update = MagicMock(spec=UsageUpdate)
+            update.cost = MagicMock()
+            update.cost.amount = 0.05
+            update.size = 150000
+            await client.session_update("fork-session-usage", update)
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn, **_kwargs):
+            loop = asyncio.new_event_loop()
+            try:
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        t0 = time.monotonic()
+        with caplog.at_level("WARNING"):
+            result = agent.ask_agent("Which files did you list?")
+        elapsed = time.monotonic() - t0
+
+        assert result == "Fork answer"
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert "UsageUpdate not received" not in caplog.text
+        assert elapsed < 1.0
+        # The fork's window does not overwrite the main session's.
+        assert client._context_window == 200000
+        assert "fork-session-usage" not in client._turn_usage_updates
+
 
 # ---------------------------------------------------------------------------
 # Client fork text routing
