@@ -461,7 +461,7 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     installed_script_archive = (
         installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
     )
-    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    payload = f"#!{sys.executable}\nimport time\ntime.sleep(300)\n".encode()
     with tarfile.open(installed_script_archive, "w:gz") as tar:
         info = tarfile.TarInfo("server.py")
         info.mode = 0o755
@@ -517,7 +517,7 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     # health probe never succeeds and `start()` would otherwise block for the
     # whole 30s timeout while holding the name lock.
     archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
-    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    payload = f"#!{sys.executable}\nimport time\ntime.sleep(300)\n".encode()
     with tarfile.open(archive, "w:gz") as tar:
         info = tarfile.TarInfo("server.py")
         info.mode = 0o755
@@ -745,8 +745,7 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     # A backend whose descendant survives SIGTERM: the leader exits promptly,
     # so escalating only on the leader's exit code would leak the descendant.
     archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
-    payload = (
-        b"#!/usr/bin/python3\n"
+    payload = f"#!{sys.executable}\n".encode() + (
         b"import http.server, os, signal, socket, subprocess, sys\n"
         b"socket.getfqdn = lambda name='': name\n"
         b"port = int(sys.argv[1])\n"
@@ -782,7 +781,8 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     revision = manager.revision("my-extension")
     assert revision is not None
     await manager.prepare("my-extension", revision)
-    assert (await manager.start("my-extension", revision)).state == "ready"
+    started = await manager.start("my-extension", revision)
+    assert started.state == "ready", (started, await manager.logs("my-extension", 8192))
     child_pid = int((manager.data_dir / "my-extension" / "child").read_text())
     runtime = manager._runtimes["my-extension"]
     assert runtime.process is not None
