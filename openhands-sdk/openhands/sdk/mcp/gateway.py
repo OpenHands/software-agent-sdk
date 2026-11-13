@@ -13,6 +13,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, enabled_mcp_servers
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     provider_supports_on_tools_reconciled,
@@ -36,6 +37,7 @@ class MCPToolGateway:
         selected_tools: Sequence[str] | None = None,
         *,
         filter_tools_regex: str | None = None,
+        tool_policy: Mapping[str, MCPToolPolicy] | None = None,
     ):
         self._lock = threading.RLock()
         self._idle = threading.Condition(self._lock)
@@ -46,6 +48,10 @@ class MCPToolGateway:
             frozenset(selected_tools) if selected_tools is not None else None
         )
         self._filter = re.compile(filter_tools_regex) if filter_tools_regex else None
+        self._tool_policy = {
+            server: rule.model_copy(deep=True)
+            for server, rule in (tool_policy or {}).items()
+        }
         self._epoch = uuid.uuid4().hex
         self._version = 0
         self._closed = False
@@ -130,6 +136,15 @@ class MCPToolGateway:
                 self._version += 1
 
     def _allows(self, name: str) -> bool:
+        server = max(
+            (key for key in self._clients if name.startswith(f"{key}.")),
+            key=len,
+            default=None,
+        )
+        if server is not None:
+            rule = self._tool_policy.get(server)
+            if rule is not None and not rule.allows(name[len(server) + 1 :]):
+                return False
         return (self._selected is None or name in self._selected) and (
             self._filter is None or bool(self._filter.match(name))
         )

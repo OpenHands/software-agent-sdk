@@ -13,6 +13,7 @@ from openhands.sdk.mcp.config import (
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 
 
 if TYPE_CHECKING:
@@ -48,6 +49,7 @@ __all__ = [
     "MCPOAuthState",
     "MCPOAuthStateResponse",
     "MCPServer",
+    "MCPToolPolicy",
     "MCPToolDefinition",
     "MCPToolAction",
     "MCPToolObservation",

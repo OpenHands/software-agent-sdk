@@ -20,6 +20,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
@@ -172,12 +173,18 @@ def _run(
     llm: RecordingLLM,
     tools: list[Tool],
     mcp_config: dict[str, MCPServer],
+    mcp_tool_policy: dict[str, MCPToolPolicy] | None = None,
     **conversation_kwargs: Any,
 ) -> LocalConversation:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     conversation = LocalConversation(
-        agent=Agent(llm=llm, tools=tools, mcp_config=mcp_config),
+        agent=Agent(
+            llm=llm,
+            tools=tools,
+            mcp_config=mcp_config,
+            mcp_tool_policy=mcp_tool_policy or {},
+        ),
         workspace=str(workspace),
         visualizer=None,
         **conversation_kwargs,
@@ -231,6 +238,33 @@ def test_a_sub_agent_uses_exactly_the_parent_mcp_tools(
     assert f"echo:hi:token={TOKEN}" in child_after_call["tool_results"]
     assert {"list_mcp_tools", "call_mcp_tool"} <= set(parent_after["tools"])
     _assert_catalog(parent_listing, {"parent.echo"})
+    _assert_no_rogue_server_started(tmp_path)
+
+
+def test_a_sub_agent_cannot_see_tools_denied_by_its_parent_policy(
+    tmp_path: Path,
+) -> None:
+    _register_declarer(tmp_path)
+    llm = _llm(
+        [
+            _call("task", prompt="go", subagent_type="declarer"),
+            _call("list_mcp_tools"),
+            _done(),
+            _call("list_mcp_tools"),
+            _done(),
+        ]
+    )
+    _run(
+        tmp_path,
+        llm,
+        [Tool(name=TaskToolSet.name)],
+        {"parent": _server("echo")},
+        mcp_tool_policy={"parent": MCPToolPolicy(include=[])},
+    )
+
+    _, _, child_listing, _, parent_listing = llm.requests
+    _assert_catalog(child_listing, set())
+    _assert_catalog(parent_listing, set())
     _assert_no_rogue_server_started(tmp_path)
 
 
