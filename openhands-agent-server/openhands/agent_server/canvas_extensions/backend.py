@@ -18,10 +18,11 @@ import urllib.request
 import zlib
 from collections import deque
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final, Literal
 from urllib.parse import urljoin, urlsplit
 
+import psutil
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.canvas_extensions.installed import (
@@ -35,6 +36,11 @@ from openhands.agent_server.canvas_extensions.manifest import (
     CanvasExtensionBackendArtifact,
     CanvasExtensionManifest,
 )
+from openhands.agent_server.canvas_extensions.windows_job import (
+    WindowsJob,
+    create_windows_job,
+)
+from openhands.agent_server.canvas_extensions.windows_launcher import launcher_argv
 from openhands.agent_server.persistence.store import SecretsStore
 from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.utils.path import get_user_persistence_dir
@@ -115,6 +121,11 @@ class _RunRecord(BaseModel):
 
 def _process_start_time(pid: int) -> int | None:
     """Return a process's start time in clock ticks since boot (Linux)."""
+    if platform.system() in {"Darwin", "Windows"}:
+        try:
+            return int(psutil.Process(pid).create_time() * 1_000_000)
+        except psutil.Error:
+            return None
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
@@ -126,6 +137,8 @@ def _process_start_time(pid: int) -> int | None:
 class _Runtime:
     def __init__(self) -> None:
         self.process: asyncio.subprocess.Process | None = None
+        self.windows_job: WindowsJob | None = None
+        self.exit_task: asyncio.Task[None] | None = None
         self.port: int | None = None
         self.revision: str | None = None
         self.state: BackendState = "stopped"
@@ -193,9 +206,17 @@ class CanvasExtensionBackendManager:
 
     @staticmethod
     def current_platform() -> BackendPlatform | None:
-        if platform.system() != "Linux":
-            return None
+        system = platform.system()
         machine = platform.machine().lower()
+        if system == "Windows" and machine in {"x86_64", "amd64"}:
+            return "windows-amd64"
+        if system == "Darwin":
+            if machine in {"x86_64", "amd64"}:
+                return "darwin-amd64"
+            if machine in {"aarch64", "arm64"}:
+                return "darwin-arm64"
+        if system != "Linux":
+            return None
         if machine in {"x86_64", "amd64"}:
             return "linux-amd64"
         if machine in {"aarch64", "arm64"}:
@@ -216,7 +237,11 @@ class CanvasExtensionBackendManager:
         current_platform = self.current_platform()
         if manifest is None or manifest.backend is None or current_platform is None:
             return None
-        artifact = manifest.backend.artifacts.get(current_platform)
+        artifacts: dict[str, CanvasExtensionBackendArtifact] = {
+            **manifest.backend.additional_artifacts,
+            **manifest.backend.artifacts,
+        }
+        artifact = artifacts.get(current_platform)
         if artifact is None:
             return None
         return manifest.backend, artifact, current_platform
@@ -403,10 +428,26 @@ class CanvasExtensionBackendManager:
         root = destination.resolve()
         seen: set[PurePosixPath] = set()
         extracted = 0
+        links: list[tuple[Path, Path]] = []
         with tarfile.open(archive, mode="r:gz") as tar:
             for member in tar:
                 original = PurePosixPath(member.name)
-                if original.is_absolute() or ".." in original.parts:
+                if (
+                    original.is_absolute()
+                    or ".." in original.parts
+                    or (
+                        os.name == "nt"
+                        and (
+                            any(c in member.name for c in '\\:<>"|?*')
+                            or any(ord(c) < 32 for c in member.name)
+                            or any(
+                                part.endswith((".", " "))
+                                or PureWindowsPath(part).is_reserved()
+                                for part in original.parts
+                            )
+                        )
+                    )
+                ):
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
@@ -414,17 +455,37 @@ class CanvasExtensionBackendManager:
                 if not parts:
                     continue
                 relative = PurePosixPath(*parts)
-                if relative in seen or not (member.isfile() or member.isdir()):
+                identity = (
+                    PurePosixPath(str(relative).casefold())
+                    if os.name == "nt"
+                    else relative
+                )
+                if identity in seen or not (
+                    member.isfile() or member.isdir() or member.issym()
+                ):
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
-                seen.add(relative)
+                seen.add(identity)
                 target = (root / Path(*relative.parts)).resolve()
                 if not target.is_relative_to(root):
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
-                if member.isdir():
+                if member.issym():
+                    source_path = (target.parent / member.linkname).resolve()
+                    if (
+                        Path(member.linkname).is_absolute()
+                        or not source_path.is_relative_to(root)
+                        or (
+                            os.name == "nt" and any(c in member.linkname for c in "\\:")
+                        )
+                    ):
+                        raise ValueError(
+                            "backend artifact contains an unsafe archive entry"
+                        )
+                    links.append((target, source_path))
+                elif member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     source = tar.extractfile(member)
@@ -437,12 +498,27 @@ class CanvasExtensionBackendManager:
                         shutil.copyfileobj(source, output)
                     target.chmod(member.mode & 0o555)
                 extracted += 1
+        # Materialize only in-archive regular-file links. Never create symlinks
+        # that could redirect subsequent writes outside the extraction root.
+        while links:
+            remaining = []
+            for target, source_path in links:
+                if source_path.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source_path, target)
+                    target.chmod(source_path.stat().st_mode & 0o555)
+                else:
+                    remaining.append((target, source_path))
+            if len(remaining) == len(links):
+                raise ValueError("backend artifact contains an unsafe archive entry")
+            links = remaining
         if not extracted:
             raise ValueError("backend artifact contains no files after stripping")
         for path in sorted(destination.rglob("*"), reverse=True):
             if path.is_dir():
                 path.chmod(0o555)
-        destination.chmod(0o555)
+        # macOS requires write permission on a directory when renaming it.
+        destination.chmod(0o755)
 
     async def prepare(self, name: str, revision: str) -> BackendStatus:
         async with self._lock(name):
@@ -505,6 +581,7 @@ class CanvasExtensionBackendManager:
                         ) from exc
                     try:
                         os.replace(temporary, artifact_dir)
+                        artifact_dir.chmod(0o555)
                     except OSError:
                         if not artifact_dir.is_dir():
                             raise
@@ -638,6 +715,15 @@ class CanvasExtensionBackendManager:
             if name in os.environ
         }
         environment["HOME"] = str(home)
+        if os.name == "nt":
+            for name in ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT"):
+                if name in os.environ:
+                    environment[name] = os.environ[name]
+            temporary = home / "tmp"
+            temporary.mkdir(exist_ok=True)
+            environment.update(
+                USERPROFILE=str(home), TEMP=str(temporary), TMP=str(temporary)
+            )
         return environment
 
     @staticmethod
@@ -669,6 +755,8 @@ class CanvasExtensionBackendManager:
                 "backend executable must be an executable regular file inside "
                 "the prepared artifact"
             )
+        if os.name == "nt" and executable.suffix.lower() != ".exe":
+            raise ValueError("Windows backends require a native .exe entrypoint")
         argv[0] = str(executable)
         return argv
 
@@ -848,8 +936,12 @@ class CanvasExtensionBackendManager:
                 runtime.logs_truncated = False
                 runtime.stop_requested = asyncio.Event()
                 try:
+                    argv = self._expand_argv(backend, port, data_dir, artifact_dir)
+                    if os.name == "nt":
+                        runtime.windows_job = create_windows_job()
+                        argv = launcher_argv(argv)
                     runtime.process = await asyncio.create_subprocess_exec(
-                        *self._expand_argv(backend, port, data_dir, artifact_dir),
+                        *argv,
                         cwd=package_root,
                         env={
                             **self._environment(backend, data_dir),
@@ -857,8 +949,42 @@ class CanvasExtensionBackendManager:
                         },
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
-                        start_new_session=True,
+                        stdin=asyncio.subprocess.PIPE if os.name == "nt" else None,
+                        start_new_session=os.name != "nt",
                     )
+                    if runtime.windows_job is not None:
+                        runtime.windows_job.assign(runtime.process.pid)
+                        assert runtime.process.stdout is not None
+                        greeting = await asyncio.wait_for(
+                            runtime.process.stdout.readline(), timeout=30
+                        )
+                        match = re.fullmatch(
+                            rb"OPENHANDS_BACKEND_LAUNCHER:(\d+)\r?\n", greeting
+                        )
+                        if match is None:
+                            raise RuntimeError("Backend launcher handshake failed")
+                        launcher_pid = int(match[1])
+                        # A one-file binary has a bootloader parent. Its Python
+                        # child may predate assignment of that parent to the job.
+                        if launcher_pid != runtime.process.pid:
+                            parents = psutil.Process(launcher_pid).parents()
+                            if not any(
+                                parent.pid == runtime.process.pid for parent in parents
+                            ):
+                                raise RuntimeError(
+                                    "Backend launcher is not an owned child"
+                                )
+                            runtime.windows_job.assign(launcher_pid)
+                    self._write_run_record(name, runtime.process.pid)
+                    if runtime.windows_job is not None:
+                        assert runtime.process.stdin is not None
+                        runtime.process.stdin.write(b"G")
+                        await runtime.process.stdin.drain()
+                        runtime.process.stdin.close()
+                except asyncio.CancelledError:
+                    await self._terminate_runtime(runtime)
+                    runtime.state = "stopped"
+                    raise
                 except Exception as exc:
                     runtime.state = "unhealthy"
                     runtime.detail = str(exc)
@@ -868,7 +994,6 @@ class CanvasExtensionBackendManager:
                         )
                     await self._terminate_runtime(runtime)
                     return self._status_unlocked(name)
-                self._write_run_record(name, runtime.process.pid)
                 runtime.drain_tasks = [
                     asyncio.create_task(
                         self._drain(runtime, runtime.process.stdout, b"[stdout] ")
@@ -877,6 +1002,10 @@ class CanvasExtensionBackendManager:
                         self._drain(runtime, runtime.process.stderr, b"[stderr] ")
                     ),
                 ]
+                if runtime.windows_job is not None:
+                    runtime.exit_task = asyncio.create_task(
+                        self._watch_windows_exit(name, runtime, runtime.process)
+                    )
                 task = asyncio.create_task(self._await_healthy(runtime, backend, port))
                 runtime.start_task = task
         if task is not None:
@@ -890,6 +1019,22 @@ class CanvasExtensionBackendManager:
                 await self._terminate_runtime(runtime)
             return self._status_unlocked(name)
 
+    async def _watch_windows_exit(
+        self, name: str, runtime: _Runtime, process: asyncio.subprocess.Process
+    ) -> None:
+        # Process.wait() also waits for pipe EOF, which surviving children can
+        # hold open. Observe the leader's exit independently of its pipes.
+        while process.returncode is None:
+            await asyncio.sleep(0.05)
+        async with self._lock(name):
+            if runtime.process is not process:
+                return
+            if runtime.start_task is not None:
+                runtime.start_task.cancel()
+                await asyncio.gather(runtime.start_task, return_exceptions=True)
+                runtime.start_task = None
+            await self._refresh_unlocked(name)
+
     async def _finish_runtime(self, runtime: _Runtime) -> None:
         if runtime.process is not None:
             await runtime.process.wait()
@@ -897,12 +1042,15 @@ class CanvasExtensionBackendManager:
             await asyncio.gather(*runtime.drain_tasks, return_exceptions=True)
         runtime.drain_tasks = []
 
-    @staticmethod
-    def _signal_group(pgid: int, sig: int) -> None:
+    @classmethod
+    def _signal_group(cls, pgid: int, sig: int) -> None:
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            if cls._group_alive(pgid):
+                raise
 
     @staticmethod
     def _group_alive(pgid: int) -> bool:
@@ -911,11 +1059,28 @@ class CanvasExtensionBackendManager:
             return True
         except ProcessLookupError:
             return False
+        except PermissionError:
+            if platform.system() != "Darwin":
+                raise
+            # XNU excludes zombies from killpg's eligible targets and returns
+            # EPERM when none remain. Confirm that there are no live members;
+            # preserve a genuine permission failure instead of hiding it.
+            for pid in psutil.pids():
+                try:
+                    if os.getpgid(pid) == pgid:
+                        if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                            raise PermissionError(f"Cannot signal process group {pgid}")
+                except (ProcessLookupError, psutil.NoSuchProcess):
+                    continue
+            return False
 
     def _runtime_group_alive(self, runtime: _Runtime) -> bool:
         process = runtime.process
+        if runtime.windows_job is not None:
+            return runtime.windows_job.active_processes() > 0
         return process is not None and (
-            process.returncode is None or self._group_alive(process.pid)
+            process.returncode is None
+            or (os.name != "nt" and self._group_alive(process.pid))
         )
 
     async def _wait_for_group_exit(self, pgid: int, timeout: float) -> bool:
@@ -928,10 +1093,35 @@ class CanvasExtensionBackendManager:
             await asyncio.sleep(0.05)
 
     async def _terminate_runtime(self, runtime: _Runtime) -> None:
+        watcher = runtime.exit_task
+        runtime.exit_task = None
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         process = runtime.process
+        if process is not None and process.stdin is not None:
+            process.stdin.close()
+        if runtime.windows_job is not None:
+            runtime.windows_job.terminate()
+            runtime.windows_job.close()
+            runtime.windows_job = None
         if process is None:
             return
         pgid = process.pid
+        if os.name == "nt":
+            # Also covers assignment failure: the launcher is still waiting,
+            # outside the job, and has not executed any backend code.
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await self._finish_runtime(runtime)
+            self._run_record_path(pgid).unlink(missing_ok=True)
+            runtime.process = None
+            runtime.port = None
+            runtime.secret_values = ()
+            return
         # Signal the whole group and wait for the *group* to drain, not just the
         # leader: a backend may fork descendants, and one that outlives (or is
         # forked just after) the leader keeps the group alive. Escalating only
@@ -979,14 +1169,11 @@ class CanvasExtensionBackendManager:
         if _process_start_time(record.pgid) != record.start_time:
             return False
         try:
-            cmdline = Path(f"/proc/{record.pgid}/cmdline").read_bytes()
-        except OSError:
+            arguments = psutil.Process(record.pgid).cmdline()
+        except psutil.Error:
             return False
         prefix = f"{(self.artifacts_dir / record.name).resolve()}/"
-        return any(
-            argument.decode(errors="replace").startswith(prefix)
-            for argument in cmdline.split(b"\0")
-        )
+        return any(argument.startswith(prefix) for argument in arguments)
 
     async def reap_orphans(self) -> None:
         """Stop backends left running by a server that died without teardown.
@@ -1002,6 +1189,11 @@ class CanvasExtensionBackendManager:
                 continue
             if _process_start_time(record.server_pid) == record.server_start_time:
                 continue  # Its server is still running and owns it.
+            # Windows closes the non-inheritable Job handle on server death.
+            # Persisted PIDs are never a substitute for that kernel ownership.
+            if os.name == "nt":
+                path.unlink(missing_ok=True)
+                continue
             if self._is_recorded_backend(record):
                 self._signal_group(record.pgid, signal.SIGTERM)
                 if not await self._wait_for_group_exit(

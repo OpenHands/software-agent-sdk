@@ -5,6 +5,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import tarfile
 import threading
@@ -13,6 +14,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import psutil
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,6 +24,7 @@ from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.canvas_extensions.backend import (
     BackendSecretGrantRequest,
     CanvasExtensionBackendManager,
+    _process_start_time,
     _Runtime,
 )
 from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
@@ -40,8 +43,13 @@ from openhands.agent_server.persistence.store import FileSecretsStore
 from .conftest import write_extension
 
 
-_SERVER = """#!/usr/bin/python3
+_SERVER = (
+    f"#!{sys.executable}\n"
+    + """
 import http.server
+import socket
+# Loopback test servers do not need reverse DNS (runner-images#14409).
+socket.getfqdn = lambda name='': name
 import json
 import os
 import subprocess
@@ -74,6 +82,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 print(\"backend-ready\", flush=True)
 http.server.HTTPServer((\"127.0.0.1\", port), Handler).serve_forever()
 """
+)
 
 
 def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
@@ -93,6 +102,10 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
         "artifacts": {
             "linux-amd64": {"path": archive.name, "sha256": checksum},
             "linux-arm64": {"path": archive.name, "sha256": checksum},
+        },
+        "additional_artifacts": {
+            "darwin-amd64": {"path": archive.name, "sha256": checksum},
+            "darwin-arm64": {"path": archive.name, "sha256": checksum},
         },
         "argv": [
             "{artifact_dir}/server.py",
@@ -127,7 +140,7 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
 
 requires_linux_backend = pytest.mark.skipif(
     CanvasExtensionBackendManager.current_platform() is None,
-    reason="backend artifact fixture only supports Linux amd64/arm64",
+    reason="backend artifact fixture requires a supported Unix platform",
 )
 
 
@@ -136,7 +149,7 @@ requires_linux_backend = pytest.mark.skipif(
     CanvasExtensionBackendManager.current_platform() is not None,
     reason="backend artifacts are supported on this platform",
 )
-async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
+async def test_backend_is_unsupported_on_other_platform(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
     installed_dir = tmp_path / "installed"
     install_canvas_extension(str(source), installed_dir=installed_dir)
@@ -324,7 +337,9 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
     manifest_path = source / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
     unsafe_installed = tmp_path / "unsafe-installed"
@@ -348,7 +363,9 @@ def _install_with_artifact_bytes(
     manifest_path = source / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(payload).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
     installed_dir = tmp_path / "installed"
@@ -444,7 +461,7 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     installed_script_archive = (
         installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
     )
-    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    payload = f"#!{sys.executable}\nimport time\ntime.sleep(300)\n".encode()
     with tarfile.open(installed_script_archive, "w:gz") as tar:
         info = tarfile.TarInfo("server.py")
         info.mode = 0o755
@@ -453,7 +470,9 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(installed_script_archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -498,7 +517,7 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     # health probe never succeeds and `start()` would otherwise block for the
     # whole 30s timeout while holding the name lock.
     archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
-    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    payload = f"#!{sys.executable}\nimport time\ntime.sleep(300)\n".encode()
     with tarfile.open(archive, "w:gz") as tar:
         info = tarfile.TarInfo("server.py")
         info.mode = 0o755
@@ -507,7 +526,9 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -541,8 +562,13 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     assert (await manager.delete_data("my-extension")).state == "stopped"
 
 
-_SLOW_HEALTH_SERVER = """#!/usr/bin/python3
+_SLOW_HEALTH_SERVER = (
+    f"#!{sys.executable}\n"
+    + """
 import http.server
+import socket
+# Loopback test servers do not need reverse DNS (runner-images#14409).
+socket.getfqdn = lambda name='': name
 import sys
 import time
 
@@ -562,6 +588,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
 server.serve_forever()
 """
+)
 
 
 @requires_linux_backend
@@ -581,7 +608,9 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -716,9 +745,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     # A backend whose descendant survives SIGTERM: the leader exits promptly,
     # so escalating only on the leader's exit code would leak the descendant.
     archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
-    payload = (
-        b"#!/usr/bin/python3\n"
-        b"import http.server, os, signal, subprocess, sys\n"
+    payload = f"#!{sys.executable}\n".encode() + (
+        b"import http.server, os, signal, socket, subprocess, sys\n"
+        b"socket.getfqdn = lambda name='': name\n"
         b"port = int(sys.argv[1])\n"
         b"data_dir = sys.argv[2]\n"
         b"os.makedirs(data_dir, exist_ok=True)\n"
@@ -742,7 +771,9 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text())
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-    for artifact in manifest["backend"]["artifacts"].values():
+    for artifact in list(manifest["backend"]["artifacts"].values()) + list(
+        manifest["backend"]["additional_artifacts"].values()
+    ):
         artifact["sha256"] = checksum
     manifest_path.write_text(json.dumps(manifest))
 
@@ -750,7 +781,8 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
     revision = manager.revision("my-extension")
     assert revision is not None
     await manager.prepare("my-extension", revision)
-    assert (await manager.start("my-extension", revision)).state == "ready"
+    started = await manager.start("my-extension", revision)
+    assert started.state == "ready", (started, await manager.logs("my-extension", 8192))
     child_pid = int((manager.data_dir / "my-extension" / "child").read_text())
     runtime = manager._runtimes["my-extension"]
     assert runtime.process is not None
@@ -793,11 +825,9 @@ asyncio.run(main())
 
 def _alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    # A zombie child of this test process is dead too.
-    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
 
 
 @requires_linux_backend
@@ -835,17 +865,17 @@ async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path)
         "/bin/sleep", "300", start_new_session=True
     )
     forged = state_dir / "run" / f"{bystander.pid}.json"
-    stat = Path(f"/proc/{bystander.pid}/stat").read_text()
-    record.update(
-        pgid=bystander.pid, start_time=int(stat.rsplit(")", 1)[1].split()[19])
-    )
+    record.update(pgid=bystander.pid, start_time=_process_start_time(bystander.pid))
     forged.write_text(json.dumps(record))
 
     manager = CanvasExtensionBackendManager(installed_dir, state_dir)
     try:
         await manager.reap_orphans()
-        assert not _alive(backend_pid)
-        assert not _alive(child_pid)
+        # Kernel group removal can precede visibility in process-status queries.
+        deadline = time.monotonic() + 3
+        while _alive(backend_pid) or _alive(child_pid):
+            assert time.monotonic() < deadline, "orphaned backend tree survived reaping"
+            await asyncio.sleep(0.01)
         assert bystander.returncode is None and _alive(bystander.pid)
         assert list((state_dir / "run").iterdir()) == []
         assert (await manager.status("my-extension")).state == "stopped"
@@ -1229,3 +1259,43 @@ async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
     assert "<secret-hidden>" in output
     assert "é" in output
     assert "\ufffd" not in output
+
+
+@pytest.mark.parametrize("link_target", ["../bin/server", "../../outside", "loop"])
+def test_archive_links_are_materialized_only_within_artifact(tmp_path, link_target):
+    archive = tmp_path / "links.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo("package/bin/server")
+        entry.mode = 0o755
+        entry.size = 4
+        tar.addfile(entry, io.BytesIO(b"test"))
+        link = tarfile.TarInfo("package/aliases/loop")
+        link.type = tarfile.SYMTYPE
+        link.linkname = link_target
+        tar.addfile(link)
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+    if link_target == "../bin/server":
+        CanvasExtensionBackendManager._extract_archive(archive, destination, 1)
+        result = destination / "aliases/loop"
+        assert result.read_bytes() == b"test"
+        assert not result.is_symlink()
+        assert result.stat().st_mode & 0o111
+    else:
+        with pytest.raises(ValueError, match="unsafe archive"):
+            CanvasExtensionBackendManager._extract_archive(archive, destination, 1)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS zombie group semantics")
+def test_exited_unreaped_backend_group_can_be_stopped():
+    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10
+        while psutil.Process(process.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        assert not CanvasExtensionBackendManager._group_alive(process.pid)
+        CanvasExtensionBackendManager._signal_group(process.pid, signal.SIGTERM)
+    finally:
+        process.wait(timeout=10)
