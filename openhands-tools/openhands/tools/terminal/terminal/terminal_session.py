@@ -35,6 +35,7 @@ from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 logger = get_logger(__name__)
 
+
 class TerminalCommandStatus(Enum):
     """Status of a terminal command execution."""
 

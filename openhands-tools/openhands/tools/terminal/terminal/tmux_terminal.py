@@ -198,7 +198,7 @@ def shell_setup_command(ps1: str) -> str:
     """
     return (
         "stty -echoctl 2>/dev/null; set +H; "
-        f"export PROMPT_COMMAND='export PS1=\"{ps1}\"'; export PS2=\"\""
+        f'export PROMPT_COMMAND=\'export PS1="{ps1}"\'; export PS2=""'
     )
 
 
