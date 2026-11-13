@@ -7,6 +7,7 @@ tmux session, enabling concurrent command execution across panes.
 from __future__ import annotations
 
 import shlex
+import sys
 import threading
 import time
 import uuid
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 import libtmux
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
@@ -181,11 +183,25 @@ class TmuxPanePool:
             shell_command = ["su", self.username, "-"]
         priority_prefix = process_priority_prefix(build_terminal_env(self.env))
 
-        window = self._session.new_window(
-            window_name=f"pane-{len(self._all_panes)}",
-            window_shell=shlex.join([*priority_prefix, *shell_command]),
-            start_directory=self.work_dir,
-        )
+        attempt = 0
+        while True:
+            try:
+                window = self._session.new_window(
+                    window_name=f"pane-{len(self._all_panes)}",
+                    window_shell=shlex.join([*priority_prefix, *shell_command]),
+                    start_directory=self.work_dir,
+                )
+                break
+            except LibTmuxException as exc:
+                if (
+                    sys.platform != "darwin"
+                    or "fork failed: Device not configured" not in str(exc)
+                    or attempt == 2
+                ):
+                    raise
+                # XNU can race PTY allocation against an asynchronously closing pane.
+                attempt += 1
+                time.sleep(0.05)
         active_pane = window.active_pane
         assert active_pane is not None
 
