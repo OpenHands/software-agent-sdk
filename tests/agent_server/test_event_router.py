@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from openhands.agent_server import event_router as event_router_module
@@ -881,13 +881,9 @@ class TestReadEventServiceSeam:
                     workspace=LocalWorkspace(working_dir=str(tmp_path)),
                 )
             )
-            request = SimpleNamespace(
-                app=SimpleNamespace(
-                    state=SimpleNamespace(
-                        conversation_registry=ConversationRegistry(Config())
-                    )
-                )
-            )
+            app = FastAPI()
+            app.state.conversation_registry = ConversationRegistry(Config())
+            request = Request({"type": "http", "app": app})
             resolved = await get_read_event_service(info.id, request, service)
             assert resolved is await service.get_event_service(info.id)
 
