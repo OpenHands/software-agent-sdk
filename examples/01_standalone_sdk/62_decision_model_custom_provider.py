@@ -5,12 +5,12 @@
 up to you:
 
 1. Through LiteLLM, the default. Set ``model`` to a LiteLLM model string. With
-   the LiteLLM release the SDK uses (1.105), that covers TypeSafe Jev
+   the LiteLLM release the SDK uses (1.108), that covers TypeSafe Jev
    (``typesafe/jev-latest``), OpenAI (``openai/gpt-6-luna``), OpenRouter,
    Perplexity, Cloudflare Clef, Microsoft Foundry (``azure_ai/<deployment>``),
-   Strands Decider and self-hosted vLLM (``hosted_vllm/<model>``). Databricks,
-   Fireworks AI, Laya, Bespoke Nimble and ``Box`` questions need LiteLLM 1.106
-   or later. See https://docs.litellm.ai/docs/decisions for the current list.
+   Strands Decider, self-hosted vLLM (``hosted_vllm/<model>``), Databricks,
+   Fireworks AI, Laya, Bespoke Nimble and ``Box`` questions. See
+   https://docs.litellm.ai/docs/decisions for the current list.
 
 2. Through your own code. Subclass ``DecisionModel`` and override ``send()``
    (and ``asend()`` if you call ``adecide()``). Each method makes one request
