@@ -88,6 +88,8 @@ def sample_conversation_id():
 def mock_event_service():
     """Create a mock EventService for testing."""
     service = AsyncMock(spec=EventService)
+    service._gateway_run_lock = asyncio.Lock()
+    service._active_gateway_runs = 0
 
     async def send_message(message, run=False, *args, **kwargs):
         return "started" if run else None

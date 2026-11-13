@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import asyncio
 import io
 import json
 import os
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -1436,6 +1437,134 @@ def test_openai_chat_completions_gateway_over_real_server(
             assert store_response.json()["detail"] == (
                 "Persistent response storage (store=True) is not supported yet"
             )
+
+
+@pytest.mark.parametrize("mode", ["new", "reused", "docker-inner"])
+def test_openai_gateway_rejects_direct_event_during_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm, mode: str
+) -> None:
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / ".openhands" / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    original_acompletion = LLM.acompletion
+    gateway_started = threading.Event()
+    release_gateway = threading.Event()
+    hold_gateway = {"enabled": False}
+
+    async def gated_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        user_text = "\n".join(
+            part.text
+            for message in messages
+            if message.role == "user"
+            for part in message.content
+            if isinstance(part, TextContent)
+        )
+        if hold_gateway["enabled"] and "Direct turn." not in user_text:
+            gateway_started.set()
+            assert await asyncio.to_thread(release_gateway.wait, 5)
+        result = await original_acompletion(self, messages, tools, **kwargs)
+        reply = "Direct reply" if "Direct turn." in user_text else "Gateway reply"
+        return result.model_copy(
+            update={
+                "message": Message(role="assistant", content=[TextContent(text=reply)])
+            }
+        )
+
+    monkeypatch.setattr(LLM, "acompletion", gated_acompletion)
+
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        gateway_url = f"{env['host']}/v1/chat/completions"
+        if mode != "new":
+            seed = client.post(
+                gateway_url,
+                json={
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Start conversation."}],
+                },
+                timeout=10,
+            )
+            assert seed.status_code == 200, seed.text
+            conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
+        else:
+            conversation_id = str(uuid4())
+        event_url = f"{env['host']}/api/conversations/{conversation_id}/events"
+
+        hold_gateway["enabled"] = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            gateway_endpoint = (
+                f"{event_url}/_gateway/run" if mode == "docker-inner" else gateway_url
+            )
+            gateway_body = (
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Gateway turn."}],
+                    "run": True,
+                }
+                if mode == "docker-inner"
+                else {
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Gateway turn."}],
+                }
+            )
+            gateway_future = pool.submit(
+                client.post,
+                gateway_endpoint,
+                headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+                json=gateway_body,
+                timeout=10,
+            )
+            try:
+                assert gateway_started.wait(5)
+                direct = pool.submit(
+                    client.post,
+                    event_url,
+                    json={
+                        "content": [{"type": "text", "text": "Direct turn."}],
+                        "run": True,
+                    },
+                    timeout=5,
+                ).result(timeout=5)
+            finally:
+                release_gateway.set()
+            gateway = gateway_future.result(timeout=10)
+
+        assert gateway.status_code == 200, gateway.text
+        assert direct.status_code == 409, direct.text
+        assert direct.json()["detail"] == "Gateway run in progress; message not saved"
+        if mode == "docker-inner":
+            assert gateway.json()["final_response"] == "Gateway reply"
+            assert gateway.json()["usage"]["prompt_tokens"] == 7
+            assert gateway.json()["usage"]["completion_tokens"] == 5
+        else:
+            assert gateway.json()["choices"][0]["message"]["content"] == (
+                "Gateway reply"
+            )
+        user_events = client.get(event_url + "/count", params={"source": "user"})
+        assert user_events.status_code == 200
+        expected_count = 1 + (mode != "new")
+        assert user_events.json() == expected_count
+        assert len(patched_llm) == expected_count
+
+        later = client.post(
+            event_url,
+            json={"content": [{"type": "text", "text": "Later turn."}], "run": False},
+        )
+        assert later.status_code == 200, later.text
+        user_events = client.get(event_url + "/count", params={"source": "user"})
+        assert user_events.status_code == 200
+        assert user_events.json() == expected_count + 1
 
 
 def test_openai_gateway_replays_frozen_llm_fixtures(

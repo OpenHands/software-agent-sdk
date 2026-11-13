@@ -1169,7 +1169,10 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
-    def test_load_plugin_binds_plugin_root_to_its_hooks(self, tmp_path: Path, mock_llm):
+    @pytest.mark.parametrize("load_twice", [False, True])
+    def test_load_plugin_binds_plugin_root_to_its_hooks(
+        self, tmp_path: Path, mock_llm, load_twice: bool
+    ):
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
             plugins=[
@@ -1201,8 +1204,15 @@ class TestLocalConversationPlugins:
         )
 
         conversation.load_plugin("hook-plugin")
+        if load_twice:
+            conversation.load_plugin("hook-plugin@manual")
 
         assert conversation.state.hook_config is not None
+        assert [
+            [hook.command for hook in matcher.hooks]
+            for matcher in conversation.state.hook_config.user_prompt_submit
+        ] == [["echo plugin-hook"]]
+
         plugin_dir = marketplace_dir / "plugins" / "hook-plugin"
         assert [
             hook.plugin_root

@@ -266,8 +266,9 @@ async def batch_get_conversation_events(
     responses=error_responses(
         {
             Conflict: (
-                "With refuse_pending_confirmation: the conversation is waiting "
-                "for confirmation; nothing was saved"
+                "A gateway run is in progress, or with "
+                "refuse_pending_confirmation the conversation is waiting for "
+                "confirmation; nothing was saved"
             ),
             RateLimited: "Message saved but server run capacity is full",
         }
@@ -281,6 +282,8 @@ async def send_message(
 ) -> SendMessageResponse:
     """Send a message to a conversation.
 
+    A 409 response means a gateway run is active, or the guard below refused;
+    the message was not saved.
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
 
@@ -335,21 +338,31 @@ async def send_message(
         if refusal in HELD_FOR_PERSON_STATUSES:
             raise Conflict(_HELD_DETAIL[refusal])
     outcome: MessageRunOutcome | None
-    try:
-        outcome = await event_service.send_message(
-            message,
-            request.run,
-            refuse_pending_confirmation=guarded,
-            sender=sender,
-        )
-    except ValueError as e:
-        held = str(e)
-        if not guarded or held not in HELD_FOR_PERSON_STATUSES:
-            raise
-        outcome = cast(MessageRunOutcome, held)
+    # The inner gateway route holds the lock for its whole turn; refuse before
+    # waiting on it so a direct event fails fast instead of queuing behind it.
+    _refuse_during_gateway_run(event_service)
+    async with event_service._gateway_run_lock:
+        _refuse_during_gateway_run(event_service)
+        try:
+            outcome = await event_service.send_message(
+                message,
+                request.run,
+                refuse_pending_confirmation=guarded,
+                sender=sender,
+            )
+        except ValueError as e:
+            held = str(e)
+            if not guarded or held not in HELD_FOR_PERSON_STATUSES:
+                raise
+            outcome = cast(MessageRunOutcome, held)
     if request.run and outcome is None:
         outcome = "not_run"
     return SendMessageResponse(run=outcome, previous_status=previous_status)
+
+
+def _refuse_during_gateway_run(event_service: EventService) -> None:
+    if event_service._active_gateway_runs:
+        raise Conflict("Gateway run in progress; message not saved")
 
 
 async def _gateway_context(
@@ -382,24 +395,28 @@ async def run_gateway_message(
     """Run one gateway turn at a time for this conversation."""
     if deadline is None:
         deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    event_service._active_gateway_runs += 1
     try:
-        await asyncio.wait_for(
-            event_service._gateway_run_lock.acquire(),
-            timeout=deadline - time.monotonic(),
-        )
-    except TimeoutError as exc:
-        raise UpstreamTimeout("Agent run timed out") from exc
-    try:
-        return await _run_gateway_message(request, event_service, deadline)
+        try:
+            await asyncio.wait_for(
+                event_service._gateway_run_lock.acquire(),
+                timeout=deadline - time.monotonic(),
+            )
+        except TimeoutError as exc:
+            raise UpstreamTimeout("Agent run timed out") from exc
+        try:
+            return await _run_gateway_message(request, event_service, deadline)
+        finally:
+            event_service._gateway_run_lock.release()
     finally:
-        event_service._gateway_run_lock.release()
+        event_service._active_gateway_runs -= 1
 
 
 async def _run_gateway_message(
     request: SendMessageRequest, event_service: EventService, deadline: float
 ) -> dict[str, Any]:
     """Save the message only after run capacity is available."""
-    if event_service._run_task is not None:
+    while event_service._run_task is not None:
         try:
             await event_service.wait_for_run_completion(
                 timeout=max(0, deadline - time.monotonic())

@@ -1733,9 +1733,9 @@ class ConversationService:
         return conversation_info, False
 
     async def start_conversation(
-        self, request: StartConversationRequest
+        self, request: StartConversationRequest, *, gateway_run: bool = False
     ) -> tuple[ConversationInfo, bool]:
-        return await self._start_conversation(request)
+        return await self._start_conversation(request, gateway_run=gateway_run)
 
     async def start_acp_conversation(
         self, request: StartConversationRequest
@@ -1745,6 +1745,8 @@ class ConversationService:
     async def _start_conversation(
         self,
         request: StartConversationRequest,
+        *,
+        gateway_run: bool = False,
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
@@ -1757,6 +1759,10 @@ class ConversationService:
                 )
 
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            if gateway_run:
+                return await self._create_conversation(
+                    request, conversation_id, run_slot, gateway_run=True
+                )
             return await self._create_conversation(request, conversation_id, run_slot)
 
     async def _create_conversation(
@@ -1768,6 +1774,7 @@ class ConversationService:
         title: str | None = None,
         initial_sender: str | None = None,
         server_tools: Sequence[Tool] = (),
+        gateway_run: bool = False,
     ) -> tuple[ConversationInfo, bool]:
         """Create a conversation from ``request``.
 
@@ -1980,6 +1987,7 @@ class ConversationService:
             stored,
             launched,
             run_slot=run_slot,
+            gateway_run=gateway_run,
             initial_message=(
                 Message(role=initial_message.role, content=initial_message.content)
                 if initial_message
@@ -2000,6 +2008,7 @@ class ConversationService:
         initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
+        gateway_run: bool = False,
     ) -> tuple[ConversationInfo, bool]:
         """Persist a prepared conversation, deliver its first message and notify.
 
@@ -2033,22 +2042,28 @@ class ConversationService:
                 is_new_conversation=True,
                 launched=launched,
                 max_budget_per_run=max_budget_per_run,
+                gateway_run=gateway_run,
             )
-        if initial_message is not None:
-            await event_service.send_message(
-                initial_message, False, sender=initial_sender
+        try:
+            if initial_message is not None:
+                await event_service.send_message(
+                    initial_message, False, sender=initial_sender
+                )
+                await event_service.run(run_slot=run_slot)
+
+            state = await event_service.get_state()
+            conversation_info = _compose_conversation_info(event_service.stored, state)
+
+            # Notify conversation webhooks about the started conversation
+            await self._notify_conversation_webhooks(
+                _compose_webhook_conversation_info(event_service.stored, state)
             )
-            await event_service.run(run_slot=run_slot)
 
-        state = await event_service.get_state()
-        conversation_info = _compose_conversation_info(event_service.stored, state)
-
-        # Notify conversation webhooks about the started conversation
-        await self._notify_conversation_webhooks(
-            _compose_webhook_conversation_info(event_service.stored, state)
-        )
-
-        return conversation_info, True
+            return conversation_info, True
+        except BaseException:
+            if gateway_run:
+                event_service._active_gateway_runs -= 1
+            raise
 
     async def pause_conversation(self, conversation_id: UUID) -> bool:
         event_service = await self._get_or_load_event_service(conversation_id)
@@ -3226,6 +3241,7 @@ class ConversationService:
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
         max_budget_per_run: float | None = None,
+        gateway_run: bool = False,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -3252,6 +3268,8 @@ class ConversationService:
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
         event_service._external_lease_renewal = True
+        if gateway_run:
+            event_service._active_gateway_runs += 1
         event_service._run_executor = self._run_executor
         event_service._run_semaphore = self._run_semaphore
 
@@ -3317,7 +3335,8 @@ class ConversationService:
             await event_service.save_meta()
             if self._event_services is not event_services:
                 raise ValueError("inactive_service")
-        except Exception:
+            state = await event_service.get_state()
+        except BaseException:
             try:
                 await event_service.close()
             except Exception as close_error:
@@ -3333,7 +3352,6 @@ class ConversationService:
             raise
 
         event_services[stored.id] = event_service
-        state = await event_service.get_state()
         self._conversation_records[stored.id] = _ConversationRecord(
             stored=event_service.stored,
             execution_status=state.execution_status,
