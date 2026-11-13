@@ -327,6 +327,8 @@ server capability and whether the selected profile resolves, but does not test
 provider availability.
 
 ```typescript
+import { PromptEnhancementClient } from '@openhands/typescript-client/clients';
+
 const prompts = new PromptEnhancementClient({
   host: 'http://localhost:3000',
   apiKey: 'your-session-api-key',
