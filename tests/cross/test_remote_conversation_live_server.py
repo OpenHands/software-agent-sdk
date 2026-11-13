@@ -1438,6 +1438,376 @@ def test_openai_chat_completions_gateway_over_real_server(
             )
 
 
+@pytest.fixture
+def gateway_smoke_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / ".openhands" / "profiles"
+    profile_store = LLMProfileStore(base_dir=profiles_dir)
+    profile_store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "continued"),
+    [("chat/completions", False), ("chat/completions", True), ("responses", False)],
+)
+def test_openai_gateway_reuses_keyed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+    endpoint: str,
+    continued: bool,
+) -> None:
+    body = (
+        {
+            "model": "openhands_smoke",
+            "messages": [{"role": "user", "content": "Run this turn once."}],
+        }
+        if endpoint == "chat/completions"
+        else {
+            "model": "openhands_smoke",
+            "input": "Run this turn once.",
+            "store": False,
+        }
+    )
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/{endpoint}"
+        headers = {"Idempotency-Key": "one-turn"}
+        if continued:
+            seed = client.post(url, json=body, timeout=10)
+            assert seed.status_code == 200, seed.text
+            headers["X-OpenHands-ServerConversation-ID"] = seed.headers[
+                "X-OpenHands-ServerConversation-ID"
+            ]
+        first = client.post(url, headers=headers, json=body, timeout=10)
+        second = client.post(url, headers=headers, json=body, timeout=10)
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 200, second.text
+        assert second.json() == first.json()
+        assert (
+            second.headers["X-OpenHands-ServerConversation-ID"]
+            == first.headers["X-OpenHands-ServerConversation-ID"]
+        )
+        assert len(patched_llm) == (2 if continued else 1)
+
+        changed_body = {**body, "model": "openhands_other"}
+        mismatch = client.post(url, headers=headers, json=changed_body, timeout=10)
+        assert mismatch.status_code == 409
+        assert mismatch.headers["x-should-retry"] == "false"
+        if endpoint == "chat/completions":
+            changed_headers = {
+                **headers,
+                "X-OpenHands-ServerConversation-ID": str(UUID(int=1)),
+            }
+            mismatch = client.post(url, headers=changed_headers, json=body, timeout=10)
+            assert mismatch.status_code == 409
+            assert mismatch.headers["x-should-retry"] == "false"
+        assert len(patched_llm) == (2 if continued else 1)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "invalid_body", "invalid_headers", "status_code"),
+    [
+        (
+            "chat/completions",
+            {"model": "unknown", "messages": [{"role": "user", "content": "Run."}]},
+            {},
+            404,
+        ),
+        (
+            "chat/completions",
+            {
+                "model": "openhands_smoke",
+                "messages": [{"role": "user", "content": "Run."}],
+            },
+            {"X-OpenHands-Observability-Metadata": "invalid-json"},
+            422,
+        ),
+        (
+            "responses",
+            {"model": "openhands_smoke", "input": "Run.", "store": True},
+            {},
+            400,
+        ),
+    ],
+)
+def test_openai_gateway_releases_invalid_keyed_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+    endpoint: str,
+    invalid_body: dict,
+    invalid_headers: dict,
+    status_code: int,
+) -> None:
+    valid_body = (
+        {"model": "openhands_smoke", "messages": [{"role": "user", "content": "Run."}]}
+        if endpoint == "chat/completions"
+        else {"model": "openhands_smoke", "input": "Run.", "store": False}
+    )
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/{endpoint}"
+        headers = {"Idempotency-Key": "corrected-request"}
+        rejected = client.post(
+            url, json=invalid_body, headers={**headers, **invalid_headers}, timeout=10
+        )
+        assert rejected.status_code == status_code, rejected.text
+        accepted = client.post(url, json=valid_body, headers=headers, timeout=10)
+        assert accepted.status_code == 200, accepted.text
+        assert len(patched_llm) == 1
+
+
+def test_openai_gateway_key_survives_session_key_rotation_and_deferred_init(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+) -> None:
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run."}],
+    }
+    with (
+        live_server_env(tmp_path, monkeypatch, session_api_keys=["old-key"]) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/chat/completions"
+        first = client.post(
+            url,
+            json=body,
+            headers={"Idempotency-Key": "rotated", "Authorization": "Bearer old-key"},
+            timeout=10,
+        )
+        assert first.status_code == 200, first.text
+
+    with (
+        live_server_env(tmp_path, monkeypatch, deferred_init=True) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        initialized = client.post(
+            f"{env['host']}/api/init",
+            headers={"X-Init-API-Key": "test-bootstrap-key"},
+            json={"session_api_keys": ["new-key"]},
+            timeout=10,
+        )
+        assert initialized.status_code == 200, initialized.text
+        url = f"{env['host']}/v1/chat/completions"
+        rejected = client.post(
+            url,
+            json=body,
+            headers={"Idempotency-Key": "rotated", "Authorization": "Bearer old-key"},
+            timeout=10,
+        )
+        assert rejected.status_code == 401, rejected.text
+        replay = client.post(
+            url,
+            json=body,
+            headers={"Idempotency-Key": "rotated", "Authorization": "Bearer new-key"},
+            timeout=10,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == first.json()
+        assert len(patched_llm) == 1
+
+
+def test_openai_gateway_replays_keyed_chat_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+) -> None:
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run."}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/chat/completions"
+        headers = {"Idempotency-Key": "stream-replay"}
+        first = client.post(url, json=body, headers=headers, timeout=10)
+        replay = client.post(url, json=body, headers=headers, timeout=10)
+        assert first.status_code == 200, first.text
+        assert replay.status_code == 200, replay.text
+        assert first.headers["content-type"].startswith("text/event-stream")
+        assert replay.text == first.text
+        assert (
+            replay.headers["X-OpenHands-ServerConversation-ID"]
+            == first.headers["X-OpenHands-ServerConversation-ID"]
+        )
+        assert len(patched_llm) == 1
+
+
+def test_openai_gateway_completion_store_failure_preserves_conversation_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+) -> None:
+    from openhands.agent_server.openai.idempotency import GatewayIdempotencyStore
+
+    async def fail_complete(self, *, claim_id, response):  # type: ignore[no-untyped-def]
+        raise OSError("storage failed")
+
+    monkeypatch.setattr(GatewayIdempotencyStore, "complete", fail_complete)
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run."}],
+    }
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/chat/completions"
+        headers = {"Idempotency-Key": "store-failure"}
+        first = client.post(url, json=body, headers=headers, timeout=10)
+        assert first.status_code == 200, first.text
+        assert first.json()["choices"][0]["message"]["content"]
+        conversation_id = first.headers["X-OpenHands-ServerConversation-ID"]
+        UUID(conversation_id)
+        retry = client.post(url, json=body, headers=headers, timeout=10)
+        assert retry.status_code == 409
+        assert retry.headers["X-Should-Retry"] == "false"
+        assert retry.headers["X-OpenHands-ServerConversation-ID"] == conversation_id
+        assert len(patched_llm) == 1
+
+
+def test_openai_gateway_releases_key_after_run_capacity_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+) -> None:
+    from openhands.agent_server.event_service import EventService
+    from openhands.sdk.errors import RateLimited
+
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run."}],
+    }
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/chat/completions"
+        seed = client.post(url, json=body, timeout=10)
+        assert seed.status_code == 200, seed.text
+        original_reserve = EventService.reserve_run_slot
+        reject_next = True
+
+        async def reserve_once(self):  # type: ignore[no-untyped-def]
+            nonlocal reject_next
+            if reject_next:
+                reject_next = False
+                raise RateLimited("Run capacity is full")
+            return await original_reserve(self)
+
+        monkeypatch.setattr(EventService, "reserve_run_slot", reserve_once)
+        headers = {
+            "Idempotency-Key": "capacity-retry",
+            "X-OpenHands-ServerConversation-ID": seed.headers[
+                "X-OpenHands-ServerConversation-ID"
+            ],
+        }
+        rejected = client.post(url, json=body, headers=headers, timeout=10)
+        accepted = client.post(url, json=body, headers=headers, timeout=10)
+        assert rejected.status_code == 429
+        assert accepted.status_code == 200, accepted.text
+        assert len(patched_llm) == 2
+
+
+@pytest.mark.parametrize("endpoint", ["chat/completions", "responses"])
+def test_openai_gateway_keyed_resend_after_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+    endpoint: str,
+) -> None:
+    import asyncio
+
+    from openhands.agent_server.openai import service as gateway_service
+
+    original_acompletion = LLM.acompletion
+    model_started = threading.Event()
+
+    async def slow_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        model_started.set()
+        await asyncio.sleep(0.6)
+        return await original_acompletion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", slow_acompletion)
+    monkeypatch.setattr(gateway_service, "_GATEWAY_TIMEOUT_SECONDS", 0.03)
+    body = (
+        {
+            "model": "openhands_smoke",
+            "messages": [{"role": "user", "content": "Run this turn once."}],
+        }
+        if endpoint == "chat/completions"
+        else {
+            "model": "openhands_smoke",
+            "input": "Run this turn once.",
+            "store": False,
+        }
+    )
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/{endpoint}"
+        headers = {"Idempotency-Key": "slow-turn"}
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first_future = pool.submit(
+                client.post, url, headers=headers, json=body, timeout=10
+            )
+            assert model_started.wait(timeout=5)
+            concurrent = client.post(url, headers=headers, json=body, timeout=10)
+            first = first_future.result(timeout=10)
+
+        assert first.status_code == 504
+        assert concurrent.status_code == 409
+        assert concurrent.headers["x-should-retry"] == "false"
+        conversation_id = concurrent.headers["X-OpenHands-ServerConversation-ID"]
+        UUID(conversation_id)
+        resend = client.post(url, headers=headers, json=body, timeout=10)
+        assert resend.status_code == 409
+        assert resend.headers["X-OpenHands-ServerConversation-ID"] == conversation_id
+
+        deadline = time.monotonic() + 5
+        while True:
+            state = client.get(f"{env['host']}/api/conversations/{conversation_id}")
+            assert state.status_code == 200
+            if state.json()["execution_status"] == "finished":
+                break
+            assert time.monotonic() < deadline, state.text
+            time.sleep(0.05)
+        user_events = client.get(
+            f"{env['host']}/api/conversations/{conversation_id}/events/count",
+            params={"source": "user"},
+        )
+        assert user_events.status_code == 200
+        assert user_events.json() == 1
+        assert len(patched_llm) == 1
+
+
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
