@@ -1,20 +1,22 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Native macOS App backends</title><style>body{font:16px/1.6 system-ui;color:#222;background:#fdfdfb;margin:0}main{max-width:960px;margin:auto;padding:40px}nav{padding:16px;background:#f3f1ec}a{color:#294eaa}h1{font-size:36px}h2{margin-top:42px}pre{overflow:auto;padding:18px;background:#f3f1ec;font:13px/1.5 monospace}.callout{border-left:4px solid #b25b0e;padding:16px;background:#fff2e5}svg{width:100%;height:auto}text{font:15px system-ui;fill:#222}rect{fill:#f7f6f1;stroke:#aaa}.changed{fill:#fff2e5;stroke:#b25b0e}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}section{border-top:1px solid #ddd;margin-top:24px}summary{cursor:pointer}</style><main><h1>Native macOS App backends</h1><p>Agent Server can select macOS artifacts, safely materialize archive file links, and own backend processes across stop and crash recovery. Linux keeps its existing process identity representation.</p><p class="callout">Compatibility: additional_artifacts is optional. The existing artifacts enum remains Linux-only, preserving the published OpenAPI response contract. Windows remains unsupported by this change.</p><nav><a href="#s0">An additive platform map preserves the API</a> · <a href="#s1">Extraction and lifecycle work on macOS</a> · <a href="#s2">Real process tests cover native cleanup</a> · <a href="#s3">Mac runners execute all suites</a> · <a href="#s4">Give the PTY a real viewport</a> · <a href="#s5">Use an available UTF-8 locale</a> · <a href="#s6">Test inherited priority correctly</a></nav><h2>API before → after</h2><pre>Before: artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Native macOS and Windows App backends</title><style>body{font:16px/1.6 system-ui;color:#222;background:#fdfdfb;margin:0}main{max-width:960px;margin:auto;padding:40px}nav{padding:16px;background:#f3f1ec}a{color:#294eaa}h1{font-size:36px}h2{margin-top:42px}pre{overflow:auto;padding:18px;background:#f3f1ec;font:13px/1.5 monospace}.callout{border-left:4px solid #b25b0e;padding:16px;background:#fff2e5}svg{width:100%;height:auto}text{font:15px system-ui;fill:#222}rect{fill:#f7f6f1;stroke:#aaa}.changed{fill:#fff2e5;stroke:#b25b0e}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}section{border-top:1px solid #ddd;margin-top:24px}summary{cursor:pointer}</style><main><h1>Native macOS and Windows App backends</h1><p>Agent Server selects Linux, macOS and Windows x64 artifacts and owns their complete process trees. Windows uses a kernel Job Object and a gated launcher; macOS uses POSIX process groups with portable process identity. Linux keeps its existing identity representation.</p><p class="callout">Compatibility: additional_artifacts is optional. The existing artifacts enum remains Linux-only, preserving the published OpenAPI response contract. Windows x64 is supported for native .exe artifacts; code-server itself has no upstream Windows release. Schema v1 still requires a canonical Linux artifact.</p><nav><a href="#s0">An additive platform map preserves the API</a> · <a href="#s1">Extraction and lifecycle work on macOS</a> · <a href="#s2">Kernel ownership for Windows descendants</a> · <a href="#s3">Execute only after ownership is established</a> · <a href="#s4">Packaged servers expose the trusted launcher</a> · <a href="#s5">Real Windows processes prove cleanup</a> · <a href="#s6">A Windows runner owns Windows validation</a> · <a href="#s7">Exercise the actual packaged Windows launcher</a> · <a href="#s8">Real process tests cover native cleanup</a> · <a href="#s9">Mac runners execute all suites</a> · <a href="#s10">Give the PTY a real viewport</a> · <a href="#s11">Use an available UTF-8 locale</a> · <a href="#s12">Test inherited priority correctly</a></nav><h2>API before → after</h2><pre>Before: artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
 After:  artifacts: Record&lt;linux-amd64 | linux-arm64, Artifact&gt;
         additional_artifacts?: Record&lt;string, Artifact&gt;
-Resolution: additional_artifacts, then canonical artifacts win overlaps.</pre><section id="s0"><h2>An additive platform map preserves the API</h2><p>CanvasExtensionBackend keeps canonical Linux keys. Additional platform keys are validated artifacts; unknown platforms are inert.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">artifacts: Linux keys only</text><text x="485" y="80">artifacts + optional additional_artifacts</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
-index dcc4493a..8edd5119 100644
+Resolution: additional_artifacts, then canonical artifacts win overlaps.</pre><section id="s0"><h2>An additive platform map preserves the API</h2><p>CanvasExtensionBackend keeps canonical Linux keys. Additional artifacts select darwin-amd64, darwin-arm64 or windows-amd64; unknown platforms are inert.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">artifacts: Linux keys only</text><text x="485" y="80">artifacts + optional additional_artifacts</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L162">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:162</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py#L164">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py:164</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
+index dcc4493a..242db766 100644
 --- a/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
 +++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py
-@@ -90,7 +90,7 @@ class CanvasExtensionContributes(BaseModel):
+@@ -90,7 +90,9 @@ class CanvasExtensionContributes(BaseModel):
          return v
  
  
 -BackendPlatform = Literal[&quot;linux-amd64&quot;, &quot;linux-arm64&quot;]
-+BackendPlatform = Literal[&quot;linux-amd64&quot;, &quot;linux-arm64&quot;, &quot;darwin-amd64&quot;, &quot;darwin-arm64&quot;]
++BackendPlatform = Literal[
++    &quot;linux-amd64&quot;, &quot;linux-arm64&quot;, &quot;darwin-amd64&quot;, &quot;darwin-arm64&quot;, &quot;windows-amd64&quot;
++]
  
  
  class CanvasExtensionBackendArtifact(BaseModel):
-@@ -163,8 +163,12 @@ class CanvasExtensionBackend(BaseModel):
+@@ -163,8 +165,12 @@ class CanvasExtensionBackend(BaseModel):
      &quot;&quot;&quot;Optional trusted backend declaration for schema-1 Canvas Apps.&quot;&quot;&quot;
  
      schema_version: Literal[1]
@@ -28,11 +30,16 @@ index dcc4493a..8edd5119 100644
 +        description=&quot;Additional platform artifacts; unknown platforms are ignored.&quot;,
      )
      argv: list[str] = Field(min_length=1)
-     health: CanvasExtensionBackendHealth = Field(</pre></details></section><section id="s1"><h2>Extraction and lifecycle work on macOS</h2><p>current_platform selects Darwin x64/arm64. _extract_archive copies contained regular-file links after extraction; absolute, escaping, cyclic and unresolved links fail. Root chmod follows atomic rename. _process_start_time and _record_is_owned use psutil on Darwin. _group_alive confirms that an EPERM group has no live members.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Reject macOS and archive file links</text><text x="485" y="80">Select Darwin; materialize contained files</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L191">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:191</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L197">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:197</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
-index a387fe0b..854b4fe1 100644
+     health: CanvasExtensionBackendHealth = Field(</pre></details></section><section id="s1"><h2>Extraction and lifecycle work on macOS</h2><p>current_platform selects Darwin x64/arm64. _extract_archive copies contained regular-file links after extraction; absolute, escaping, cyclic and unresolved links fail. Windows extraction also rejects reserved names, alternate streams and case collisions. Windows startup requires native .exe entrypoints and isolated USERPROFILE/TEMP. _watch_windows_exit reclaims descendants automatically, without a status request. Root chmod follows atomic rename. _process_start_time and _record_is_owned use psutil on Darwin. _group_alive confirms that an EPERM group has no live members.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Reject macOS and archive file links</text><text x="485" y="80">Darwin / Windows; safe extraction and ownership</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L195">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:195</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py#L208">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py:208</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
+index 7c7019ab..5e5429c0 100644
 --- a/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
 +++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py
-@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
+@@ -18,10 +18,11 @@ import urllib.request
+ import zlib
+ from collections import deque
+ from collections.abc import Callable
+-from pathlib import Path, PurePosixPath
++from pathlib import Path, PurePosixPath, PureWindowsPath
  from typing import Final, Literal
  from urllib.parse import urljoin, urlsplit
  
@@ -40,11 +47,23 @@ index a387fe0b..854b4fe1 100644
  from pydantic import BaseModel, Field
  
  from openhands.agent_server.canvas_extensions.installed import (
-@@ -114,6 +115,11 @@ class _RunRecord(BaseModel):
+@@ -35,6 +36,11 @@ from openhands.agent_server.canvas_extensions.manifest import (
+     CanvasExtensionBackendArtifact,
+     CanvasExtensionManifest,
+ )
++from openhands.agent_server.canvas_extensions.windows_job import (
++    WindowsJob,
++    create_windows_job,
++)
++from openhands.agent_server.canvas_extensions.windows_launcher import launcher_argv
+ from openhands.agent_server.persistence.store import SecretsStore
+ from openhands.sdk.conversation.secret_registry import StreamOutputMask
+ from openhands.sdk.utils.path import get_user_persistence_dir
+@@ -115,6 +121,11 @@ class _RunRecord(BaseModel):
  
  def _process_start_time(pid: int) -&gt; int | None:
      &quot;&quot;&quot;Return a process&#x27;s start time in clock ticks since boot (Linux).&quot;&quot;&quot;
-+    if platform.system() == &quot;Darwin&quot;:
++    if platform.system() in {&quot;Darwin&quot;, &quot;Windows&quot;}:
 +        try:
 +            return int(psutil.Process(pid).create_time() * 1_000_000)
 +        except psutil.Error:
@@ -52,7 +71,16 @@ index a387fe0b..854b4fe1 100644
      try:
          stat = Path(f&quot;/proc/{pid}/stat&quot;).read_text()
      except OSError:
-@@ -189,9 +195,15 @@ class CanvasExtensionBackendManager:
+@@ -126,6 +137,8 @@ def _process_start_time(pid: int) -&gt; int | None:
+ class _Runtime:
+     def __init__(self) -&gt; None:
+         self.process: asyncio.subprocess.Process | None = None
++        self.windows_job: WindowsJob | None = None
++        self.exit_task: asyncio.Task[None] | None = None
+         self.port: int | None = None
+         self.revision: str | None = None
+         self.state: BackendState = &quot;stopped&quot;
+@@ -193,9 +206,17 @@ class CanvasExtensionBackendManager:
  
      @staticmethod
      def current_platform() -&gt; BackendPlatform | None:
@@ -60,6 +88,8 @@ index a387fe0b..854b4fe1 100644
 -            return None
 +        system = platform.system()
          machine = platform.machine().lower()
++        if system == &quot;Windows&quot; and machine in {&quot;x86_64&quot;, &quot;amd64&quot;}:
++            return &quot;windows-amd64&quot;
 +        if system == &quot;Darwin&quot;:
 +            if machine in {&quot;x86_64&quot;, &quot;amd64&quot;}:
 +                return &quot;darwin-amd64&quot;
@@ -70,7 +100,7 @@ index a387fe0b..854b4fe1 100644
          if machine in {&quot;x86_64&quot;, &quot;amd64&quot;}:
              return &quot;linux-amd64&quot;
          if machine in {&quot;aarch64&quot;, &quot;arm64&quot;}:
-@@ -212,7 +224,11 @@ class CanvasExtensionBackendManager:
+@@ -216,7 +237,11 @@ class CanvasExtensionBackendManager:
          current_platform = self.current_platform()
          if manifest is None or manifest.backend is None or current_platform is None:
              return None
@@ -83,7 +113,7 @@ index a387fe0b..854b4fe1 100644
          if artifact is None:
              return None
          return manifest.backend, artifact, current_platform
-@@ -399,6 +415,7 @@ class CanvasExtensionBackendManager:
+@@ -403,10 +428,26 @@ class CanvasExtensionBackendManager:
          root = destination.resolve()
          seen: set[PurePosixPath] = set()
          extracted = 0
@@ -91,27 +121,59 @@ index a387fe0b..854b4fe1 100644
          with tarfile.open(archive, mode=&quot;r:gz&quot;) as tar:
              for member in tar:
                  original = PurePosixPath(member.name)
-@@ -410,7 +427,9 @@ class CanvasExtensionBackendManager:
+-                if original.is_absolute() or &quot;..&quot; in original.parts:
++                if (
++                    original.is_absolute()
++                    or &quot;..&quot; in original.parts
++                    or (
++                        os.name == &quot;nt&quot;
++                        and (
++                            any(c in member.name for c in &#x27;\\:&lt;&gt;&quot;|?*&#x27;)
++                            or any(ord(c) &lt; 32 for c in member.name)
++                            or any(
++                                part.endswith((&quot;.&quot;, &quot; &quot;))
++                                or PureWindowsPath(part).is_reserved()
++                                for part in original.parts
++                            )
++                        )
++                    )
++                ):
+                     raise ValueError(
+                         &quot;backend artifact contains an unsafe archive entry&quot;
+                     )
+@@ -414,17 +455,37 @@ class CanvasExtensionBackendManager:
                  if not parts:
                      continue
                  relative = PurePosixPath(*parts)
 -                if relative in seen or not (member.isfile() or member.isdir()):
-+                if relative in seen or not (
++                identity = (
++                    PurePosixPath(str(relative).casefold())
++                    if os.name == &quot;nt&quot;
++                    else relative
++                )
++                if identity in seen or not (
 +                    member.isfile() or member.isdir() or member.issym()
 +                ):
                      raise ValueError(
                          &quot;backend artifact contains an unsafe archive entry&quot;
                      )
-@@ -420,7 +439,16 @@ class CanvasExtensionBackendManager:
+-                seen.add(relative)
++                seen.add(identity)
+                 target = (root / Path(*relative.parts)).resolve()
+                 if not target.is_relative_to(root):
                      raise ValueError(
                          &quot;backend artifact contains an unsafe archive entry&quot;
                      )
 -                if member.isdir():
 +                if member.issym():
 +                    source_path = (target.parent / member.linkname).resolve()
-+                    if Path(
-+                        member.linkname
-+                    ).is_absolute() or not source_path.is_relative_to(root):
++                    if (
++                        Path(member.linkname).is_absolute()
++                        or not source_path.is_relative_to(root)
++                        or (
++                            os.name == &quot;nt&quot; and any(c in member.linkname for c in &quot;\\:&quot;)
++                        )
++                    ):
 +                        raise ValueError(
 +                            &quot;backend artifact contains an unsafe archive entry&quot;
 +                        )
@@ -120,7 +182,7 @@ index a387fe0b..854b4fe1 100644
                      target.mkdir(parents=True, exist_ok=True)
                  else:
                      source = tar.extractfile(member)
-@@ -433,12 +461,27 @@ class CanvasExtensionBackendManager:
+@@ -437,12 +498,27 @@ class CanvasExtensionBackendManager:
                          shutil.copyfileobj(source, output)
                      target.chmod(member.mode &amp; 0o555)
                  extracted += 1
@@ -149,7 +211,7 @@ index a387fe0b..854b4fe1 100644
  
      async def prepare(self, name: str, revision: str) -&gt; BackendStatus:
          async with self._lock(name):
-@@ -501,6 +544,7 @@ class CanvasExtensionBackendManager:
+@@ -505,6 +581,7 @@ class CanvasExtensionBackendManager:
                          ) from exc
                      try:
                          os.replace(temporary, artifact_dir)
@@ -157,7 +219,132 @@ index a387fe0b..854b4fe1 100644
                      except OSError:
                          if not artifact_dir.is_dir():
                              raise
-@@ -891,12 +935,15 @@ class CanvasExtensionBackendManager:
+@@ -638,6 +715,15 @@ class CanvasExtensionBackendManager:
+             if name in os.environ
+         }
+         environment[&quot;HOME&quot;] = str(home)
++        if os.name == &quot;nt&quot;:
++            for name in (&quot;SYSTEMROOT&quot;, &quot;WINDIR&quot;, &quot;SYSTEMDRIVE&quot;, &quot;COMSPEC&quot;, &quot;PATHEXT&quot;):
++                if name in os.environ:
++                    environment[name] = os.environ[name]
++            temporary = home / &quot;tmp&quot;
++            temporary.mkdir(exist_ok=True)
++            environment.update(
++                USERPROFILE=str(home), TEMP=str(temporary), TMP=str(temporary)
++            )
+         return environment
+ 
+     @staticmethod
+@@ -669,6 +755,8 @@ class CanvasExtensionBackendManager:
+                 &quot;backend executable must be an executable regular file inside &quot;
+                 &quot;the prepared artifact&quot;
+             )
++        if os.name == &quot;nt&quot; and executable.suffix.lower() != &quot;.exe&quot;:
++            raise ValueError(&quot;Windows backends require a native .exe entrypoint&quot;)
+         argv[0] = str(executable)
+         return argv
+ 
+@@ -848,8 +936,12 @@ class CanvasExtensionBackendManager:
+                 runtime.logs_truncated = False
+                 runtime.stop_requested = asyncio.Event()
+                 try:
++                    argv = self._expand_argv(backend, port, data_dir, artifact_dir)
++                    if os.name == &quot;nt&quot;:
++                        runtime.windows_job = create_windows_job()
++                        argv = launcher_argv(argv)
+                     runtime.process = await asyncio.create_subprocess_exec(
+-                        *self._expand_argv(backend, port, data_dir, artifact_dir),
++                        *argv,
+                         cwd=package_root,
+                         env={
+                             **self._environment(backend, data_dir),
+@@ -857,8 +949,42 @@ class CanvasExtensionBackendManager:
+                         },
+                         stdout=asyncio.subprocess.PIPE,
+                         stderr=asyncio.subprocess.PIPE,
+-                        start_new_session=True,
++                        stdin=asyncio.subprocess.PIPE if os.name == &quot;nt&quot; else None,
++                        start_new_session=os.name != &quot;nt&quot;,
+                     )
++                    if runtime.windows_job is not None:
++                        runtime.windows_job.assign(runtime.process.pid)
++                        assert runtime.process.stdout is not None
++                        greeting = await asyncio.wait_for(
++                            runtime.process.stdout.readline(), timeout=30
++                        )
++                        match = re.fullmatch(
++                            rb&quot;OPENHANDS_BACKEND_LAUNCHER:(\d+)\r?\n&quot;, greeting
++                        )
++                        if match is None:
++                            raise RuntimeError(&quot;Backend launcher handshake failed&quot;)
++                        launcher_pid = int(match[1])
++                        # A one-file binary has a bootloader parent. Its Python
++                        # child may predate assignment of that parent to the job.
++                        if launcher_pid != runtime.process.pid:
++                            parents = psutil.Process(launcher_pid).parents()
++                            if not any(
++                                parent.pid == runtime.process.pid for parent in parents
++                            ):
++                                raise RuntimeError(
++                                    &quot;Backend launcher is not an owned child&quot;
++                                )
++                            runtime.windows_job.assign(launcher_pid)
++                    self._write_run_record(name, runtime.process.pid)
++                    if runtime.windows_job is not None:
++                        assert runtime.process.stdin is not None
++                        runtime.process.stdin.write(b&quot;G&quot;)
++                        await runtime.process.stdin.drain()
++                        runtime.process.stdin.close()
++                except asyncio.CancelledError:
++                    await self._terminate_runtime(runtime)
++                    runtime.state = &quot;stopped&quot;
++                    raise
+                 except Exception as exc:
+                     runtime.state = &quot;unhealthy&quot;
+                     runtime.detail = str(exc)
+@@ -868,7 +994,6 @@ class CanvasExtensionBackendManager:
+                         )
+                     await self._terminate_runtime(runtime)
+                     return self._status_unlocked(name)
+-                self._write_run_record(name, runtime.process.pid)
+                 runtime.drain_tasks = [
+                     asyncio.create_task(
+                         self._drain(runtime, runtime.process.stdout, b&quot;[stdout] &quot;)
+@@ -877,6 +1002,10 @@ class CanvasExtensionBackendManager:
+                         self._drain(runtime, runtime.process.stderr, b&quot;[stderr] &quot;)
+                     ),
+                 ]
++                if runtime.windows_job is not None:
++                    runtime.exit_task = asyncio.create_task(
++                        self._watch_windows_exit(name, runtime, runtime.process)
++                    )
+                 task = asyncio.create_task(self._await_healthy(runtime, backend, port))
+                 runtime.start_task = task
+         if task is not None:
+@@ -890,6 +1019,22 @@ class CanvasExtensionBackendManager:
+                 await self._terminate_runtime(runtime)
+             return self._status_unlocked(name)
+ 
++    async def _watch_windows_exit(
++        self, name: str, runtime: _Runtime, process: asyncio.subprocess.Process
++    ) -&gt; None:
++        # Process.wait() also waits for pipe EOF, which surviving children can
++        # hold open. Observe the leader&#x27;s exit independently of its pipes.
++        while process.returncode is None:
++            await asyncio.sleep(0.05)
++        async with self._lock(name):
++            if runtime.process is not process:
++                return
++            if runtime.start_task is not None:
++                runtime.start_task.cancel()
++                await asyncio.gather(runtime.start_task, return_exceptions=True)
++                runtime.start_task = None
++            await self._refresh_unlocked(name)
++
+     async def _finish_runtime(self, runtime: _Runtime) -&gt; None:
+         if runtime.process is not None:
+             await runtime.process.wait()
+@@ -897,12 +1042,15 @@ class CanvasExtensionBackendManager:
              await asyncio.gather(*runtime.drain_tasks, return_exceptions=True)
          runtime.drain_tasks = []
  
@@ -175,7 +362,7 @@ index a387fe0b..854b4fe1 100644
  
      @staticmethod
      def _group_alive(pgid: int) -&gt; bool:
-@@ -905,6 +952,20 @@ class CanvasExtensionBackendManager:
+@@ -911,11 +1059,28 @@ class CanvasExtensionBackendManager:
              return True
          except ProcessLookupError:
              return False
@@ -196,7 +383,52 @@ index a387fe0b..854b4fe1 100644
  
      def _runtime_group_alive(self, runtime: _Runtime) -&gt; bool:
          process = runtime.process
-@@ -973,14 +1034,11 @@ class CanvasExtensionBackendManager:
++        if runtime.windows_job is not None:
++            return runtime.windows_job.active_processes() &gt; 0
+         return process is not None and (
+-            process.returncode is None or self._group_alive(process.pid)
++            process.returncode is None
++            or (os.name != &quot;nt&quot; and self._group_alive(process.pid))
+         )
+ 
+     async def _wait_for_group_exit(self, pgid: int, timeout: float) -&gt; bool:
+@@ -928,10 +1093,35 @@ class CanvasExtensionBackendManager:
+             await asyncio.sleep(0.05)
+ 
+     async def _terminate_runtime(self, runtime: _Runtime) -&gt; None:
++        watcher = runtime.exit_task
++        runtime.exit_task = None
++        if watcher is not None and watcher is not asyncio.current_task():
++            watcher.cancel()
++            await asyncio.gather(watcher, return_exceptions=True)
+         process = runtime.process
++        if process is not None and process.stdin is not None:
++            process.stdin.close()
++        if runtime.windows_job is not None:
++            runtime.windows_job.terminate()
++            runtime.windows_job.close()
++            runtime.windows_job = None
+         if process is None:
+             return
+         pgid = process.pid
++        if os.name == &quot;nt&quot;:
++            # Also covers assignment failure: the launcher is still waiting,
++            # outside the job, and has not executed any backend code.
++            if process.returncode is None:
++                try:
++                    process.kill()
++                except ProcessLookupError:
++                    pass
++            await self._finish_runtime(runtime)
++            self._run_record_path(pgid).unlink(missing_ok=True)
++            runtime.process = None
++            runtime.port = None
++            runtime.secret_values = ()
++            return
+         # Signal the whole group and wait for the *group* to drain, not just the
+         # leader: a backend may fork descendants, and one that outlives (or is
+         # forked just after) the leader keeps the group alive. Escalating only
+@@ -979,14 +1169,11 @@ class CanvasExtensionBackendManager:
          if _process_start_time(record.pgid) != record.start_time:
              return False
          try:
@@ -213,8 +445,720 @@ index a387fe0b..854b4fe1 100644
 +        return any(argument.startswith(prefix) for argument in arguments)
  
      async def reap_orphans(self) -&gt; None:
-         &quot;&quot;&quot;Stop backends left running by a server that died without teardown.</pre></details></section><section id="s2"><h2>Real process tests cover native cleanup</h2><p>Existing lifecycle tests now run on macOS with the active Python interpreter. Regression tests exercise contained archive links and a real exited, unreaped process group. Focused Mac validation: 44 passed, one skip including MCP cleanup tests.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Linux fixture; no zombie-group regression</text><text x="485" y="80">Darwin fixture + real zombie regression</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1287">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1287</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
-index 305e52ec..4ec299b5 100644
+         &quot;&quot;&quot;Stop backends left running by a server that died without teardown.
+@@ -1002,6 +1189,11 @@ class CanvasExtensionBackendManager:
+                 continue
+             if _process_start_time(record.server_pid) == record.server_start_time:
+                 continue  # Its server is still running and owns it.
++            # Windows closes the non-inheritable Job handle on server death.
++            # Persisted PIDs are never a substitute for that kernel ownership.
++            if os.name == &quot;nt&quot;:
++                path.unlink(missing_ok=True)
++                continue
+             if self._is_recorded_backend(record):
+                 self._signal_group(record.pgid, signal.SIGTERM)
+                 if not await self._wait_for_group_exit(</pre></details></section><section id="s2"><h2>Kernel ownership for Windows descendants</h2><p>New WindowsJob API assigns processes to an unnamed, non-inheritable kill-on-close Job Object. Assignment errors fail startup; closing the server-owned handle reclaims the tree even when the server crashes. No taskkill or persisted-PID fallback.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">New module: no prior Windows ownership</text><text x="485" y="80">assign → terminate / close</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py#L1">openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py#L145">openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py:145</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py
+new file mode 100644
+index 00000000..5c232777
+--- /dev/null
++++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py
+@@ -0,0 +1,148 @@
++&quot;&quot;&quot;Windows kernel ownership for one App backend and all its descendants.&quot;&quot;&quot;
++
++import ctypes
++import os
++from typing import Protocol
++
++
++class _BasicLimits(ctypes.Structure):
++    _fields_ = [
++        (&quot;process_time&quot;, ctypes.c_int64),
++        (&quot;job_time&quot;, ctypes.c_int64),
++        (&quot;flags&quot;, ctypes.c_uint32),
++        (&quot;minimum_working_set&quot;, ctypes.c_size_t),
++        (&quot;maximum_working_set&quot;, ctypes.c_size_t),
++        (&quot;active_process_limit&quot;, ctypes.c_uint32),
++        (&quot;affinity&quot;, ctypes.c_size_t),
++        (&quot;priority&quot;, ctypes.c_uint32),
++        (&quot;scheduling&quot;, ctypes.c_uint32),
++    ]
++
++
++class _ExtendedLimits(ctypes.Structure):
++    _fields_ = [
++        (&quot;basic&quot;, _BasicLimits),
++        (&quot;io_counters&quot;, ctypes.c_uint64 * 6),
++        (&quot;process_memory_limit&quot;, ctypes.c_size_t),
++        (&quot;job_memory_limit&quot;, ctypes.c_size_t),
++        (&quot;peak_process_memory&quot;, ctypes.c_size_t),
++        (&quot;peak_job_memory&quot;, ctypes.c_size_t),
++    ]
++
++
++class _Accounting(ctypes.Structure):
++    _fields_ = [
++        (&quot;user_time&quot;, ctypes.c_int64),
++        (&quot;kernel_time&quot;, ctypes.c_int64),
++        (&quot;period_user_time&quot;, ctypes.c_int64),
++        (&quot;period_kernel_time&quot;, ctypes.c_int64),
++        (&quot;page_faults&quot;, ctypes.c_uint32),
++        (&quot;total_processes&quot;, ctypes.c_uint32),
++        (&quot;active_processes&quot;, ctypes.c_uint32),
++        (&quot;terminated_processes&quot;, ctypes.c_uint32),
++    ]
++
++
++class WindowsJob(Protocol):
++    def assign(self, pid: int) -&gt; None: ...
++    def active_processes(self) -&gt; int: ...
++    def terminate(self) -&gt; None: ...
++    def close(self) -&gt; None: ...
++
++
++if os.name == &quot;nt&quot;:
++
++    class _WindowsJob:
++        &quot;&quot;&quot;An unnamed, non-inheritable job killed when its server handle closes.&quot;&quot;&quot;
++
++        def __init__(self) -&gt; None:
++            self._api = ctypes.WinDLL(&quot;kernel32&quot;, use_last_error=True)
++            handle = ctypes.c_void_p
++            dword = ctypes.c_uint32
++            boolean = ctypes.c_int
++            self._api.CreateJobObjectW.argtypes = [handle, ctypes.c_wchar_p]
++            self._api.CreateJobObjectW.restype = handle
++            self._api.SetInformationJobObject.argtypes = [
++                handle,
++                ctypes.c_int,
++                handle,
++                dword,
++            ]
++            self._api.SetInformationJobObject.restype = boolean
++            self._api.QueryInformationJobObject.argtypes = [
++                handle,
++                ctypes.c_int,
++                handle,
++                dword,
++                handle,
++            ]
++            self._api.QueryInformationJobObject.restype = boolean
++            self._api.AssignProcessToJobObject.argtypes = [handle, handle]
++            self._api.AssignProcessToJobObject.restype = boolean
++            self._api.IsProcessInJob.argtypes = [
++                handle,
++                handle,
++                ctypes.POINTER(boolean),
++            ]
++            self._api.IsProcessInJob.restype = boolean
++            self._api.TerminateJobObject.argtypes = [handle, ctypes.c_uint]
++            self._api.TerminateJobObject.restype = boolean
++            self._api.OpenProcess.argtypes = [dword, boolean, dword]
++            self._api.OpenProcess.restype = handle
++            self._api.CloseHandle.argtypes = [handle]
++            self._api.CloseHandle.restype = boolean
++            self._handle = self._api.CreateJobObjectW(None, None)
++            if not self._handle:
++                raise ctypes.WinError(ctypes.get_last_error())
++            limits = _ExtendedLimits()
++            limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
++            if not self._api.SetInformationJobObject(
++                self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
++            ):
++                error = ctypes.WinError(ctypes.get_last_error())
++                self.close()
++                raise error
++
++        def assign(self, pid: int) -&gt; None:
++            &quot;&quot;&quot;Assign the waiting launcher; fail closed when nesting is prohibited.&quot;&quot;&quot;
++            process = self._api.OpenProcess(0x0100 | 0x0001 | 0x1000, False, pid)
++            if not process:
++                raise ctypes.WinError(ctypes.get_last_error())
++            try:
++                assigned = ctypes.c_int()
++                if not self._api.IsProcessInJob(
++                    process, self._handle, ctypes.byref(assigned)
++                ):
++                    raise ctypes.WinError(ctypes.get_last_error())
++                if assigned.value:
++                    return
++                if not self._api.AssignProcessToJobObject(self._handle, process):
++                    raise ctypes.WinError(ctypes.get_last_error())
++            finally:
++                self._api.CloseHandle(process)
++
++        def active_processes(self) -&gt; int:
++            if not self._handle:
++                return 0
++            info = _Accounting()
++            if not self._api.QueryInformationJobObject(
++                self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
++            ):
++                raise ctypes.WinError(ctypes.get_last_error())
++            return int(info.active_processes)
++
++        def terminate(self) -&gt; None:
++            if self._handle and not self._api.TerminateJobObject(self._handle, 1):
++                raise ctypes.WinError(ctypes.get_last_error())
++
++        def close(self) -&gt; None:
++            if self._handle:
++                if not self._api.CloseHandle(self._handle):
++                    raise ctypes.WinError(ctypes.get_last_error())
++                self._handle = None
++
++
++def create_windows_job() -&gt; WindowsJob:
++    if os.name != &quot;nt&quot;:
++        raise RuntimeError(&quot;Windows Job Objects require Windows&quot;)
++    return _WindowsJob()</pre></details></section><section id="s3"><h2>Execute only after ownership is established</h2><p>A trusted launcher reports its PID, then waits for a server acknowledgment. The server assigns both the bootloader and its verified Python descendant before acknowledgment. EOF executes nothing; frozen launchers reset the inherited DLL directory.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">New module: Windows was rejected</text><text x="485" y="80">PID greeting → job assignment → execute</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py#L1">openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py#L19">openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py:19</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py b/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py
+new file mode 100644
+index 00000000..26067ee0
+--- /dev/null
++++ b/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py
+@@ -0,0 +1,36 @@
++&quot;&quot;&quot;Launch trusted backend code only after the server assigns kernel ownership.&quot;&quot;&quot;
++
++import ctypes
++import os
++import subprocess
++import sys
++
++
++LAUNCHER_FLAG = &quot;--canvas-backend-launcher&quot;
++
++
++def launcher_argv(argv: list[str]) -&gt; list[str]:
++    # PyInstaller adds this runtime-only attribute; its executable is not Python.
++    if getattr(sys, &quot;frozen&quot;, False):
++        return [sys.executable, LAUNCHER_FLAG, *argv]
++    return [sys.executable, &quot;-m&quot;, __name__, *argv]
++
++
++def run_backend(argv: list[str]) -&gt; int:
++    if os.name != &quot;nt&quot; or not argv:
++        raise RuntimeError(&quot;The backend launcher requires Windows and an executable&quot;)
++    print(f&quot;OPENHANDS_BACKEND_LAUNCHER:{os.getpid()}&quot;, flush=True)
++    # EOF also covers server death before job assignment, with no backend spawned.
++    if sys.stdin.buffer.read(1) != b&quot;G&quot;:
++        return 1
++    # PyInstaller&#x27;s DLL directory must not override the backend&#x27;s own runtime.
++    kernel = ctypes.WinDLL(&quot;kernel32&quot;, use_last_error=True)
++    kernel.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
++    kernel.SetDllDirectoryW.restype = ctypes.c_int
++    if not kernel.SetDllDirectoryW(None):
++        raise ctypes.WinError(ctypes.get_last_error())
++    return subprocess.run(argv, stdin=subprocess.DEVNULL, check=False).returncode
++
++
++if __name__ == &quot;__main__&quot;:
++    raise SystemExit(run_backend(sys.argv[1:]))</pre></details></section><section id="s4"><h2>Packaged servers expose the trusted launcher</h2><p>The internal launcher flag dispatches before normal server startup. Ordinary Python uses a module invocation; PyInstaller reuses the packaged executable.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Only normal server startup</text><text x="485" y="80">Internal launcher flag or normal startup</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-agent-server/openhands/agent_server/__main__.py#L232">openhands-agent-server/openhands/agent_server/__main__.py:232</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/__main__.py#L236">openhands-agent-server/openhands/agent_server/__main__.py:236</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/__main__.py b/openhands-agent-server/openhands/agent_server/__main__.py
+index 226f43dc..94ed1ad3 100644
+--- a/openhands-agent-server/openhands/agent_server/__main__.py
++++ b/openhands-agent-server/openhands/agent_server/__main__.py
+@@ -10,6 +10,10 @@ from types import FrameType
+ import uvicorn
+ from uvicorn import Config
+ 
++from openhands.agent_server.canvas_extensions.windows_launcher import (
++    LAUNCHER_FLAG,
++    run_backend,
++)
+ from openhands.agent_server.logging_config import LOGGING_CONFIG
+ from openhands.sdk.logger import DEBUG, get_logger
+ 
+@@ -230,6 +234,9 @@ def _setup_crash_diagnostics() -&gt; None:
+ 
+ 
+ def main() -&gt; None:
++    if sys.argv[1:2] == [LAUNCHER_FLAG]:
++        raise SystemExit(run_backend(sys.argv[2:]))
++
+     # Set up crash diagnostics early, before any other initialization
+     _setup_crash_diagnostics()</pre></details></section><section id="s5"><h2>Real Windows processes prove cleanup</h2><p>Native interpreter archives exercise install/start/logs/stop/restart, isolated environment, archive rejection, assignment failure, health timeout, cancellation, disable/uninstall, spontaneous exit, and server death. Cleanup is asserted before status polling or reaping.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">New suite: no Windows App evidence</text><text x="485" y="80">Native trees + failure and crash assertions</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py#L1">tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py#L136">tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py:136</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py b/tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
+new file mode 100644
+index 00000000..9a04899d
+--- /dev/null
++++ b/tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
+@@ -0,0 +1,408 @@
++&quot;&quot;&quot;Real native Windows lifecycle tests; no WSL or mocked process APIs.&quot;&quot;&quot;
++
++import asyncio
++import hashlib
++import io
++import json
++import os
++import subprocess
++import sys
++import tarfile
++import time
++import zipfile
++from pathlib import Path
++
++import psutil
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++from openhands.agent_server.canvas_extensions import backend
++from openhands.agent_server.canvas_extensions.backend import (
++    CanvasExtensionBackendManager,
++)
++from openhands.agent_server.canvas_extensions.installed import install_canvas_extension
++from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
++from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
++
++from .conftest import write_extension
++
++
++pytestmark = pytest.mark.skipif(
++    sys.platform != &quot;win32&quot;, reason=&quot;native Windows lifecycle&quot;
++)
++
++_SERVER = &quot;&quot;&quot;
++import http.server, json, os, socket, subprocess, sys
++socket.getfqdn = lambda name=&#x27;&#x27;: name
++port, data = int(sys.argv[1]), sys.argv[2]
++child = subprocess.Popen([sys.executable, &#x27;-c&#x27;, &#x27;import time; time.sleep(300)&#x27;])
++with open(os.path.join(data, &#x27;runtime.json&#x27;), &#x27;w&#x27;) as f:
++    json.dump({&#x27;pid&#x27;: os.getpid(), &#x27;child&#x27;: child.pid, &#x27;env&#x27;: dict(os.environ)}, f)
++print(&#x27;backend-ready&#x27;, flush=True)
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        self.send_response(503 if self.path == &quot;/unhealthy&quot; else 200)
++        self.end_headers()
++        if self.path == &#x27;/exit&#x27;:
++            self.wfile.flush()
++            os._exit(0)
++    def log_message(self, *args): pass
++http.server.HTTPServer((&#x27;127.0.0.1&#x27;, port), Handler).serve_forever()
++&quot;&quot;&quot;
++
++
++@pytest.fixture(scope=&quot;session&quot;)
++def python_archive(tmp_path_factory):
++    &quot;&quot;&quot;Package the runner&#x27;s locked interpreter as a self-contained native artifact.&quot;&quot;&quot;
++    root = tmp_path_factory.mktemp(&quot;windows-runtime&quot;)
++    base = Path(sys.base_prefix)
++    version = f&quot;python{sys.version_info.major}{sys.version_info.minor}&quot;
++    library = root / f&quot;{version}.zip&quot;
++    with zipfile.ZipFile(library, &quot;w&quot;, zipfile.ZIP_DEFLATED) as archive:
++        for source in (base / &quot;Lib&quot;).rglob(&quot;*.py&quot;):
++            relative = source.relative_to(base / &quot;Lib&quot;)
++            if not {&quot;site-packages&quot;, &quot;__pycache__&quot;}.intersection(relative.parts):
++                archive.write(source, relative.as_posix())
++    target = root / &quot;runtime.tar.gz&quot;
++    with tarfile.open(target, &quot;w:gz&quot;) as archive:
++        archive.add(base / &quot;python.exe&quot;, arcname=&quot;python.exe&quot;)
++        for source in base.glob(&quot;*.dll&quot;):
++            archive.add(source, arcname=source.name)
++        archive.add(base / &quot;DLLs&quot;, arcname=&quot;DLLs&quot;, recursive=True)
++        archive.add(library, arcname=library.name)
++        payload = f&quot;{version}.zip\n.\nDLLs\n&quot;.encode()
++        info = tarfile.TarInfo(f&quot;{version}._pth&quot;)
++        info.size = len(payload)
++        archive.addfile(info, io.BytesIO(payload))
++    return target
++
++
++@pytest.fixture
++def installed_backend(tmp_path, python_archive):
++    source = write_extension(tmp_path / &quot;source&quot; / &quot;my-extension&quot;)
++    archive = source / &quot;backend.tar.gz&quot;
++    with (
++        tarfile.open(python_archive, &quot;r:gz&quot;) as original,
++        tarfile.open(archive, &quot;w:gz&quot;) as target,
++    ):
++        for member in original:
++            target.addfile(
++                member, original.extractfile(member) if member.isfile() else None
++            )
++        payload = _SERVER.encode()
++        member = tarfile.TarInfo(&quot;server.py&quot;)
++        member.size = len(payload)
++        target.addfile(member, io.BytesIO(payload))
++    path = source / MANIFEST_FILENAME
++    manifest = json.loads(path.read_text())
++    manifest[&quot;backend&quot;] = {
++        &quot;schema_version&quot;: 1,
++        # The schema-1 canonical map remains Linux-only for wire compatibility.
++        # This unused URL must never be selected on Windows.
++        &quot;artifacts&quot;: {
++            &quot;linux-amd64&quot;: {
++                &quot;url&quot;: &quot;https://example.invalid/linux.tar.gz&quot;,
++                &quot;sha256&quot;: &quot;0&quot; * 64,
++            }
++        },
++        &quot;additional_artifacts&quot;: {
++            &quot;windows-amd64&quot;: {
++                &quot;path&quot;: archive.name,
++                &quot;sha256&quot;: hashlib.sha256(archive.read_bytes()).hexdigest(),
++            }
++        },
++        &quot;argv&quot;: [
++            &quot;{artifact_dir}/python.exe&quot;,
++            &quot;{artifact_dir}/server.py&quot;,
++            &quot;{port}&quot;,
++            &quot;{data_dir}&quot;,
++        ],
++        &quot;health&quot;: {&quot;path&quot;: &quot;/health&quot;, &quot;timeout_seconds&quot;: 10, &quot;interval_seconds&quot;: 0.05},
++    }
++    path.write_text(json.dumps(manifest))
++    installed = tmp_path / &quot;installed&quot;
++    install_canvas_extension(str(source), installed_dir=installed)
++    return installed, tmp_path / &quot;state&quot;
++
++
++async def _dead(*pids):
++    deadline = time.monotonic() + 10
++    while any(psutil.pid_exists(pid) for pid in pids):
++        assert time.monotonic() &lt; deadline, f&quot;processes survived: {pids}&quot;
++        await asyncio.sleep(0.05)
++
++
++async def test_windows_backend_lifecycle(installed_backend, monkeypatch):
++    manager = CanvasExtensionBackendManager(*installed_backend)
++    revision = manager.revision(&quot;my-extension&quot;)
++    assert revision is not None
++    monkeypatch.setenv(&quot;OH_UNGRANTED_SECRET&quot;, &quot;do-not-inherit&quot;)
++    try:
++        prepared = await manager.prepare(&quot;my-extension&quot;, revision)
++        assert prepared.prepared_revision == revision
++        started = await manager.start(&quot;my-extension&quot;, revision)
++        assert started.state == &quot;ready&quot;, started.detail
++        runtime_file = manager.data_dir / &quot;my-extension&quot; / &quot;runtime.json&quot;
++        runtime = json.loads(runtime_file.read_text())
++        assert &quot;OH_UNGRANTED_SECRET&quot; not in runtime[&quot;env&quot;]
++        assert Path(runtime[&quot;env&quot;][&quot;USERPROFILE&quot;]).is_relative_to(manager.data_dir)
++        assert runtime[&quot;env&quot;][&quot;SYSTEMROOT&quot;] == os.environ[&quot;SYSTEMROOT&quot;]
++        assert &quot;backend-ready&quot; in (await manager.logs(&quot;my-extension&quot;, 4096)).logs
++        assert (await manager.status(&quot;my-extension&quot;)).state == &quot;ready&quot;
++        assert (await manager.stop(&quot;my-extension&quot;)).state == &quot;stopped&quot;
++        await _dead(runtime[&quot;pid&quot;], runtime[&quot;child&quot;])
++        assert runtime_file.exists()
++        restarted = await manager.start(&quot;my-extension&quot;, revision)
++        assert restarted.state == &quot;ready&quot;, restarted.detail
++        runtime = json.loads(runtime_file.read_text())
++        await manager.shutdown()
++        await _dead(runtime[&quot;pid&quot;], runtime[&quot;child&quot;])
++    finally:
++        await manager.shutdown()
++
++
++async def test_windows_server_crash_kills_descendants(installed_backend):
++    installed, state = installed_backend
++    script = &quot;&quot;&quot;
++import asyncio, os, sys
++from pathlib import Path
++from openhands.agent_server.canvas_extensions import backend as backend_module
++from openhands.agent_server.canvas_extensions.backend import (
++    CanvasExtensionBackendManager,
++)
++binary = os.environ.get(&quot;OPENHANDS_TEST_SERVER_BINARY&quot;)
++if binary:
++    backend_module.launcher_argv = lambda argv: [
++        binary, &quot;--canvas-backend-launcher&quot;, *argv
++    ]
++async def main():
++    manager = CanvasExtensionBackendManager(Path(sys.argv[1]), Path(sys.argv[2]))
++    revision = manager.revision(&#x27;my-extension&#x27;)
++    await manager.prepare(&#x27;my-extension&#x27;, revision)
++    result = await manager.start(&#x27;my-extension&#x27;, revision)
++    print(result.model_dump_json(), flush=True)
++    await asyncio.sleep(300)
++asyncio.run(main())
++&quot;&quot;&quot;
++    server = await asyncio.create_subprocess_exec(
++        sys.executable, &quot;-c&quot;, script, str(installed), str(state), stdout=subprocess.PIPE
++    )
++    try:
++        assert server.stdout is not None
++        result = json.loads(await asyncio.wait_for(server.stdout.readline(), 90))
++        assert result[&quot;state&quot;] == &quot;ready&quot;, result
++        runtime = json.loads(
++            (state / &quot;data&quot; / &quot;my-extension&quot; / &quot;runtime.json&quot;).read_text()
++        )
++        server.kill()
++        await server.wait()
++        # Cleanup must happen without starting another server or calling reaping.
++        await _dead(runtime[&quot;pid&quot;], runtime[&quot;child&quot;])
++        manager = CanvasExtensionBackendManager(installed, state)
++        await manager.reap_orphans()
++        assert not list(manager.run_dir.glob(&quot;*.json&quot;))
++    finally:
++        if server.returncode is None:
++            server.kill()
++        await server.wait()
++
++
++@pytest.mark.parametrize(
++    &quot;names&quot;,
++    [(&quot;file:stream&quot;,), (&quot;NUL&quot;,), (&quot;trailing.&quot;,), (&quot;a\\..\\outside&quot;,), (&quot;File&quot;, &quot;file&quot;)],
++)
++def test_windows_archive_rejects_ambiguous_paths(tmp_path, names):
++    archive = tmp_path / &quot;bad.tar.gz&quot;
++    with tarfile.open(archive, &quot;w:gz&quot;) as target:
++        for name in names:
++            member = tarfile.TarInfo(name)
++            member.size = 1
++            target.addfile(member, io.BytesIO(b&quot;x&quot;))
++    destination = tmp_path / &quot;artifact&quot;
++    destination.mkdir()
++    with pytest.raises(ValueError, match=&quot;unsafe archive entry&quot;):
++        CanvasExtensionBackendManager._extract_archive(archive, destination)
++
++
++async def test_windows_assignment_failure_never_executes_backend(
++    installed_backend, monkeypatch
++):
++    captured = []
++    original = backend.create_windows_job
++
++    class RefusingJob:
++        def __init__(self):
++            self.job = original()
++
++        def assign(self, pid):
++            captured.append(pid)
++            raise OSError(&quot;job assignment refused&quot;)
++
++        def active_processes(self):
++            return self.job.active_processes()
++
++        def terminate(self):
++            self.job.terminate()
++
++        def close(self):
++            self.job.close()
++
++    monkeypatch.setattr(backend, &quot;create_windows_job&quot;, RefusingJob)
++    manager = CanvasExtensionBackendManager(*installed_backend)
++    revision = manager.revision(&quot;my-extension&quot;)
++    assert revision is not None
++    try:
++        await manager.prepare(&quot;my-extension&quot;, revision)
++        result = await manager.start(&quot;my-extension&quot;, revision)
++        assert result.state == &quot;unhealthy&quot;
++        assert &quot;job assignment refused&quot; in (result.detail or &quot;&quot;)
++        assert len(captured) == 1
++        await _dead(*captured)
++        assert not (manager.data_dir / &quot;my-extension&quot; / &quot;runtime.json&quot;).exists()
++    finally:
++        await manager.shutdown()
++
++
++@pytest.mark.parametrize(&quot;operation&quot;, [&quot;disable&quot;, &quot;uninstall&quot;])
++def test_windows_http_removal_stops_owned_tree(
++    installed_backend, monkeypatch, operation
++):
++    installed, state = installed_backend
++    monkeypatch.setattr(
++        &quot;openhands.agent_server.canvas_extensions.installed.get_installed_canvas_extensions_dir&quot;,
++        lambda: installed,
++    )
++    manager = CanvasExtensionBackendManager(installed, state)
++    app = FastAPI()
++    app.state.canvas_extension_backend_manager = manager
++    app.include_router(canvas_extensions_router)
++    with TestClient(app) as client:
++        root = &quot;/canvas-extensions/installed/my-extension&quot;
++        revision = manager.revision(&quot;my-extension&quot;)
++        assert (
++            client.post(
++                root + &quot;/backend/prepare&quot;, json={&quot;revision&quot;: revision}
++            ).status_code
++            == 200
++        )
++        result = client.post(root + &quot;/backend/start&quot;, json={&quot;revision&quot;: revision})
++        assert result.json()[&quot;state&quot;] == &quot;ready&quot;, result.text
++        runtime_path = manager.data_dir / &quot;my-extension&quot; / &quot;runtime.json&quot;
++        runtime = json.loads(runtime_path.read_text())
++        response = (
++            client.patch(root, json={&quot;enabled&quot;: False})
++            if operation == &quot;disable&quot;
++            else client.delete(root)
++        )
++        assert response.status_code == 200, response.text
++        assert not psutil.pid_exists(runtime[&quot;pid&quot;])
++        assert not psutil.pid_exists(runtime[&quot;child&quot;])
++        assert runtime_path.is_file()
++
++
++@pytest.mark.parametrize(&quot;operation&quot;, [&quot;timeout&quot;, &quot;stop&quot;])
++async def test_windows_unhealthy_start_cleans_tree(installed_backend, operation):
++    installed, state = installed_backend
++    path = installed / &quot;my-extension&quot; / MANIFEST_FILENAME
++    manifest = json.loads(path.read_text())
++    manifest[&quot;backend&quot;][&quot;health&quot;].update(path=&quot;/unhealthy&quot;, timeout_seconds=5)
++    path.write_text(json.dumps(manifest))
++    manager = CanvasExtensionBackendManager(installed, state)
++    revision = manager.revision(&quot;my-extension&quot;)
++    assert revision is not None
++    try:
++        await manager.prepare(&quot;my-extension&quot;, revision)
++        pending = asyncio.create_task(manager.start(&quot;my-extension&quot;, revision))
++        runtime_path = manager.data_dir / &quot;my-extension&quot; / &quot;runtime.json&quot;
++        deadline = time.monotonic() + 15
++        while not runtime_path.exists():
++            assert time.monotonic() &lt; deadline
++            await asyncio.sleep(0.05)
++        if operation == &quot;stop&quot;:
++            assert (await manager.stop(&quot;my-extension&quot;)).state == &quot;stopped&quot;
++        result = await pending
++        assert result.state == (&quot;unhealthy&quot; if operation == &quot;timeout&quot; else &quot;stopped&quot;)
++        runtime = json.loads(runtime_path.read_text())
++        await _dead(runtime[&quot;pid&quot;], runtime[&quot;child&quot;])
++    finally:
++        await manager.shutdown()
++
++
++async def test_windows_backend_exit_reclaims_children(installed_backend):
++    manager = CanvasExtensionBackendManager(*installed_backend)
++    revision = manager.revision(&quot;my-extension&quot;)
++    assert revision is not None
++    try:
++        await manager.prepare(&quot;my-extension&quot;, revision)
++        status = await manager.start(&quot;my-extension&quot;, revision)
++        assert status.state == &quot;ready&quot;, status.detail
++        runtime = json.loads(
++            (manager.data_dir / &quot;my-extension&quot; / &quot;runtime.json&quot;).read_text()
++        )
++        psutil.Process(runtime[&quot;pid&quot;]).kill()
++        # No polling or reaping call may be needed to reclaim the orphan.
++        await _dead(runtime[&quot;pid&quot;], runtime[&quot;child&quot;])
++        assert (await manager.status(&quot;my-extension&quot;)).state == &quot;unhealthy&quot;
++        assert manager.ready_endpoint(&quot;my-extension&quot;) is None
++    finally:
++        await manager.shutdown()
++
++
++@pytest.mark.skipif(
++    not os.environ.get(&quot;OPENHANDS_TEST_SERVER_BINARY&quot;),
++    reason=&quot;the packaged-server CI job supplies the built executable&quot;,
++)
++async def test_windows_frozen_launcher(installed_backend, monkeypatch):
++    binary = Path(os.environ[&quot;OPENHANDS_TEST_SERVER_BINARY&quot;])
++    assert binary.is_file()
++    monkeypatch.setattr(
++        backend,
++        &quot;launcher_argv&quot;,
++        lambda argv: [str(binary), &quot;--canvas-backend-launcher&quot;, *argv],
++    )
++    manager = CanvasExtensionBackendManager(*installed_backend)
++    revision = manager.revision(&quot;my-extension&quot;)
++    assert revision is not None
++    try:
++        await manager.prepare(&quot;my-extension&quot;, revision)
++        result = await manager.start(&quot;my-extension&quot;, revision)
++        assert result.state == &quot;ready&quot;, (
++            result.detail,
++            (await manager.logs(&quot;my-extension&quot;, 4096)).logs,
++        )
++        runtime = json.loads(
++            (manager.data_dir / &quot;my-extension&quot; / &quot;runtime.json&quot;).read_text()
++        )
++        await manager.shutdown()
++        await _dead(runtime[&quot;pid&quot;], runtime[&quot;child&quot;])
++    finally:
++        await manager.shutdown()
++
++
++async def test_windows_launcher_eof_does_not_run_backend(tmp_path):
++    marker = tmp_path / &quot;executed&quot;
++    script = &quot;from pathlib import Path; import sys; Path(sys.argv[1]).touch()&quot;
++    process = await asyncio.create_subprocess_exec(
++        sys.executable,
++        &quot;-m&quot;,
++        &quot;openhands.agent_server.canvas_extensions.windows_launcher&quot;,
++        sys.executable,
++        &quot;-c&quot;,
++        script,
++        str(marker),
++        stdin=subprocess.PIPE,
++        stdout=subprocess.PIPE,
++    )
++    try:
++        assert process.stdout is not None
++        greeting = await asyncio.wait_for(process.stdout.readline(), 30)
++        assert greeting.startswith(b&quot;OPENHANDS_BACKEND_LAUNCHER:&quot;)
++        assert process.stdin is not None
++        process.stdin.close()
++        assert await asyncio.wait_for(process.wait(), 10) == 1
++        assert not marker.exists()
++    finally:
++        if process.returncode is None:
++            process.kill()
++        await process.wait()</pre></details></section><section id="s6"><h2>A Windows runner owns Windows validation</h2><p>Runs the real lifecycle suite on windows-latest with the committed Python dependency lock. WSL and simulated Windows APIs are not used.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No native Windows App lifecycle job</text><text x="485" y="80">windows-latest → real lifecycle suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/.github/workflows/canvas-backends-windows.yml#L1">.github/workflows/canvas-backends-windows.yml:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/.github/workflows/canvas-backends-windows.yml#L19">.github/workflows/canvas-backends-windows.yml:19</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/canvas-backends-windows.yml b/.github/workflows/canvas-backends-windows.yml
+new file mode 100644
+index 00000000..cfbbecc7
+--- /dev/null
++++ b/.github/workflows/canvas-backends-windows.yml
+@@ -0,0 +1,35 @@
++---
++name: Native Windows App backends
++on:
++    pull_request:
++        paths:
++            - openhands-agent-server/**
++            - tests/agent_server/canvas_extensions/**
++            - uv.lock
++            - .github/workflows/canvas-backends-windows.yml
++    workflow_dispatch:
++permissions:
++    contents: read
++concurrency:
++    group: windows-app-backends-${{ github.event.pull_request.number || github.ref }}
++    cancel-in-progress: true
++jobs:
++    lifecycle:
++        name: Windows App backend lifecycle
++        runs-on: windows-latest
++        timeout-minutes: 15
++        steps:
++            - uses: actions/checkout@v7.0.1
++              with:
++                  persist-credentials: false
++            - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
++              with:
++                  python-version: &#x27;3.13&#x27;
++                  enable-cache: true
++            - run: uv sync --frozen --group dev
++            - name: Test native backend ownership and manifest compatibility
++              run: &gt;-
++                  uv run --frozen python -m pytest -v
++                  --timeout=120 --timeout-method=thread
++                  tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
++                  tests/agent_server/canvas_extensions/test_canvas_extensions_manifest.py</pre></details></section><section id="s7"><h2>Exercise the actual packaged Windows launcher</h2><p>After building the Windows executable, lifecycle and server-crash tests invoke that artifact. This covers bootloader children and DLL search behavior that Python-only tests cannot prove.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Build binary; no managed App smoke</text><text x="485" y="80">Build → packaged launch and crash tests</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/.github/workflows/server.yml#L1">.github/workflows/server.yml:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/.github/workflows/server.yml#L64">.github/workflows/server.yml:64</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/server.yml b/.github/workflows/server.yml
+index 176f65f9..a9d9a905 100644
+--- a/.github/workflows/server.yml
++++ b/.github/workflows/server.yml
+@@ -49,7 +49,7 @@ jobs:
+                   version: latest
+                   python-version: &#x27;3.13&#x27;
+             - name: Install dependencies
+-              run: uv sync --dev
++              run: uv sync --frozen --group dev
+ 
+             - name: Build binary (Unix)
+               if: runner.os != &#x27;Windows&#x27;
+@@ -59,7 +59,16 @@ jobs:
+             - name: Build binary (Windows)
+               if: runner.os == &#x27;Windows&#x27;
+               shell: bash
+-              run: uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
++              run: uv run --frozen pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
++
++            - name: Test packaged Windows App backend launcher
++              if: runner.os == &#x27;Windows&#x27;
++              env:
++                  OPENHANDS_TEST_SERVER_BINARY: ${{ github.workspace }}/dist/openhands-agent-server.exe
++              run: &gt;-
++                  uv run --frozen python -m pytest -v --timeout=120
++                  tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
++                  -k &quot;frozen_launcher or server_crash&quot;
+ 
+             - name: Test binary
+               shell: bash</pre></details></section><section id="s8"><h2>Real process tests cover native cleanup</h2><p>Existing lifecycle tests now run on macOS with the active Python interpreter. Regression tests exercise contained archive links and a real exited, unreaped process group. Local backend/manifest regression: 81 passed, one platform skip.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Linux fixture; no zombie-group regression</text><text x="485" y="80">Darwin fixture + real zombie regression</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py#L1287">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1287</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
+index 1ac9bd8d..95ee0a56 100644
 --- a/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
 +++ b/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py
 @@ -5,6 +5,7 @@ import io
@@ -492,7 +1436,7 @@ index 305e52ec..4ec299b5 100644
 +        assert not CanvasExtensionBackendManager._group_alive(process.pid)
 +        CanvasExtensionBackendManager._signal_group(process.pid, signal.SIGTERM)
 +    finally:
-+        process.wait(timeout=10)</pre></details></section><section id="s3"><h2>Mac runners execute all suites</h2><p>Install tmux and verify the runner-provided Chrome. Fork only terminal tests; browser and other tools call macOS frameworks that crash after fork. Keep all suites enabled, with per-test diagnostics for hangs.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No tmux; browsers inherit forked runtime</text><text x="485" y="80">Prerequisites + isolated terminal suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/tests-macos.yml b/.github/workflows/tests-macos.yml
++        process.wait(timeout=10)</pre></details></section><section id="s9"><h2>Mac runners execute all suites</h2><p>Install tmux and verify the runner-provided Chrome. Fork only terminal tests; browser and other tools call macOS frameworks that crash after fork. Keep all suites enabled, with per-test diagnostics for hangs.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No tmux; browsers inherit forked runtime</text><text x="485" y="80">Prerequisites + isolated terminal suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/tests-macos.yml b/.github/workflows/tests-macos.yml
 index b0513c42..d5ab71b7 100644
 --- a/.github/workflows/tests-macos.yml
 +++ b/.github/workflows/tests-macos.yml
@@ -531,7 +1475,7 @@ index b0513c42..d5ab71b7 100644
 +              run: &#x27;&quot;/Applications/Google Chrome.app/Contents/MacOS/Google Chrome&quot; --version&#x27;
 +
              - name: Run ${{ matrix.suite }} tests
-               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}</pre></details></section><section id="s4"><h2>Give the PTY a real viewport</h2><p>Native Mac CI exposed zero-sized PTYs: readline inserted spaces into echoed completion markers. Set the same bounded viewport used by tmux before starting the shell. Existing heredoc integration tests exercise the regression.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Zero-sized PTY; corrupted marker echoes</text><text x="485" y="80">Explicit viewport; intact completion markers</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L160">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:160</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L163">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:163</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
+               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}</pre></details></section><section id="s10"><h2>Give the PTY a real viewport</h2><p>Native Mac CI exposed zero-sized PTYs: readline inserted spaces into echoed completion markers. Set the same bounded viewport used by tmux before starting the shell. Existing heredoc integration tests exercise the regression.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Zero-sized PTY; corrupted marker echoes</text><text x="485" y="80">Explicit viewport; intact completion markers</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L160">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:160</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L163">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:163</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
 index 2672b7fc..7a70526d 100644
 --- a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
 +++ b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
@@ -560,7 +1504,7 @@ index 2672b7fc..7a70526d 100644
 +        termios.tcsetwinsize(slave_fd, (TMUX_SESSION_HEIGHT, TMUX_SESSION_WIDTH))
  
          logger.debug(&quot;Initializing PTY terminal with: %s&quot;, &quot; &quot;.join(bash_cmd))
-         try:</pre></details></section><section id="s5"><h2>Use an available UTF-8 locale</h2><p>Use en_US.UTF-8 on macOS, retaining C.UTF-8 elsewhere. The integration test checks the shell encoding, rather than a particular locale name.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">One fallback locale for all platforms</text><text x="485" y="80">Platform-available UTF-8 fallback</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/openhands-tools/openhands/tools/terminal/env.py#L16">openhands-tools/openhands/tools/terminal/env.py:16</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/env.py#L18">openhands-tools/openhands/tools/terminal/env.py:18</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/env.py b/openhands-tools/openhands/tools/terminal/env.py
+         try:</pre></details></section><section id="s11"><h2>Use an available UTF-8 locale</h2><p>Use en_US.UTF-8 on macOS, retaining C.UTF-8 elsewhere. The integration test checks the shell encoding, rather than a particular locale name.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">One fallback locale for all platforms</text><text x="485" y="80">Platform-available UTF-8 fallback</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-tools/openhands/tools/terminal/env.py#L16">openhands-tools/openhands/tools/terminal/env.py:16</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-tools/openhands/tools/terminal/env.py#L18">openhands-tools/openhands/tools/terminal/env.py:18</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/env.py b/openhands-tools/openhands/tools/terminal/env.py
 index 20243ba8..23756e0c 100644
 --- a/openhands-tools/openhands/tools/terminal/env.py
 +++ b/openhands-tools/openhands/tools/terminal/env.py
@@ -581,7 +1525,7 @@ index 20243ba8..23756e0c 100644
 +UTF8_FALLBACK_LOCALE = &quot;en_US.UTF-8&quot; if sys.platform == &quot;darwin&quot; else &quot;C.UTF-8&quot;
  
  
- def normalize_terminal_env(</pre></details></section><section id="s6"><h2>Test inherited priority correctly</h2><p>Hosted Mac runners already use utility QoS. Compare the resulting priority against an independently launched utility-clamped process and the inherited server priority; a clamp cannot lower a priority already below its ceiling. Local tests pass under both default and utility parent priority.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Require a strict priority decrease</text><text x="485" y="80">Verify the inherited utility ceiling</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/10be259c4fc89b23999e8c653f2130a358e02116/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_process_priority.py b/tests/tools/terminal/test_process_priority.py
+ def normalize_terminal_env(</pre></details></section><section id="s12"><h2>Test inherited priority correctly</h2><p>Hosted Mac runners already use utility QoS. Compare the resulting priority against an independently launched utility-clamped process and the inherited server priority; a clamp cannot lower a priority already below its ceiling. Local tests pass under both default and utility parent priority.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Require a strict priority decrease</text><text x="485" y="80">Verify the inherited utility ceiling</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_process_priority.py b/tests/tools/terminal/test_process_priority.py
 index 4aafd9c8..e5ea271d 100644
 --- a/tests/tools/terminal/test_process_priority.py
 +++ b/tests/tools/terminal/test_process_priority.py
@@ -607,4 +1551,4 @@ index 4aafd9c8..e5ea271d 100644
 +        )
 +        assert agent == min(server, utility)
      else:
-         assert agent == min(19, server + 10)</pre></details></section><h2>Supporting files</h2><table><tr><th>File</th><th>Change</th></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/.github/workflows/tests-macos.yml">.github/workflows/tests-macos.yml</a></td><td>+17 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py</a></td><td>+72 / −14</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py</a></td><td>+7 / −3</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-agent-server/pyproject.toml">openhands-agent-server/pyproject.toml</a></td><td>+1 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/env.py">openhands-tools/openhands/tools/terminal/env.py</a></td><td>+3 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py</a></td><td>+6 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py</a></td><td>+91 / −24</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/cross/test_verify_agent_server_skill.py">tests/cross/test_verify_agent_server_skill.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py</a></td><td>+3 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/browser_use/test_browser_executor_e2e.py">tests/tools/browser_use/test_browser_executor_e2e.py</a></td><td>+6 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_process_priority.py">tests/tools/terminal/test_process_priority.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_terminal_exit_code_top_level.py">tests/tools/terminal/test_terminal_exit_code_top_level.py</a></td><td>+2 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_terminal_session.py">tests/tools/terminal/test_terminal_session.py</a></td><td>+19 / −13</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/tests/tools/terminal/test_tmux_pane_pool.py">tests/tools/terminal/test_tmux_pane_pool.py</a></td><td>+3 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/8d80fce1656f561132f05c84f2e13f2554ab10d4/uv.lock">uv.lock</a></td><td>+2 / −0</td></tr></table><p>Temporary PR review aid. The repository release workflow removes root .pr artifacts after merge.</p></main></html>
+         assert agent == min(19, server + 10)</pre></details></section><h2>Supporting files</h2><table><tr><th>File</th><th>Change</th></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/.github/workflows/canvas-backends-windows.yml">.github/workflows/canvas-backends-windows.yml</a></td><td>+35 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/.github/workflows/server.yml">.github/workflows/server.yml</a></td><td>+11 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/.github/workflows/tests-macos.yml">.github/workflows/tests-macos.yml</a></td><td>+17 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/README.md">openhands-agent-server/openhands/agent_server/README.md</a></td><td>+40 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/__main__.py">openhands-agent-server/openhands/agent_server/__main__.py</a></td><td>+7 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py">openhands-agent-server/openhands/agent_server/canvas_extensions/backend.py</a></td><td>+213 / −21</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py">openhands-agent-server/openhands/agent_server/canvas_extensions/manifest.py</a></td><td>+9 / −3</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py">openhands-agent-server/openhands/agent_server/canvas_extensions/windows_job.py</a></td><td>+148 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py">openhands-agent-server/openhands/agent_server/canvas_extensions/windows_launcher.py</a></td><td>+36 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-agent-server/pyproject.toml">openhands-agent-server/pyproject.toml</a></td><td>+1 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-tools/openhands/tools/terminal/env.py">openhands-tools/openhands/tools/terminal/env.py</a></td><td>+3 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py</a></td><td>+6 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/agent_server/canvas_extensions/test_canvas_extension_backend.py">tests/agent_server/canvas_extensions/test_canvas_extension_backend.py</a></td><td>+91 / −24</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py">tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py</a></td><td>+408 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/agent_server/test_api.py">tests/agent_server/test_api.py</a></td><td>+2 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/cross/test_verify_agent_server_skill.py">tests/cross/test_verify_agent_server_skill.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py</a></td><td>+3 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/tools/browser_use/test_browser_executor_e2e.py">tests/tools/browser_use/test_browser_executor_e2e.py</a></td><td>+6 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/tools/terminal/test_process_priority.py">tests/tools/terminal/test_process_priority.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/tools/terminal/test_terminal_exit_code_top_level.py">tests/tools/terminal/test_terminal_exit_code_top_level.py</a></td><td>+2 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/tools/terminal/test_terminal_session.py">tests/tools/terminal/test_terminal_session.py</a></td><td>+19 / −13</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/tests/tools/terminal/test_tmux_pane_pool.py">tests/tools/terminal/test_tmux_pane_pool.py</a></td><td>+3 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/ccf1aca320238d7c7c0f396350f52972b99be9f9/uv.lock">uv.lock</a></td><td>+2 / −0</td></tr></table><p>Temporary PR review aid. The repository release workflow removes root .pr artifacts after merge.</p></main></html>
