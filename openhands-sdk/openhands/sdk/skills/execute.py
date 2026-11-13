@@ -16,11 +16,11 @@ privileges. Only use with trusted skill sources.
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 from typing import Final
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.command import execute_command
 
 
 logger = get_logger(__name__)
@@ -63,14 +63,12 @@ def _execute_inline_command(
     """
     cwd = str(working_dir) if working_dir else None
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        # execute_command kills the shell's whole process group on timeout.
+        result = execute_command(command, cwd=cwd, timeout=timeout, print_output=False)
+        if result.returncode == -1:
+            message = f"Command `{command}` timed out after {timeout}s"
+            logger.warning("Skill command failed: %s", message)
+            return f"[Error: {message}]"
         if result.returncode != 0:
             message = (
                 f"Command `{command}` exited with "
@@ -85,10 +83,6 @@ def _execute_inline_command(
             output += "\n... [output truncated]"
         return output
 
-    except subprocess.TimeoutExpired:
-        message = f"Command `{command}` timed out after {timeout}s"
-        logger.warning("Skill command failed: %s", message)
-        return f"[Error: {message}]"
     except Exception as e:
         message = f"Failed to execute command `{command}`: {e}"
         logger.warning("Skill command failed: %s", message)
