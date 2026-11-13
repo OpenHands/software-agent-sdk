@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.mcp.client import MCPClient
@@ -86,6 +87,88 @@ def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None
     conversation._ensure_agent_ready()
 
     assert provider.calls == []
+    conversation.close()
+
+
+def _mcp_tool(client: EmptyMCPClient, name: str) -> MCPToolDefinition:
+    return MCPToolDefinition.create(
+        mcp_tool=mcp_types.Tool(
+            name=name,
+            description=name,
+            input_schema={"type": "object", "properties": {}},
+        ),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+
+def test_add_mcp_servers_registers_modern_runtime_tools(tmp_path: Path) -> None:
+    client = EmptyMCPClient()
+    client.tools = [_mcp_tool(client, "fetch")]
+    provider = RecordingMCPToolProvider(client)
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+
+    conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+
+    assert [set(call) for call in provider.calls] == [{"docs"}]
+    assert "docs" in conversation.agent.mcp_config
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
+    conversation.close()
+
+
+def test_add_mcp_servers_rejects_sse_transport(tmp_path: Path) -> None:
+    provider = RecordingMCPToolProvider()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+
+    with pytest.raises(ValueError, match="SSE transport"):
+        conversation.add_mcp_servers(
+            {"events": MCPServer(url="http://example.test/sse", transport="sse")}
+        )
+
+    assert provider.calls == []
+    assert conversation.agent.mcp_config == {}
+    conversation.close()
+
+
+def test_add_mcp_servers_rejects_running_conversation(tmp_path: Path) -> None:
+    provider = RecordingMCPToolProvider()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+    conversation.state.transition(ConversationExecutionStatus.RUNNING, "test")
+
+    with pytest.raises(RuntimeError, match="while the conversation runs"):
+        conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+
+    assert provider.calls == []
+    assert conversation.agent.mcp_config == {}
     conversation.close()
 
 

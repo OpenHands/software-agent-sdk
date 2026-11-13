@@ -1707,6 +1707,67 @@ class LocalConversation(BaseConversation):
             on_tools_reconciled=self._on_mcp_tools_reconciled,
         )
 
+    def _runtime_mcp_create_kwargs(self) -> dict[str, Any]:
+        create_kwargs: dict[str, Any] = {
+            "on_tools_changed": lambda tools: self.agent._on_mcp_tools_changed(tools)
+        }
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = self._on_mcp_tools_reconciled
+        return create_kwargs
+
+    def add_mcp_servers(self, servers: Mapping[str, MCPServer]) -> None:
+        """Add modern MCP servers to this conversation without legacy session reuse."""
+        if not self.agent.supports_openhands_mcp:
+            raise ValueError("Runtime MCP additions require an OpenHands agent")
+        mcp_config = expand_mcp_servers(
+            dict(servers), self._state.secret_registry.get_secret_value
+        )
+        for name, server in mcp_config.items():
+            if server.effective_transport == "sse":
+                raise ValueError(
+                    f"Runtime MCP additions do not support SSE transport: {name}"
+                )
+
+        with self._state:
+            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
+                raise RuntimeError("Cannot add MCP servers while the conversation runs")
+            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            agent_ready = self._agent_ready
+
+        runtime_tools: list[ToolDefinition] = []
+        if agent_ready:
+            create_kwargs = self._runtime_mcp_create_kwargs()
+            try:
+                for name, server in enabled_mcp_servers(mcp_config).items():
+                    runtime_tools.extend(
+                        self._start_runtime_mcp_server(
+                            name, server, create_kwargs, prefixed=True
+                        )
+                    )
+            except Exception:
+                self._close_runtime_tools(runtime_tools)
+                raise
+
+        with self._state:
+            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
+                self._close_runtime_tools(runtime_tools)
+                raise RuntimeError("Cannot add MCP servers while the conversation runs")
+            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                self._close_runtime_tools(runtime_tools)
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            updated_agent = self.agent.model_copy(
+                update={"mcp_config": {**self.agent.mcp_config, **mcp_config}}
+            )
+            try:
+                updated_agent.add_runtime_tools(runtime_tools)
+            except Exception:
+                self._close_runtime_tools(runtime_tools)
+                raise
+            self.agent = self._state.agent = updated_agent
+
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
         has_invocable_skills = bool(
