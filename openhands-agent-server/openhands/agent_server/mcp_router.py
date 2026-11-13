@@ -941,7 +941,7 @@ async def get_mcp_oauth_status(job_id: str) -> MCPOAuthStatusResponse:
     return _get_oauth_job(job_id).to_status_response()
 
 
-def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> tuple[str, str]:
+def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
     try:
         parsed = urlparse(callback_url)
     except ValueError:  # e.g. an unclosed IPv6 bracket
@@ -965,7 +965,6 @@ def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> tuple[s
         raise Invalid("Unexpected OAuth callback URL") from None
     if port != expected_parsed.port or parsed.path != expected_parsed.path:
         raise Invalid("Unexpected OAuth callback URL")
-    return expected, parsed.query
 
 
 @mcp_router.post(
@@ -978,14 +977,14 @@ async def submit_mcp_oauth_callback(
     job_id: str, request: MCPOAuthCallbackRequest
 ) -> MCPOAuthStatusResponse:
     job = _get_oauth_job(job_id)
-    callback_base, query = _validate_callback_url(request.callback_url, job)
+    _validate_callback_url(request.callback_url, job)
     if job.done.is_set():
         # A replayed or late callback: the probe finished and its callback
         # server is closed, so report the outcome instead of forwarding.
         return job.to_status_response()
     try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
-            response = await client.get(callback_base, params=query)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = await client.get(request.callback_url)
     except httpx.TransportError as exc:
         # The probe may have finished while we were forwarding.
         if job.done.is_set():
