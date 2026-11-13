@@ -319,6 +319,11 @@ def _failed_servers(caplog: pytest.LogCaptureFixture) -> list[str]:
     [
         pytest.param(UNRESPONSIVE_SERVER, id="never-answers"),
         pytest.param({"command": "missing-mcp-server-command"}, id="missing-command"),
+        # Port 1 is reserved and nothing listens there: the connection is refused.
+        pytest.param(
+            {"transport": "http", "url": "http://127.0.0.1:1/mcp"},
+            id="unreachable-http",
+        ),
     ],
 )
 def test_failing_mcp_server_keeps_the_other_servers_tools(
