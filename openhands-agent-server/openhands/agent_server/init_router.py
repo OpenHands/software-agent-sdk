@@ -400,7 +400,7 @@ class InitService:
         """Replace the telemetry sink with the one ``config`` asks for."""
         await shutdown_telemetry_sink()
         self._app.state.telemetry_sink = await build_telemetry_sink(
-            config, stores.settings
+            config, stores.settings, deferred_init=self._base_config.deferred_init
         )
 
     async def teardown(self) -> None:
