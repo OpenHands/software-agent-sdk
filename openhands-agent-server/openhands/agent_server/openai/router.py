@@ -11,8 +11,14 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_config,
+    get_conversation_registry,
+    get_conversation_service,
+    get_stores,
+)
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.errors import status_for
 from openhands.agent_server.openai.idempotency import Claim, GatewayIdempotencyStore
@@ -31,6 +37,7 @@ from openhands.agent_server.openai.service import (
     run_chat_completion,
     run_response,
 )
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
@@ -40,7 +47,6 @@ from openhands.sdk.errors import (
     DomainError,
     Invalid,
     Unauthenticated,
-    Unavailable,
     Unprocessable,
 )
 from openhands.sdk.logger import get_logger
@@ -58,7 +64,7 @@ _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
 
 
 def check_openai_api_key(
-    request: Request,
+    config: Config = Depends(get_config),
     session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
     authorization: HTTPAuthorizationCredentials | None = Depends(_AUTHORIZATION_HEADER),
 ) -> None:
@@ -71,10 +77,9 @@ def check_openai_api_key(
     system. When no session keys are configured, the local server remains
     unauthenticated like the existing agent-server API.
 
-    Reads config from ``request.app.state`` at request time so that keys
-    delivered via ``POST /api/init`` take effect immediately.
+    Reads the config at request time so that keys delivered via
+    ``POST /api/init`` take effect immediately.
     """
-    config: Config = request.app.state.config
     if not config.session_api_keys:
         return
     bearer_token = authorization.credentials if authorization else None
@@ -85,15 +90,9 @@ def check_openai_api_key(
     raise Unauthenticated()
 
 
-def _get_config(request: Request) -> Config:
-    config = getattr(request.app.state, "config", None)
-    if not isinstance(config, Config):
-        raise Unavailable("Agent server config is not available")
-    return config
-
-
-def _get_docker_registry(request: Request) -> DockerConversationRegistry | None:
-    registry = getattr(request.app.state, "conversation_registry", None)
+def _get_docker_registry(
+    registry: ConversationRegistry,
+) -> DockerConversationRegistry | None:
     return registry if isinstance(registry, DockerConversationRegistry) else None
 
 
@@ -217,9 +216,10 @@ def _parse_observability_overrides(
 
 
 @openai_router.get("/v1/models", response_model=OpenAIModelListResponse)
-async def get_openai_models(request: Request) -> OpenAIModelListResponse:
-    _get_config(request)
-    return await list_openai_models()
+async def get_openai_models(
+    stores: ServerStores = Depends(get_stores),
+) -> OpenAIModelListResponse:
+    return await list_openai_models(stores)
 
 
 @openai_router.post(
@@ -247,8 +247,10 @@ async def create_chat_completion(
         str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> OpenAIChatCompletionResponse | JSONResponse | StreamingResponse:
-    config = _get_config(request)
     overrides = _parse_observability_overrides(
         span_name=x_openhands_observability_span_name,
         tags=x_openhands_observability_tags,
@@ -268,7 +270,7 @@ async def create_chat_completion(
     prepared = None
     if keyed is not None:
         try:
-            prepared = prepare_chat_completion(body, config, conversation_id)
+            prepared = prepare_chat_completion(body, config, stores, conversation_id)
         except Exception:
             assert keyed[1].claim_id is not None
             try:
@@ -280,13 +282,14 @@ async def create_chat_completion(
         result = await run_chat_completion(
             request=body.model_copy(update={"stream": False}) if body.stream else body,
             config=config,
+            stores=stores,
             conversation_service=conversation_service,
             reusable_conversation_id=(
                 keyed[1].conversation_id
                 if keyed is not None
                 else x_openhands_server_conversation_id
             ),
-            registry=_get_docker_registry(request),
+            registry=_get_docker_registry(conversation_registry),
             observability_overrides=overrides,
             prepared=prepared,
         )
@@ -352,8 +355,10 @@ async def create_response(
         str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> OpenAIResponse | JSONResponse | StreamingResponse:
-    config = _get_config(request)
     overrides = _parse_observability_overrides(
         span_name=x_openhands_observability_span_name,
         tags=x_openhands_observability_tags,
@@ -367,7 +372,7 @@ async def create_response(
     prepared = None
     if keyed is not None:
         try:
-            prepared = prepare_response(body, config, conversation_id)
+            prepared = prepare_response(body, config, stores, conversation_id)
         except Exception:
             assert keyed[1].claim_id is not None
             try:
@@ -379,8 +384,9 @@ async def create_response(
         result = await run_response(
             request=body,
             config=config,
+            stores=stores,
             conversation_service=conversation_service,
-            registry=_get_docker_registry(request),
+            registry=_get_docker_registry(conversation_registry),
             conversation_id=keyed[1].conversation_id if keyed is not None else None,
             observability_overrides=overrides,
             prepared=prepared,

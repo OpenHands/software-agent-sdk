@@ -10,17 +10,22 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import SecretStr
 
 from openhands.agent_server import event_router
 from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_conversation_registry
 from openhands.agent_server.docker_runtime.hybrid import HybridConversationRegistry
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.errors import status_for
 from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.openai import service as gateway
+from openhands.agent_server.openai.router import openai_router
+from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.server_context import ServerContext, install_server_context
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -38,13 +43,29 @@ def _setup(tmp_path):
         workspace_path=tmp_path / "outer-workspace",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     outer_service = AsyncMock()
     request = StartConversationRequest(
         agent_profile_id=uuid4(),
         workspace=LocalWorkspace(working_dir=str(config.workspace_path)),
     )
     return config, registry, outer_service, request
+
+
+def _gateway_app(config, registry, outer_service):
+    app = FastAPI()
+    _add_exception_handlers(app)
+    install_server_context(
+        app,
+        ServerContext(
+            config=config,
+            stores=registry.stores,
+            conversation_registry=registry,
+            conversation_service=outer_service,
+        ),
+    )
+    app.include_router(openai_router)
+    return app
 
 
 def _mock_container(monkeypatch, *, host="http://inner"):
@@ -177,11 +198,6 @@ async def test_h7m4_new_gateway_run_uses_isolated_docker_workspace(
 async def test_docker_gateway_keyed_resend_does_not_repeat_inner_turn(
     tmp_path, monkeypatch
 ):
-    from fastapi import FastAPI
-
-    from openhands.agent_server.dependencies import get_conversation_service
-    from openhands.agent_server.openai.router import openai_router
-
     config, registry, outer_service, start_request = _setup(tmp_path)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
     requests = []
@@ -193,19 +209,14 @@ async def test_docker_gateway_keyed_resend_does_not_repeat_inner_turn(
     monkeypatch.setattr(
         gateway,
         "_conversation_request",
-        lambda *, request, config, conversation_id: start_request.model_copy(
+        lambda *, request, config, stores, conversation_id: start_request.model_copy(
             update={"conversation_id": conversation_id}
         ),
     )
     _mock_container(monkeypatch)
     _inner_client(monkeypatch, requests, status_code=504)
 
-    app = FastAPI()
-    _add_exception_handlers(app)
-    app.state.config = config
-    app.state.conversation_registry = registry
-    app.dependency_overrides[get_conversation_service] = lambda: outer_service
-    app.include_router(openai_router)
+    app = _gateway_app(config, registry, outer_service)
     body = {
         "model": "openhands_smoke",
         "messages": [{"role": "user", "content": "Run once."}],
@@ -228,11 +239,6 @@ async def test_docker_gateway_keyed_resend_does_not_repeat_inner_turn(
 async def test_docker_gateway_keyed_request_retries_after_pre_dispatch_rejection(
     tmp_path, monkeypatch
 ):
-    from fastapi import FastAPI
-
-    from openhands.agent_server.dependencies import get_conversation_service
-    from openhands.agent_server.openai.router import openai_router
-
     config, registry, outer_service, start_request = _setup(tmp_path)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
     requests = []
@@ -244,19 +250,15 @@ async def test_docker_gateway_keyed_request_retries_after_pre_dispatch_rejection
     monkeypatch.setattr(
         gateway,
         "_conversation_request",
-        lambda *, request, config, conversation_id: start_request.model_copy(
+        lambda *, request, config, stores, conversation_id: start_request.model_copy(
             update={"conversation_id": conversation_id}
         ),
     )
     _mock_container(monkeypatch)
     _inner_client(monkeypatch, requests)
 
-    app = FastAPI()
-    _add_exception_handlers(app)
-    app.state.config = config
-    app.state.conversation_registry = None
-    app.dependency_overrides[get_conversation_service] = lambda: outer_service
-    app.include_router(openai_router)
+    app = _gateway_app(config, registry, outer_service)
+    app.dependency_overrides[get_conversation_registry] = lambda: None
     body = {
         "model": "openhands_smoke",
         "messages": [{"role": "user", "content": "Run once."}],
@@ -266,7 +268,7 @@ async def test_docker_gateway_keyed_request_retries_after_pre_dispatch_rejection
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
         rejected = await client.post("/v1/chat/completions", headers=headers, json=body)
-        app.state.conversation_registry = registry
+        del app.dependency_overrides[get_conversation_registry]
         retried = await client.post("/v1/chat/completions", headers=headers, json=body)
         replayed = await client.post("/v1/chat/completions", headers=headers, json=body)
 
@@ -284,17 +286,12 @@ async def test_docker_gateway_keyed_request_retries_after_pre_dispatch_rejection
 async def test_gateway_keyed_request_retries_after_retry_safe_rejection(
     tmp_path, monkeypatch
 ):
-    from fastapi import FastAPI
-
-    from openhands.agent_server.dependencies import get_conversation_service
-    from openhands.agent_server.openai.router import openai_router
-
     config, registry, outer_service, start_request = _setup(tmp_path)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
     monkeypatch.setattr(
         gateway,
         "_conversation_request",
-        lambda *, request, config, conversation_id: start_request.model_copy(
+        lambda *, request, config, stores, conversation_id: start_request.model_copy(
             update={"conversation_id": conversation_id}
         ),
     )
@@ -316,12 +313,7 @@ async def test_gateway_keyed_request_retries_after_retry_safe_rejection(
 
     monkeypatch.setattr(gateway, "_run_agent", run_agent)
 
-    app = FastAPI()
-    _add_exception_handlers(app)
-    app.state.config = config
-    app.state.conversation_registry = registry
-    app.dependency_overrides[get_conversation_service] = lambda: outer_service
-    app.include_router(openai_router)
+    app = _gateway_app(config, registry, outer_service)
     body = {
         "model": "openhands_smoke",
         "messages": [{"role": "user", "content": "Run once."}],
@@ -345,11 +337,7 @@ async def test_gateway_keyed_request_retries_after_retry_safe_rejection(
 async def test_docker_gateway_keyed_result_returns_when_claim_store_write_fails(
     tmp_path, monkeypatch
 ):
-    from fastapi import FastAPI
-
-    from openhands.agent_server.dependencies import get_conversation_service
     from openhands.agent_server.openai.idempotency import GatewayIdempotencyStore
-    from openhands.agent_server.openai.router import openai_router
 
     config, registry, outer_service, start_request = _setup(tmp_path)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
@@ -362,7 +350,7 @@ async def test_docker_gateway_keyed_result_returns_when_claim_store_write_fails(
     monkeypatch.setattr(
         gateway,
         "_conversation_request",
-        lambda *, request, config, conversation_id: start_request.model_copy(
+        lambda *, request, config, stores, conversation_id: start_request.model_copy(
             update={"conversation_id": conversation_id}
         ),
     )
@@ -374,12 +362,7 @@ async def test_docker_gateway_keyed_result_returns_when_claim_store_write_fails(
 
     monkeypatch.setattr(GatewayIdempotencyStore, "complete", failing_complete)
 
-    app = FastAPI()
-    _add_exception_handlers(app)
-    app.state.config = config
-    app.state.conversation_registry = registry
-    app.dependency_overrides[get_conversation_service] = lambda: outer_service
-    app.include_router(openai_router)
+    app = _gateway_app(config, registry, outer_service)
     body = {
         "model": "openhands_smoke",
         "messages": [{"role": "user", "content": "Run once."}],
@@ -417,7 +400,7 @@ async def test_f55r_resume_gateway_run_stays_in_existing_docker_container(
                 "conversation_runtime_selectable": True,
             }
         )
-        registry = HybridConversationRegistry(config)
+        registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     registry.provisioning.create(conversation_id)
     requests = []
@@ -676,7 +659,7 @@ async def test_docker_gateway_rejects_id_owned_by_local_conversation(tmp_path):
 async def test_hybrid_gateway_keeps_a_local_owned_conversation_local(tmp_path):
     config, _, outer_service, start_request = _setup(tmp_path)
     config = config.model_copy(update={"conversation_runtime_selectable": True})
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     conversation_dir = registry.conversation_dir(conversation_id)
     conversation_dir.mkdir(parents=True)

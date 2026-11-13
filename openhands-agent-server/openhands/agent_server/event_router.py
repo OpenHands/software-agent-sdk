@@ -14,15 +14,15 @@ from fastapi import (
     Depends,
     Query,
 )
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from openhands.agent_server._secrets_exposure import get_config
-from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
+    get_conversation_registry,
     get_conversation_service,
     get_event_service,
+    get_settings_store,
 )
 from openhands.agent_server.errors import error_responses
 from openhands.agent_server.event_service import EventService
@@ -38,7 +38,11 @@ from openhands.agent_server.models import (
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import (
+    FileSettingsStore,
+    PersistedSettings,
+    SettingsStore,
+)
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.errors import (
@@ -257,12 +261,12 @@ async def send_message(
 
 async def _gateway_context(
     conversation_id: UUID,
-    http_request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> tuple[EventService, float]:
     deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
     event_service = await get_event_service(
-        conversation_id, http_request, conversation_service
+        conversation_id, conversation_service, registry
     )
     return event_service, deadline
 
@@ -374,11 +378,11 @@ reaction_router = APIRouter(
 )
 
 
-async def require_reactions_enabled(config: Config) -> None:
+async def require_reactions_enabled(settings_store: SettingsStore) -> None:
     """Refuse with 409 unless the user has conversation reactions on."""
     try:
         settings = await asyncio.to_thread(
-            lambda: get_settings_store(config).load() or PersistedSettings()
+            lambda: settings_store.load() or PersistedSettings()
         )
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
@@ -398,8 +402,8 @@ async def require_reactions_enabled(config: Config) -> None:
 )
 async def react_to_message(
     request: ReactionRequest,
-    http_request: Request,
     event_service: EventService = Depends(get_event_service),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ReactionEvent:
     """Add or remove the user's emoji reaction on a message.
 
@@ -414,7 +418,7 @@ async def react_to_message(
     # A Docker runtime's server finds the user's switch on the host, which
     # checks it before forwarding the request.
     if host_experimental_features() is None:
-        await require_reactions_enabled(get_config(http_request))
+        await require_reactions_enabled(settings_store)
     try:
         return await event_service.react(
             request.emoji, request.target_event_id, removed=request.removed

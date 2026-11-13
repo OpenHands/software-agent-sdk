@@ -43,11 +43,7 @@ from openhands.agent_server.openai.models import (
     OpenAIResponseUsage,
     OpenAIUsage,
 )
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_llm_profile_store,
-    get_settings_store,
-)
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
@@ -72,6 +68,7 @@ from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -114,9 +111,11 @@ def _profile_name_from_model(model: str) -> str:
     raise NotFound(f"Unknown OpenHands model '{model}'. Use GET /v1/models.")
 
 
-def _require_llm_profile(profile_name: str, config: Config) -> None:
+def _require_llm_profile(
+    profile_name: str, stores: ServerStores, cipher: Cipher | None
+) -> None:
     try:
-        get_llm_profile_store().load(profile_name, cipher=config.cipher)
+        stores.llm_profiles.load(profile_name, cipher=cipher)
     except FileNotFoundError:
         raise NotFound(f"Profile '{profile_name}' not found")
     except TimeoutError:
@@ -254,14 +253,15 @@ def _create_conversation_request(
     system_text: str,
     user_content: list[TextContent | ImageContent],
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     llm_profile = _profile_name_from_model(model)
-    _require_llm_profile(llm_profile, config)
-    profile = active_agent_profile(config, config.cipher)
+    _require_llm_profile(llm_profile, stores, config.cipher)
+    profile = active_agent_profile(stores, config.cipher)
     if profile is None:
         raise Conflict("No active Agent Profile; activate one to use the gateway")
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = stores.settings.load() or PersistedSettings()
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.
@@ -291,6 +291,7 @@ def _conversation_request(
     *,
     request: OpenAIChatCompletionRequest,
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     user_message = _latest_user_message(request.messages)
@@ -299,6 +300,7 @@ def _conversation_request(
         system_text=_system_text(request.messages),
         user_content=_content_to_sdk_parts(user_message),
         config=config,
+        stores=stores,
         conversation_id=conversation_id,
     )
 
@@ -308,6 +310,7 @@ def _response_conversation_request(
     request: OpenAIResponseRequest,
     user_content: list[TextContent | ImageContent],
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     return _create_conversation_request(
@@ -315,6 +318,7 @@ def _response_conversation_request(
         system_text=_response_system_text(request),
         user_content=user_content,
         config=config,
+        stores=stores,
         conversation_id=conversation_id,
     )
 
@@ -322,12 +326,16 @@ def _response_conversation_request(
 def prepare_chat_completion(
     request: OpenAIChatCompletionRequest,
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> PreparedGatewayRequest:
     user_content = _content_to_sdk_parts(_latest_user_message(request.messages))
     return PreparedGatewayRequest(
         start_request=_conversation_request(
-            request=request, config=config, conversation_id=conversation_id
+            request=request,
+            config=config,
+            stores=stores,
+            conversation_id=conversation_id,
         ),
         user_content=user_content,
     )
@@ -336,6 +344,7 @@ def prepare_chat_completion(
 def prepare_response(
     request: OpenAIResponseRequest,
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> PreparedGatewayRequest:
     if request.stream:
@@ -352,6 +361,7 @@ def prepare_response(
             request=request,
             user_content=user_content,
             config=config,
+            stores=stores,
             conversation_id=conversation_id,
         ),
         user_content=user_content,
@@ -536,9 +546,9 @@ def iter_openai_chat_completion_sse(
     yield "data: [DONE]\n\n"
 
 
-async def list_openai_models() -> OpenAIModelListResponse:
+async def list_openai_models(stores: ServerStores) -> OpenAIModelListResponse:
     try:
-        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
+        profiles = await asyncio.to_thread(stores.llm_profiles.list_summaries)
     except TimeoutError:
         raise Unavailable("Profile store is busy. Please retry.")
     data = [
@@ -746,6 +756,7 @@ async def run_chat_completion(
     *,
     request: OpenAIChatCompletionRequest,
     config: Config,
+    stores: ServerStores,
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
     observability_overrides: dict[str, object] | None = None,
@@ -757,7 +768,7 @@ async def run_chat_completion(
         raise Invalid("Streaming chat completions are not supported yet")
 
     prepared = prepared or prepare_chat_completion(
-        request, config, reusable_conversation_id
+        request, config, stores, reusable_conversation_id
     )
     start_request = prepared.start_request
     if observability_overrides:
@@ -799,13 +810,14 @@ async def run_response(
     *,
     request: OpenAIResponseRequest,
     config: Config,
+    stores: ServerStores,
     conversation_service: ConversationService,
     observability_overrides: dict[str, object] | None = None,
     registry: DockerConversationRegistry | None = None,
     conversation_id: UUID | None = None,
     prepared: PreparedGatewayRequest | None = None,
 ) -> OpenAIResponseResult:
-    prepared = prepared or prepare_response(request, config, conversation_id)
+    prepared = prepared or prepare_response(request, config, stores, conversation_id)
     start_request = prepared.start_request
     if observability_overrides:
         start_request = start_request.model_copy(update=observability_overrides)
