@@ -2,6 +2,7 @@
  * Conversation manager for handling multiple conversations
  */
 
+import type { BaseConversationOptions } from './base';
 import { HttpClient } from '../client/http-client';
 import { ConversationClient } from '../client/conversation-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
@@ -29,6 +30,7 @@ import {
   ConversationSearchRequest,
   ConversationSearchResponse,
   CreateACPConversationRequest,
+  serializeStuckDetectionThresholds,
   UpdateConversationRequest,
 } from '../models/conversation';
 import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from '../types/base';
@@ -65,6 +67,7 @@ export class ACPConversationNamespace {
       maxIterations?: number;
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
+      stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       workingDir?: string;
     } = {}
   ): Promise<ACPConversationInfo> {
@@ -210,6 +213,7 @@ export class ConversationManager {
       maxIterations?: number;
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
+      stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       workingDir?: string;
       userId?: string;
     } = {}
@@ -224,6 +228,7 @@ export class ConversationManager {
       maxIterations: options.maxIterations,
       maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
+      stuckDetectionThresholds: options.stuckDetectionThresholds,
       userId: options.userId,
     });
 
@@ -232,6 +237,7 @@ export class ConversationManager {
       maxIterations: options.maxIterations,
       maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
+      stuckDetectionThresholds: options.stuckDetectionThresholds,
       userId: options.userId,
     });
 
@@ -340,6 +346,7 @@ export class ConversationManager {
       maxIterations?: number;
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
+      stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       workingDir?: string;
       userId?: string;
     } = {}
@@ -358,6 +365,9 @@ export class ConversationManager {
       max_iterations: options.maxIterations || 500,
       max_budget_per_run: options.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? true,
+      stuck_detection_thresholds: serializeStuckDetectionThresholds(
+        options.stuckDetectionThresholds
+      ),
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
       user_id: options.userId ?? null,
     };

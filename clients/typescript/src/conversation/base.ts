@@ -14,6 +14,7 @@ import {
   AgentBase,
   SecretValue,
 } from '../types/base';
+import type { StuckDetectionThresholds } from './stuck-detector';
 import { IWorkspace } from '../workspace/base';
 
 /**
@@ -30,6 +31,7 @@ export interface BaseConversationOptions {
   maxIterations?: number;
   /** Enable stuck detection (default: true) */
   stuckDetection?: boolean;
+  stuckDetectionThresholds?: Partial<StuckDetectionThresholds>;
 }
 
 /**

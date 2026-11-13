@@ -24,6 +24,7 @@ import {
   SendMessageRequest,
   ConfirmationResponseRequest,
   CreateConversationRequest,
+  serializeStuckDetectionThresholds,
   UpdateConversationRequest,
   UpdateSecretsRequest,
   AskAgentRequest,
@@ -100,6 +101,7 @@ export class RemoteConversation implements IConversation {
   private maxIterations?: number;
   private maxBudgetPerRun?: number | null;
   private stuckDetection?: boolean;
+  private stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
 
   constructor(
     agent: AgentBase,
@@ -116,6 +118,7 @@ export class RemoteConversation implements IConversation {
     this.maxIterations = options.maxIterations;
     this.maxBudgetPerRun = options.maxBudgetPerRun;
     this.stuckDetection = options.stuckDetection;
+    this.stuckDetectionThresholds = options.stuckDetectionThresholds;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -153,6 +156,7 @@ export class RemoteConversation implements IConversation {
       maxIterations?: number;
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
+      stuckDetectionThresholds?: BaseConversationOptions['stuckDetectionThresholds'];
       hookConfig?: HookConfig;
       userId?: string;
     } = {}
@@ -186,6 +190,9 @@ export class RemoteConversation implements IConversation {
       max_budget_per_run:
         options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
+      stuck_detection_thresholds: serializeStuckDetectionThresholds(
+        options.stuckDetectionThresholds ?? this.stuckDetectionThresholds
+      ),
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,
       user_id: userId ?? null,
