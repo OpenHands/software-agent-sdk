@@ -1,9 +1,10 @@
 """VSCode router for agent server API endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from openhands.agent_server.vscode_service import get_vscode_service
+from openhands.agent_server.dependencies import get_vscode_service
+from openhands.agent_server.vscode_service import VSCodeService
 from openhands.sdk.errors import OperationFailed, Unavailable
 from openhands.sdk.logger import get_logger
 
@@ -21,7 +22,9 @@ class VSCodeUrlResponse(BaseModel):
 
 @vscode_router.get("/url", response_model=VSCodeUrlResponse)
 async def get_vscode_url(
-    base_url: str | None = None, workspace_dir: str = "workspace"
+    base_url: str | None = None,
+    workspace_dir: str = "workspace",
+    vscode_service: VSCodeService | None = Depends(get_vscode_service),
 ) -> VSCodeUrlResponse:
     """Get the VSCode URL with authentication token.
 
@@ -36,7 +39,6 @@ async def get_vscode_url(
     Returns:
         VSCode URL with token if available, None otherwise
     """
-    vscode_service = get_vscode_service()
     if vscode_service is None:
         raise Unavailable(
             "VSCode is disabled in configuration. Set enable_vscode=true to enable."
@@ -51,13 +53,14 @@ async def get_vscode_url(
 
 
 @vscode_router.get("/status")
-async def get_vscode_status() -> dict[str, bool | str]:
+async def get_vscode_status(
+    vscode_service: VSCodeService | None = Depends(get_vscode_service),
+) -> dict[str, bool | str]:
     """Get the VSCode server status.
 
     Returns:
         Dictionary with running status and enabled status
     """
-    vscode_service = get_vscode_service()
     if vscode_service is None:
         return {
             "running": False,

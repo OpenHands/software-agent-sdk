@@ -8,15 +8,15 @@ agent-server sees the same list.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.dependencies import get_workspaces_store
 from openhands.agent_server.persistence import (
+    FileWorkspacesStore,
     PersistedWorkspaces,
     WorkspaceItem,
     WorkspaceParentItem,
-    get_workspaces_store,
 )
 from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.logger import get_logger
@@ -61,10 +61,10 @@ def _to_response(persisted: PersistedWorkspaces) -> WorkspacesListResponse:
     response_model=WorkspacesListResponse,
     response_model_exclude_none=True,
 )
-async def list_workspaces(request: Request) -> WorkspacesListResponse:
+async def list_workspaces(
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
+) -> WorkspacesListResponse:
     """Return the saved workspaces and workspace parents."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
     try:
         persisted = store.load()
     except (OSError, PermissionError):
@@ -87,11 +87,10 @@ async def list_workspaces(request: Request) -> WorkspacesListResponse:
     response_model_exclude_none=True,
 )
 async def add_workspaces(
-    request: Request, payload: AddWorkspacesRequest
+    payload: AddWorkspacesRequest,
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> WorkspacesListResponse:
     """Append workspaces to the saved list. Idempotent — dedupes by ``path``."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
         # Dedupe against the existing list AND within the incoming payload,
@@ -124,12 +123,10 @@ async def add_workspaces(
 
 @workspaces_router.delete("", response_model=DeleteResponse)
 async def delete_workspace(
-    request: Request,
     path: Annotated[str, Query(description="Absolute workspace path to remove")],
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> DeleteResponse:
     """Remove a workspace by its absolute path."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     removed = False
 
@@ -161,11 +158,10 @@ async def delete_workspace(
     response_model_exclude_none=True,
 )
 async def add_workspace_parents(
-    request: Request, payload: AddWorkspaceParentsRequest
+    payload: AddWorkspaceParentsRequest,
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> WorkspacesListResponse:
     """Append workspace parents. Idempotent — dedupes by ``path``."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
         # Dedupe against the existing list AND within the incoming payload —
@@ -199,12 +195,10 @@ async def add_workspace_parents(
 
 @workspaces_router.delete("/parents", response_model=DeleteResponse)
 async def delete_workspace_parent(
-    request: Request,
     path: Annotated[str, Query(description="Absolute workspace parent path to remove")],
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> DeleteResponse:
     """Remove a workspace parent by its absolute path."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     removed = False
 
