@@ -139,6 +139,9 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
             "invalid params",
             "inactive_service",
             "powershell is not available",
+            # Retries exhausted on the per-attempt LLM timeout (#6249): the
+            # fix is a faster model, a shorter prompt, or a higher timeout.
+            "did not return a complete response within the llm timeout",
         )
     ):
         return _failure(FailureKind.CONFIG, user_action="settings")

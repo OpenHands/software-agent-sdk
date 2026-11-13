@@ -23,6 +23,18 @@ from openhands.sdk.event.llm_convertible import AgentErrorEvent
             "config",
         ),
         (
+            "LLMTimeoutError",
+            "litellm.Timeout: LLM hard timeout after 300 seconds",
+            "transient",
+        ),
+        (
+            "LLMTimeoutError",
+            "litellm.Timeout: LLM hard timeout after 300 seconds. The model did "
+            "not return a complete response within the LLM timeout of 300s "
+            "(gave up after 2 attempts, 608s in total).",
+            "config",
+        ),
+        (
             "NoCondensationAvailableException",
             "Streaming requires an on_token callback",
             "internal",
