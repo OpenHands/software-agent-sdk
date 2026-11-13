@@ -150,7 +150,11 @@ def generate_title_with_llm(
 
             # Ensure the title isn't too long
             if len(title) > max_length:
-                title = title[: max_length - 3] + "..."
+                title = (
+                    title[: max_length - 3] + "..."
+                    if max_length > 3
+                    else title[:max_length]
+                )
 
             return title
         else:
@@ -178,7 +182,9 @@ def generate_fallback_title(message: str, max_length: int = 50) -> str:
     """
     title = message.strip()
     if len(title) > max_length:
-        title = title[: max_length - 3] + "..."
+        title = (
+            title[: max_length - 3] + "..." if max_length > 3 else title[:max_length]
+        )
     return title
 
 

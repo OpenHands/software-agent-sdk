@@ -46,7 +46,7 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
 - `F05.interrupt-tool-call`: interrupt while a tool call runs returns at once: `paused`, an `InterruptEvent`, an `AgentErrorEvent` for the unfinished call (same `tool_call_id`) and no observation; the resumed run sends that error to the model as the tool result and finishes.
 - `F05.run-capacity`: with `max_concurrent_runs` 1, `POST /run` on a second conversation returns 429 while the first holds the slot, leaves it `idle`, and succeeds once the first is interrupted.
 - `F05.stuck-detected`: with `stuck_detection` on (the default), a run whose model repeats the same tool call ends `stuck` after four identical action/observation pairs (four model calls), with no `ConversationErrorEvent`; GET, `status=stuck` search and count and the events socket say `stuck`.
-- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call.
+- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call. The SDK reports the same behavior as a known failure ([#6648](https://github.com/OpenHands/software-agent-sdk/issues/6648), `S01.stuck-recover`): if that is fixed, this bullet changes with it.
 - `F05.stuck-new-input`: a new user message moves a `stuck` conversation to `idle`, and `POST /run` runs it again to `finished`.
 - `F05.max-iterations-stop`: a conversation created with `max_iterations: 6` and `stuck_detection: false` whose model never finishes makes exactly six model calls (past the stuck threshold) and ends `error` with exactly one `ConversationErrorEvent` `code: MaxIterationsReached` naming the limit, on REST and the events socket, never `stuck`.
 - `F05.max-iterations-resume`: `POST /run` after `MaxIterationsReached` is accepted and gets a fresh budget of six model calls (a second `MaxIterationsReached`), and once the model calls `finish` the next run ends `finished`.
@@ -165,9 +165,9 @@ STEP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
 TOOL=$(control-agent-server fixture llm-stub --name qa-f05-tool --step 'tool:terminal:{"command":"sleep 30"}' --print-path)
 TOOL_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$TOOL/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
 LOOP=$(control-agent-server fixture llm-stub --name qa-f05-loop --step 'tool:think:{"thought":"QA_F05_LOOP"}' --print-path)
-LOOP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$LOOP/v1\", \"num_retries\": 0}, \"tools\": []}"
+LOOP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$LOOP/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"think\"}]}"
 CAP=$(control-agent-server fixture llm-stub --name qa-f05-cap --step 'tool:think:{"thought":"QA_F05_CAP"}' --print-path)
-CAP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CAP/v1\", \"num_retries\": 0}, \"tools\": []}"
+CAP_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CAP/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"think\"}]}"
 A=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
 B=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
 C=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
@@ -417,27 +417,24 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   waits), one `PauseEvent` is persisted, `status=paused` lists `P` and the
   socket pushes `paused` and the `PauseEvent`. The model call is still in
   flight, so `/run` is still 409 even though the status is `paused`.
-- **GET after a mid-call pause (`F05.pause-running-get`), known bug.** Read
+- **GET after a mid-call pause (`F05.pause-running-get`).** Read
   the same conversation through its detail route and its state file.
   ```sh
   control-agent-server api GET /api/conversations/search --query status=paused --check items contains "$P"
   control-agent-server api POST "/api/conversations/$P/run" --expect 409
-  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get  # bug: status eq 200 && checks.0.actual eq running
-  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused  # bug: checks.0.actual eq running
+  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get
+  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused
   ```
   The status search (the live status says `paused`) and the 409 (the model
   call is still in flight) are the controls that the mid-call pause holds.
-  Expected: `paused`, like the socket, the event log and the status search.
-  Today both still say `running` until the model call returns (here 300 s) or
-  is interrupted: the pause runs inside the run loop's open state block
-  (`ConversationState._save_depth` stays 1 while `arun()` releases only the
-  lock for the network wait, `_released_state_lock_during_io` in
-  `local_conversation.py`), so the autosave of `base_state.json` is deferred
-  to the end of the step, and `GET /api/conversations/{id}` answers from that
-  file. Even `search?status=paused`, which filters on the live status and so
-  lists `P`, returns `P`'s item with `execution_status` `running`. A consumer
-  that pauses and polls GET (as `conversation wait` and SDK pollers do) keeps
-  seeing `running`, and a crash in that window loses the pause
+  Both say `paused`, like the socket, the event log and the status search,
+  although the model call is still in flight: the run loop releases the
+  state's deferred-save depth with the lock around the network wait
+  (`_released_state_lock_during_io` in `local_conversation.py`), so the
+  pause is written to `base_state.json` at once, and
+  `GET /api/conversations/{id}` answers from that file. A consumer that
+  pauses and polls GET (as `conversation wait` and SDK pollers do) sees
+  `paused` right away, and a crash in that window keeps the pause
   (`F05.pause-running-crash`).
 - **Release a paused step with interrupt (`F05.pause-running-release`).**
   ```sh
@@ -700,7 +697,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   over the dead owner's lease, marks `K` `error` (a persisted
   `execution_status` update), nothing is `running`, and `/run` resumes `K`
   (interrupted again to free the slot).
-- **Crash after a mid-call pause (`F05.pause-running-crash`), known bug.**
+- **Crash after a mid-call pause (`F05.pause-running-crash`).**
   `K` runs into the hanging stub again, is paused while the model call is in
   flight, and the server is SIGKILLed. The last bullet, so nothing depends on
   what it leaves behind.
@@ -714,16 +711,15 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
   control-agent-server restart --hard
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
-  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get  # bug: status eq 200 && checks.0.actual eq error
+  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get
   ```
   The stub's new request proves the model call was in flight when the pause
   landed, and the second `PauseEvent` is still in the event log after the
-  crash (the control). Expected: `paused`, the last status the server
-  accepted and persisted in the event log (the `PauseEvent` and the
-  `execution_status` `paused` update are both on disk). Today `K` comes back
-  `error`: the pause never reached
-  `base_state.json` (`F05.pause-running-get`), so the restart sees `running`
-  and treats the conversation as crashed mid-run.
+  crash (the control). `K` comes back `paused`, the last status the server
+  accepted (the `PauseEvent` and the `execution_status` `paused` update are
+  on disk, and the pause reached `base_state.json` at once,
+  `F05.pause-running-get`), so the restart does not treat it as crashed
+  mid-run.
 
 ## Gotchas
 
@@ -740,9 +736,10 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   first run holds the slot.
 - `GET /api/conversations/{id}` composes its answer from the autosaved
   `base_state.json`, while the events socket, the status filters of search
-  and count, and the event log come from memory. They differ while a step is
-  in flight and something changed the state mid-step
-  (`F05.pause-running-get`).
+  and count, and the event log come from memory. A change made during a
+  model call (the run loop has released the lock) is written at once
+  (`F05.pause-running-get`); one made on the run loop's own thread inside a
+  step is written only when the step ends (`F09.switch-llm-mid-run-get`).
 - Pause does not stop a model call that is in progress: the status flips to
   `paused` at once, but the step finishes first, and until then `/run`
   answers 409 "Wait for completion or pause first" although the conversation

@@ -108,6 +108,34 @@ def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACP
     return conv, agent
 
 
+def test_switch_llm_rejects_acp_agent(tmp_path):
+    """switch_llm is refused on an ACP conversation (#4158).
+
+    The ACP subprocess owns its model, so swapping OpenHands' LLM would only
+    overwrite the ``acp-managed`` placeholder without changing what runs.
+    """
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+    base_before = conv.state._fs.read(BASE_STATE)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_llm(_make_llm("other-model", "other"))
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
+    assert conv.state._fs.read(BASE_STATE) == base_before
+
+
+def test_switch_profile_rejects_acp_agent(tmp_path, profile_store):
+    """switch_profile is refused on an ACP conversation, as switch_llm is."""
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_profile("fast")
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
+
+
 def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
     """A pre-``run()`` switch persists the new model without raising.
 
@@ -220,6 +248,69 @@ def test_switch_acp_model_refreshes_surfaced_current_model_id(tmp_path):
     assert switched.current_model_id == "model-b"
     # Persisted hint written unconditionally for cold reads before re-init.
     assert conv.state.agent_state["acp_current_model_id"] == "model-b"
+
+
+def test_switch_acp_effort_before_session_persists(tmp_path):
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    conv.switch_acp_effort("high")
+
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state._fs.read(BASE_STATE))
+    )
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_effort == "high"
+    assert conv.state.agent_state["acp_current_effort"] == "high"
+
+
+def test_switch_acp_effort_live_applies_and_persists(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path)
+    agent._model_via_config_option = True
+    conn = agent._conn
+    assert conn is not None
+    conn.set_config_option = AsyncMock(
+        return_value={
+            "config_options": [
+                {
+                    "id": "reasoning_effort",
+                    "type": "select",
+                    "category": "thought_level",
+                    "current_value": "low",
+                    "options": [{"value": "low"}, {"value": "high"}],
+                }
+            ]
+        }
+    )
+
+    conv.switch_acp_effort("low")
+
+    conn.set_config_option.assert_awaited_once_with(
+        config_id="reasoning_effort", value="low", session_id="sess-1"
+    )
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_effort == "low"
+    assert switched.current_effort == "low"
+    assert switched._conn is conn
+    assert conv.state.agent_state["acp_current_effort"] == "low"
+
+
+def test_switch_acp_effort_rejected_keeps_persisted_state(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        conv.switch_acp_effort(" ")
+    with pytest.raises(ValueError, match="no session config options"):
+        conv.switch_acp_effort("high")
+
+    assert conv.agent is agent
+    assert agent.acp_effort is None
+    assert "acp_current_effort" not in conv.state.agent_state
+
+
+def test_switch_acp_effort_rejects_non_acp_agent():
+    with pytest.raises(ValueError, match="only supported for ACP"):
+        _make_conversation().switch_acp_effort("high")
 
 
 def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
@@ -445,7 +536,7 @@ def test_switch_llm_refreshes_llm_condenser_credentials(
     assert state_condenser_llm.model == condenser_llm.model
     assert state_condenser_llm.api_key == condenser_llm.api_key
     assert condenser_llm.metrics is not conv.agent.llm.metrics
-    assert condenser_llm._telemetry is not None
+    assert condenser_llm.telemetry.metrics is condenser_llm.metrics
 
     async def _fake_acompletion(**kwargs):
         return create_mock_litellm_response(

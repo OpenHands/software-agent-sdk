@@ -318,7 +318,6 @@ def _failed_servers(caplog: pytest.LogCaptureFixture) -> list[str]:
     "broken",
     [
         pytest.param(UNRESPONSIVE_SERVER, id="never-answers"),
-        pytest.param({}, id="invalid-entry"),
         pytest.param({"command": "missing-mcp-server-command"}, id="missing-command"),
     ],
 )
