@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
@@ -364,19 +365,44 @@ def _kill_processes(processes: list[psutil.Process], timeout: float = 3.0) -> No
     Used for a browser that a timed-out cleanup left behind, which otherwise
     outlives the conversation and the program (re-parented to PID 1).
     """
-    alive = []
+    killed: list[psutil.Process] = []
     for process in processes:
         try:
             if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
                 process.kill()
-                alive.append(process)
-        except psutil.Error:
+                killed.append(process)
+        except psutil.NoSuchProcess:
             continue
-    if alive:
+        except psutil.Error as e:
+            logger.warning("Could not kill browser process %s: %s", process.pid, e)
+    if not killed:
+        return
+    logger.warning(
+        "Killed %d browser process(es) left running after cleanup", len(killed)
+    )
+    # Poll rather than wait(): Chromium is a direct child that asyncio's child
+    # watcher also waits on, and reaping it here makes asyncio log a bogus
+    # "exit status already read" for it.
+    deadline = time.monotonic() + timeout
+    while True:
+        survivors = [p for p in killed if _still_running(p)]
+        if not survivors or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    if survivors:
         logger.warning(
-            "Killed %d browser process(es) left running after cleanup", len(alive)
+            "Browser process(es) still running after kill: %s",
+            ", ".join(str(p.pid) for p in survivors),
         )
-        psutil.wait_procs(alive, timeout=timeout)
+
+
+def _still_running(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True
 
 
 class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
@@ -857,10 +883,24 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             return [process]
 
     def _forget_browser_session(self) -> None:
-        """Drop the server's session references so the next action starts anew."""
+        """Drop the server's session references so the next action starts anew.
+
+        A cancelled cleanup leaves the old session's event bus running on the
+        portal loop, which then holds up the executor's close, so stop it too.
+        """
+        session = self._server.browser_session
         self._server.browser_session = None
         self._server.tools = None
         self._server.active_sessions.clear()
+        event_bus = getattr(session, "event_bus", None)
+        if event_bus is None:
+            return
+        try:
+            self._async_executor.run_async(
+                event_bus.stop(clear=True, timeout=1), timeout=3.0
+            )
+        except Exception as e:
+            logger.debug("Stopping the old browser session's event bus failed: %s", e)
 
     def close(self):
         """Close the browser executor and cleanup resources."""

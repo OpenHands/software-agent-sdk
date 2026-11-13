@@ -562,6 +562,7 @@ def test_reset_kills_hung_browser_and_forgets_its_session(mock_browser_executor)
         server = mock_browser_executor._server
         server.browser_session._local_browser_watchdog._subprocess = process
         server.active_sessions = {"s1": {}}
+        old_session = server.browser_session
         mock_browser_executor._initialized = True
 
         with patch.object(
@@ -580,6 +581,7 @@ def test_reset_kills_hung_browser_and_forgets_its_session(mock_browser_executor)
         assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
         assert server.browser_session is None
         assert server.active_sessions == {}
+        old_session.event_bus.stop.assert_called_once_with(clear=True, timeout=1)
         assert mock_browser_executor._initialized is False
     finally:
         if browser.poll() is None:
@@ -638,3 +640,21 @@ async def test_navigate_allowed_reports_success(mock_browser_executor):
 
     assert_browser_observation_success(result)
     assert "Navigated to: http://127.0.0.1/page.html" in result.text
+
+
+def test_kill_processes_reports_a_process_it_cannot_kill(caplog):
+    """A browser process that survives the kill is logged, not skipped silently."""
+    import psutil
+
+    from openhands.tools.browser_use.impl import _kill_processes
+
+    stubborn = MagicMock(spec=psutil.Process)
+    stubborn.pid = 4242
+    stubborn.is_running.return_value = True
+    stubborn.status.return_value = psutil.STATUS_RUNNING
+    stubborn.kill.side_effect = psutil.AccessDenied(4242)
+
+    with caplog.at_level("WARNING"):
+        _kill_processes([stubborn], timeout=0.1)
+
+    assert "Could not kill browser process 4242" in caplog.text
