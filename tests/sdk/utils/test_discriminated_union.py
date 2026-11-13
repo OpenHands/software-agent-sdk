@@ -13,6 +13,14 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.event import Event
+from openhands.sdk.secret import SecretSource, StaticSecret
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.confirmation_policy import (
+    ConfirmationPolicyBase,
+    NeverConfirm,
+)
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     OpenHandsModel,
@@ -365,3 +373,66 @@ def test_model_validate_does_not_mutate_input() -> None:
     data = copy.deepcopy(garage)
     Garage.model_validate(data)
     assert data == garage
+
+
+@pytest.mark.parametrize(
+    "target",
+    [ConfirmationPolicyBase, SecretSource, Event, AgentBase, SecurityAnalyzerBase],
+)
+@pytest.mark.parametrize("kind", [[], {}, 7, True])
+def test_non_string_kind_is_a_validation_error(target, kind) -> None:
+    data = {"kind": kind}
+    original = copy.deepcopy(data)
+    with pytest.raises(ValidationError):
+        target.model_validate(data)
+    assert data == original
+
+
+class PolicyEnvelope(BaseModel):
+    policy: ConfirmationPolicyBase
+
+
+@pytest.mark.parametrize("kind", [[], {}, 7, True])
+def test_nested_non_string_kind_is_a_validation_error(kind) -> None:
+    data = {"policy": {"kind": kind}}
+    original = copy.deepcopy(data)
+    with pytest.raises(ValidationError) as exc:
+        PolicyEnvelope.model_validate(data)
+    assert exc.value.errors()[0]["loc"] == ("policy",)
+    assert data == original
+
+
+@pytest.mark.parametrize("kind", [[], {}, 7, True])
+def test_secret_map_non_string_kind_is_a_validation_error(kind) -> None:
+    secrets = {"TEST": {"kind": kind}}
+    original_secrets = copy.deepcopy(secrets)
+    with pytest.raises(ValidationError) as exc:
+        TypeAdapter(dict[str, SecretSource]).validate_python(secrets)
+    assert exc.value.errors()[0]["loc"] == ("TEST",)
+    assert secrets == original_secrets
+
+
+class SingleKindBase(DiscriminatedUnionMixin, ABC):
+    pass
+
+
+class SingleKindImpl(SingleKindBase):
+    pass
+
+
+@pytest.mark.parametrize("data", [{}, {"kind": None}])
+def test_missing_kind_inference_is_preserved(data) -> None:
+    original = copy.deepcopy(data)
+    assert isinstance(SingleKindBase.model_validate(data), SingleKindImpl)
+    with pytest.raises(ValidationError):
+        ConfirmationPolicyBase.model_validate(data)
+    assert data == original
+
+
+def test_valid_policy_and_secret_kinds() -> None:
+    assert isinstance(
+        ConfirmationPolicyBase.model_validate({"kind": "NeverConfirm"}), NeverConfirm
+    )
+    secret = SecretSource.model_validate({"kind": "StaticSecret", "value": "synthetic"})
+    assert isinstance(secret, StaticSecret)
+    assert secret.get_value() == "synthetic"
