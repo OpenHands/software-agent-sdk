@@ -1,0 +1,35 @@
+---
+name: Native Windows App backends
+on:
+    pull_request:
+        paths:
+            - openhands-agent-server/**
+            - tests/agent_server/canvas_extensions/**
+            - uv.lock
+            - .github/workflows/canvas-backends-windows.yml
+    workflow_dispatch:
+permissions:
+    contents: read
+concurrency:
+    group: windows-app-backends-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+jobs:
+    lifecycle:
+        name: Windows App backend lifecycle
+        runs-on: windows-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  python-version: '3.13'
+                  enable-cache: true
+            - run: uv sync --frozen --group dev
+            - name: Test native backend ownership and manifest compatibility
+              run: >-
+                  uv run --frozen python -m pytest -v
+                  --timeout=120 --timeout-method=thread
+                  tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
+                  tests/agent_server/canvas_extensions/test_canvas_extensions_manifest.py
