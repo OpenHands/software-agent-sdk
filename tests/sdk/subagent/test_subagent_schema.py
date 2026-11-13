@@ -695,3 +695,24 @@ class TestAgentDefinitionMaxBudget:
         md = tmp_path / "a.md"
         md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
         assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
+
+
+def test_load_empty_frontmatter_values_fall_back_to_defaults(tmp_path: Path):
+    md = tmp_path / "reviewer.md"
+    md.write_text("---\nname:\ndescription:\nmodel:\n---\n\nPrompt.\n")
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "reviewer"
+    assert agent.description == ""
+    assert agent.model == "inherit"
+
+
+def test_load_utf8_bom_frontmatter(tmp_path: Path):
+    md = tmp_path / "file-stem.md"
+    md.write_bytes("\ufeff---\nname: bom-agent\n---\n\nPrompt.\n".encode())
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "bom-agent"
+    assert agent.system_prompt == "Prompt."

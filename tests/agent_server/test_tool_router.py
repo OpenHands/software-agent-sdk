@@ -2,10 +2,13 @@
 
 import importlib
 
+from openhands.agent_server.api import add_domain_error_handler
+from openhands.agent_server.config import Config
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     get_agent_factory,
 )
+from tests.agent_server.conftest import install_test_context
 
 
 def test_builtin_agents_registered_on_tool_router_import():
@@ -36,7 +39,8 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
-    app.state.config = Config()
+    add_domain_error_handler(app)
+    install_test_context(app, Config())
     app.include_router(tool_router, prefix="/api")
     response = TestClient(app).get("/api/tools/catalog")
 
@@ -81,8 +85,6 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
 
 
 def test_docker_runtime_catalog_does_not_report_host_usability(monkeypatch):
-    from types import SimpleNamespace
-
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -92,10 +94,14 @@ def test_docker_runtime_catalog_does_not_report_host_usability(monkeypatch):
         "openhands.sdk.tool.registry._check_tool_usable", lambda name, checker: False
     )
     app = FastAPI()
-    app.state.config = SimpleNamespace(
-        conversation_runtime="docker",
-        conversation_image_has_browser=True,
-        enable_browser=True,
+    add_domain_error_handler(app)
+    install_test_context(
+        app,
+        Config(
+            conversation_runtime="docker",
+            conversation_image_has_browser=True,
+            enable_browser=True,
+        ),
     )
     app.include_router(tool_router, prefix="/api")
 
@@ -105,18 +111,20 @@ def test_docker_runtime_catalog_does_not_report_host_usability(monkeypatch):
 
 
 def test_docker_catalog_follows_the_image_browser_setting(monkeypatch):
-    from types import SimpleNamespace
-
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
-    app.state.config = SimpleNamespace(
-        conversation_runtime="docker",
-        conversation_image_has_browser=False,
-        enable_browser=True,
+    add_domain_error_handler(app)
+    install_test_context(
+        app,
+        Config(
+            conversation_runtime="docker",
+            conversation_image_has_browser=False,
+            enable_browser=True,
+        ),
     )
     app.include_router(tool_router, prefix="/api")
 
@@ -128,18 +136,20 @@ def test_docker_catalog_follows_the_image_browser_setting(monkeypatch):
 
 
 def test_catalog_reports_a_disabled_browser_as_unusable():
-    from types import SimpleNamespace
-
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
-    app.state.config = SimpleNamespace(
-        conversation_runtime="local",
-        conversation_image_has_browser=True,
-        enable_browser=False,
+    add_domain_error_handler(app)
+    install_test_context(
+        app,
+        Config(
+            conversation_runtime="local",
+            conversation_image_has_browser=True,
+            enable_browser=False,
+        ),
     )
     app.include_router(tool_router, prefix="/api")
 

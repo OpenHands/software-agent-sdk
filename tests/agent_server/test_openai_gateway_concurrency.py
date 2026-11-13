@@ -6,21 +6,25 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.openai import service
 from openhands.agent_server.openai.models import OpenAIChatCompletionRequest
+from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import DomainError
 
 
 class _FakeEventService:
     def __init__(self, status: ConversationExecutionStatus) -> None:
         self.status = status
         self.sent: list[object] = []
+        self._gateway_run_lock = asyncio.Lock()
+        self._active_gateway_runs = 0
+        self._run_task: asyncio.Task | None = None
 
     async def get_state(self):
-        stats = MagicMock()
-        stats.get_combined_metrics.return_value.accumulated_token_usage = None
+        stats = ConversationStats()
         return SimpleNamespace(execution_status=self.status, events=[], stats=stats)
 
     async def reserve_run_slot(self) -> None:
@@ -52,7 +56,7 @@ def gateway(monkeypatch):
         conversation_service.get_event_service = get_event_service
         run_may_finish = asyncio.Event()
 
-        async def wait_for_completion(svc, *, min_event_count):
+        async def wait_for_completion(svc, *, min_event_count, timeout_seconds):
             await run_may_finish.wait()
             svc.status = ConversationExecutionStatus.FINISHED
             return svc.status
@@ -72,6 +76,7 @@ def _chat(conversation_service, conversation_id, text: str):
         service.run_chat_completion(
             request=_request(text),
             config=MagicMock(),
+            stores=MagicMock(),
             conversation_service=conversation_service,
             reusable_conversation_id=conversation_id,
         ),
@@ -92,9 +97,9 @@ async def test_overlapping_turn_is_refused_and_first_gets_its_own_answer(gateway
     # The run X started has finished, but X's request has not seen it yet.
     event_service.status = ConversationExecutionStatus.FINISHED
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await _chat(conversation_service, conversation_id, "Y")
-    assert exc_info.value.status_code == 409
+    assert status_for(exc_info.value) == 409
     assert len(event_service.sent) == 1  # Y's message was not saved
 
     run_may_finish.set()
@@ -111,8 +116,8 @@ async def test_turn_on_a_conversation_running_elsewhere_is_refused(gateway):
         ConversationExecutionStatus.RUNNING
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await _chat(conversation_service, uuid4(), "Y")
 
-    assert exc_info.value.status_code == 409
+    assert status_for(exc_info.value) == 409
     assert event_service.sent == []

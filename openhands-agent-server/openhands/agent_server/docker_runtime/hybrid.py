@@ -17,6 +17,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.models import ConversationRuntimeInfo
+from openhands.agent_server.server_context import server_context_of
 
 
 DOCKER_ROUTE_PREFIX: Final[str] = "/_docker"
@@ -93,7 +94,11 @@ class RuntimeDispatchMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        registry = scope["app"].state.conversation_registry if "app" in scope else None
+        registry = (
+            server_context_of(scope["app"]).conversation_registry
+            if "app" in scope
+            else None
+        )
         if scope["type"] not in ("http", "websocket") or not isinstance(
             registry, HybridConversationRegistry
         ):

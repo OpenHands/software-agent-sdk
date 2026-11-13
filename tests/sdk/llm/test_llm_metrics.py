@@ -642,3 +642,53 @@ def test_cache_hit_rate_is_not_serialized():
     snapshot = Metrics().get_snapshot()
     assert "cache_hit_rate" not in snapshot.model_dump()
     assert "cache_hit_rate" not in MetricsSnapshot.model_json_schema()["properties"]
+
+
+def test_metrics_roll_up_into_records_in_both_ledgers():
+    """What a ledger records after it is attached is also added to its target."""
+    total = Metrics(model_name="gpt-4o")
+    total.add_cost(1.0)
+    ledger = Metrics(model_name="gpt-4o")
+    ledger.add_cost(0.5)  # recorded before attaching: stays local
+
+    ledger.roll_up_into(total)
+    ledger.add_cost(2.0)
+    ledger.add_token_usage(100, 50, 10, 5, 4096, "resp-1")
+    ledger.add_response_latency(1.5, "resp-1")
+    other = Metrics(model_name="gpt-4o")
+    other.add_cost(4.0)
+    ledger.merge(other)
+
+    assert ledger.rolls_up_into is total
+    assert ledger.accumulated_cost == 6.5
+    assert total.accumulated_cost == 7.0
+    assert total.accumulated_token_usage is not None
+    assert total.accumulated_token_usage.prompt_tokens == 100
+    assert [latency.response_id for latency in total.response_latencies] == ["resp-1"]
+
+    # One direction only, and it can be detached again.
+    total.add_cost(1.0)
+    assert ledger.accumulated_cost == 6.5
+    ledger.roll_up_into(None)
+    ledger.add_cost(1.0)
+    assert total.accumulated_cost == 8.0
+
+
+def test_metrics_roll_up_target_is_wiring_not_data():
+    """The target is not serialized, compared or carried over to copies."""
+    total = Metrics(model_name="gpt-4o")
+    ledger = Metrics(model_name="gpt-4o")
+    ledger.roll_up_into(total)
+    ledger.add_cost(1.0)
+
+    same_data = Metrics.model_validate(ledger.model_dump())
+    assert same_data.rolls_up_into is None
+    assert ledger == same_data
+
+    for copied in (ledger.deep_copy(), ledger.model_copy()):
+        assert copied.rolls_up_into is None
+        copied.add_cost(5.0)
+    assert total.accumulated_cost == 1.0
+
+    with pytest.raises(ValueError, match="roll up into itself"):
+        ledger.roll_up_into(ledger)
