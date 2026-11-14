@@ -905,6 +905,33 @@ class LocalConversation(BaseConversation):
         ):
             self._stuck_detector.mark_resumed()
 
+    def _is_paused(self) -> bool:
+        with self._state:
+            return self._state.execution_status == ConversationExecutionStatus.PAUSED
+
+    def _start_running(self, resume_from_pause: bool) -> None:
+        """Move the conversation to RUNNING as :meth:`run`/:meth:`arun` starts.
+
+        Caller holds the state lock, after the agent is ready. ``PAUSED`` is
+        resumed only when it was already set as the run was called
+        (``resume_from_pause``). A :meth:`pause` or :meth:`interrupt` that lands
+        while the agent is being made ready (plugins, MCP servers, an ACP
+        subprocess) finds the conversation ``IDLE`` and moves it to ``PAUSED``;
+        that request stops this run instead of being taken for a resume, and the
+        run loop returns before the first step.
+        """
+        status = self._state.execution_status
+        if status == ConversationExecutionStatus.PAUSED and not resume_from_pause:
+            logger.info("Pause requested while the run was starting; not resuming")
+            return
+        if status in [
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.PAUSED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        ]:
+            self._state.transition(ConversationExecutionStatus.RUNNING, "run started")
+
     @property
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
@@ -2347,21 +2374,14 @@ class LocalConversation(BaseConversation):
 
     def _run(self) -> None:
         """Implement :meth:`run` inside the active LLM context scope."""
+        resume_from_pause = self._is_paused()
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
         self._cancel_token = CancellationToken()
 
         with self._state:
             self._resume_if_stuck()
-            if self._state.execution_status in [
-                ConversationExecutionStatus.IDLE,
-                ConversationExecutionStatus.PAUSED,
-                ConversationExecutionStatus.ERROR,
-                ConversationExecutionStatus.STUCK,
-            ]:
-                self._state.transition(
-                    ConversationExecutionStatus.RUNNING, "run started"
-                )
+            self._start_running(resume_from_pause)
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
@@ -2559,6 +2579,7 @@ class LocalConversation(BaseConversation):
         """Implement :meth:`arun` inside the active LLM context scope."""
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
+        resume_from_pause = self._is_paused()
         # Off-load lazy init to a worker thread: init_state may block the loop
         # (an ACP agent resolves credentials via a synchronous LookupSecret
         # httpx.get). When the agent-server runs arun() on its event loop and
@@ -2585,15 +2606,7 @@ class LocalConversation(BaseConversation):
                     self._state.agent_state = updated_agent_state
 
             self._resume_if_stuck()
-            if self._state.execution_status in [
-                ConversationExecutionStatus.IDLE,
-                ConversationExecutionStatus.PAUSED,
-                ConversationExecutionStatus.ERROR,
-                ConversationExecutionStatus.STUCK,
-            ]:
-                self._state.transition(
-                    ConversationExecutionStatus.RUNNING, "run started"
-                )
+            self._start_running(resume_from_pause)
             last_acp_prompt_user_message_id = self._state.agent_state.get(
                 ACP_LAST_PROMPT_USER_MESSAGE_ID
             )
