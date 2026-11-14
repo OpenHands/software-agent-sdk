@@ -76,6 +76,17 @@ def _auth_error() -> AuthenticationError:
     )
 
 
+def _transient_proxy_auth_error() -> AuthenticationError:
+    return AuthenticationError(
+        message=(
+            "Litellm_proxyException - Invalid proxy server token passed. "
+            "Unable to find token in cache or LiteLLM_VerificationTokenTable"
+        ),
+        llm_provider="openhands",
+        model="gpt-4o",
+    )
+
+
 def _make_llm(auth_type: Literal["api_key", "subscription"] = "api_key") -> LLM:
     return LLM(
         usage_id="test-llm",
@@ -90,6 +101,55 @@ def _make_llm(auth_type: Literal["api_key", "subscription"] = "api_key") -> LLM:
 
 def _message() -> list[Message]:
     return [Message(role="user", content=[TextContent(text="Hello!")])]
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_transient_proxy_lookup_retries_without_refresh_hook(mock_litellm_completion):
+    mock_litellm_completion.side_effect = [
+        _transient_proxy_auth_error(),
+        create_mock_response("Recovered"),
+    ]
+    result = _make_llm().completion(messages=_message())
+
+    assert isinstance(result, LLMResponse)
+    assert mock_litellm_completion.call_count == 2
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_persistent_proxy_lookup_miss_refreshes_key_after_retries(
+    mock_litellm_completion,
+):
+    """A rotated managed key may report only the cache-miss text; once the
+    transient retries are spent, the refresh-on-401 hook still gets one shot."""
+    mock_litellm_completion.side_effect = [
+        _transient_proxy_auth_error(),
+        _transient_proxy_auth_error(),
+        _transient_proxy_auth_error(),
+        create_mock_response("Recovered"),
+    ]
+    llm = _make_llm()
+    llm.set_api_key_refresh_hook(lambda: "fresh_key")
+
+    result = llm.completion(messages=_message())
+
+    assert isinstance(result, LLMResponse)
+    assert mock_litellm_completion.call_count == 4  # 1 + num_retries, then refresh
+    assert mock_litellm_completion.call_args_list[3].kwargs["api_key"] == "fresh_key"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+async def test_async_transient_proxy_lookup_retries_without_refresh_hook(
+    mock_litellm_acompletion,
+):
+    mock_litellm_acompletion.side_effect = [
+        _transient_proxy_auth_error(),
+        create_mock_response("Recovered"),
+    ]
+    result = await _make_llm().acompletion(messages=_message())
+
+    assert isinstance(result, LLMResponse)
+    assert mock_litellm_acompletion.call_count == 2
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

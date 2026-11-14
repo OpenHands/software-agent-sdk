@@ -16,6 +16,7 @@ from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.exceptions.classifier import (
     is_quota_exhaustion_error,
     is_transient_http_error,
+    is_transient_proxy_auth_error,
 )
 from openhands.sdk.llm.utils.retry_after import retry_after_seconds
 from openhands.sdk.logger import get_logger
@@ -34,6 +35,8 @@ def transient_error_condition(
     return (
         retry_if_exception_type(exception_types)
         | retry_if_exception(is_transient_http_error)
+        # LiteLLM proxy cache-miss 401s recover on retry (OpenHands#18951)
+        | retry_if_exception(is_transient_proxy_auth_error)
     ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
 
 

@@ -89,6 +89,13 @@ AUTH_PATTERNS: Final[list[str]] = [
     "access denied",
 ]
 
+# A proxy cache lookup may race with provisioning (#18951). An explicit
+# token_not_found_in_db marker, however, also identifies a rotated managed
+# credential (#5189) that must go through the refresh-on-401 path instead.
+TRANSIENT_PROXY_AUTH_PATTERNS: Final[list[str]] = [
+    "unable to find token in cache",
+]
+
 CONTENT_POLICY_PATTERNS: Final[list[str]] = [
     "content_policy",
     "content filtering policy",
@@ -184,11 +191,21 @@ def is_quota_exhaustion_error(exception: BaseException) -> bool:
     )
 
 
+def is_transient_proxy_auth_error(exception: BaseException) -> bool:
+    """Recognize retryable proxy lookup races without masking key rotation."""
+    if not isinstance(exception, AuthenticationError):
+        return False
+    s = str(exception).lower()
+    return "token_not_found_in_db" not in s and any(
+        p in s for p in TRANSIENT_PROXY_AUTH_PATTERNS
+    )
+
+
 def looks_like_auth_error(exception: Exception) -> bool:
-    # Trust the typed exception when the provider/LiteLLM raised an explicit
-    # 401/403 — its message text may not contain the heuristic patterns below.
+    # LiteLLM proxy cache-miss 401s carry the typed AuthenticationError but
+    # recover on retry — exclude them before trusting the exception type.
     if isinstance(exception, (AuthenticationError, PermissionDeniedError)):
-        return True
+        return not is_transient_proxy_auth_error(exception)
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False
     s = str(exception).lower()
