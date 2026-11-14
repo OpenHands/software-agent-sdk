@@ -268,6 +268,8 @@ def test_owner_pid_check_treats_unknown_errors_as_alive(
         raise OSError("EPERM-like error from a sandbox")
 
     monkeypatch.setattr(conversation_lease_module.os, "kill", _raise_oserror)
+    # Only os.kill decides here: no /proc state or start time is available.
+    monkeypatch.setattr(conversation_lease_module, "_read_proc_stat", lambda _: None)
 
     # Forge the lease so it points at a PID that is NOT this process
     # (otherwise the same-process short-circuit kicks in before
