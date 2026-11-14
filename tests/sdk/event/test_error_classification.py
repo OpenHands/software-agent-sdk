@@ -22,14 +22,11 @@ from openhands.sdk.event.llm_convertible import AgentErrorEvent
             "LLM Provider NOT provided",
             "config",
         ),
+        ("LLMTimeoutError", "LLM hard timeout after 300 seconds", "config"),
+        ("LLMTimeoutError", "litellm.Timeout: Connection timed out.", "transient"),
         (
             "LLMTimeoutError",
-            "litellm.Timeout: LLM hard timeout after 300 seconds",
-            "transient",
-        ),
-        (
-            "LLMTimeoutError",
-            "litellm.Timeout: LLM hard timeout after 300 seconds. The model did "
+            "litellm.Timeout: APITimeoutError - Request timed out. The model did "
             "not return a complete response within the LLM timeout of 300s "
             "(gave up after 2 attempts, 608s in total).",
             "config",
@@ -110,3 +107,22 @@ def test_agent_error_event_preserves_explicit_classification() -> None:
         classification=explicit,
     )
     assert event.classification is explicit
+
+
+def test_exhausted_llm_timeout_points_to_settings_not_retry():
+    """#6249: retrying a call that used the whole LLM timeout repeats it."""
+    event = ConversationErrorEvent(
+        source="environment",
+        code="LLMTimeoutError",
+        detail="litellm.Timeout: LLM hard timeout after 300 seconds",
+    )
+
+    classification = event.model_dump(mode="json")["classification"]
+    assert classification["kind"] == "config"
+    assert classification["retryable"] is False
+    assert classification["user_action"] == "settings"
+    assert classify_error(
+        "LLMTimeoutError", "litellm.Timeout: Request timed out."
+    ) == ErrorClassification(
+        kind=FailureKind.TRANSIENT, retryable=True, user_action="retry"
+    )
