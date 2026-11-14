@@ -49,6 +49,7 @@ Routes: none
 - `F34.manager`: `ConversationManager` searches with paging, counts by status, batch-gets (unknown ids are `null`), lists all, loads a conversation with its server working directory, creates and deletes one, and an unknown id rejects with 404.
 - `F34.manager-update-result`: `ConversationManager.updateConversation` stores the new title and resolves with the updated `ConversationInfo` it is typed to return.
 - `F34.manager-create-options`: `ConversationManager.createConversation(agent, {maxIterations, stuckDetection})` creates the conversation with those settings.
+- `F34.manager-batch-over-limit`: `getConversations` on `ConversationManager`, `ConversationClient` and the ACP namespace splits a list of more than 99 ids into requests the server accepts (it refuses 100 with 422) and returns every entry in input order, `null` for unknown ids.
 - `F34.manager-acp`: `ConversationManager.acp` creates a conversation for an inline ACP agent (with its `maxIterations`) and gets, batch-gets, lists and counts it with its ACP agent fields.
 - `F34.hooks-client`: `HooksClient.loadHooks` and `RemoteConversation.loadHooks` read a project's `.openhands/hooks.json` as a snake_case `HookConfig` the client's hook helpers understand, and `null` for a directory without hooks.
 - `F34.mcp-client`: `MCPClient.testServer` lists a stdio MCP server's tools and runs one tool call, reports a server that fails to start as `{ok: false}` with an `error_kind`, and an empty command rejects with 422.
@@ -969,6 +970,44 @@ Preconditions:
   input order with `null` for the unknown id, the loaded conversation carries
   its server working directory, and the created conversation is gone after
   the delete (404, count back to `COUNT`).
+- **Batches above the server limit (`F34.manager-batch-over-limit`).**
+  `GET /api/conversations?ids=` takes at most 99 ids; the client methods
+  split a longer list into requests of at most 99 and join the answers.
+  `CID`, then 150 unknown ids, then `SCID` go through
+  `ConversationManager.getConversations`, `ConversationClient.getConversations`
+  and the ACP namespace's `getConversations`.
+
+  Requires: `F34.conversation-create`
+  ```sh
+  Q99=$(for N in $(seq 1 99); do printf 'ids=00000000-0000-4000-8000-%012d&' "$N"; done)
+  control-agent-server api GET "/api/conversations?${Q99%&}" --expect 200 --check . len-eq 99 --check 0 eq null --quiet
+  control-agent-server api GET "/api/conversations?${Q99}ids=00000000-0000-4000-8000-000000000100" --expect 422 \
+    --check detail.0.type eq too_long --quiet --save F34.manager-batch-over-limit/rest-100
+  cat > "$F34/batch.mjs" <<'JS'
+  import { writeFileSync } from 'node:fs';
+  import { m, c, host, apiKey, F34, assert } from './lib.mjs';
+  const [cid, scid] = process.argv.slice(2);
+  const unknown = Array.from({ length: 150 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`);
+  const ids = [cid, ...unknown, scid];
+  const expected = [cid, ...unknown.map(() => null), scid];
+  const manager = new m.ConversationManager({ host, apiKey });
+  const viaManager = (await manager.getConversations(ids)).map((x) => x && x.id);
+  const viaClient = (await new c.ConversationClient({ host, apiKey }).getConversations(ids)).map((x) => x && x.id);
+  const viaAcp = (await manager.acp.getConversations(ids)).map((x) => x && x.id);
+  writeFileSync(`${F34}/batch.json`, JSON.stringify({ manager: viaManager.length, client: viaClient.length, acp: viaAcp.length }));
+  assert.deepEqual(viaManager, expected);
+  assert.deepEqual(viaClient, expected);
+  assert.deepEqual(viaAcp, expected);
+  console.log('QA_F34_BATCH_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_BATCH_OK --save F34.manager-batch-over-limit/program -- node "$F34/batch.mjs" "$CID" "$SCID"
+  control-agent-server assert --json "$F34/batch.json" --check manager eq 152 --check client eq 152 --check acp eq 152
+  ```
+  REST answers 99 ids (all unknown, all `null`) and refuses a 100th with
+  `422` (`too_long`). Each client method resolves 152 entries in input
+  order, `CID` first, `SCID` last and `null` for every unknown id (the client
+  sends at most 99 ids per request, read from source, which the REST limit
+  above makes necessary).
 - **Update result (`F34.manager-update-result`).** `PATCH
   /api/conversations/{id}` answers `Success` (`{"success": true}`, also in
   the client's generated contract), so `ConversationManager.updateConversation`
@@ -1504,3 +1543,10 @@ Preconditions:
   changes. The raw `/openapi.json` of a running server is not the public
   contract (it includes `/v1` and internal schemas), so regenerating from it
   shows thousands of unrelated changes.
+- Agent Canvas pins `@openhands/typescript-client` 1.62.0, which sends every id
+  in one lookup, so a conversation with more than 99 children still gets a 422
+  there until its pin moves to a release with the batched lookup
+  (`F34.manager-batch-over-limit`). The release bot moves the agent-server and
+  client pins together after each SDK release, as
+  [OpenHands/OpenHands#19658](https://github.com/OpenHands/OpenHands/pull/19658)
+  did for 1.62.0.

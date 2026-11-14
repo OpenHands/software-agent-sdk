@@ -1,0 +1,82 @@
+
+=== 2026-11-11T08:41:33Z start: /home/user/software-agent-sdk/.venv/bin/python -m openhands.agent_server --host 127.0.0.1 --port 37231
+Exception in thread litellm-model-cost-map-retry:
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/user/software-agent-sdk/openhands-agent-server/openhands/agent_server/__main__.py", line 13, in <module>
+    from openhands.agent_server.logging_config import LOGGING_CONFIG
+  File "/home/user/software-agent-sdk/openhands-agent-server/openhands/agent_server/logging_config.py", line 8, in <module>
+    from openhands.sdk.logger import ENV_JSON, ENV_LOG_LEVEL, IN_CI
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/__init__.py", line 5, in <module>
+    from openhands.sdk.agent import (
+    ...<2 lines>...
+    )
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/agent/__init__.py", line 5, in <module>
+    from openhands.sdk.agent.agent import Agent
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/agent/agent.py", line 12, in <module>
+    import openhands.sdk.security.analyzer as analyzer
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/security/__init__.py", line 1, in <module>
+    from openhands.sdk.security.analyzer import SecurityAnalysis, SecurityAnalyzerBase
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/security/analyzer.py", line 6, in <module>
+    from openhands.sdk.event.base import Event
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/event/__init__.py", line 1, in <module>
+    from openhands.sdk.event.acp_tool_call import ACPToolCallEvent
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/event/acp_tool_call.py", line 9, in <module>
+    from openhands.sdk.event.base import Event
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/event/base.py", line 9, in <module>
+    from openhands.sdk.event.types import ROOT_PARENT_ID, EventID, SourceType
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/event/types.py", line 3, in <module>
+    from openhands.sdk.utils.masking import SkipSecretMasking
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/utils/__init__.py", line 3, in <module>
+    from .command import sanitized_env
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/utils/command.py", line 9, in <module>
+    from openhands.sdk.logger import get_logger
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/logger/__init__.py", line 1, in <module>
+    from .logger import (
+    ...<7 lines>...
+    )
+  File "/home/user/software-agent-sdk/openhands-sdk/openhands/sdk/logger/logger.py", line 16, in <module>
+    import litellm
+  File "/home/user/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/__init__.py", line 563, in <module>
+    model_cost = get_model_cost_map(url=model_cost_map_url)
+Exception in thread litellm-model-cost-map-retry:
+  File "/home/user/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/get_model_cost_map.py", line 672, in get_model_cost_map
+    verbose_logger.warning(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        "LiteLLM: Failed to fetch remote model cost map from %s: %s. Falling back to local backup.",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        url,
+        ^^^^
+        outcome.reason,
+        ^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/local/lib/python3.13/logging/__init__.py", line 1537, in warning
+    self._log(WARNING, msg, args, **kwargs)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/logging/__init__.py", line 1670, in _log
+    self.handle(record)
+    ~~~~~~~~~~~^^^^^^^^
+  File "/usr/local/lib/python3.13/logging/__init__.py", line 1681, in handle
+    maybe_record = self.filter(record)
+  File "/usr/local/lib/python3.13/logging/__init__.py", line 867, in filter
+    result = f.filter(record)
+  File "/home/user/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/_logging.py", line 551, in filter
+    return _process_record(
+        record,
+    ...<2 lines>...
+        redact=_ENABLE_SECRET_REDACTION,
+    )
+  File "/home/user/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/_logging.py", line 455, in _process_record
+    candidate: Final = diagnostics.run(
+                       ~~~~~~~~~~~~~~~^
+        lambda native: native.process_diagnostic(message, exception, stack, leaves, (redact, base64_limit, text_limit)),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        lambda: _python_process_diagnostic(message, exception, stack, leaves, redact, base64_limit, text_limit),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/rust_bridge/diagnostics.py", line 47, in run
+    from litellm.rust_bridge.catalog import LoggerContext, decision
+ImportError: cannot import name 'LoggerContext' from partially initialized module 'litellm.rust_bridge.catalog' (most likely due to a circular import) (/home/user/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/rust_bridge/catalog.py)

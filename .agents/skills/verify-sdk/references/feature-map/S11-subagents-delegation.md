@@ -29,6 +29,7 @@ Examples: `examples/01_standalone_sdk/25_agent_delegation.py`, `examples/01_stan
 - `S11.task-persistence`: with a persisting parent, sub-conversations are stored under `<parent persistence_dir>/subagents/` and kept on close; without one they go to a temporary `openhands_tasks_*` dir that `close()` deletes. Unit: `tests/tools/task/test_task_manager.py::TestTaskManagerPersistence`. Example: none. Real-LLM: none.
 - `S11.task-hooks`: a definition's `hooks` become the sub-conversation's `hook_config`, on create and on resume. Unit: `tests/tools/task/test_task_manager.py::TestTaskManagerHooks`. Example: none. Real-LLM: none.
 - `S11.task-observability`: sub-conversations share the parent's prompt cache key and carry delegate trace metadata (`is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, parent span link) and the `delegate` tag. Unit: `tests/tools/task/test_task_manager.py::TestTaskManager::test_sub_agents_inherit_parent_prompt_cache_key`, `::test_marks_conversation_as_delegate_with_linking_metadata`, `::test_delegate_metadata_includes_parent_span_link`. Example: none. Real-LLM: none.
+- `S11.task-secrets`: secrets the parent conversation holds (`conversation.update_secrets(...)`) resolve in a task sub-agent's terminal, on create and on resume, and stay masked in what comes back. Unit: **none (untested)**. Example: none. Real-LLM: none.
 - `S11.task-confirmation`: a definition's `permission_mode` sets the sub-conversation's confirmation policy, omission inherits the parent's; when the sub-agent waits for confirmation, `TaskToolSet.create(confirmation_handler=...)` decides, and without a handler the actions are approved. Unit: **none (untested)**. Example: none. Real-LLM: none.
 - `S11.sub-agent-scope`: `SubAgentScope(tools=True, mcp_servers=True)` (the `sub_agent_scope` tool param) hides and refuses sub-agents whose tools or MCP servers the parent lacks, compares built-in tool names canonically, propagates to nested delegation tools, and says so when no sub-agent fits. Unit: `tests/sdk/subagent/test_subagent_scope.py`, `tests/tools/task/test_sub_agent_scope.py`. Example: none. Real-LLM: none.
 - `S11.delegate-executor`: the older `DelegateExecutor` (`spawn` named sub-agents, then `delegate` a dict of tasks run in parallel threads) closes replaced and spawned sub-agents, rolls back a partial spawn, merges metrics, and inherits the parent's persistence dir. Unit: `tests/tools/delegate/test_delegation.py`. Example: none. Real-LLM: none.
@@ -79,7 +80,16 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check sub_cache_key_is_parent.0 eq true --check sub_cache_key_is_parent.1 eq true \
     --check sub_cache_key_is_parent.2 eq true --check sub_session_differs eq true
   ```
-  Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Known failure (reproduced 2026-10-13, not yet filed): the two calls of the created task carry the parent's key, but the call made after `task(resume=...)` carries the sub-conversation's own id (`sub_cache_key_is_parent` is `[true, true, false]`): `TaskManager._resume_task` builds the `LocalConversation` without `prompt_cache_key=...`, unlike `_get_conversation`.
+  Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Known failure (reproduced 2026-11-12, [#6655](https://github.com/OpenHands/software-agent-sdk/issues/6655)): the two calls of the created task carry the parent's key, but the call made after `task(resume=...)` carries the sub-conversation's own id (`sub_cache_key_is_parent` is `[true, true, false]`): `TaskManager._resume_task` builds the `LocalConversation` without `prompt_cache_key=...`, unlike `_get_conversation`.
+- **Delegates see the parent's secrets (`S11.task-secrets`).** A persisted parent registers `PROBE_TOKEN` with `update_secrets`, runs `echo probe=${PROBE_TOKEN:+set} value=$PROBE_TOKEN` itself, then delegates the same command to the programmatic sub-agent `prober` and resumes that task for a second run.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S11/task_secrets \
+    --check execution_status eq finished --check parent_probe eq set \
+    --check task_statuses len-eq 2 --check parent_masked eq true --check secret_leaked eq false \
+    --check create_probe eq set --check resume_probe eq set
+  ```
+  Expected: the secret resolves in the sub-agent's shell, on create and on resume, as it does in the parent's (`create_probe` and `resume_probe` are `set`), and the parent's output stays masked.
 - **Delegate trace metadata (`S11.task-observability`), blocked.** `is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, the parent span link and the `delegate` tag go only to the observability backend; proving them needs a Laminar/OpenTelemetry collector to read spans from.
 - **Registry, Markdown definitions and factories (`S11.register-programmatic`, `S11.register-if-absent`, `S11.markdown-schema`, `S11.file-discovery`, `S11.file-precedence`, `S11.plugin-agents`, `S11.definition-factory`, `S11.definition-model`).** The program lays out agent files in the workspace (`.agents/agents/`, `.openhands/agents/`, a `README.md`, a nested dir), the user's home (`~/.agents/agents/`) and `$OH_PERSISTENCE_DIR/agents/`, saves an LLM profile, and goes through `openhands.sdk.subagent`.
   ```sh
@@ -125,7 +135,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
   control-sdk program S11/builtins \
     --check example_in_description.general-purpose eq true --check example_in_description.web-researcher eq true
   ```
-  Expected: with all four built-ins registered, the description holds an example for each. Before #6656, `TASK_TOOL_EXAMPLES` keyed two of them as `"general purpose"` and `"web researcher"` (spaces), so only the `code-explorer` and `bash-runner` examples appeared; now the keys match the registered names.
+  Expected: with all four built-ins registered, the description holds an example for each, keyed by the names the built-ins register under.
 - **Workspace Markdown agents picked up by the conversation (`S11.conversation-autoregister`, `S11.builtin-agents`, `S11.task-persistence`).** The workspace holds `.agents/agents/ws-reviewer.md`; the program never calls `register_file_agents`. A non-persisted parent delegates to it and to the built-in `bash-runner`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

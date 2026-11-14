@@ -1,0 +1,33 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.61.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[11/11/26 09:06:28] WARNING  Duplicate tool name registered:     registry.py:154
+                             terminal                                           
+[11/11/26 09:06:28] WARNING  No persistence_dir provided; falling   state.py:562
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[11/11/26 09:06:28] INFO     Created new conversation               state.py:645
+                             d9d67c7b-912f-4061-83ef-1455e115127b               
+[11/11/26 09:06:29] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:149
+                             session=openhands-pool-None-c                      
+                             d7f58c7-5c33-442e-94c1-dc5183                      
+                             85c170, max_panes=4                                
+[11/11/26 09:06:29] INFO     TerminalExecutor initialized (pool      impl.py:148
+                             mode) working_dir:                                 
+                             /tmp/tmuxleak-ws-9jxt11b9, username:               
+                             None, max_panes: 4                                 
+[11/11/26 09:06:29] INFO     Loaded 1 tools from spec                base.py:585
+run: raised ConversationRunError: Conversation run failed for id=d9d67c7b-912f-4061-83ef-1455e115127b: TestLLM: no more scripted responses (exhausted after 0 calls)
+  traceback mentions set_response_schema: False
+  traceback mentions resolve_tool: False
+close: done
+  socket .openhands-socket-creation.lock: rc=1 no server running on /tmp/tl-segEVU/tmux-0/.openhands-socket-creation.lock
+  socket openhands-929b8ac6294b460bbc9347ef5d1839d1: rc=1 no server running on /tmp/tl-segEVU/tmux-0/openhands-929b8ac6294b460bbc9347ef5d1839d1
+RESULT mode=valid tmux_servers_alive_after_close=0 []

@@ -70,11 +70,12 @@ def slow_llm(script, delay: float) -> SlowLLM:
     return llm
 
 
-def conversation_for(llm, tools=("SleeperTool",), **kw):
+def conversation_for(llm, tools=("SleeperTool",), callbacks=None, **kw):
     return Conversation(
         agent=Agent(llm=llm, tools=[Tool(name=t) for t in tools], **kw),
         workspace=WORKSPACE,
         visualizer=None,
+        callbacks=callbacks,
     )
 
 
@@ -270,30 +271,32 @@ elif mode == "cancel-token":
     llm = TestLLM.from_messages(
         script_messages([batch, {"finish": "batch done"}]), usage_id="agent"
     )
-    conversation = conversation_for(llm, tool_concurrency_limit=1)
-    conversation.send_message("Run the batch.")
     tokens: list = []
+    holder: list = []
+
+    def record_token(_event) -> None:
+        # Events are emitted while a run is in progress, so the run's token is
+        # observable here however short the run is.
+        token = holder[0].cancel_token if holder else None
+        if token is not None and (not tokens or tokens[-1] is not token):
+            tokens.append(token)
+
+    conversation = conversation_for(
+        llm, tool_concurrency_limit=1, callbacks=[record_token]
+    )
+    holder.append(conversation)
+    conversation.send_message("Run the batch.")
 
     async def drive() -> None:
         await conversation.arun()
 
-    def watch_token() -> None:
-        while thread.is_alive():
-            token = conversation.cancel_token
-            if token is not None and (not tokens or tokens[-1] is not token):
-                tokens.append(token)
-            time.sleep(0.02)
-
     thread = threading.Thread(target=lambda: asyncio.run(drive()))
     thread.start()
-    watcher = threading.Thread(target=watch_token)
-    watcher.start()
     while count(conversation, ActionEvent) < 4 and thread.is_alive():
         time.sleep(0.02)
     time.sleep(0.3)  # call-0 is running
     conversation.interrupt()
     thread.join(timeout=60)
-    watcher.join()
     time.sleep(1.2)  # let a worker that was already running finish
     first_token = tokens[0] if tokens else None
     out |= {
@@ -305,11 +308,8 @@ elif mode == "cancel-token":
     }
     # The next run gets a fresh, uncancelled token and finishes the work.
     thread = threading.Thread(target=lambda: asyncio.run(drive()))
-    watcher = threading.Thread(target=watch_token)
     thread.start()
-    watcher.start()
     thread.join(timeout=60)
-    watcher.join()
     out |= {
         "tokens_seen": len(tokens),
         "second_token_is_new": len(tokens) >= 2 and tokens[-1] is not tokens[0],
