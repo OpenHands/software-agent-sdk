@@ -31,6 +31,7 @@ from openhands.agent_server.experimental_features import (
     is_enabled,
 )
 from openhands.agent_server.models import (
+    AskUserAnswerRequest,
     ConfirmationResponseRequest,
     EventSortOrder,
     ReactionRequest,
@@ -53,6 +54,7 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.event import Event, ReactionEvent
+from openhands.sdk.event.ask_user import AskUserAnswerEvent
 
 
 event_read_router = APIRouter(
@@ -396,16 +398,24 @@ reaction_router = APIRouter(
 )
 
 
-async def require_reactions_enabled(settings_store: SettingsStore) -> None:
-    """Refuse with 409 unless the user has conversation reactions on."""
+async def require_feature_enabled(
+    settings_store: SettingsStore, key: str, off_detail: str
+) -> None:
+    """Refuse with 409 unless the user has experimental feature ``key`` on.
+
+    A Docker runtime's server finds the user's switch on the host, which
+    checks it before forwarding the request, so this check is skipped there.
+    """
+    if host_experimental_features() is not None:
+        return
     try:
         settings = await asyncio.to_thread(
             lambda: settings_store.load() or PersistedSettings()
         )
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
-    if not is_enabled(settings.experimental_features, "conversation_reactions"):
-        raise Conflict("Conversation reactions are turned off")
+    if not is_enabled(settings.experimental_features, key):
+        raise Conflict(off_detail)
 
 
 @reaction_router.post(
@@ -433,10 +443,11 @@ async def react_to_message(
     unlike the agent's tools, which a conversation gets when it starts, this
     check follows the switch at once.
     """
-    # A Docker runtime's server finds the user's switch on the host, which
-    # checks it before forwarding the request.
-    if host_experimental_features() is None:
-        await require_reactions_enabled(settings_store)
+    await require_feature_enabled(
+        settings_store,
+        "conversation_reactions",
+        "Conversation reactions are turned off",
+    )
     try:
         return await event_service.react(
             request.emoji, request.target_event_id, removed=request.removed
@@ -447,7 +458,55 @@ async def react_to_message(
         raise Invalid(str(exc))
 
 
+ask_user_router = APIRouter(
+    prefix="/conversations/{conversation_id}/ask_user", tags=["Events"]
+)
+
+
+@ask_user_router.post(
+    "/answer",
+    responses=error_responses(
+        {
+            Invalid: "That question is not waiting for an answer",
+            NotFound: "Item not found",
+            Conflict: "Decision cards are turned off",
+            RateLimited: "Answer saved but server run capacity is full",
+        }
+    ),
+)
+async def answer_ask_user(
+    request: AskUserAnswerRequest,
+    event_service: EventService = Depends(get_event_service),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+) -> AskUserAnswerEvent:
+    """Answer the agent's pending `ask_user` question, and run the agent.
+
+    Pick an option (`option_index`), give words (`text`), or both. The answer
+    is saved as an `AskUserAnswerEvent`, which clients use to show the card as
+    answered, followed by a user message the agent reads; then the agent runs.
+    `ask_id` must be the pending question: one the person already answered,
+    by a tap or by writing in the chat, is refused (422). There is no field
+    for another conversation to answer on the person's behalf. Needs the
+    `ask_user` feature on; this check follows the switch at once.
+    """
+    await require_feature_enabled(
+        settings_store, "ask_user", "Decision cards are turned off"
+    )
+    _refuse_during_gateway_run(event_service)
+    async with event_service._gateway_run_lock:
+        _refuse_during_gateway_run(event_service)
+        try:
+            return await event_service.answer_ask(
+                request.ask_id, request.option_index, request.text
+            )
+        except ValueError as exc:
+            if str(exc) == "inactive_service":
+                raise
+            raise Invalid(str(exc))
+
+
 event_router = APIRouter()
 event_router.include_router(event_read_router)
 event_router.include_router(event_write_router)
 event_router.include_router(reaction_router)
+event_router.include_router(ask_user_router)

@@ -5,6 +5,7 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isAskUserAnswerEvent,
   isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
@@ -2395,6 +2396,45 @@ describe('Auxiliary API clients', () => {
       removed: true,
     });
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
+  });
+
+  it('ConversationClient answers an ask_user question', async () => {
+    const saved = {
+      id: 'a1',
+      timestamp: '2026-11-14T00:00:00',
+      source: 'user',
+      kind: 'AskUserAnswerEvent',
+      ask_id: 'q1',
+      option_index: 1,
+      option_label: 'SQLite',
+      text: null,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.answerAskUser('conv-1', 'q1', { optionIndex: 1 });
+    await client.answerAskUser('conv-1', 'q1', { text: 'Neither' });
+
+    expect(isAskUserAnswerEvent(event)).toBe(true);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/ask_user/answer'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      ask_id: 'q1',
+      option_index: 1,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      ask_id: 'q1',
+      text: 'Neither',
+    });
   });
 
   it('SettingsClient fetches and updates settings and secrets', async () => {

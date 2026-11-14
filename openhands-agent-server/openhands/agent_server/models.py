@@ -473,6 +473,22 @@ class ReactionRequest(BaseModel):
     removed: bool = Field(default=False, description="True to remove the reaction.")
 
 
+class AskUserAnswerRequest(BaseModel):
+    """The person's answer to the agent's pending ``ask_user`` question."""
+
+    ask_id: EventID = Field(
+        description="Id of the agent's `ask_user` call (its ActionEvent) answered."
+    )
+    option_index: int | None = Field(
+        default=None, ge=0, description="The option picked, counted from 0."
+    )
+    text: str | None = Field(
+        default=None,
+        max_length=10_000,
+        description="The person's own words, instead of an option or with one.",
+    )
+
+
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
