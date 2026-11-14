@@ -3197,15 +3197,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _begin_chat_messages(
         self, messages: list[Message]
     ) -> tuple[list[Message], bool]:
-        """Deepcopy ``messages`` and apply prompt-caching flags.
+        """Detach ``messages`` when needed and apply prompt-caching flags.
 
         Shared by the sync and async chat-formatting paths. Returns the
-        detached message list and the resolved ``vision_enabled`` flag so
-        callers can plug in their own (sync or async) inline-image pass
-        without duplicating the boilerplate.
+        message list and the resolved ``vision_enabled`` flag so callers can
+        plug in their own (sync or async) inline-image pass without duplicating
+        the boilerplate.
+
+        The list is only deep-copied when prompt caching is active, because
+        ``_apply_prompt_caching`` mutates content items in place. The inline and
+        resize passes are already copy-on-write, so with caching inactive the
+        input can be passed straight through -- which avoids deep-copying the
+        whole history on every token-count and formatting call.
         """
-        messages = copy.deepcopy(messages)
         if self.is_caching_prompt_active():
+            messages = copy.deepcopy(messages)
             self._apply_prompt_caching(messages)
         messages = self._apply_proxy_system_identity(messages)
         return messages, self.vision_is_active()
@@ -3395,6 +3401,31 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             vision_enabled=self.vision_is_active(),
         )
         return self._build_responses_payload(msgs)
+
+    def token_count_is_additive(self, *, has_tools: bool) -> bool:
+        """Whether token counting is exactly additive over the message list.
+
+        Callers that sum per-message counts (see ``IncrementalTokenCounter``)
+        rely on ``count(A + B) == count(A) + count(B) - count([])``. Two
+        configured paths break that:
+
+        - a chat-template tokenizer, which renders the whole message list into a
+          single prompt and then tokenises it;
+        - prompt-mocked tool calling (``native_tool_calling=False`` with tools),
+          whose in-context example is attached according to a message's position,
+          so the first user message counts differently alone than it does inside
+          the full history.
+
+        ``has_tools`` mirrors whether ``get_token_count`` will be passed tools.
+        """
+        if (
+            chat_template_tokenizer(self._chat_template_tokenizer or self._tokenizer)
+            is not None
+        ):
+            return False
+        if has_tools and not self.native_tool_calling:
+            return False
+        return True
 
     def get_token_count(
         self,

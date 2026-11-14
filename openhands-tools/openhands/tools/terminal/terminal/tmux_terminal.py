@@ -16,6 +16,8 @@ from filelock import FileLock
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_PS1_BEGIN,
+    CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
@@ -37,6 +39,13 @@ from openhands.tools.terminal.terminal.process_priority import (
 
 
 logger = get_logger(__name__)
+
+# ``clear_screen`` waits for the shell prompt instead of sleeping a fixed
+# duration. ``_CLEAR_PROMPT_TIMEOUT`` is the upper bound (a wedged pane must not
+# block the agent) and ``_CLEAR_PROMPT_POLL_INTERVAL`` matches the terminal's
+# other prompt polls.
+_CLEAR_PROMPT_TIMEOUT = 0.5
+_CLEAR_PROMPT_POLL_INTERVAL = 0.02
 
 
 class _SecretRedactFilter(logging.Filter):
@@ -347,15 +356,85 @@ class TmuxTerminal(TerminalInterface):
         control character (``^L``) can leak into the shell input buffer over SSH
         connections.
 
-        Instead, we run the ``clear`` command to clear the visible screen, then
-        use tmux's ``clear-history`` to remove the scrollback buffer.
+        ``clear`` erases the visible screen and ``clear-history`` drops the
+        scrollback. Spawning a tmux client dominates the cost and this runs after
+        every command, so we send as little as possible:
+
+        * If the visible screen is already empty there is nothing for ``clear``
+          to erase. ``clear-history`` alone drops the scrollback, and because it
+          is a synchronous tmux command (no shell round-trip) no ``clear`` is left
+          pending -- the prompt already on screen cannot be mistaken for the
+          result of a queued command.
+        * Otherwise the pre-clear screen shows content above the prompt, so the
+          cleared shape (a bare prompt with nothing above it) is an unambiguous
+          proof that ``clear`` ran. ``send_keys`` returns before the shell runs the
+          command, so we wait for the shape, bounded by ``_CLEAR_PROMPT_TIMEOUT``
+          so a wedged pane still makes progress.
+
+        The shape is read from the visible rows only. ``clear`` empties those
+        immediately, whereas its scrollback erase relies on ``ESC[3J``, which not
+        every ``clear`` emits -- waiting on the scrollback (``read_screen``) would
+        stall the full timeout there.
+
+        Every command is targeted at this pane. ``libtmux`` injects ``-t`` for the
+        command that follows the subcommand name, but the second command of a
+        ``;`` chain is a separate tmux command and would otherwise run against the
+        session's *active* pane, wiping an unrelated pooled pane's scrollback.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("clear", enter=True)
-        time.sleep(0.1)
-        self.pane.cmd("clear-history")
+        try:
+            visible_cleared = self._content_is_cleared(self._visible_screen())
+        except Exception:
+            visible_cleared = False
+            logger.debug("capture-pane failed while checking for a clean pane")
+
+        if visible_cleared:
+            self.pane.cmd("clear-history")
+            return
+
+        self.pane.cmd(
+            "send-keys", "clear", "Enter", ";", "clear-history", "-t", self.pane.id
+        )
+        self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
+
+    def _wait_for_clear(self, timeout: float) -> bool:
+        """Wait until ``clear`` has emptied the visible screen.
+
+        Returns ``True`` once the cleared shape appears, ``False`` if ``timeout``
+        elapses first (the caller then proceeds anyway).
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if self._content_is_cleared(self._visible_screen()):
+                    return True
+            except Exception:
+                logger.debug("capture-pane failed while waiting for clear")
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
+
+    def _visible_screen(self) -> str:
+        """The pane's visible rows only, excluding the scrollback."""
+        return "\n".join(
+            map(
+                lambda line: line.rstrip(),
+                self.pane.cmd("capture-pane", "-J", "-p").stdout,
+            )
+        )
+
+    def _screen_is_cleared(self) -> bool:
+        """Whether the pane shows a bare prompt with no content above it."""
+        return self._content_is_cleared(self._visible_screen())
+
+    @staticmethod
+    def _content_is_cleared(content: str) -> bool:
+        if not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+            return False
+        index = content.rfind(CMD_OUTPUT_PS1_BEGIN.strip())
+        return index >= 0 and content[:index].strip() == ""
 
     def interrupt(self) -> bool:
         """Send interrupt signal (Ctrl+C) to the tmux pane.
