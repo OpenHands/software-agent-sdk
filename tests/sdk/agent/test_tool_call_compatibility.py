@@ -22,6 +22,7 @@ from openhands.sdk.agent import Agent, utils as agent_utils
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.mixins import fn_call_converter
 from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
 from openhands.sdk.tool.tool import ToolDefinition
 
@@ -744,3 +745,13 @@ def test_shell_tool_name_git_falls_back_to_terminal(tmp_path):
     assert action_event.tool_name == TERMINAL_TOOL_NAME
     assert action_event.action is not None
     assert getattr(action_event.action, "command") == "git"
+
+
+def test_agent_and_converter_share_one_alias_table():
+    """The non-native converter and ``normalize_tool_call`` must read the same
+    table; the converter's own copy had fallen four entries behind."""
+    assert agent_utils.TOOL_NAME_ALIASES is fn_call_converter.TOOL_NAME_ALIASES
+    assert (
+        agent_utils.TERMINAL_COMMAND_PREFIX_ALIASES
+        is fn_call_converter.TERMINAL_COMMAND_PREFIX_ALIASES
+    )

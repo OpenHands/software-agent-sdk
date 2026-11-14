@@ -146,6 +146,31 @@ describe('deriveSwitchPlan', () => {
       }
     });
 
+    it('switch-live names every live field that differs', () => {
+      const effortOnly: ACPAgentProfile = { ...acpBase, revision: 1, acp_effort: 'high' };
+      const both: ACPAgentProfile = { ...effortOnly, acp_model: 'claude-opus-4-8' };
+
+      expect(deriveSwitchPlan(acpBase, effortOnly, claudeProvider)).toEqual({
+        action: 'switch-live',
+        mutableFields: ['acp_effort'],
+      });
+      expect(deriveSwitchPlan(acpBase, both, claudeProvider)).toEqual({
+        action: 'switch-live',
+        mutableFields: ['acp_model', 'acp_effort'],
+      });
+    });
+
+    it('starts a new session to restore the default effort', () => {
+      const snapshot: ACPAgentProfile = { ...acpBase, acp_effort: 'high' };
+      const target: ACPAgentProfile = { ...acpBase, revision: 1, acp_effort: null };
+      expect(deriveSwitchPlan(snapshot, target, claudeProvider).action).toBe('start-new');
+    });
+
+    it('treats a missing acp_effort like null', () => {
+      const target: ACPAgentProfile = { ...acpBase, revision: 1, acp_effort: null };
+      expect(deriveSwitchPlan(acpBase, target, claudeProvider).action).toBe('current');
+    });
+
     it('start-new when only acp_model differs but provider does NOT support runtime switch', () => {
       const codexSnapshot: ACPAgentProfile = {
         ...acpBase,

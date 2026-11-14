@@ -35,7 +35,7 @@ def test_default_agent_registers_finish_tool_when_missing(monkeypatch):
         for tool in agent.tools
     )
     assert "FinishTool" not in agent.include_default_tools
-    assert "ThinkTool" in agent.include_default_tools
+    assert "ThinkTool" not in agent.include_default_tools
 
 
 def test_default_agent_uses_structured_finish_without_duplicate_warning(caplog):
@@ -55,7 +55,7 @@ def test_default_agent_uses_structured_finish_without_duplicate_warning(caplog):
     )
     assert "FinishTool" in list_registered_tools()
     assert "FinishTool" not in agent.include_default_tools
-    assert "ThinkTool" in agent.include_default_tools
+    assert "ThinkTool" not in agent.include_default_tools
 
     caplog.clear()
     get_default_agent(
@@ -70,4 +70,4 @@ def test_default_agent_uses_structured_finish_without_duplicate_warning(caplog):
 
     finish_tool = agent.tools_map["finish"]
     assert finish_tool.response_schema is _FinishResult
-    assert "think" in agent.tools_map
+    assert "think" not in agent.tools_map

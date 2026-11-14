@@ -476,7 +476,7 @@ Preconditions:
   socket table (`/proc/net/tcp`), not only from the startup line. The
   namespace keeps the unauthenticated wildcard server unreachable from
   outside, and `env -i` keeps this shell's `OH_*` variables away from it.
-- **Cookie path ignores a prefix (`F02.workspace-cookie-root-path`), known bug.**
+- **Cookie path follows the prefix (`F02.workspace-cookie-root-path`).**
   A second server with `OH_WEB_URL=http://127.0.0.1/qa-f02-prefix`, used
   through its prefixed URLs like a browser behind a path-prefix proxy.
   ```sh
@@ -487,18 +487,16 @@ Preconditions:
   control-agent-server exec --run "$PREFIXED" -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" key 200 'has:qa-f02-workspace-file'
   control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/mint -- bash "$F02/jar.sh" POST /qa-f02-prefix/api/auth/workspace-session key 204
   grep -q oh_workspace_session_key "$PREFIXED/fixtures/qa-f02-cookies.txt"
-  control-agent-server exec --run "$PREFIXED" -- bash "$F02/jar.sh" GET "/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
-  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'  # bug: exit_code eq 1 && stdout_tail contains status=401
+  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
+  grep -qE '[[:space:]]/qa-f02-prefix/api/conversations[[:space:]].*[[:space:]]oh_workspace_session_key[[:space:]]' "$PREFIXED/fixtures/qa-f02-cookies.txt"
   control-agent-server stop --run "$PREFIXED"
   ```
   The server advertises `servers: [{"url": "/qa-f02-prefix"}]` and serves
-  the file under the prefix; the minted cookie lands in the second run's jar
-  and is a valid credential (the unprefixed URL, which a prefix-stripping
-  proxy would forward, loads the file with it). Expected: the cookie also
-  comes back on the prefixed file URL, the one the browser actually uses.
-  Today it is scoped to `Path=/api/conversations` regardless of the root
-  path (unlike `CORSDispatcher`, which strips `root_path`), so the jar does
-  not send it and the file is 401. The TypeScript client's
+  the file under the prefix. The minted cookie lands in the second run's jar
+  scoped to `Path=/qa-f02-prefix/api/conversations` (the root path plus
+  `/api/conversations`), so the jar sends it back on the prefixed file URL,
+  the one a browser behind a path-prefix proxy actually uses, and the file
+  loads without the key header. The TypeScript client's
   `startWorkspaceSession()` returns `${host}/api/conversations/{id}/workspace/`,
   which carries the prefix whenever `host` does.
 - **IPv6 loopback is a secure context (`F02.workspace-session-ipv6-loopback`).**
@@ -525,9 +523,9 @@ Preconditions:
   `Max-Age`). There is no server-side session: `DELETE` only tells the
   browser to drop it, a copied cookie keeps working until the key is rotated,
   and rotating the key invalidates every cookie at once.
-- `Path=/api/conversations` makes browsers send the cookie to every
-  conversation route, not just workspace files; the server ignores it there
-  (`F02.http-header-only`). Keep it that way: honoring it would open those
+- `Path=/api/conversations` (prefixed with the root path, if any) makes
+  browsers send the cookie to every conversation route, not just workspace
+  files; the server ignores it there (`F02.http-header-only`). Keep it that way: honoring it would open those
   routes to CSRF.
 - A wrong legacy key (query or header) is rejected before the WebSocket is
   accepted, so the client sees an HTTP 403 handshake failure, not a 4001

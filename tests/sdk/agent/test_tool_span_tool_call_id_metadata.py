@@ -114,7 +114,7 @@ def test_tool_span_metadata_carries_tool_call_id():
         ),
         patch(
             "openhands.sdk.agent.agent.observe",
-            side_effect=lambda **kwargs: (lambda f: f),
+            side_effect=lambda **kwargs: lambda f: f,
         ) as mock_observe,
     ):
         conversation.send_message(

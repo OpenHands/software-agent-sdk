@@ -7,7 +7,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_forked
 from pydantic import SecretStr
+from pytest_forked import serialize_report
 
 from openhands.sdk import Agent
 from openhands.sdk.conversation.state import ConversationState
@@ -32,7 +34,16 @@ _LIVE_DEPLOYMENT_ENV = re.compile(
 )
 
 
+def _serialize_forked_report(report: pytest.TestReport) -> dict[str, object]:
+    data = serialize_report(report)
+    # pytest 9.2 stores a NodeId in _id, which marshal cannot serialize.
+    data["nodeid"] = report.nodeid
+    data.pop("_id", None)
+    return data
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    pytest_forked.serialize_report = _serialize_forked_report
     # Before collection: some modules read the agent-server config at import.
     for name in [n for n in os.environ if _LIVE_DEPLOYMENT_ENV.fullmatch(n)]:
         del os.environ[name]
@@ -135,6 +146,18 @@ def mock_tool():
     mock_tool.name = "mock_tool"
     mock_tool.executor = MockExecutor()
     return mock_tool
+
+
+@pytest.fixture
+def no_locale_env(monkeypatch):
+    """Unset what tmux reads to choose UTF-8 output, and restore it afterwards.
+
+    setenv before delenv makes monkeypatch record each original, so a value the
+    code under test sets is removed too.
+    """
+    for name in ("LC_ALL", "LC_CTYPE", "LANG", "TMUX"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
 
 
 def create_mock_litellm_response(

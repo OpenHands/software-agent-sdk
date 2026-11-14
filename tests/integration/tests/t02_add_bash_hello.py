@@ -6,7 +6,7 @@ from openhands.sdk import get_logger
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
-INSTRUCTION = "Write a shell script 'shell/hello.sh' that prints 'hello'."
+INSTRUCTION = "Write an executable shell script 'shell/hello.sh' that prints 'hello'."
 
 
 logger = get_logger(__name__)

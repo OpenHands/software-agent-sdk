@@ -57,6 +57,11 @@ interface AgentProfileBase {
    * list its own provider credential to receive it.
    */
   secret_refs?: string[] | null;
+  /**
+   * Which of the user's connected built-in integrations to expose. `null` = all;
+   * `[]` = none; a non-null list = filter to the named integrations.
+   */
+  integration_refs?: string[] | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -92,6 +97,8 @@ export interface ACPAgentProfile extends AgentProfileBase {
   /** ACP provider key, or `'custom'` for a user-supplied command. */
   acp_server: ACPServerKind;
   acp_model: string | null;
+  /** Reasoning effort; `null` or omitted lets the ACP server pick its default. */
+  acp_effort?: string | null;
   acp_session_mode: string | null;
   acp_prompt_timeout: number;
   /** Timeout (seconds) for ACP server startup. */
@@ -149,6 +156,8 @@ export interface AgentProfileDiagnostics {
 
   /** Secret scope; `null` = unrestricted. */
   secret_refs?: string[] | null;
+  /** Built-in integration scope; `null` = unrestricted. */
+  integration_refs?: string[] | null;
 
   // OpenHands LLM reference.
   llm_profile_ref: string | null;
@@ -191,6 +200,8 @@ export interface LaunchedAgentProfile {
   revision: number;
   /** Launch-time secret allow-list, also enforced on resume. */
   secret_refs?: string[] | null;
+  /** Launch-time built-in integration allow-list; `null` = unrestricted. */
+  integration_refs?: string[] | null;
 }
 
 /**
