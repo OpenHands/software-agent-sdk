@@ -9,6 +9,7 @@ Key requirements:
 3. Calling conversation.run() on an already paused agent will resume it
 """
 
+import asyncio
 import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
@@ -444,3 +445,101 @@ class TestPauseFunctionality:
             e for e in self.conversation.state.events if isinstance(e, PauseEvent)
         ]
         assert len(pause_events) == 1, f"Expected 1 PauseEvent, got {len(pause_events)}"
+
+    def _hold_agent_startup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[threading.Event, threading.Event]:
+        """Make run()/arun() block in agent startup until the test releases it.
+
+        Agent startup (plugins, MCP servers, an ACP subprocess) runs inside run()
+        before the run loop; the conversation is still IDLE there.
+        """
+        entered, release = threading.Event(), threading.Event()
+        ready = LocalConversation._ensure_agent_ready
+
+        def held_ready(conversation: LocalConversation) -> None:
+            entered.set()
+            assert release.wait(timeout=3.0), "test never released agent startup"
+            ready(conversation)
+
+        monkeypatch.setattr(LocalConversation, "_ensure_agent_ready", held_ready)
+        return entered, release
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("stop", ["pause", "interrupt"])
+    def test_stop_during_run_startup_is_not_resumed(
+        self, monkeypatch: pytest.MonkeyPatch, stop: str
+    ):
+        """pause()/interrupt() from another thread while run() is starting stops it.
+
+        The stop finds the conversation IDLE and moves it to PAUSED; run() must not
+        treat that PAUSED as a resume request (requirement 2, not 3).
+        """
+        self._use_scripted_llm(
+            [Message(role="assistant", content=[TextContent(text="Task completed")])]
+        )
+        self.conversation.send_message(
+            Message(role="user", content=[TextContent(text="Hello")])
+        )
+        entered, release = self._hold_agent_startup(monkeypatch)
+
+        run_exc: list[Exception | None] = [None]
+
+        def run_agent():
+            try:
+                self.conversation.run()
+            except Exception as e:
+                run_exc[0] = e
+
+        t = threading.Thread(target=run_agent, daemon=True)
+        t.start()
+        assert entered.wait(timeout=3.0), "run() never reached agent startup"
+        getattr(self.conversation, stop)()
+        release.set()
+        t.join(timeout=3.0)
+
+        assert not t.is_alive(), "run() did not return"
+        assert run_exc[0] is None, f"Run thread failed with: {run_exc[0]}"
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
+        assert isinstance(self.llm, TestLLM)
+        assert self.llm.call_count == 0, "the LLM was called after the stop"
+
+        # The pause is honoured once; the next run() resumes as before.
+        self.conversation.run()
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
+        )
+        assert self.llm.call_count == 1
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.asyncio
+    async def test_pause_during_arun_startup_is_not_resumed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Same for arun(): agent startup runs in a worker thread there."""
+        self._use_scripted_llm(
+            [Message(role="assistant", content=[TextContent(text="Task completed")])]
+        )
+        self.conversation.send_message(
+            Message(role="user", content=[TextContent(text="Hello")])
+        )
+        entered, release = self._hold_agent_startup(monkeypatch)
+
+        task = asyncio.create_task(self.conversation.arun())
+        assert await asyncio.to_thread(entered.wait, 3.0), (
+            "arun() never reached agent startup"
+        )
+        self.conversation.pause()
+        release.set()
+        await asyncio.wait_for(task, timeout=3.0)
+
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
+        assert isinstance(self.llm, TestLLM)
+        assert self.llm.call_count == 0, "the LLM was called after the pause"
