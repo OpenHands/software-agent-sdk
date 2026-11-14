@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import parse_qsl
 
 import httpx2
@@ -85,6 +85,39 @@ class MCPOAuth(OAuth):
     includes and which strict servers reject.
     """
 
+    def __init__(
+        self,
+        mcp_url: str | None = None,
+        scopes: str | list[str] | None = None,
+        client_name: str = "FastMCP Client",
+        token_storage: Any | None = None,
+        additional_client_metadata: dict[str, Any] | None = None,
+        callback_port: int | None = None,
+        callback_host: str = "localhost",
+        callback_timeout: float = 300.0,
+        httpx_client_factory: Any | None = None,
+        client_metadata_url: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+    ) -> None:
+        self._openhands_has_explicit_token_auth_method = (
+            "token_endpoint_auth_method" in (additional_client_metadata or {})
+        )
+        super().__init__(
+            mcp_url=mcp_url,
+            scopes=scopes,
+            client_name=client_name,
+            token_storage=token_storage,
+            additional_client_metadata=additional_client_metadata,
+            callback_port=callback_port,
+            callback_host=callback_host,
+            callback_timeout=callback_timeout,
+            httpx_client_factory=httpx_client_factory,
+            client_metadata_url=client_metadata_url,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
     async def async_auth_flow(
         self, request: httpx2.Request
     ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
@@ -109,7 +142,7 @@ class MCPOAuth(OAuth):
         if (
             context.client_info is not None
             or context.oauth_metadata is None
-            or "token_endpoint_auth_method" in (self._additional_client_metadata or {})
+            or self._openhands_has_explicit_token_auth_method
             or request.url != self._registration_request().url
         ):
             return request

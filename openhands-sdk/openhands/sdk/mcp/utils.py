@@ -14,7 +14,6 @@ from fastmcp.client.messages import MessageHandler
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
-from mcp.shared._httpx_utils import create_mcp_http_client
 from pydantic import ValidationError
 
 from openhands.sdk.logger import get_logger
@@ -33,6 +32,10 @@ from openhands.sdk.mcp.tool import MCPToolDefinition
 
 logger = get_logger(__name__)
 LOGGING_LEVEL_MAP = logging.getLevelNamesMapping()
+
+_MCP_DEFAULT_TIMEOUT = 30.0
+_MCP_DEFAULT_SSE_READ_TIMEOUT = 300.0
+
 
 MCPOAuthFactory = Callable[
     [str, MCPServer, MCPOAuthAuthCredential, AsyncKeyValue | None],
@@ -138,6 +141,24 @@ class _PackageRemoteMCPServer(RemoteMCPServer):
         return transport
 
 
+def _create_mcp_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
+) -> httpx2.AsyncClient:
+    if timeout is None:
+        timeout = httpx2.Timeout(
+            _MCP_DEFAULT_TIMEOUT,
+            read=_MCP_DEFAULT_SSE_READ_TIMEOUT,
+        )
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if headers is not None:
+        kwargs["headers"] = headers
+    if auth is not None:
+        kwargs["auth"] = auth
+    return httpx2.AsyncClient(**kwargs)
+
+
 def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
     origin = _origin(httpx2.URL(url))
 
@@ -154,7 +175,7 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
         auth: httpx2.Auth | None = None,
         **_: object,
     ) -> httpx2.AsyncClient:
-        client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        client = _create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
         client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
         return client
 
@@ -269,7 +290,7 @@ async def log_handler(message: LogMessage):
 
 
 async def _connect_and_list_tools(client: MCPClient) -> None:
-    """Connect to MCP server and populate client._tools."""
+    """Connect to MCP server and populate its tool definitions."""
     await client.connect()
     await _refresh_tools(client)
 
@@ -279,7 +300,7 @@ async def _refresh_tools(
     on_tools_changed: ToolsChangedCallback | None = None,
     on_tools_reconciled: ToolsReconciledCallback | None = None,
 ) -> None:
-    """Re-list tools from the server and reconcile ``client._tools``.
+    """Re-list tools from the server and reconcile client tool definitions.
 
     Called after the initial connection and whenever the server sends a
     ``notifications/tools/list_changed`` notification. When an
@@ -288,7 +309,7 @@ async def _refresh_tools(
     agent can add, replace, and remove tools owned by this client.
     """
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
-    existing_by_name = {tool.name: tool for tool in client._tools}
+    existing_by_name = {tool.name: tool for tool in client.tools}
     server_names = {mcp_tool.name for mcp_tool in mcp_type_tools}
 
     reconciled: list[MCPToolDefinition] = []
@@ -318,7 +339,7 @@ async def _refresh_tools(
             "MCP server updated tools: %s",
             ", ".join(sorted(tool.name for tool in updated)),
         )
-    client._tools = reconciled
+    client.replace_tools(reconciled)
 
     if added and on_tools_changed is not None:
         try:
@@ -352,11 +373,23 @@ class _ToolListChangedHandler(MessageHandler):
 
     def __init__(
         self,
-        client: MCPClient,
+        client: MCPClient | None = None,
+        *,
+        client_provider: Callable[[], MCPClient] | None = None,
         on_tools_changed: ToolsChangedCallback | None = None,
     ):
         super().__init__()
-        self._client = client
+        if client_provider is not None:
+            self._client_provider = client_provider
+        else:
+            if client is None:
+                raise ValueError("client or client_provider is required")
+            bound_client = client
+
+            def get_bound_client() -> MCPClient:
+                return bound_client
+
+            self._client_provider = get_bound_client
         self._on_tools_changed = on_tools_changed
         self._refresh_lock = asyncio.Lock()
         self._refresh_tasks: set[asyncio.Task[None]] = set()
@@ -365,8 +398,8 @@ class _ToolListChangedHandler(MessageHandler):
         self,
         message: mcp.types.ToolListChangedNotification,  # noqa: ARG002
     ) -> None:
-        client = self._client
-        if client._closed:
+        client = self._client_provider()
+        if client.is_closed:
             return
         logger.debug("MCP tools/list_changed received; refreshing tools")
         # Keep the receive loop free to process the list_tools response.
@@ -375,15 +408,15 @@ class _ToolListChangedHandler(MessageHandler):
         task.add_done_callback(self._refresh_tasks.discard)
 
     async def _refresh_tools(self) -> None:
-        client = self._client
+        client = self._client_provider()
         try:
             async with self._refresh_lock:
-                if client._closed:
+                if client.is_closed:
                     return
                 await _refresh_tools(
                     client,
                     self._on_tools_changed,
-                    client._tools_reconciled_callback,
+                    client.tools_reconciled_callback,
                 )
         except Exception:
             logger.warning(
@@ -434,13 +467,19 @@ def create_mcp_tools(
         mcp_oauth_factory=mcp_oauth_factory,
         mcp_oauth_class=mcp_oauth_class,
     )
+    client: MCPClient | None = None
+
+    def get_client() -> MCPClient:
+        if client is None:
+            raise RuntimeError("MCP client is not initialized")
+        return client
+
     handler = _ToolListChangedHandler(
-        client=None,  # type: ignore[arg-type]
+        client_provider=get_client,
         on_tools_changed=on_tools_changed,
     )
     client = MCPClient(config, log_handler=log_handler, message_handler=handler)
-    handler._client = client
-    client._tools_reconciled_callback = on_tools_reconciled
+    client.set_tools_reconciled_callback(on_tools_reconciled)
 
     try:
         client.call_async_from_sync(
