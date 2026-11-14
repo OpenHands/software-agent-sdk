@@ -1839,9 +1839,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ``Telemetry.on_response`` and is not returned to the caller.
 
         Raises:
-            LLMNoResponseError: If the response has no choices
-                (Gemini sometimes returns empty choices; raising here
-                inside the retry boundary ensures it is retried).
+            LLMNoResponseError: If the response has no choices, or its only
+                choice carries no text content, no tool calls, and no
+                reasoning. Raising here, inside the retry boundary, ensures
+                both cases are retried.
         """
         raw_resp: ModelResponse | None = None
         if use_mock_tools:
@@ -1868,6 +1869,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not resp.get("choices") or len(resp["choices"]) < 1:
             raise LLMNoResponseError(
                 "Response choices is less than 1. Response: " + str(resp)
+            )
+
+        # A content-free completion is a provider failure, not agent behaviour
+        # (#6085): returning it would persist an empty agent message whose
+        # corrective nudge does not break the stuck detector's agent streak.
+        # A completion cut off by the output-token cap (e.g. the profile
+        # pre-flight ping with max_tokens=1) is deterministic, so retrying it
+        # would only repeat the same empty answer.
+        choice = resp["choices"][0]
+        message = Message.from_llm_chat_message(choice["message"])
+        has_content = any(
+            isinstance(c, TextContent) and bool(c.text.strip()) for c in message.content
+        )
+        if not (
+            choice.get("finish_reason") == "length"
+            or has_content
+            or message.tool_calls
+            or message.reasoning_content
+            or message.thinking_blocks
+        ):
+            raise LLMNoResponseError(
+                "Response choices[0] message has no content, tool calls, or "
+                "reasoning. Response: " + str(resp)
             )
         return resp
 

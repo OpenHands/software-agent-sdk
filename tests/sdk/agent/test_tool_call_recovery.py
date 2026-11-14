@@ -5,9 +5,13 @@ Covers two fixes for the Qwen3.5-Flash stuck conversation issue:
 1. JSON argument parsing: raw json.loads first, sanitize_json_control_chars
    as fallback (fixes literal \\n whitespace being incorrectly escaped).
 
-2. Corrective feedback: when the LLM produces no tool call and no content,
-   inject a user message so the model can self-correct instead of silently
-   looping into the monologue stuck detector.
+2. Corrective feedback: when the LLM produces reasoning but no tool call
+   and no content, inject a user message so the model can self-correct
+   instead of silently looping into the monologue stuck detector.
+
+   A completely content-free completion (no text, no tool calls, no
+   reasoning) is a provider failure, not agent behaviour: the LLM layer
+   retries it as LLMNoResponseError instead of nudging (#6085).
 """
 
 import json
@@ -269,15 +273,30 @@ def test_content_response_does_not_inject_nudge():
     assert len(corrective_nudges) == 0
 
 
-def test_completely_empty_response_injects_nudge():
-    """Completely empty responses (no reasoning, no content) get a nudge."""
-    agent = _make_agent(with_tool=False)
+def test_completely_empty_response_is_retried_not_nudged():
+    """Completely empty responses (no reasoning, no content) are retried inside
+    the LLM retry boundary as LLMNoResponseError; no corrective nudge is sent."""
+    llm = LLM(
+        model="test-model",
+        usage_id="test-llm",
+        api_key=SecretStr("test-key"),
+        base_url="http://test",
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        temperature=0.0,
+    )
+    agent = Agent(llm=llm, tools=[])
     conv = Conversation(agent=agent)
 
-    resp = _model_response(content="")
+    empty_resp = _model_response(content="")
+    good_resp = _model_response(content="Working on it.")
 
     events: list[object] = []
-    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        side_effect=[empty_resp, good_resp],
+    ):
         conv.send_message(
             Message(
                 role="user",
@@ -286,8 +305,16 @@ def test_completely_empty_response_injects_nudge():
         )
         agent.step(conv, on_event=events.append)
 
+    # The empty attempt was retried, not surfaced as a nudge turn.
     corrective_nudges = [
         e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
-    assert len(corrective_nudges) == 1
-    assert corrective_nudges[0].llm_message.role == "user"
+    assert len(corrective_nudges) == 0
+
+    agent_msgs = [
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    ]
+    assert len(agent_msgs) == 1
+    content = agent_msgs[0].llm_message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "Working on it."
