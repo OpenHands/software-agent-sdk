@@ -14,6 +14,7 @@ from urllib.parse import unquote
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from fastmcp import FastMCP
 from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
@@ -43,8 +44,11 @@ from tests.agent_server.conftest import FakeMCPTools
 # is perfectly portable and exercises the same connect/list-tools code path
 # the endpoint relies on.
 from tests.sdk.mcp.test_create_mcp_tool import (  # noqa: E402
+    _GITLAB_REASON,
     MCPTestServer,
+    RejectRequests,
     _find_free_port,
+    _serve,
 )
 
 
@@ -947,6 +951,28 @@ def test_mcp_test_remote_unreachable(client: TestClient):
     body = response.json()
     assert body["ok"] is False
     assert body["error_kind"] in {"connection", "timeout"}
+
+
+def test_mcp_test_reports_the_reason_a_server_rejected_the_connection(
+    client: TestClient,
+):
+    app = FastMCP("rejecting-server").http_app(path="/mcp")
+    app.add_middleware(RejectRequests)
+    with _serve(app) as port:
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "server": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"},
+                "timeout": 10.0,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "ok": False,
+        "error": f"HTTP 403 Forbidden from http://127.0.0.1:{port}: {_GITLAB_REASON}",
+        "error_kind": "unknown",
+    }
 
 
 # ---------------------------------------------------------------------------

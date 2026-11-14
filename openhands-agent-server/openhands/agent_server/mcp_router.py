@@ -56,7 +56,11 @@ from openhands.sdk.mcp.config import (
     MCPOAuthStateResponse,
     MCPServer,
 )
-from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.exceptions import (
+    MCPError,
+    MCPServerHTTPError,
+    MCPTimeoutError,
+)
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.skills.utils import SecretLookup, expand_mcp_servers
 from openhands.sdk.utils.cipher import Cipher
@@ -657,6 +661,11 @@ def _probe_mcp_server(
         message = scrub(str(exc))
         logger.info("MCP test timed out for server %r: %s", request.name, message)
         return MCPTestFailure(error=message, error_kind="timeout")
+    except MCPServerHTTPError as exc:
+        # The server answered and refused: its reason is the useful part.
+        detail = scrub(str(exc))
+        logger.warning("MCP test failed for server %r: %s", request.name, detail)
+        return MCPTestFailure(error=detail, error_kind="unknown")
     except MCPError as exc:
         # ``MCPError("MCP Connection Failure")`` is what client.connect()
         # raises when the underlying fastmcp client fails to start. Surface

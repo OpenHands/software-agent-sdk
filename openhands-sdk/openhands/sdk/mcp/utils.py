@@ -2,8 +2,9 @@
 
 import asyncio
 import inspect
+import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 import httpx2
@@ -11,11 +12,12 @@ import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
-from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
+from mcp.client.auth.utils import extract_field_from_www_auth
 from mcp.shared._httpx_utils import create_mcp_http_client
-from pydantic import ValidationError
+from pydantic import PrivateAttr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -26,7 +28,7 @@ from openhands.sdk.mcp.config import (
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPServerHTTPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -120,34 +122,74 @@ def _oauth_auth_from_authentication_config(
     )
 
 
-class _PackageRemoteMCPServer(RemoteMCPServer):
-    """A package-declared remote server whose headers stay on its own origin.
+class _HTTPErrorLog:
+    """The last HTTP error response an MCP server's client received."""
 
-    Agent Plugins §7.2.1: configured headers must not follow a redirect to a
-    different origin. httpx strips only ``Authorization`` there, so this
-    server's HTTP client drops every configured header name from any request
-    that leaves the configured origin.
+    def __init__(self) -> None:
+        self.last: httpx2.Response | None = None
+
+    async def record(self, response: httpx2.Response) -> None:
+        if not response.is_error:
+            return
+        # A streamable-HTTP server without a server-to-client stream answers
+        # the client's GET with 405; the spec makes that a normal reply.
+        if response.status_code == 405 and response.request.method == "GET":
+            return
+        # The transport streams responses and may never read an error body.
+        await response.aread()
+        self.last = response
+
+
+class _RemoteMCPServer(RemoteMCPServer):
+    """A remote server whose HTTP client reports the server's error responses.
+
+    The MCP client turns an HTTP error from the server into a stand-in such as
+    ``Server returned an error response`` or ``Session terminated`` and drops
+    the response, so the server's reason (e.g. GitLab's "MCP server not
+    enabled for any of your groups") never reaches the user. This server's
+    client records its error responses in ``_http_errors`` instead.
+
+    A package-declared server also keeps its headers on its own origin (Agent
+    Plugins §7.2.1): httpx strips only ``Authorization`` on a cross-origin
+    redirect, so every configured header name is dropped from any request
+    that leaves it.
     """
+
+    _http_errors: _HTTPErrorLog = PrivateAttr(default_factory=_HTTPErrorLog)
+    _bind_headers_to_origin: bool = PrivateAttr(default=False)
 
     def to_transport(self):  # type: ignore[override]
         transport = super().to_transport()
-        if isinstance(transport, StreamableHttpTransport) and self.headers:
-            transport.httpx_client_factory = _origin_bound_client_factory(
-                self.url, tuple(self.headers)
+        if not isinstance(transport, (StreamableHttpTransport, SSETransport)):
+            return transport
+        request_hooks = []
+        if self._bind_headers_to_origin and self.headers:
+            request_hooks.append(
+                _drop_headers_off_origin(self.url, tuple(self.headers))
             )
+        transport.httpx_client_factory = _mcp_http_client_factory(
+            request_hooks, self._http_errors.record
+        )
         return transport
 
 
-def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
+def _drop_headers_off_origin(url: str, header_names: tuple[str, ...]):
     origin = _origin(httpx2.URL(url))
 
-    async def drop_headers_off_origin(request: httpx2.Request) -> None:
+    async def hook(request: httpx2.Request) -> None:
         # Request hooks run on every redirect hop, after httpx has copied the
         # previous request's headers onto the next one.
         if _origin(request.url) != origin:
             for name in header_names:
                 request.headers.pop(name, None)
 
+    return hook
+
+
+def _mcp_http_client_factory(
+    request_hooks: list[Callable[[httpx2.Request], Awaitable[None]]],
+    response_hook: Callable[[httpx2.Response], Awaitable[None]],
+):
     def factory(
         headers: dict[str, str] | None = None,
         timeout: httpx2.Timeout | None = None,
@@ -155,10 +197,86 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
         **_: object,
     ) -> httpx2.AsyncClient:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-        client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
+        client.event_hooks = {"request": request_hooks, "response": [response_hook]}
         return client
 
     return factory
+
+
+# What the MCP client reports instead of a streamable-HTTP error response.
+_HTTP_ERROR_STAND_INS = frozenset(
+    {"Server returned an error response", "Session terminated", "Not Found"}
+)
+_HTTP_ERROR_REASON_MAX_CHARS = 300
+
+
+def _server_http_error(
+    exc: BaseException, config: FastMCPConfig
+) -> MCPServerHTTPError | None:
+    """The HTTP error response behind ``exc``, if a server rejected a request."""
+    if isinstance(exc, httpx2.HTTPStatusError):
+        response = exc.response
+    elif isinstance(exc, mcp.MCPError) and exc.message in _HTTP_ERROR_STAND_INS:
+        responses = [
+            server._http_errors.last
+            for server in config.mcpServers.values()
+            if isinstance(server, _RemoteMCPServer)
+        ]
+        response = next((r for r in responses if r is not None), None)
+    else:
+        return None
+    if response is None:
+        return None
+    url = response.request.url
+    return MCPServerHTTPError(
+        status_code=response.status_code,
+        reason_phrase=response.reason_phrase,
+        url=f"{url.scheme}://{url.netloc.decode()}",
+        reason=_http_error_reason(response),
+    )
+
+
+def _http_error_reason(response: httpx2.Response) -> str | None:
+    """The most readable reason a server gave for rejecting a request.
+
+    RFC 6750 puts it in ``WWW-Authenticate``'s ``error_description``, but most
+    servers send only an error code there and explain in a JSON body.
+    """
+    try:
+        text = response.text.strip()
+    except httpx2.ResponseNotRead:
+        text = ""
+    candidates = [
+        extract_field_from_www_auth(response, "error_description"),
+        *_json_body_reasons(text),
+        extract_field_from_www_auth(response, "error"),
+        text,
+    ]
+    reason = next((c for c in candidates if c), None)
+    if reason is None:
+        return None
+    reason = " ".join(reason.split())
+    if len(reason) > _HTTP_ERROR_REASON_MAX_CHARS:
+        reason = reason[: _HTTP_ERROR_REASON_MAX_CHARS - 3] + "..."
+    return reason
+
+
+def _json_body_reasons(text: str) -> list[str]:
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(body, dict):
+        return []
+    error = body.get("error")
+    candidates = [
+        body.get("error_description"),
+        body.get("message"),
+        error.get("message") if isinstance(error, dict) else None,
+        body.get("detail"),
+        error,
+    ]
+    return [c for c in candidates if isinstance(c, str)]
 
 
 def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
@@ -195,12 +313,13 @@ def _prepare_mcp_config(
         raise ValueError(f"No valid MCP servers among: {', '.join(sorted(servers))}")
     prepared = FastMCPConfig.model_validate({"mcpServers": valid})
 
-    for server_name, server_spec in mcp_config.items():
-        server = prepared.mcpServers.get(server_name)
-        if server_spec.literal_values and isinstance(server, RemoteMCPServer):
-            prepared.mcpServers[server_name] = _PackageRemoteMCPServer.model_validate(
-                server.model_dump()
-            )
+    for server_name, server in list(prepared.mcpServers.items()):
+        if not isinstance(server, RemoteMCPServer):
+            continue
+        remote = _RemoteMCPServer.model_validate(server.model_dump())
+        spec = mcp_config.get(server_name)
+        remote._bind_headers_to_origin = spec is not None and spec.literal_values
+        prepared.mcpServers[server_name] = remote
 
     for server_name, server_spec in mcp_config.items():
         auth = server_spec.auth
@@ -463,13 +582,16 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
-    except BaseException:
+    except BaseException as exc:
         try:
             client.sync_close()
         except Exception as close_exc:
             logger.warning(
                 "Failed to close MCP client during error cleanup", exc_info=close_exc
             )
+        http_error = _server_http_error(exc, config)
+        if http_error is not None:
+            raise http_error from exc
         raise
 
     logger.info("Created %d MCP tools", len(client.tools))
