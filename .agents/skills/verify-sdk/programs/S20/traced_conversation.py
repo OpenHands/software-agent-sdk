@@ -13,6 +13,9 @@ Usage: traced_conversation.py MODE
   model     a real LLM object (litellm) against a local OpenAI-compatible
             endpoint that reports cost and cached tokens; then the utility
             calls generate_title() and ask_agent()
+  content   a real LLM object against a local endpoint whose first reply
+            carries reasoning; the user message quotes a credential; completion
+            logging stays off. Reports what the LLM spans carry.
   delegate  a sub-agent conversation started from inside a tool span with
             detached_delegate_context()
   off       no endpoint: nothing is traced and lmnr is never imported
@@ -92,6 +95,21 @@ if mode == "model":
 
     fake = FakeLLMServer(script, cost=0.0125, cached_tokens=40).__enter__()
     llm = fake.llm()
+elif mode == "content":
+    from pydantic import SecretStr
+    from S02.fake_provider import FakeProvider
+
+    from openhands.sdk import LLM
+
+    script[0]["reasoning"] = "private chain of thought"
+    fake = FakeProvider(script).__enter__()
+    llm = LLM(
+        model="openai/gpt-4o-mini",
+        base_url=fake.url,
+        api_key=SecretStr("sk-span-key"),
+        usage_id="agent",
+        num_retries=1,
+    )
 elif mode == "live":
     llm = make_llm()  # the run's real model; exit 3 without its key
 else:
@@ -161,6 +179,9 @@ else:
 cid = str(conversation.id)
 if mode == "live":
     conversation.send_message("Run `echo one` in the terminal, then finish.")
+    conversation.run()
+elif mode == "content":
+    conversation.send_message('trace this with {"api_token": "tok-span-123"}')
     conversation.run()
 elif mode != "delegate":
     conversation.send_message("trace this")
@@ -290,6 +311,59 @@ result.update(
         "ask_operation": ops("conversation.ask_agent"),
     }
 )
+if mode in ("content", "live"):
+
+    def attr(span: dict, key: str) -> str:
+        return str(span["attributes"].get(key) or "")
+
+    inputs = [attr(s, "gen_ai.input.messages") for s in outer_llm]
+    outputs = [attr(s, "gen_ai.output.messages") for s in outer_llm]
+    shortest = min((i for i in inputs if i), key=len, default="[]")
+    everything = json.dumps([s["attributes"] for s in spans], default=str)
+
+    def spans_with(needle: str) -> list[str]:
+        """Names of the spans with `needle` in any attribute."""
+        return sorted(
+            {s["name"] for s in spans if needle in json.dumps(s["attributes"])}
+        )
+
+    llm_everything = json.dumps([s["attributes"] for s in outer_llm], default=str)
+    result["content"] = {
+        "completion_logging": llm.log_completions_to_file,
+        "spans_with_input": sum(1 for i in inputs if i),
+        "spans_with_output": sum(1 for o in outputs if o),
+        "first_input_roles": [m.get("role") for m in json.loads(shortest)],
+        "input_has_user_text": any("trace this" in i for i in inputs),
+        "output_has_text": any("One." in o for o in outputs),
+        "output_has_tool_call": any("echo one" in o for o in outputs),
+        "laminar_copy_matches": all(
+            attr(s, "lmnr.span.input") == attr(s, "gen_ai.input.messages")
+            and attr(s, "lmnr.span.output") == attr(s, "gen_ai.output.messages")
+            for s in outer_llm
+        ),
+        "input_tokens": sorted(
+            {s["attributes"].get("gen_ai.usage.input_tokens") for s in outer_llm}
+            - {None}
+        ),
+        "output_tokens": sorted(
+            {s["attributes"].get("gen_ai.usage.output_tokens") for s in outer_llm}
+            - {None}
+        ),
+        "spans_with_token_totals": sum(
+            1
+            for s in outer_llm
+            if (s["attributes"].get("gen_ai.usage.input_tokens") or 0) > 0
+            and (s["attributes"].get("gen_ai.usage.output_tokens") or 0) > 0
+        ),
+        "reasoning_in_llm_spans": "private chain of thought" in llm_everything,
+        # Spans the SDK's filter does not own (Laminar's LiteLLM instrument,
+        # the observed conversation methods) are reported, not filtered.
+        "reasoning_elsewhere": spans_with("private chain of thought"),
+        "credential_elsewhere": spans_with("tok-span-123"),
+        "credential_in_llm_spans": "tok-span-123" in llm_everything,
+        "credential_redacted": any("<redacted>" in i for i in inputs),
+        "api_key_in_any_span": "sk-span-key" in everything,
+    }
 if mode == "delegate":
     task = next((s for s in spans if s["name"] == "task"), None)
     child_root = next((s for s in roots if s is not root), None)

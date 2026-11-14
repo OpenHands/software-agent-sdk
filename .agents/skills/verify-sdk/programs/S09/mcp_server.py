@@ -3,19 +3,27 @@
 Usage: mcp_server.py [stdio | http PORT | sse PORT] [--name NAME]
                      [--slow-start SECONDS] [--fail-start]
                      [--oauth [--no-metadata]] [--fail-first-call]
+                     [--handshake-only]
 
 --fail-first-call (http only) answers the first tools/call with HTTP 503,
 a transient gateway error.
+--handshake-only (http only) answers `server/discover` with JSON-RPC
+"Method not found", as a server without that method does, so a client can
+only use the `initialize` handshake.
 
-Tools: echo, add, getenv, counter (per-process state), nested (a nested
+Tools: echo, add, getenv, counter (per-process state), session (the MCP
+session id of the call and how many calls that session made), nested (a nested
 object schema), kind_echo (a property literally named `kind`), fail
 (isError), picture (image content), structured (JSON result), slow,
 headers (the HTTP request headers it received), die (exits the process
 right after answering), register_extra / remove_extra (change the tool list
-and send notifications/tools/list_changed).
+and send notifications/tools/list_changed while answering), register_late
+(adds a tool and sends the notification on the session after answering).
 """
 
+import asyncio
 import base64
+import json
 import os
 import sys
 import threading
@@ -40,6 +48,7 @@ if "--slow-start" in args:
 
 mcp = FastMCP(name)
 COUNT = {"n": 0}
+SESSION_CALLS: dict[str, int] = {}
 # A 1x1 PNG.
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -87,6 +96,14 @@ def counter() -> str:
     """Count calls in this server process."""
     COUNT["n"] += 1
     return f"count={COUNT['n']} pid={os.getpid()}"
+
+
+@mcp.tool()
+def session() -> dict:
+    """The MCP session id of this call and the calls that session has made."""
+    session_id = get_context().session_id
+    SESSION_CALLS[session_id] = SESSION_CALLS.get(session_id, 0) + 1
+    return {"session_id": session_id, "calls_in_session": SESSION_CALLS[session_id]}
 
 
 @mcp.tool()
@@ -159,6 +176,25 @@ async def register_extra() -> str:
 
     await _notify()
     return "registered"
+
+
+@mcp.tool()
+async def register_late() -> str:
+    """Add a tool named late; notify on the session after answering."""
+
+    @mcp.tool()
+    def late(value: int) -> int:
+        """Added after connect: triples the value."""
+        return value * 3
+
+    mcp_session = get_context().session
+
+    async def notify_after_answer() -> None:
+        await asyncio.sleep(0.3)
+        await mcp_session.send_notification(mcp_types.ToolListChangedNotification())
+
+    asyncio.get_running_loop().create_task(notify_after_answer())
+    return "registered late"
 
 
 @mcp.tool()
@@ -236,6 +272,27 @@ if __name__ == "__main__":
 
         app = mcp.http_app(path="/mcp")
         app.add_middleware(FailFirstToolCall)
+        uvicorn.run(app, host="127.0.0.1", port=int(args[1]), log_level="error")
+    elif "--handshake-only" in args:
+        import uvicorn
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.responses import JSONResponse
+
+        class NoDiscover(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                raw = await request.body()
+                if b"server/discover" in raw:
+                    return JSONResponse(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": json.loads(raw).get("id"),
+                            "error": {"code": -32601, "message": "Method not found"},
+                        }
+                    )
+                return await call_next(request)
+
+        app = mcp.http_app(path="/mcp")
+        app.add_middleware(NoDiscover)
         uvicorn.run(app, host="127.0.0.1", port=int(args[1]), log_level="error")
     else:
         port = int(args[1])

@@ -5,6 +5,9 @@ The conversation gets an explicit PostToolUse hook, one plugin attached with
 with `load_plugin("runtime-hooks@local")` from a local marketplace
 (programs/S10/marketplace). Every PostToolUse hook appends its name to
 order.log in the workspace, so the file shows which hooks ran, in order.
+
+Then the runtime plugin is loaded twice more, by bare name and by full ref,
+and a third run shows what each hook did after that.
 """
 
 from pathlib import Path
@@ -27,6 +30,8 @@ llm = make_llm(
         {"finish": "first"},
         {"tool": "terminal", "args": {"command": "echo two"}},
         {"finish": "second"},
+        {"tool": "terminal", "args": {"command": "echo three"}},
+        {"finish": "third"},
     ]
 )
 agent = Agent(
@@ -66,6 +71,28 @@ hook_commands = [
     if isinstance(e, HookExecutionEvent) and e.hook_event_type == "PostToolUse"
 ]
 resolved = [p.source for p in (conversation.resolved_plugins or [])]
+
+
+def session_start_matchers() -> int:
+    return len(conversation.state.hook_config.session_start)
+
+
+# The same plugin again, by bare name and by full ref.
+session_start_before_reload = session_start_matchers()
+conversation.load_plugin("runtime-hooks")
+conversation.load_plugin("runtime-hooks@local")
+lines_added_by_reload = (workspace / "order.log").read_text().split()[len(order) :]
+matchers_after_reload = len(conversation.state.hook_config.post_tool_use)
+session_start_after_reload = session_start_matchers()
+conversation.send_message("Echo three.")
+conversation.run()
+third_run = (workspace / "order.log").read_text().split()[len(order) :]
+third_run_hook_commands = [
+    e.hook_command
+    for e in conversation.state.events
+    if isinstance(e, HookExecutionEvent) and e.hook_event_type == "PostToolUse"
+][len(hook_commands) :]
+status_after_reload = conversation.state.execution_status.value
 conversation.close()
 
 emit(
@@ -78,5 +105,12 @@ emit(
         "post_tool_use_matchers_after_load": matchers_after,
         "post_hook_commands": hook_commands,
         "resolved_plugins": resolved,
+        "lines_added_by_reload": lines_added_by_reload,
+        "post_tool_use_matchers_after_reload": matchers_after_reload,
+        "session_start_matchers_before_reload": session_start_before_reload,
+        "session_start_matchers_after_reload": session_start_after_reload,
+        "order_third_run": third_run,
+        "post_hook_commands_third_run": third_run_hook_commands,
+        "execution_status_after_reload": status_after_reload,
     }
 )

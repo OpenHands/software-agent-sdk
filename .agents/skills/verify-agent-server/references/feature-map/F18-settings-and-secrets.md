@@ -884,8 +884,8 @@ Preconditions:
   Scoping works while the profile is valid (one secret), and the
   agent-profile route reports the broken file as 400 `Failed to load profile
   ...`. The scoped list answers the same 400 with the load error in
-  `detail`: `list_secrets` reads the profile inside `store_errors()`, as the
-  agent-profile routes do. The trap removes the profile file.
+  `detail`: it reports profile store errors with the statuses the
+  agent-profile routes use. The trap removes the profile file.
 - **Agent-profile store busy (`F18.secret-scope-profile-errors`).**
   Another process (here `flock`, standing in for a second server on the same
   persistence directory) holds the agent-profile store's lock for 75 seconds.

@@ -10,7 +10,13 @@ Usage: llm_calls.py MODE
   prompted        text replies parsed back into tool calls (non-native)
   cache-too-small a prompt-cache rejection retried without cache markers
   token-count     get_token_count, with and without tool definitions
-  context-guard   a short context window refused (or allowed by env)
+  context-guard   a short context window refused (or allowed by env); the
+                  default output budget
+  image-guard     an image in the latest user message refused before any
+                  request when vision is inactive
+  image-adapter-loss  an image the native DeepSeek adapter drops from the
+                  request body
+  log-alias       log_completions_to_file and its deprecated alias
   inline-image    http image URLs inlined as data: URLs
   serialization   dump, masking, round trip, model_copy, load_from_env
   features        model feature table and the chat options sent per model
@@ -368,22 +374,238 @@ elif mode == "context-guard":
 
     from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
-    # A model whose metadata reports only max_tokens (the context window, as
-    # some providers do) gets a capped output budget.
+    # A model's advertised output limit is a ceiling, not the budget a
+    # request asks for: one that reports only max_tokens (the context window,
+    # as some providers do), one that advertises 64000 and one that advertises
+    # 8192.
+    def entry(**limits) -> dict:
+        return {
+            "max_input_tokens": 200000,
+            "litellm_provider": "openai",
+            "mode": "chat",
+            **limits,
+        }
+
     litellm.register_model(
         {
-            "openai/verify-wide-model": {
-                "max_tokens": 200000,
-                "max_input_tokens": 200000,
-                "litellm_provider": "openai",
-                "mode": "chat",
-            }
+            "openai/verify-wide-model": entry(max_tokens=200000),
+            "openai/verify-64k-model": entry(max_tokens=64000, max_output_tokens=64000),
+            "openai/verify-8k-model": entry(max_tokens=8192, max_output_tokens=8192),
         }
     )
     wide = LLM(model="openai/verify-wide-model", api_key=KEY)
     out["fallback_max_output"] = wide.effective_max_output_tokens
     out["fallback_cap"] = DEFAULT_MAX_OUTPUT_TOKENS_CAP
     out["configured_max_output"] = wide.max_output_tokens
+    budgets = {
+        "advertised_64000": {"model": "openai/verify-64k-model"},
+        "advertised_8192": {"model": "openai/verify-8k-model"},
+        "explicit_32000": {
+            "model": "openai/verify-64k-model",
+            "max_output_tokens": 32000,
+        },
+    }
+    with FakeProvider([{"text": "ok"}] * len(budgets)) as s:
+        for name, kw in budgets.items():
+            llm = chat_llm(s, num_retries=1, **kw)
+            _, err, _ = attempt(lambda: llm.completion(MESSAGES))
+            body = s.requests[-1]["body"] if s.requests else {}
+            out[name] = {
+                "error": err,
+                "advertised": (llm.model_info or {}).get("max_output_tokens"),
+                "configured": llm.max_output_tokens,
+                "effective": llm.effective_max_output_tokens,
+                "sent": body.get("max_completion_tokens", body.get("max_tokens")),
+            }
+
+elif mode == "image-guard":
+    image = Message(
+        role="user",
+        content=[
+            TextContent(text="Describe."),
+            ImageContent(image_urls=["https://example.com/cat.png"]),
+        ],
+    )
+    with_image = [MESSAGES[0], image]
+
+    async def ignore(_chunk) -> None:
+        pass
+
+    def calls(llm: LLM) -> dict:
+        return {
+            "completion": lambda: llm.completion(with_image),
+            "acompletion": lambda: asyncio.run(llm.acompletion(with_image)),
+            "responses": lambda: llm.responses(with_image),
+            "aresponses": lambda: asyncio.run(llm.aresponses(with_image)),
+        }
+
+    def image_parts(body: dict) -> int:
+        text = json.dumps(body)
+        return text.count('"image_url"') + text.count('"input_image"')
+
+    # gpt-3.5-turbo has no vision; gpt-4o-mini has it until disable_vision.
+    cases = {
+        "unsupported": {"model": "openai/gpt-3.5-turbo"},
+        "disabled": {"model": "openai/gpt-4o-mini", "disable_vision": True},
+    }
+    for name, kw in cases.items():
+        with FakeProvider([{"text": "never"}] * 4) as s:
+            llm = chat_llm(s, num_retries=1, **kw)
+            errors, messages = {}, {}
+            for call, fn in calls(llm).items():
+                try:
+                    fn()
+                    errors[call] = None
+                except Exception as exc:
+                    errors[call] = type(exc).__name__
+                    messages[call] = str(exc)[:200]
+            out[name] = {
+                "vision_active": llm.vision_is_active(),
+                "errors": errors,
+                "message": messages.get("completion"),
+                "requests": len(s.requests),
+                "token_count": llm.get_token_count(with_image),
+                "formatted_messages": len(llm.format_messages_for_llm(with_image)),
+                "formatted_image_parts": image_parts(
+                    {"m": llm.format_messages_for_llm(with_image)}
+                ),
+            }
+    # An image in an older user message is not refused: the request goes out
+    # without the pixels.
+    with FakeProvider([{"text": "ok"}]) as s:
+        llm = chat_llm(s, model="openai/gpt-3.5-turbo", num_retries=1)
+        older = with_image + [
+            Message(role="assistant", content=[TextContent(text="I cannot see it.")]),
+            Message(role="user", content=[TextContent(text="Never mind, say hi.")]),
+        ]
+        r, err, _ = attempt(lambda: llm.completion(older))
+        out["older_image"] = {
+            "error": err,
+            "text": text_of(r) if r else None,
+            "requests": len(s.requests),
+            "image_parts_sent": image_parts(s.requests[-1]["body"])
+            if s.requests
+            else None,
+        }
+    # The positive controls: the caller declares vision, or the model has it.
+    controls = {
+        "override": {
+            "model": "openai/gpt-3.5-turbo",
+            "capability_overrides": {"supports_vision": True},
+        },
+        "vision_model": {"model": "openai/gpt-4o-mini"},
+    }
+    for name, kw in controls.items():
+        with FakeProvider([{"text": "a cat"}]) as s:
+            llm = chat_llm(s, num_retries=1, **kw)
+            r, err, _ = attempt(lambda: llm.completion(with_image))
+            out[name] = {
+                "vision_active": llm.vision_is_active(),
+                "error": err,
+                "text": text_of(r) if r else None,
+                "requests": len(s.requests),
+                "image_parts_sent": image_parts(s.requests[-1]["body"])
+                if s.requests
+                else None,
+            }
+
+elif mode == "image-adapter-loss":
+    from openhands.sdk.llm import MessageToolCall
+
+    # deepseek/deepseek-v4.1-flash is vision-capable for the SDK, so the
+    # vision guard lets the image through; what LiteLLM's native DeepSeek
+    # adapter then puts in the HTTP body is checked before it is sent.
+    picture = ImageContent(image_urls=["https://example.com/cat.png"])
+    histories = {
+        "user_image": [
+            MESSAGES[0],
+            Message(role="user", content=[TextContent(text="Describe."), picture]),
+        ],
+        "tool_image": [
+            MESSAGES[0],
+            Message(role="user", content=[TextContent(text="Take a screenshot.")]),
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_shot", name="shot", arguments="{}", origin="completion"
+                    )
+                ],
+            ),
+            Message(
+                role="tool",
+                tool_call_id="call_shot",
+                name="shot",
+                content=[TextContent(text="screenshot"), picture],
+            ),
+        ],
+    }
+    for name, history in histories.items():
+        retried: list = []
+        with FakeProvider([{"text": "a cat"}] * 3) as s:
+            llm = chat_llm(
+                s,
+                model="deepseek/deepseek-v4.1-flash",
+                num_retries=3,
+                retry_listener=lambda n, m, _e: retried.append([n, m]),
+                **FAST,
+            )
+            try:
+                r, err, message = llm.completion(history), None, None
+            except Exception as exc:
+                r, err, message = None, type(exc).__name__, str(exc)[:300]
+            sent = json.dumps(s.requests[-1]["body"]) if s.requests else ""
+            out[name] = {
+                "vision_active": llm.vision_is_active(),
+                "error": err,
+                "message": message,
+                "retries": len(retried),
+                "requests": len(s.requests),
+                "image_parts_sent": sent.count('"image_url"') if s.requests else None,
+                # The promise: every image arrives, or the call is refused
+                # once, as a bad request, with nothing sent.
+                "delivered_or_refused_once": (
+                    err is None and len(s.requests) == 1 and '"image_url"' in sent
+                )
+                or (err == "LLMBadRequestError" and not retried and not s.requests),
+            }
+
+elif mode == "log-alias":
+    import warnings
+
+    def build(**kw):
+        """Construct an LLM; report its flags, warnings and any error."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                llm = LLM(model="openai/gpt-4o-mini", api_key=KEY, usage_id="log", **kw)
+            except Exception as exc:
+                return {
+                    "error": type(exc).__name__,
+                    "is_value_error": isinstance(exc, ValueError),
+                    "message": str(exc)[:300],
+                }
+        dumped = llm.model_dump(mode="json")
+        return {
+            "error": None,
+            "to_file": llm.log_completions_to_file,
+            "dump_to_file": dumped.get("log_completions_to_file"),
+            "dump_alias": dumped.get("log_completions"),
+            "warnings": [type(w.message).__name__ for w in caught],
+            "warning_text": next(
+                (str(w.message) for w in caught if "log_completions" in str(w.message)),
+                None,
+            ),
+        }
+
+    out |= {
+        "default": build(),
+        "new_name": build(log_completions_to_file=True),
+        "alias": build(log_completions=True),
+        "both_equal": build(log_completions=True, log_completions_to_file=True),
+        "conflict": build(log_completions=True, log_completions_to_file=False),
+    }
 
 elif mode == "inline-image":
     import os
@@ -522,6 +744,25 @@ elif mode == "features":
         table["litellm_proxy/anthropic/claude-sonnet-4-5-20250929"]
         == table["anthropic/claude-sonnet-4-5-20250929"]
     )
+    # Who decides a capability: the caller's override, then what the endpoint
+    # declares, then the SDK's own table, then discovery. LiteLLM's registry
+    # is discovery, so it does not outrank the SDK's table.
+    flash = "deepseek/deepseek-v4.1-flash"
+    no_vision = {"supports_vision": False}
+    registry = {**no_vision, "_capability_source": "litellm"}
+    precedence = {
+        "sdk": get_features(flash),
+        "endpoint": get_features(flash, model_info=no_vision),
+        "registry": get_features(flash, model_info=registry),
+        "caller": get_features(
+            flash, model_info=no_vision, overrides={"supports_vision": True}
+        ),
+        "unknown_model": get_features("openai/verify-unknown-model"),
+    }
+    out["vision_precedence"] = {
+        name: {"vision": f.supports_vision, "source": f.sources.get("supports_vision")}
+        for name, f in precedence.items()
+    }
     sent = {}
     probes = {
         "gpt5": {"model": "openai/gpt-5-mini", "api_mode": "chat"},

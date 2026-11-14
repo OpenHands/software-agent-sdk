@@ -1,6 +1,6 @@
 # Observability, tracing and logging
 
-A Python program gets OpenTelemetry traces of its conversations by setting environment variables before it imports the SDK: `LMNR_PROJECT_API_KEY` sends them to Laminar, and `OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` send them to any OTLP collector through Laminar's exporter. With none of these set (and no user-side `Laminar.initialize()`), every `@observe` decorator is a pass-through and `lmnr` is not even imported. When enabled, each `Conversation` owns a long-lived root span named `conversation` whose trace session id is the conversation id, with `user_id`, `observability_metadata` (also as span attributes), `observability_tags`, `conversation.tags.*` attributes and an optional named child span; `conversation.send_message` / `run` / `arun`, `agent.step`, tool calls (one TOOL span per call with `tool_call_id` metadata), MCP calls, condenser and hook calls, and LLM calls (an `LLM` span carrying cost and cache buckets) nest under it, across threads and parallel tool workers. Sub-agent conversations start their own trace linked back to the parent. The `openhands.sdk.automation` helpers turn the generic `OPENHANDS_OBSERVABILITY_*` env vars an automation runner sets into `Conversation(...)` kwargs and HTTP headers. Separately, `get_logger(__name__)` returns standard loggers under a root configured on import from `LOG_*` env vars (Rich console, or JSON in CI or with `LOG_JSON`, optional rotating file), with LiteLLM, OpenAI, httpx and libtmux loggers quieted.
+A Python program gets OpenTelemetry traces of its conversations by setting environment variables before it imports the SDK: `LMNR_PROJECT_API_KEY` sends them to Laminar, and `OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` send them to any OTLP collector through Laminar's exporter. With none of these set (and no user-side `Laminar.initialize()`), every `@observe` decorator is a pass-through and `lmnr` is not even imported. When enabled, each `Conversation` owns a long-lived root span named `conversation` whose trace session id is the conversation id, with `user_id`, `observability_metadata` (also as span attributes), `observability_tags`, `conversation.tags.*` attributes and an optional named child span; `conversation.send_message` / `run` / `arun`, `agent.step`, tool calls (one TOOL span per call with `tool_call_id` metadata), MCP calls, condenser and hook calls, and LLM calls (an `LLM` span carrying the request and response messages, token totals, cost and cache buckets) nest under it, across threads and parallel tool workers. Sub-agent conversations start their own trace linked back to the parent. The `openhands.sdk.automation` helpers turn the generic `OPENHANDS_OBSERVABILITY_*` env vars an automation runner sets into `Conversation(...)` kwargs and HTTP headers. Separately, `get_logger(__name__)` returns standard loggers under a root configured on import from `LOG_*` env vars (Rich console, or JSON in CI or with `LOG_JSON`, optional rotating file), with LiteLLM, OpenAI, httpx and libtmux loggers quieted.
 
 Source: `openhands-sdk/openhands/sdk/observability/`, `openhands-sdk/openhands/sdk/automation/`, `openhands-sdk/openhands/sdk/logger/`, `openhands-sdk/openhands/sdk/conversation/base.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/agent/agent.py`, `openhands-sdk/openhands/sdk/agent/parallel_executor.py`, `openhands-sdk/openhands/sdk/llm/`
 
@@ -19,7 +19,8 @@ Examples: `examples/01_standalone_sdk/27_observability_laminar.py`
 - `S20.env-conversation-defaults`: a local conversation also merges `OPENHANDS_OBSERVABILITY_METADATA` (JSON), uses `OPENHANDS_OBSERVABILITY_SPAN_NAME` when no span name is passed, and `OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT` or `LMNR_SPAN_CONTEXT` as parent. Unit: **none (untested)** at the conversation level (the env readers are tested through `tests/sdk/test_automation_observability.py`). Example: none. Real-LLM: none.
 - `S20.step-and-tool-spans`: `agent.step`/`agent.astep` spans contain one TOOL span per declared tool call, including rejected and cancelled calls, whose input is the action only and whose metadata carries `tool_call_id`. Unit: `tests/sdk/agent/test_tool_span_input.py`, `tests/sdk/agent/test_tool_span_tool_call_id_metadata.py`, `tests/sdk/observability/test_laminar.py::test_async_agent_and_conversation_paths_are_observed`. Example: none. Real-LLM: none.
 - `S20.parallel-span-context`: parallel tool workers copy the context so their spans nest under the dispatcher, with and without `lmnr`, and overlapping tasks get fresh contexts. Unit: `tests/sdk/agent/test_parallel_tool_span_context.py`. Example: none. Real-LLM: none.
-- `S20.llm-span`: each LLM call opens a current `LLM` span that records the authoritative proxy cost (matching `Metrics`), cache read and write buckets, closes on error and does not leak across retries. Unit: `tests/sdk/llm/test_llm_span_cost.py`. Example: none. Real-LLM: none.
+- `S20.llm-span`: each LLM call opens a current `LLM` span named `llm.<model>` that records the authoritative proxy cost (matching `Metrics`), cache read and write buckets, closes on error and does not leak across retries. Unit: `tests/sdk/llm/test_llm_span_cost.py`. Example: none. Real-LLM: none.
+- `S20.llm-span-content`: with tracing on, and whether or not completion logging (`log_completions_to_file`) is, each `llm.<model>` span carries the request messages as `gen_ai.input.messages` and the reply as `gen_ai.output.messages` (JSON arrays, repeated as `lmnr.span.input`/`lmnr.span.output`) and the token totals `gen_ai.usage.input_tokens`/`gen_ai.usage.output_tokens`; that copy leaves out reasoning (`reasoning_content`, thinking blocks, reasoning items) and has credential-like entries replaced by `<redacted>`. Unit: `tests/sdk/llm/test_llm_span_content.py`, `tests/sdk/llm/test_log_completions_tracing_independence.py`. Example: none. Real-LLM: none.
 - `S20.utility-operation-metadata`: side utilities (title generation and similar) mark their LLM spans with `openhands.operation` metadata (`OPERATION_METADATA_KEY`). Unit: `tests/sdk/conversation/test_utility_llm_span_metadata.py`. Example: none. Real-LLM: none.
 - `S20.delegate-trace`: `detached_delegate_context()` makes a sub-agent conversation start a new trace instead of joining the parent's `task` span, yields `delegate.parent_trace_id`, `delegate.parent_span_id` and `tool_call_id`, restores the ambient span afterwards, and is a no-op when disabled. Unit: `tests/sdk/observability/test_laminar.py` (`test_detached_delegate_context_*`), `tests/tools/task/test_task_manager.py::TestTaskManager::test_delegate_metadata_includes_parent_span_link`. Example: none. Real-LLM: none.
 - `S20.external-entry`: `init_laminar_for_external()` initializes Laminar and returns the current span context for a webhook-style caller to pass on. Unit: **none (untested)**. Example: none. Real-LLM: none.
@@ -90,6 +91,20 @@ Preconditions:
     --check title_operation contains title_generation --check ask_operation contains ask_agent
   ```
   One `llm.<model>` LLM span per call, each holding the proxy's cost (the same figure `Metrics` accumulates: four agent-LLM calls, 0.05) and the cache-read bucket; the three agent calls nest under `agent.step`, the title and `ask_agent` calls under their own spans marked `openhands.operation`.
+- **What an LLM span says about the call (`S20.llm-span-content`).** A real `LLM` (`openai/gpt-4o-mini`, completion logging left off) against `programs/S02/fake_provider.py`; the user message quotes `{"api_token": "tok-span-123"}` and the first reply carries `reasoning_content`. Every call reports 100 prompt and 20 completion tokens.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S20/traced_conversation --arg content \
+    --check status eq finished --check llm_spans eq 3 --check content.completion_logging eq false \
+    --check content.spans_with_input eq 3 --check content.spans_with_output eq 3 \
+    --check content.first_input_roles.0 eq system --check content.first_input_roles.1 eq user \
+    --check content.input_has_user_text eq true --check content.output_has_text eq true \
+    --check content.output_has_tool_call eq true --check content.laminar_copy_matches eq true \
+    --check content.spans_with_token_totals eq 3 --check content.input_tokens.0 eq 100 --check content.output_tokens.0 eq 20 \
+    --check content.reasoning_in_llm_spans eq false --check content.credential_in_llm_spans eq false \
+    --check content.credential_redacted eq true --check content.api_key_in_any_span eq false
+  ```
+  Each of the three `llm.<model>` spans has the messages sent, the reply (text and tool call) and both token totals. The reply's reasoning is in none of them, the quoted token reads `<redacted>`, and the LLM's API key is in no span at all. (`content.reasoning_elsewhere` and `content.credential_elsewhere` list the other spans of the trace that do hold them; see Gotchas.)
 - **Sub-agent traces (`S20.delegate-trace`).** Inside a `task` TOOL span carrying a `tool_call_id`, a sub-agent conversation is created within `detached_delegate_context()`, as the task tool does.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -147,12 +162,14 @@ Preconditions:
     --check warning_level.console_has_info eq false --check no_auto_config.handlers len-eq 0
   ```
   Default: a Rich console handler; `LOG_JSON=1` a JSON stream handler and, with `LOG_TO_FILE`, a JSON `<LOG_DIR>/app.log`; `CI=true` JSON on the console; `DEBUG=true` lowers the root to DEBUG; `LOG_AUTO_CONFIG=false` adds no handler. In JSON mode `rolling_log_view` emits one record with the header and the last N lines on exit.
-- **Live: a real model traced to the local collector (`S20.root-span`, `S20.llm-span`, `S20.step-and-tool-spans`).**
+- **Live: a real model traced to the local collector (`S20.root-span`, `S20.llm-span`, `S20.llm-span-content`, `S20.step-and-tool-spans`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
   control-sdk program S20/traced_conversation --arg live \
     --check status eq finished --check root.found eq true --check llm_spans ge 1 --check terminal_spans ge 1 \
-    --check tools_under_step eq true
+    --check tools_under_step eq true \
+    --check content.spans_with_input ge 1 --check content.spans_with_output ge 1 \
+    --check content.spans_with_token_totals ge 1 --check content.first_input_roles.0 eq system
   ```
 - **Example 27 against Laminar (`S20.laminar-init`, `S20.root-span`), blocked: needs `LMNR_PROJECT_API_KEY` (a Laminar project) and network to api.lmnr.ai.** The trace shows up in the Laminar dashboard with the conversation id as session.
   ```sh
@@ -173,5 +190,8 @@ Preconditions:
 - Importing the SDK imports LiteLLM, which calls `load_dotenv()` on `./.env`: an `OTEL_*` or `LMNR_*` line in a `.env` in the program's working directory turns observability on even though the SDK itself never reads `.env`.
 - `setup_logging` sets `httpx` and `libtmux` loggers to `LOG_LEVEL`, but they do not reach the SDK's handlers, so their INFO lines still do not show (their warnings go to Python's last-resort handler).
 - `automation_observability_headers()` and `automation_conversation_kwargs()` deduplicate `OPENHANDS_OBSERVABILITY_TAGS`; the headers a `RemoteWorkspace` sends from the same variable do not (`nightly,verify,nightly`).
-- `TestLLM` bypasses LiteLLM, so a scripted conversation produces no LLM spans; to see `llm.*` spans use a real `LLM` against an OpenAI-compatible endpoint (the `model` mode's local fake).
+- `TestLLM` bypasses LiteLLM, so a scripted conversation produces no LLM spans; to see `llm.*` spans use a real `LLM` against an OpenAI-compatible endpoint (the `model` and `content` modes' local fakes).
+- Turning tracing on exports conversation content: every `llm.<model>` span holds the full prompt (system prompt, user messages, tool results) and the reply, with completion logging off too. Send traces only to a collector that may hold that content.
+- The reasoning filter and `<redacted>` substitution apply to the `llm.<model>` span only. In the same trace Laminar's LiteLLM instrument adds a nested `litellm.completion` span with the unfiltered request and reply (reasoning and quoted credentials included), and the `conversation.send_message` span records the message as sent; with `LMNR_INSTRUMENTS` set to a list without `litellm` (`mcp`, say) that nested span is not created. Whether the filter should cover those spans is open in [#6838](https://github.com/OpenHands/software-agent-sdk/issues/6838).
+- The credential redaction matches quoted `"name": "value"` entries (and `api_key='...'`, URL query parameters) whose name contains key, secret, token, password or authorization; a bare value in running text is not recognized.
 - Span attribute keys contain dots (`lmnr.association.properties.user_id`); control-sdk check paths split on every dot, so programs copy the ones a recipe checks to flat result fields.

@@ -29,7 +29,8 @@ Examples: `examples/01_standalone_sdk/33_hooks/main.py`, `examples/01_standalone
 - `S10.prompt-hook`: a `type="prompt"` hook sends the policy and the event as separate messages to a non-streaming copy of the conversation's current LLM (`usage_id` `prompt-hook:<name>`, the hook's timeout), parses the first JSON object of the reply, falls open on a bad answer or failure, and merges its cost into the parent's stats. Unit: `tests/sdk/hooks/test_executor.py::TestPromptHookExecution`, `tests/sdk/hooks/test_manager.py::TestHookManager::test_pre_tool_use_prompt_deny_blocks`. Example: `examples/01_standalone_sdk/57_prompt_hooks/main.py`. Real-LLM: none.
 - `S10.agent-hook`: a `type="agent"` hook runs a `LocalConversation` with the hook's `system_prompt`, the listed `tools` plus `FinishTool`, `max_iterations`, no hooks of its own, and a sub-visualizer; the final response is parsed like a prompt hook (fenced or prose-wrapped JSON accepted), failures fall open, and metrics land under `agent-hook:<name>` in the parent's stats. Unit: `tests/sdk/hooks/test_executor.py::TestAgentHookExecution`, `tests/sdk/hooks/test_manager.py::TestHookManager::test_stop_prompt_deny_keeps_agent_running`. Example: `examples/01_standalone_sdk/51_agent_hooks/main.py`. Real-LLM: none.
 - `S10.llm-follows-switch`: prompt and agent hooks read the conversation's LLM at call time, so `switch_llm()`/`switch_profile()` changes the model they use. Unit: `tests/sdk/hooks/test_executor.py::TestAgentHookExecution::test_llm_getter_is_resolved_live`, `::TestPromptHookExecution::test_llm_getter_is_resolved_live`. Example: none. Real-LLM: none.
-- `S10.plugin-hooks-merge`: hooks from attached, ambient or runtime-loaded plugins run after the explicit `hook_config`, and the merged config is stored in `conversation.state.hook_config`; loading a plugin later restarts the hook processor. Unit: `tests/sdk/conversation/test_local_conversation_plugins.py::TestLocalConversationPlugins` (`test_plugin_hooks_combined_with_explicit_hooks`, `test_load_plugin_merges_runtime_hooks_and_restarts_processor`), `tests/sdk/plugin/test_plugin_loader.py::TestHookConfigMerge`. Example: `examples/05_skills_and_plugins/02_loading_plugins/main.py`. Real-LLM: none.
+- `S10.plugin-hooks-merge`: hooks from attached, ambient or runtime-loaded plugins run after the explicit `hook_config`, and the merged config is stored in `conversation.state.hook_config`; loading a plugin later restarts the hook processor only when the load adds a hook matcher. Unit: `tests/sdk/conversation/test_local_conversation_plugins.py::TestLocalConversationPlugins` (`test_plugin_hooks_combined_with_explicit_hooks`, `test_load_plugin_merges_runtime_hooks_and_restarts_processor`), `tests/sdk/plugin/test_plugin_loader.py::TestHookConfigMerge`. Example: `examples/05_skills_and_plugins/02_loading_plugins/main.py`. Real-LLM: none.
+- `S10.plugin-hooks-reload-once`: loading a plugin that is already loaded (by bare name or by full `name@marketplace` ref) leaves one copy of its hook matchers in `conversation.state.hook_config`, does not restart the hook processor or run `SessionStart` again, and each of its hooks fires once per event. Unit: `tests/sdk/conversation/test_local_conversation_plugins.py::TestLocalConversationPlugins::test_load_plugin_binds_plugin_root_to_its_hooks` (`load_twice`). Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
 
@@ -131,6 +132,18 @@ Preconditions:
     --check order.-3 eq explicit --check order.-2 eq attached --check order.-1 eq runtime \
     --check resolved_plugins len-eq 2
   ```
+- **Loading the same plugin again (`S10.plugin-hooks-reload-once`).** The same program then calls `load_plugin("runtime-hooks")` and `load_plugin("runtime-hooks@local")` on the conversation that already has that plugin, and runs a third turn (one terminal call, then `finish`).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S10/plugin_hooks \
+    --check execution_status_after_reload eq finished \
+    --check post_tool_use_matchers_after_load eq 3 --check post_tool_use_matchers_after_reload eq 3 \
+    --check session_start_matchers_before_reload eq 2 --check session_start_matchers_after_reload eq 2 \
+    --check lines_added_by_reload len-eq 0 \
+    --check order_third_run eq '["explicit", "attached", "runtime", "explicit", "attached", "runtime"]' \
+    --check post_hook_commands_third_run len-eq 6
+  ```
+  The two loads write nothing to `order.log` (no `SessionStart` rerun), and each of the turn's two tool calls runs `runtime` once.
 - **Command hooks with a real model, example 33 (`S10.command-exec`, `S10.pre-tool-use-block`, `S10.post-tool-use`, `S10.user-prompt-context`, `S10.stop-hook`).** Live.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -161,7 +174,7 @@ Preconditions:
 - Agent hooks spend tokens on every matching event (one sub-conversation per call), and run synchronously before the tool; a broad matcher on `PreToolUse` multiplies cost and latency.
 - `examples/01_standalone_sdk/51_agent_hooks/main.py` and `57_prompt_hooks/main.py` default `LLM_MODEL` to `anthropic/claude-sonnet-4-5-20250929`, unlike the other examples (`gpt-5.5`).
 - `tests/sdk/test_agent_step_bounded_scan.py` passes but takes about 120 s on this machine; budget for it when running the hook suite under a timeout.
-- `conversation.load_plugin(...)` rebuilds the hook processor and runs `SessionStart` again for every configured hook (explicit and earlier plugins too), not only the new plugin's: `programs/S10/plugin_hooks.py` sees `start-attached` twice.
+- A `conversation.load_plugin(...)` that adds a hook matcher rebuilds the hook processor and runs `SessionStart` again for every configured hook (explicit and earlier plugins too), not only the new plugin's: `programs/S10/plugin_hooks.py` sees `start-attached` twice. A load that adds no matcher (the plugin is already loaded) does neither.
 - `PostToolUse` hooks with matcher `*` also run for the `finish` tool's observation.
 - `LocalConversation` registers only plain `LLM` objects in its stats registry (`AgentBase.get_all_llms` skips subclasses), so with a scripted `TestLLM` neither `agent` nor `agent-hook:<name>` shows up in `conversation_stats.usage_to_metrics`; prompt-hook metrics are merged directly and do show up. Prove agent-hook spend with a real model.
 - `control-sdk exec --expect-output` looks only at the last 1500 characters of stdout; pick strings the examples print at the end.
