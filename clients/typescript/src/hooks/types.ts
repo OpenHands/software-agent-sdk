@@ -40,6 +40,12 @@ export interface HookEvent {
   tool_name?: string | null;
   tool_input?: Record<string, unknown> | null;
   tool_response?: Record<string, unknown> | null;
+  /**
+   * Identifies the tool call: the ActionEvent's tool_call_id for PreToolUse
+   * and the paired ObservationEvent's tool_call_id for PostToolUse, so both
+   * hooks for one call see the same value. Null for non-tool hook events.
+   */
+  tool_use_id?: string | null;
   message?: string | null;
   session_id?: string | null;
   working_dir?: string | null;

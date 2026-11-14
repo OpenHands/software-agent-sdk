@@ -54,3 +54,13 @@ hook contract):
 > **Note:** Only exit code `2` blocks. Exit code `1` (the conventional Unix
 > failure code) is treated as a non-blocking error. A hook that is meant to
 > enforce a policy must exit with `2`.
+
+## Hook Input
+
+Every hook receives the event as JSON on stdin. Tool hooks (`PreToolUse`,
+`PostToolUse`) carry `tool_name`, `tool_input`, and — for `PostToolUse` —
+`tool_response`. The `tool_use_id` field identifies the tool call itself: it
+holds the call's id for both `PreToolUse` and `PostToolUse` (the same value in
+both), so a hook can pair a call with its result even when the same tool runs
+twice with the same input (parallel calls, retries). It is `null` for
+non-tool hook events.
