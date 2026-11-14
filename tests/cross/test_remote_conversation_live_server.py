@@ -32,8 +32,10 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from openhands.agent_server.config import Config, load_config
+from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
+from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.event import (
@@ -56,6 +58,7 @@ from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
@@ -1914,6 +1917,77 @@ def test_conversation_stats_with_live_server(
     assert stats_from_field, "Expected non-empty stats in the 'stats' field after run()"
 
     conv.close()
+
+
+def _metrics_exceeding_frame_limit() -> Metrics:
+    metrics = Metrics(model_name="gpt-4o-mini")
+    calls = 0
+    while len(metrics.model_dump_json()) <= MAX_FRAME_BYTES:
+        for _ in range(500):
+            response_id = f"chatcmpl-{calls:06d}-{uuid4().hex}"
+            metrics.add_cost(0.0123)
+            metrics.add_token_usage(
+                prompt_tokens=120_000,
+                completion_tokens=512,
+                cache_read_tokens=110_000,
+                cache_write_tokens=2_048,
+                context_window=200_000,
+                response_id=response_id,
+                reasoning_tokens=256,
+            )
+            metrics.add_response_latency(3.21, response_id)
+            calls += 1
+    return metrics
+
+
+def test_long_conversation_full_state_fits_session_frame(server_env):
+    """Per-call metrics over 4 MiB must not break reconnects (#6741)."""
+    ws_host = server_env["host"].replace("http://", "ws://")
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        event_service = server_env["conversation_service"]._event_services[
+            UUID(conversation_id)
+        ]
+        state = event_service.get_conversation()._state
+        metrics = _metrics_exceeding_frame_limit()
+        with state:
+            state.stats = ConversationStats(usage_to_metrics={"agent": metrics})
+        assert len(state.model_dump_json()) > MAX_FRAME_BYTES
+
+        full_state = None
+        with connect(
+            f"{ws_host}/sockets/session/{conversation_id}", max_size=None
+        ) as ws:
+            while full_state is None:
+                frame = json.loads(ws.recv(timeout=10))
+                event = frame.get("event") or {}
+                if event.get("key") == "full_state":
+                    full_state = event["value"]
+
+        served = full_state["stats"]["usage_to_metrics"]["agent"]
+        assert "costs" not in served
+        assert "response_latencies" not in served
+        assert "token_usages" not in served
+        assert served["accumulated_cost"] == pytest.approx(metrics.accumulated_cost)
+        assert metrics.accumulated_token_usage is not None
+        assert (
+            served["accumulated_token_usage"]
+            == metrics.accumulated_token_usage.model_dump()
+        )
+
+        for response in (
+            client.get(f"/api/conversations/{conversation_id}"),
+            client.get("/api/conversations/search"),
+        ):
+            response.raise_for_status()
+            assert len(response.content) < 100_000
+        # Persistence still keeps every call.
+        persisted = json.loads(
+            (Path(event_service.conversation_dir) / "base_state.json").read_text()
+        )
+        assert len(persisted["stats"]["usage_to_metrics"]["agent"]["costs"]) == len(
+            metrics.costs
+        )
 
 
 def test_events_not_lost_during_client_disconnection(

@@ -192,3 +192,56 @@ def test_stats_model_dump_with_snapshot_context_excludes_history():
     assert "accumulated_token_usage" in metrics_data
     assert metrics_data["accumulated_token_usage"]["prompt_tokens"] == 500
     assert metrics_data["accumulated_token_usage"]["completion_tokens"] == 250
+
+
+def _metrics_with_history(calls: int) -> Metrics:
+    metrics = Metrics(model_name="gpt-4")
+    for i in range(calls):
+        metrics.add_cost(0.01)
+        metrics.add_token_usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=8000,
+            response_id=f"resp{i}",
+        )
+        metrics.add_response_latency(1.5, f"resp{i}")
+    return metrics
+
+
+def test_full_state_event_uses_snapshot_stats(state):
+    """The full_state snapshot sent on (re)connect omits per-call metrics."""
+    state.stats.usage_to_metrics["default"] = _metrics_with_history(20)
+
+    event = ConversationStateUpdateEvent.from_conversation_state(state)
+
+    assert event.key == "full_state"
+    metrics_data = event.value["stats"]["usage_to_metrics"]["default"]
+    assert set(metrics_data) == {
+        "model_name",
+        "accumulated_cost",
+        "max_budget_per_task",
+        "accumulated_token_usage",
+    }
+    live = state.stats.usage_to_metrics["default"]
+    assert metrics_data["accumulated_cost"] == pytest.approx(live.accumulated_cost)
+    assert live.accumulated_token_usage is not None
+    assert (
+        metrics_data["accumulated_token_usage"]
+        == live.accumulated_token_usage.model_dump()
+    )
+    # Persistence keeps the full per-call history.
+    persisted = state.model_dump(mode="json")["stats"]["usage_to_metrics"]["default"]
+    assert len(persisted["costs"]) == 20
+    assert len(persisted["token_usages"]) == 20
+
+
+def test_full_state_event_size_does_not_grow_with_llm_calls(state):
+    state.stats.usage_to_metrics["default"] = _metrics_with_history(1)
+    small = ConversationStateUpdateEvent.from_conversation_state(state)
+
+    state.stats.usage_to_metrics["default"] = _metrics_with_history(500)
+    large = ConversationStateUpdateEvent.from_conversation_state(state)
+
+    assert len(large.model_dump_json()) - len(small.model_dump_json()) < 100
