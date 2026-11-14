@@ -75,7 +75,7 @@ known-bug marker, against a server from `main` and then from part 3.
 | `F33` Python `RemoteConversation`: run, fork, confirmation, secrets | 5 of 5 pass | 5 of 5 pass |
 | `F34` TypeScript client: create, run, fork/navigate/ask, confirm | 4 of 5 pass; 1 fail that also fails on `main` (`F34.conversation-branching`) | 4 of 5 pass, 1 fail |
 | `S04` local conversation (SDK map) | 26 of 27 pass; `S04.factory` labelled blocked in the map | 25 of 26 pass, 1 blocked |
-| `S13` security and confirmation (SDK map) | 7 of 9 pass; the live-model bullet (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`) fail in this run, blocked on `main`: see the note below; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map | 7 of 9 pass, 2 blocked |
+| `S13` security and confirmation (SDK map) | 7 of 9 pass; the live-model bullet (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`) failed in this run and was blocked on `main`: see the note below; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map | 7 of 9 pass, 2 blocked |
 
 Every bullet that does not pass on part 3 does not pass on `main` either
 (compared bullet by bullet). `main` has five more that do not pass: the bullets its map marks as known bugs, which this stack fixes (`F04.create-secrets-get`, `F08.secrets-visible`, `F08.secrets-unsaved-restart`, `F10.fork-keeps-credentials`, `F10.fork-run-memory`). The three failures the two share are recipes about a side question: after `ask_agent` the event count is one higher than `F10.ask-agent`, `F10.ask-agent-running` and `F34.conversation-branching` expect, on `main` as here. I left those recipes alone; they are not about this change.
