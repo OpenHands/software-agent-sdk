@@ -1,7 +1,7 @@
-"""Fork a conversation that carries a confirmation policy, a security analyzer
-with its own model key, and secrets, all set after construction, and report
-what the fork has: in memory, in its `base_state.json`, and after it is loaded
-again from disk. No model is called.
+"""Fork a conversation that was built with a hook and carries a confirmation
+policy, a security analyzer with its own model key, and secrets, all set after
+construction, and report what the fork has: in memory, in its
+`base_state.json`, and after it is loaded again from disk. No model is called.
 
 Usage: fork_state.py
 """
@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from sdk_verify import emit, make_llm, run_paths
 
 from openhands.sdk import LLM, Agent, LocalConversation
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.security.confirmation_policy import ConfirmRisky, NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_llm_analyzer import (
@@ -25,6 +26,7 @@ paths = run_paths()
 BASE = paths["run"] / "fork-state"
 WORKSPACE = str(paths["workspace"])
 VALUES = ("start-secret-value-1", "guard-key-value-2", "runtime-secret-value-3")
+HOOK_REASON = "blocked by the source hook"
 cipher = Cipher("sdk-verify-fork-state-key")
 
 
@@ -51,6 +53,13 @@ source = LocalConversation(
     persistence_dir=str(BASE),
     cipher=cipher,
     secrets={"START_TOKEN": VALUES[0]},
+    hook_config=HookConfig(
+        user_prompt_submit=[
+            HookMatcher(
+                hooks=[HookDefinition(command=f"echo '{HOOK_REASON}' >&2; exit 2")]
+            )
+        ]
+    ),
     visualizer=None,
 )
 source.set_confirmation_policy(
@@ -84,6 +93,10 @@ out: dict = {
     == {"*"},
     "plaintext_on_disk": any(value in saved_text for value in VALUES),
 }
+
+# A prompt sent to the fork goes through the hook the source was built with.
+fork.send_message("hello")
+out["fork_prompt_block"] = next(iter(fork.state.blocked_messages.values()), None)
 
 # Changing the fork does not reach back into the source.
 fork.set_confirmation_policy(NeverConfirm())
