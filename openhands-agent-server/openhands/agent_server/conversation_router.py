@@ -14,7 +14,7 @@ from fastapi import (
     Response,
     status,
 )
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
@@ -70,7 +70,11 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
-from openhands.sdk.llm import RouterLLM
+from openhands.sdk.llm import (
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
@@ -86,17 +90,6 @@ conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 _OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
 _OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
 _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
-
-
-class ModelRouterSwitchRequest(BaseModel):
-    llm_key: str
-
-
-class ModelRouterStatus(BaseModel):
-    enabled: bool
-    routing_mode: str | None = None
-    selected_llm_key: str | None = None
-    available_llms: list[str] = Field(default_factory=list)
 
 
 def _request_with_observability_headers(
@@ -673,12 +666,7 @@ async def switch_conversation_llm(
 def _model_router_status(llm: LLM) -> ModelRouterStatus:
     if not isinstance(llm, RouterLLM):
         return ModelRouterStatus(enabled=False)
-    return ModelRouterStatus(
-        enabled=True,
-        routing_mode=llm.routing_mode,
-        selected_llm_key=llm.selected_llm_key,
-        available_llms=list(llm.available_llms()),
-    )
+    return llm.status()
 
 
 @conversation_router.get(
@@ -697,8 +685,9 @@ async def get_conversation_model_router(
     return _model_router_status(event_service.get_conversation().agent.llm)
 
 
-@conversation_router.post(
-    "/{conversation_id}/model_router/switch",
+@conversation_router.patch(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
     responses=error_responses(
         {
             Invalid: "Conversation is not backed by a model router or key is invalid",
@@ -706,44 +695,21 @@ async def get_conversation_model_router(
         }
     ),
 )
-async def switch_conversation_model_router(
+async def update_conversation_model_router(
     conversation_id: UUID,
-    request: ModelRouterSwitchRequest,
+    request: ModelRouterUpdateRequest,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> Success:
-    """Switch a RouterLLM-backed conversation to a manual route."""
+) -> ModelRouterStatus:
+    """Update model-router selection for the conversation's active LLM."""
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise NotFound()
+    conversation = event_service.get_conversation()
     try:
-        event_service.get_conversation().switch_routed_llm(request.llm_key)
+        conversation.update_model_router_selection(request.selection)
     except ValueError as e:
         raise Invalid(str(e))
-    return Success()
-
-
-@conversation_router.post(
-    "/{conversation_id}/model_router/auto",
-    responses=error_responses(
-        {
-            Invalid: "Conversation is not backed by a model router",
-            NotFound: "Conversation not found",
-        }
-    ),
-)
-async def resume_conversation_model_router_auto(
-    conversation_id: UUID,
-    conversation_service: ConversationService = Depends(get_conversation_service),
-) -> Success:
-    """Return a RouterLLM-backed conversation to automatic routing."""
-    event_service = await conversation_service.get_event_service(conversation_id)
-    if event_service is None:
-        raise NotFound()
-    try:
-        event_service.get_conversation().resume_auto_llm_routing()
-    except ValueError as e:
-        raise Invalid(str(e))
-    return Success()
+    return _model_router_status(conversation.agent.llm)
 
 
 @conversation_router.post(

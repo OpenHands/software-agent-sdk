@@ -928,20 +928,22 @@ def test_switch_routed_llm_updates_agent_and_state(tmp_path):
     conv.switch_routed_llm(MultimodalRouter.PRIMARY_MODEL_KEY)
 
     assert isinstance(conv.agent.llm, MultimodalRouter)
-    assert conv.agent.llm.routing_mode == "manual"
-    assert conv.agent.llm.selected_llm_key == MultimodalRouter.PRIMARY_MODEL_KEY
+    assert conv.agent.llm.selection.mode == "manual"
+    assert (
+        conv.agent.llm.selection.manual_route_key == MultimodalRouter.PRIMARY_MODEL_KEY
+    )
     assert conv.state.agent.llm is conv.agent.llm
 
 
 def test_resume_auto_llm_routing_updates_agent_and_state(tmp_path):
-    router = _make_router().switch_llm(MultimodalRouter.PRIMARY_MODEL_KEY)
+    router = _make_router().with_manual_route(MultimodalRouter.PRIMARY_MODEL_KEY)
     conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
 
     conv.resume_auto_llm_routing()
 
     assert isinstance(conv.agent.llm, MultimodalRouter)
-    assert conv.agent.llm.routing_mode == "auto"
-    assert conv.agent.llm.selected_llm_key is None
+    assert conv.agent.llm.selection.mode == "auto"
+    assert conv.agent.llm.selection.manual_route_key is None
     assert conv.state.agent.llm is conv.agent.llm
 
 
@@ -955,9 +957,12 @@ def test_switch_routed_llm_survives_state_roundtrip(tmp_path):
     )
 
     assert isinstance(reloaded.agent.llm, MultimodalRouter)
-    assert reloaded.agent.llm.routing_mode == "manual"
-    assert reloaded.agent.llm.selected_llm_key == MultimodalRouter.SECONDARY_MODEL_KEY
-    assert set(reloaded.agent.llm.available_llms()) == {"primary", "secondary"}
+    assert reloaded.agent.llm.selection.mode == "manual"
+    assert (
+        reloaded.agent.llm.selection.manual_route_key
+        == MultimodalRouter.SECONDARY_MODEL_KEY
+    )
+    assert set(reloaded.agent.llm.available_routes()) == {"primary", "secondary"}
 
 
 def test_switch_routed_llm_rejects_non_router(tmp_path):

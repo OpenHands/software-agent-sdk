@@ -87,11 +87,22 @@ export interface Success {
   message?: string;
 }
 
+export interface ModelRouterSelection {
+  mode: 'auto' | 'manual';
+  manual_route_key?: string | null;
+}
+
+export interface ModelRouteInfo {
+  key: string;
+  model?: string | null;
+  label?: string | null;
+}
+
 export interface ModelRouterStatus {
   enabled: boolean;
-  routing_mode?: 'auto' | 'manual' | null;
-  selected_llm_key?: string | null;
-  available_llms: string[];
+  selection?: ModelRouterSelection | null;
+  last_route_key?: string | null;
+  routes: ModelRouteInfo[];
 }
 
 export interface EventPage {

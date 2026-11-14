@@ -51,7 +51,13 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfileLimitExceeded,
     MetaProfileStore,
 )
-from openhands.sdk.llm.router import RouterLLM
+from openhands.sdk.llm.router import (
+    ModelRouteInfo,
+    ModelRouterSelection,
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
 from openhands.sdk.llm.streaming import (
     AsyncTokenCallbackType,
     LLMStreamChunk,
@@ -104,6 +110,10 @@ __all__ = [
     "MetaProfileClass",
     "MetaProfileLimitExceeded",
     "MetaProfileStore",
+    "ModelRouteInfo",
+    "ModelRouterSelection",
+    "ModelRouterStatus",
+    "ModelRouterUpdateRequest",
     "RouterLLM",
     "RegistryEvent",
     # Messages

@@ -1,6 +1,12 @@
 import { HttpClient, HttpError } from './http-client';
 import { getCachedAgentServerInfo } from './agent-server-compatibility';
-import { ConversationExecutionStatus, LLM, ModelRouterStatus, Success } from '../types/base';
+import {
+  ConversationExecutionStatus,
+  LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
@@ -448,14 +454,26 @@ export class ConversationClient {
     return response.data;
   }
 
-  async switchModelRouter(conversationId: string, llmKey: string): Promise<void> {
-    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/switch`, {
-      llm_key: llmKey,
+  async updateModelRouter(
+    conversationId: string,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  async switchModelRouter(conversationId: string, routeKey: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_key: routeKey,
     });
   }
 
-  async resumeAutoModelRouting(conversationId: string): Promise<void> {
-    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/auto`, {});
+  async resumeAutoModelRouting(conversationId: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
   }
 
   /**

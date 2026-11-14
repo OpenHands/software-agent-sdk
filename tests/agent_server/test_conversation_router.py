@@ -2982,10 +2982,8 @@ def _server_test_router() -> MultimodalRouter:
         llms_for_routing={
             MultimodalRouter.PRIMARY_MODEL_KEY: LLM(model="primary-model"),
             MultimodalRouter.SECONDARY_MODEL_KEY: LLM(model="secondary-model"),
-        },
-        routing_mode="manual",
-        selected_llm_key=MultimodalRouter.SECONDARY_MODEL_KEY,
-    )
+        }
+    ).with_manual_route(MultimodalRouter.SECONDARY_MODEL_KEY)
 
 
 def test_get_conversation_model_router_status(
@@ -3007,18 +3005,25 @@ def test_get_conversation_model_router_status(
         assert response.status_code == 200
         assert response.json() == {
             "enabled": True,
-            "routing_mode": "manual",
-            "selected_llm_key": "secondary",
-            "available_llms": ["primary", "secondary"],
+            "selection": {
+                "mode": "manual",
+                "manual_route_key": "secondary",
+            },
+            "last_route_key": None,
+            "routes": [
+                {"key": "primary", "model": "primary-model", "label": "primary"},
+                {"key": "secondary", "model": "secondary-model", "label": "secondary"},
+            ],
         }
     finally:
         client.app.dependency_overrides.clear()
 
 
-def test_switch_conversation_model_router(
+def test_update_conversation_model_router_manual_selection(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
     mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.get_conversation.return_value = mock_conversation
     client.app.dependency_overrides[get_conversation_service] = lambda: (
@@ -3026,22 +3031,30 @@ def test_switch_conversation_model_router(
     )
 
     try:
-        response = client.post(
-            f"/api/conversations/{sample_conversation_id}/model_router/switch",
-            json={"llm_key": "primary"},
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}/model_router",
+            json={
+                "selection": {
+                    "mode": "manual",
+                    "manual_route_key": "primary",
+                }
+            },
         )
 
         assert response.status_code == 200
-        assert response.json()["success"] is True
-        mock_conversation.switch_routed_llm.assert_called_once_with("primary")
+        mock_conversation.update_model_router_selection.assert_called_once()
+        selection = mock_conversation.update_model_router_selection.call_args.args[0]
+        assert selection.mode == "manual"
+        assert selection.manual_route_key == "primary"
     finally:
         client.app.dependency_overrides.clear()
 
 
-def test_resume_conversation_model_router_auto(
+def test_update_conversation_model_router_auto_selection(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
     mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.get_conversation.return_value = mock_conversation
     client.app.dependency_overrides[get_conversation_service] = lambda: (
@@ -3049,13 +3062,16 @@ def test_resume_conversation_model_router_auto(
     )
 
     try:
-        response = client.post(
-            f"/api/conversations/{sample_conversation_id}/model_router/auto"
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}/model_router",
+            json={"selection": {"mode": "auto"}},
         )
 
         assert response.status_code == 200
-        assert response.json()["success"] is True
-        mock_conversation.resume_auto_llm_routing.assert_called_once_with()
+        mock_conversation.update_model_router_selection.assert_called_once()
+        selection = mock_conversation.update_model_router_selection.call_args.args[0]
+        assert selection.mode == "auto"
+        assert selection.manual_route_key is None
     finally:
         client.app.dependency_overrides.clear()
 

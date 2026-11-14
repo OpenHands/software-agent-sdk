@@ -42,21 +42,24 @@ def test_router_auto_selects_and_records_selected_key():
     response = router.completion(_message())
 
     assert _response_text(response) == "first"
-    assert router.routing_mode == "auto"
-    assert router.selected_llm_key == "first"
+    assert router.selection.mode == "auto"
+    assert router.selection.manual_route_key is None
+    assert router.last_selected_llm_key == "first"
     assert router.active_llm is router.llms_for_routing["first"]
 
 
 def test_router_manual_switch_returns_copy_and_routes_to_key():
     router = _router()
 
-    switched = router.switch_llm("second")
+    switched = router.with_manual_route("second")
     response = switched.completion(_message())
 
-    assert router.routing_mode == "auto"
-    assert router.selected_llm_key is None
-    assert switched.routing_mode == "manual"
-    assert switched.selected_llm_key == "second"
+    assert router.selection.mode == "auto"
+    assert router.selection.manual_route_key is None
+    assert router.last_selected_llm_key is None
+    assert switched.selection.mode == "manual"
+    assert switched.selection.manual_route_key == "second"
+    assert switched.last_selected_llm_key == "second"
     assert _response_text(response) == "second"
 
 
@@ -64,13 +67,14 @@ def test_router_rejects_unknown_manual_key():
     router = _router()
 
     with pytest.raises(ValueError, match="missing"):
-        router.switch_llm("missing")
+        router.with_manual_route("missing")
 
 
 def test_router_async_generate_delegates_to_manual_key():
-    router = _router().switch_llm("second")
+    router = _router().with_manual_route("second")
 
     response = asyncio.run(router.agenerate(_message()))
 
     assert _response_text(response) == "second"
-    assert router.selected_llm_key == "second"
+    assert router.selection.manual_route_key == "second"
+    assert router.last_selected_llm_key == "second"

@@ -62,7 +62,14 @@ from openhands.sdk.event.reaction import (
 )
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
-from openhands.sdk.llm import LLM, Message, RouterLLM, TextContent, content_to_str
+from openhands.sdk.llm import (
+    LLM,
+    Message,
+    ModelRouterSelection,
+    RouterLLM,
+    TextContent,
+    content_to_str,
+)
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
@@ -1937,19 +1944,22 @@ class LocalConversation(BaseConversation):
             self._state.agent = self.agent
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
 
-    def switch_routed_llm(self, llm_key: str) -> None:
-        """Switch a RouterLLM-backed conversation to a manual route."""
+    def update_model_router_selection(self, selection: ModelRouterSelection) -> None:
+        """Update route selection for a RouterLLM-backed conversation."""
         self._reject_llm_switch_on_acp()
         if not isinstance(self.agent.llm, RouterLLM):
             raise ValueError("Current agent LLM is not a RouterLLM.")
-        self._replace_agent_llm(self.agent.llm.switch_llm(llm_key))
+        self._replace_agent_llm(self.agent.llm.with_selection(selection))
+
+    def switch_routed_llm(self, llm_key: str) -> None:
+        """Switch a RouterLLM-backed conversation to a manual route."""
+        self.update_model_router_selection(
+            ModelRouterSelection(mode="manual", manual_route_key=llm_key)
+        )
 
     def resume_auto_llm_routing(self) -> None:
         """Return a RouterLLM-backed conversation to automatic routing."""
-        self._reject_llm_switch_on_acp()
-        if not isinstance(self.agent.llm, RouterLLM):
-            raise ValueError("Current agent LLM is not a RouterLLM.")
-        self._replace_agent_llm(self.agent.llm.resume_auto_routing())
+        self.update_model_router_selection(ModelRouterSelection(mode="auto"))
 
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.

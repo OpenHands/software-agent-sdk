@@ -580,9 +580,12 @@ describe('Auxiliary API clients', () => {
         new Response(
           JSON.stringify({
             enabled: true,
-            routing_mode: 'manual',
-            selected_llm_key: 'primary',
-            available_llms: ['primary', 'secondary'],
+            selection: { mode: 'manual', manual_route_key: 'primary' },
+            last_route_key: 'primary',
+            routes: [
+              { key: 'primary', model: 'primary-model', label: 'primary' },
+              { key: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
           }),
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
@@ -595,7 +598,7 @@ describe('Auxiliary API clients', () => {
     await client.switchModelRouter('c1', 'secondary');
     await client.resumeAutoModelRouting('c1');
 
-    expect(status.selected_llm_key).toBe('primary');
+    expect(status.selection?.manual_route_key).toBe('primary');
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
       'http://example.com/api/conversations/c1/model_router',
@@ -603,16 +606,21 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      'http://example.com/api/conversations/c1/model_router/switch',
+      'http://example.com/api/conversations/c1/model_router',
       expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ llm_key: 'secondary' }),
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_key: 'secondary' },
+        }),
       })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
-      'http://example.com/api/conversations/c1/model_router/auto',
-      expect.objectContaining({ method: 'POST', body: '{}' })
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
+      })
     );
   });
 
@@ -1836,9 +1844,12 @@ describe('Auxiliary API clients', () => {
         new Response(
           JSON.stringify({
             enabled: true,
-            routing_mode: 'auto',
-            selected_llm_key: null,
-            available_llms: ['primary', 'secondary'],
+            selection: { mode: 'auto' },
+            last_route_key: null,
+            routes: [
+              { key: 'primary', model: 'primary-model', label: 'primary' },
+              { key: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
           }),
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
@@ -1856,7 +1867,7 @@ describe('Auxiliary API clients', () => {
     await conversation.switchModelRouter('secondary');
     await conversation.resumeAutoModelRouting();
 
-    expect(status.routing_mode).toBe('auto');
+    expect(status.selection?.mode).toBe('auto');
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
       'http://example.com/api/conversations/conv-123/model_router',
@@ -1864,16 +1875,21 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      'http://example.com/api/conversations/conv-123/model_router/switch',
+      'http://example.com/api/conversations/conv-123/model_router',
       expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ llm_key: 'secondary' }),
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_key: 'secondary' },
+        }),
       })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
-      'http://example.com/api/conversations/conv-123/model_router/auto',
-      expect.objectContaining({ method: 'POST', body: '{}' })
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
+      })
     );
   });
 
