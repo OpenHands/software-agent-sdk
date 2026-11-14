@@ -3334,6 +3334,8 @@ class LocalConversation(BaseConversation):
         This bypasses the normal conversation flow and does **not** modify, persist,
         or become part of the conversation state. The request is not remembered by
         the main agent, no events are recorded, and execution status is untouched.
+        Only the usage of the call is kept: it is counted in the conversation's
+        stats under ``ask-agent-llm`` and saved with them.
         It is also thread-safe and may be called while `conversation.run()` is
         executing in another thread.
 
@@ -3393,6 +3395,9 @@ class LocalConversation(BaseConversation):
             store=False,
             call_context=self._llm_call_context,
         )
+        # The call recorded its usage inside ``state.stats``; nothing else
+        # changes here that would save it.
+        self._state.save_soon()
 
         message = response.message
 
