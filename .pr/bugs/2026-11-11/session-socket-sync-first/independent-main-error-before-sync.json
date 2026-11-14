@@ -1,0 +1,56 @@
+{
+  "summary": {
+    "opened": true,
+    "frames": 2,
+    "kinds": {
+      "error": 1,
+      "sync": 1
+    },
+    "stopped": "until-kind sync",
+    "close": null
+  },
+  "frames": [
+    {
+      "direction": "opened",
+      "at": "2026-11-11T08:56:27Z"
+    },
+    {
+      "direction": "sent",
+      "at": "2026-11-11T08:56:27Z",
+      "frame": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "x"
+          }
+        ]
+      }
+    },
+    {
+      "direction": "received",
+      "at": "2026-11-11T08:56:28Z",
+      "kind": "error",
+      "frame": {
+        "type": "error",
+        "code": "AssertionError",
+        "detail": "Only user messages are allowed to be sent to the agent."
+      }
+    },
+    {
+      "direction": "received",
+      "at": "2026-11-11T08:57:15Z",
+      "kind": "sync",
+      "frame": {
+        "type": "sync",
+        "through_seq": 9
+      }
+    },
+    {
+      "direction": "ended",
+      "at": "2026-11-11T08:57:15Z",
+      "stopped": "until-kind sync",
+      "close": null
+    }
+  ]
+}

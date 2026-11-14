@@ -17,6 +17,11 @@ Environment (inherited from the program through the SDK):
                           FAKE_ACP_KEY is set
   FAKE_ACP_INIT_SLEEP     seconds to stall in initialize
   FAKE_ACP_LEGACY_MODELS  report models in the UNSTABLE `models` block
+  FAKE_ACP_EFFORT         m1 also offers a reasoning-effort select (id
+                          `effort`, category `thought_level`, levels
+                          low/medium/high, default medium) that a model
+                          switch resets; m2 offers none. A server named
+                          codex-* always offers `reasoning_effort` this way.
 
 What a prompt does depends on a tag in its first text block:
   (none)     thought, two tool calls (the first asks permission and streams
@@ -55,6 +60,20 @@ pending: dict[int, list] = {}
 ids = itertools.count(1000)
 cancelled: set[str] = set()
 models: dict[str, str] = {}
+efforts: dict[str, str] = {}
+EFFORT_LEVELS = ("low", "medium", "high")
+DEFAULT_EFFORT = "medium"
+
+
+def effort_config_id(session_id: str) -> str | None:
+    """The reasoning-effort option the session's current model offers."""
+    if NAME.startswith("codex"):
+        return "reasoning_effort"
+    if os.environ.get("FAKE_ACP_EFFORT") and models.get(session_id, "m1") == "m1":
+        return "effort"
+    return None
+
+
 costs: dict[str, float] = {}
 attempts: dict[str, int] = {}
 forks: set[str] = set()
@@ -131,14 +150,16 @@ def model_options(session_id: str) -> list[dict]:
             "options": [{"value": m, "name": m.upper()} for m in MODELS],
         }
     ]
-    if NAME.startswith("codex"):
+    config_id = effort_config_id(session_id)
+    if config_id is not None:
         options.append(
             {
-                "id": "reasoning_effort",
+                "id": config_id,
                 "name": "Effort",
                 "type": "select",
-                "currentValue": "medium",
-                "options": [{"value": v, "name": v} for v in ("low", "medium", "high")],
+                "category": "thought_level",
+                "currentValue": efforts.get(session_id, DEFAULT_EFFORT),
+                "options": [{"value": v, "name": v.title()} for v in EFFORT_LEVELS],
             }
         )
     return options
@@ -434,6 +455,15 @@ def handle(message: dict) -> None:
             return
         if config_id == "model":
             models[session_id] = value
+            efforts.pop(session_id, None)  # a model switch resets the effort
+        elif config_id == effort_config_id(session_id) and value in EFFORT_LEVELS:
+            efforts[session_id] = value
+        else:
+            respond(
+                request_id,
+                error={"code": -32602, "message": f"Unknown {config_id} {value}"},
+            )
+            return
         respond(request_id, {"configOptions": model_options(session_id)})
     elif method == "session/set_model":
         session_id, value = params.get("sessionId"), params.get("modelId")

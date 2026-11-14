@@ -1,0 +1,19 @@
+{
+  "origin": "http://127.0.0.1:18800",
+  "clients": 3,
+  "duration_limit_seconds": 20.0,
+  "round_limit_per_client": 5000,
+  "slow_ms": 2.0,
+  "elapsed_seconds": 20.067,
+  "max_network_bytes": 16777216,
+  "max_uncompressed_bytes": 16777216,
+  "max_members": 512,
+  "counts": {
+    "attempts": 733,
+    "http_200": 733,
+    "valid_zip": 730,
+    "received_bytes": 84115939,
+    "unverified_deadline": 3
+  },
+  "raw_samples_private": true
+}

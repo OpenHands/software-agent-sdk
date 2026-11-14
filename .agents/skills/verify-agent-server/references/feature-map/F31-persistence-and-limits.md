@@ -24,7 +24,7 @@ Routes: none
 - `F31.lease-renewed`: while the server lives, the lease's `expires_at` moves forward within 15 s, with the same owner and generation.
 - `F31.lease-released-graceful`: a graceful restart deletes the lease of every loaded conversation, catalog reads do not claim it again, and the next load claims generation 1 under the new pid.
 - `F31.lease-dead-owner-takeover`: after a SIGKILL the lease still names the dead pid; the restarted server takes it over on first load with generation 2 and logs the takeover.
-- `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` answering the interrupted call and no observation, and the resumed run hands that error to the model.
+- `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` (`recovery_reason: server_restart`) answering the interrupted call and no observation, and the resumed run hands that error to the model.
 - `F31.state-survives-restarts`: a conversation's title, tags and events, the settings, a stored secret and the LLM profiles read back unchanged after a graceful restart and after a SIGKILL.
 - `F31.no-plaintext-at-rest`: after a real model run, the provider key, a stored secret and a conversation secret appear nowhere in the run's persisted files or the server log, while the server still hands out the provider key and the stored secret and keeps the conversation secret encrypted in its registry.
 - `F31.second-instance-catalog`: a second server sharing the conversations directory lists, counts and reads conversations that existed when it started, without claiming their leases.
@@ -204,7 +204,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$T" --check execution_status eq error --quiet --save F31.crash-tool-call/get
   control-agent-server api GET "/api/conversations/$T/events/search" --query kind=$AGENT_ERROR_KIND --check items len-eq 1 \
     --check items.0.tool_call_id eq "$TCALL" --check items.0.error contains 'A restart occurred while this tool was in progress' \
-    --save F31.crash-tool-call/agent-error
+    --check items.0.recovery_reason eq server_restart --check items.0.classification.kind eq internal \
+    --check items.0.classification.retryable eq false --save F31.crash-tool-call/agent-error
   control-agent-server api GET "/api/conversations/$T/events/count" --query kind=$OBSERVATION_KIND --check . eq 0
   control-agent-server fixture llm-stub --name qa-f31-tool --step 'tool:finish:{"message":"QA_F31_RESUMED"}'
   control-agent-server api POST "/api/conversations/$T/run" --expect 200 --check success eq true
@@ -217,7 +218,9 @@ Preconditions:
   startup loaded `T` (its lease already names the new pid), marked it
   `error` and appended one `AgentErrorEvent` for the open `tool_call_id`
   ("A restart occurred while this tool was in progress ..."), with no
-  observation. The resumed model request carries that error as the tool
+  observation. The error says where it came from: `recovery_reason:
+  "server_restart"` (`null` on errors not synthesized by recovery)
+  and `classification` `{"kind": "internal", "retryable": false}`. The resumed model request carries that error as the tool
   result, and `T` finishes.
 - **State survives restarts (`F31.state-survives-restarts`).** One
   conversation, a settings field, a stored secret and the two DeepSeek
