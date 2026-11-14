@@ -180,7 +180,7 @@ Then exactly four H2 sections, in this order:
    Two label markers keep the map honest without turning it red forever:
    **known bug** and **blocked**. A bullet whose bold label says **known
    bug** (for example
-   `**Stale secrets after update (`F08.secrets-visible`), known bug #1234.**`)
+   `**Remote server behind a bearer token (`F19.test-remote-bearer`), known bug #6687.**`)
    follows the known-bug contract below. A bullet whose label says **blocked**
    names its prerequisite in prose, is reported as `blocked`, and is not
    executed. Later bullets never depend on variables set in either kind.
