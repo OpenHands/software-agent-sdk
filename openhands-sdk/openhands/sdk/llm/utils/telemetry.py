@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Self
 
 from litellm.cost_calculator import completion_cost as litellm_completion_cost
-from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from litellm.types.llms.openai import (
+    InputTokensDetails,
+    ResponseAPIUsage,
+    ResponsesAPIResponse,
+)
 from litellm.types.utils import Choices, CostPerToken, ModelResponse, Usage
 from pydantic import (
     BaseModel,
@@ -124,9 +128,22 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
                 if input_details is not None
                 else 0
             ),
+            cache_write_tokens=_responses_cache_write_tokens(input_details),
         )
 
     return None
+
+
+def _responses_cache_write_tokens(details: InputTokensDetails | None) -> int:
+    """Cache-write tokens from a Responses API ``input_tokens_details`` block.
+
+    ``InputTokensDetails`` declares no cache-write field, so LiteLLM keeps the
+    reported ``cache_write_tokens`` (OpenAI's name, also emitted by LiteLLM's
+    chat-to-Responses bridge) in the model's extra mapping.
+    """
+    if details is None or not details.model_extra:
+        return 0
+    return int(details.model_extra.get("cache_write_tokens") or 0)
 
 
 def _response_usage(
