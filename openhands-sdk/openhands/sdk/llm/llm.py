@@ -130,6 +130,7 @@ from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
+    is_transient_proxy_auth_error,
     looks_like_auth_error,
     map_provider_exception,
 )
@@ -1281,7 +1282,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return None
         if self.auth_type != "api_key":
             return None
-        if not looks_like_auth_error(error):
+        # A cache-miss 401 that survived every transient retry may be a rotated
+        # managed key whose message lacks the token_not_found_in_db marker.
+        if not (looks_like_auth_error(error) or is_transient_proxy_auth_error(error)):
             return None
         try:
             new_key = self._api_key_refresh_hook()
