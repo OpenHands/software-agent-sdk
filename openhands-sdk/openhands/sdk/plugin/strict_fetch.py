@@ -8,10 +8,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from filelock import FileLock
 from pydantic import BaseModel, Field
@@ -244,25 +245,61 @@ def _expand_source_and_ref(
             raise PluginSourceError("missing_secret", f"Missing secret: {name}")
         resolved[name] = plain_value
 
-    expanded_source = expand_variable_references(
-        source,
-        variables=resolved,
+    expanded_source = expand_plugin_source(source, resolved.get)
+    expanded_ref = _expand(ref, resolved.get) if ref is not None else None
+    encoded = {_encode_userinfo(value) for value in resolved.values()}
+    return (
+        expanded_source,
+        expanded_ref,
+        [*resolved.values(), *(encoded - set(resolved.values()))],
+    )
+
+
+def _expand(value: str, lookup: Callable[[str], str | None]) -> str:
+    return expand_variable_references(
+        value,
+        get_secret=lookup,
         check_env=False,
         support_unbraced=False,
         expand_defaults=False,
     )
-    expanded_ref = (
-        expand_variable_references(
-            ref,
-            variables=resolved,
-            check_env=False,
-            support_unbraced=False,
-            expand_defaults=False,
-        )
-        if ref is not None
-        else None
+
+
+def _encode_userinfo(value: str) -> str:
+    return quote(value, safe="")
+
+
+def expand_plugin_source(source: str, lookup: Callable[[str], str | None]) -> str:
+    """Expand the ``${NAME}`` placeholders of a plugin source.
+
+    ``lookup`` returns a secret's value, or ``None`` to keep its placeholder.
+    A value put in the user info of an http(s) URL is percent-encoded, so a
+    token containing ``/``, ``@`` or ``:`` keeps its meaning instead of
+    breaking the URL; git decodes it before sending it. Placeholders anywhere
+    else are expanded as they are.
+    """
+    parts = urlsplit(source)
+    authority_start = source.find("//") + 2
+    authority_end = authority_start + len(parts.netloc)
+    if (
+        parts.scheme.lower() not in ("http", "https")
+        or "@" not in parts.netloc
+        or source[authority_start:authority_end] != parts.netloc
+    ):
+        return _expand(source, lookup)
+    userinfo, _, hostport = parts.netloc.rpartition("@")
+
+    def encoded(name: str) -> str | None:
+        value = lookup(name)
+        return _encode_userinfo(value) if value is not None else None
+
+    return (
+        _expand(source[:authority_start], lookup)
+        + _expand(userinfo, encoded)
+        + "@"
+        + _expand(hostport, lookup)
+        + _expand(source[authority_end:], lookup)
     )
-    return expanded_source, expanded_ref, list(resolved.values())
 
 
 def _copy_local_source(url: str, repo_path: str | None, work_dir: Path | None) -> Path:
@@ -388,6 +425,9 @@ def _classify_git_error(stderr: str, default_code: str) -> str:
     lower = stderr.lower()
     if "authentication failed" in lower or "authentication required" in lower:
         return "auth_failed"
+    if "url rejected" in lower or "url using bad/illegal format" in lower:
+        # A malformed URL: retrying the same source cannot succeed.
+        return "invalid_source"
     if (
         "couldn't find remote ref" in lower
         or "could not find remote ref" in lower

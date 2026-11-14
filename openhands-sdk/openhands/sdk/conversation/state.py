@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self, cast
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
@@ -32,6 +32,7 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import drop_mcp_servers_without_endpoint
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -77,6 +78,57 @@ class ConversationExecutionStatus(str, Enum):
             ConversationExecutionStatus.ERROR,
             ConversationExecutionStatus.STUCK,
         )
+
+
+_Status = ConversationExecutionStatus
+
+# Moves no code path makes: ConversationState.transition() rejects these and
+# accepts every other move. In practice the lifecycle is almost fully
+# connected:
+# - a run can fail, be paused or (re)start from any status;
+# - a step can run under any status (``condense()``, a direct ``agent.step()``,
+#   or the sync loop retrying after ACPAgent reported a timeout as ERROR), so
+#   FINISHED, WAITING_FOR_CONFIRMATION and STUCK can follow ERROR;
+# - a pause can land mid-step (arun() releases the state lock for LLM I/O, ACP
+#   steps run without it), so PAUSED can be followed by the step's outcome;
+# - DELETING is only ever set on the webhook payload, never on the state, so
+#   it gets no special case. ERROR and PAUSED, the targets of the run loop's
+#   exception handlers, stay reachable from every status, so a handler can
+#   never mask the original error.
+_UNREACHED_MOVES: dict[_Status, frozenset[_Status]] = {
+    # Stuck detection runs under the same lock right after the run loop has
+    # stopped on PAUSED or FINISHED.
+    _Status.PAUSED: frozenset({_Status.STUCK}),
+    _Status.FINISHED: frozenset({_Status.STUCK}),
+    # Only send_message() (from FINISHED/STUCK), reject_pending_actions() (from
+    # WAITING_FOR_CONFIRMATION) and the run loop move to IDLE, and the run loop
+    # stops on ERROR.
+    _Status.ERROR: frozenset({_Status.IDLE}),
+}
+
+_ALLOWED_TRANSITIONS: dict[_Status, frozenset[_Status]] = {
+    status: frozenset(_Status) - {status} - _UNREACHED_MOVES.get(status, frozenset())
+    for status in _Status
+}
+
+
+class InvalidExecutionStatusTransitionError(ValueError):
+    """Raised when ``ConversationState.transition`` is asked for a move the
+    status table does not allow."""
+
+    def __init__(
+        self,
+        current: ConversationExecutionStatus,
+        target: ConversationExecutionStatus,
+        reason: str,
+    ) -> None:
+        super().__init__(
+            f"execution_status cannot move from {current.value} to "
+            f"{target.value} ({reason})"
+        )
+        self.current = current
+        self.target = target
+        self.reason = reason
 
 
 class ConversationState(OpenHandsModel):
@@ -152,6 +204,20 @@ class ConversationState(OpenHandsModel):
             "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
             "which tracks trigger-based activations."
         ),
+    )
+
+    # Ambient (installed/local) plugins are re-discovered on every load, but their
+    # contributions are merged into the persisted agent. Recording what they
+    # contributed lets a resumed conversation drop them before re-discovery, so
+    # a since-disabled or removed plugin does not linger. ``None`` marks a
+    # conversation persisted before these fields existed.
+    ambient_plugin_skills: list[str] | None = Field(
+        default=None,
+        description="Skill names contributed by ambient plugins at the last load.",
+    )
+    ambient_plugin_mcp_servers: list[str] | None = Field(
+        default=None,
+        description="MCP server names contributed by ambient plugins at the last load.",
     )
 
     # Hook-blocked actions: action_id -> blocking reason
@@ -260,6 +326,22 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_stored_mcp_servers_without_endpoint(cls, data: Any) -> Any:
+        """Let a persisted state with an endpoint-less MCP server still load.
+
+        Such a server was accepted before ``MCPServer`` required ``command``
+        or ``url``; it never contributed tools, so drop it rather than fail.
+        """
+        if not isinstance(data, dict):
+            return data
+        agent = data.get("agent")
+        if isinstance(agent, dict) and isinstance(agent.get("mcp_config"), dict):
+            mcp_config = drop_mcp_servers_without_endpoint(agent["mcp_config"])
+            data = {**data, "agent": {**agent, "mcp_config": mcp_config}}
+        return data
 
     @property
     def events(self) -> EventLog:
@@ -617,6 +699,8 @@ class ConversationState(OpenHandsModel):
             max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
+            ambient_plugin_skills=[],
+            ambient_plugin_mcp_servers=[],
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
@@ -682,6 +766,38 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def transition(self, to: ConversationExecutionStatus, reason: str) -> None:
+        """Move ``execution_status`` to ``to``; the only way SDK code changes it.
+
+        The move is checked against the status table, so a status the run
+        loop can never produce (IDLE straight from ERROR, STUCK after FINISHED
+        or PAUSED) fails loudly instead of being persisted. The assignment
+        goes through the autosave hook, so it is persisted and published as a
+        ``ConversationStateUpdateEvent`` like any other field change. Moving to
+        the current status is a no-op.
+
+        Args:
+            to: The status to move to.
+            reason: Short description of why, for the debug log and the error.
+
+        Raises:
+            InvalidExecutionStatusTransitionError: If the table does not allow
+                moving from the current status to ``to``.
+        """
+        current = self.execution_status
+        if to == current:
+            return
+        if to not in _ALLOWED_TRANSITIONS[current]:
+            raise InvalidExecutionStatusTransitionError(current, to, reason)
+        logger.debug(
+            "Conversation %s execution_status %s -> %s: %s",
+            self.id,
+            current.value,
+            to.value,
+            reason,
+        )
+        self.execution_status = to  # status-write: the checked write
 
     def block_action(self, action_id: str, reason: str) -> None:
         """Persistently record a hook-blocked action."""

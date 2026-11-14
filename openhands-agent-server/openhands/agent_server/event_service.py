@@ -37,7 +37,10 @@ from openhands.sdk.agent.acp_file_credentials import (
 )
 from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import (
+    UNREADABLE_EVENT_FILE_CODE,
+    EventLog,
+)
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
@@ -69,9 +72,11 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import RateLimited
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
+    ReactionEvent,
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -100,7 +105,7 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 logger = get_logger(__name__)
 
 
-class ConversationRunLimitExceeded(RuntimeError):
+class ConversationRunLimitExceeded(RateLimited, RuntimeError):
     """The server has no capacity to start another conversation run."""
 
 
@@ -264,6 +269,8 @@ class EventService:
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _active_gateway_runs: int = field(default=0, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -602,7 +609,7 @@ class EventService:
 
     def _get_searchable_event(self, events: EventsListBase, index: int) -> Event | None:
         try:
-            return events[index]
+            event = events[index]
         except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
             logger.warning(
                 "Skipping unreadable event at index %d for conversation %s (%s)",
@@ -611,6 +618,12 @@ class EventService:
                 type(exc).__name__,
             )
             return None
+        if (
+            isinstance(event, ConversationErrorEvent)
+            and event.code == UNREADABLE_EVENT_FILE_CODE
+        ):
+            return None  # the log's stand-in for a damaged file
+        return event
 
     def _search_events_sync(
         self,
@@ -805,7 +818,9 @@ class EventService:
             return
         with self._conversation._state as state:
             if state.execution_status != ConversationExecutionStatus.ERROR:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "run failed outside the run loop"
+                )
 
     def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
@@ -833,6 +848,15 @@ class EventService:
         state = self._conversation._state
         with state:
             return ConversationStateUpdateEvent.from_conversation_state(state)
+
+    def _create_initial_state_sync(
+        self,
+    ) -> tuple[ConversationStateUpdateEvent, int]:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        state = self._conversation._state
+        with state:
+            return self._create_state_update_event_sync(), len(state.events)
 
     async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
         loop = asyncio.get_running_loop()
@@ -1014,32 +1038,41 @@ class EventService:
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
-
-        # Send current state to the new subscriber immediately.
-        # The snapshot is created in a worker thread so waiting on the
-        # conversation's synchronous FIFOLock cannot block the server event loop.
-        if self._conversation:
-            state_update_event = await self._create_state_update_event()
-        else:
-            state_update_event = ConversationStateUpdateEvent(
-                key="execution_status",
-                value=ConversationExecutionStatus.IDLE,
-            )
-
         try:
-            await asyncio.wait_for(
-                subscriber(state_update_event),
-                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+            # Send current state to the new subscriber immediately.
+            # The snapshot is created in a worker thread so waiting on the
+            # conversation's synchronous FIFOLock cannot block the server event loop.
+            log_length: int | None = None
+            if self._conversation:
+                loop = asyncio.get_running_loop()
+                state_update_event, log_length = await loop.run_in_executor(
+                    None, self._create_initial_state_sync
+                )
+            else:
+                state_update_event = ConversationStateUpdateEvent(
+                    key="execution_status",
+                    value=ConversationExecutionStatus.IDLE,
+                )
+
+            push = (
+                subscriber.on_initial_state(state_update_event, log_length)
+                if isinstance(subscriber, Subscriber)
+                else subscriber(state_update_event)
             )
-        except TimeoutError:
-            # Subscriber stays registered; only the initial-state push is
-            # dropped. Subsequent publishes go through pub_sub and may
-            # still block there if the subscriber remains wedged.
-            logger.warning(
-                f"Initial state push to subscriber {subscriber_id} timed "
-                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
-            )
-        # Non-timeout errors propagate to caller (e.g. webhook failures).
+            try:
+                await asyncio.wait_for(push, timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS)
+            except TimeoutError:
+                # Subscriber stays registered; only the initial-state push is
+                # dropped. Subsequent publishes go through pub_sub and may
+                # still block there if the subscriber remains wedged.
+                logger.warning(
+                    f"Initial state push to subscriber {subscriber_id} timed "
+                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+                )
+            # Non-timeout errors propagate to caller (e.g. webhook failures).
+        except BaseException:
+            self._pub_sub.unsubscribe(subscriber_id)
+            raise
 
         return subscriber_id
 
@@ -1099,32 +1132,31 @@ class EventService:
                 partial(_log_emit_failure, type(event).__name__),
             )
 
-    def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
-        """Configure LLM log callbacks to stream logs via events."""
-        for llm in agent.get_all_llms():
-            if not llm.log_completions:
-                continue
+    def _setup_llm_log_streaming(self, conversation: LocalConversation) -> None:
+        """Configure LLM log callbacks to stream logs via events.
 
-            # Capture variables for closure
-            usage_id = llm.usage_id
-            model_name = llm.model
+        Set on the conversation's registry, so it covers every LLM session of
+        the conversation, including those opened by a later ``switch_llm`` /
+        ``switch_profile``. Only LLMs with ``log_completions_to_file`` on
+        produce logs.
+        """
 
-            def log_callback(
-                filename: str, log_data: str, uid=usage_id, model=model_name
-            ) -> None:
-                """Callback to emit LLM completion logs as events."""
-                try:
-                    event = LLMCompletionLogEvent(
-                        filename=filename,
-                        log_data=log_data,
-                        model_name=model,
-                        usage_id=uid,
-                    )
-                    self._emit_event_from_thread(event)
-                except Exception:
-                    logger.exception("Failed to emit LLM completion log event")
+        def log_callback(
+            filename: str, log_data: str, usage_id: str, model_name: str
+        ) -> None:
+            """Callback to emit LLM completion logs as events."""
+            try:
+                event = LLMCompletionLogEvent(
+                    filename=filename,
+                    log_data=log_data,
+                    model_name=model_name,
+                    usage_id=usage_id,
+                )
+                self._emit_event_from_thread(event)
+            except Exception:
+                logger.exception("Failed to emit LLM completion log event")
 
-            llm.telemetry.set_log_completions_callback(log_callback)
+        conversation.llm_registry.set_log_completions_callback(log_callback)
 
     def _setup_acp_activity_heartbeat(self, agent: AgentBase) -> None:
         """Wire ACP activity heartbeat to the idle timer.
@@ -1176,8 +1208,12 @@ class EventService:
 
         return callback
 
-    def _setup_stats_streaming(self, agent: AgentBase) -> None:
-        """Configure stats update callbacks to stream stats changes via events."""
+    def _setup_stats_streaming(self, conversation: LocalConversation) -> None:
+        """Configure stats update callbacks to stream stats changes via events.
+
+        Set on the conversation's registry, so it keeps firing for the LLM a
+        later ``switch_llm`` / ``switch_profile`` installs.
+        """
 
         def stats_callback() -> None:
             """Callback to emit stats updates.
@@ -1205,8 +1241,7 @@ class EventService:
             )
             self._emit_event_from_thread(event)
 
-        for llm in agent.get_all_llms():
-            llm.telemetry.set_stats_update_callback(stats_callback)
+        conversation.llm_registry.set_stats_update_callback(stats_callback)
 
     @staticmethod
     def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
@@ -1410,10 +1445,10 @@ class EventService:
         )
 
         # Setup LLM log streaming for remote execution
-        self._setup_llm_log_streaming(self._conversation.agent)
+        self._setup_llm_log_streaming(self._conversation)
 
         # Setup stats streaming for remote execution
-        self._setup_stats_streaming(self._conversation.agent)
+        self._setup_stats_streaming(self._conversation)
 
         # Wire ACP activity heartbeat so ACP tool calls (which run inside
         # the subprocess and never hit HTTP endpoints) still reset the
@@ -1427,7 +1462,9 @@ class EventService:
         # should be surfaced back to the agent.
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
-            state.execution_status = ConversationExecutionStatus.ERROR
+            state.transition(
+                ConversationExecutionStatus.ERROR, "stale running status on load"
+            )
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
             # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
@@ -1463,6 +1500,7 @@ class EventService:
                         classification=ErrorClassification(
                             kind=FailureKind.INTERNAL, retryable=False
                         ),
+                        recovery_reason="server_restart",
                     )
                     self._conversation._on_event(error_event)
 
@@ -1546,6 +1584,7 @@ class EventService:
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")
+        request_generation = self._explicit_interrupt_generation
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
@@ -1588,6 +1627,7 @@ class EventService:
             # of a chain acquires capacity; the permit is returned once the
             # whole chain (plus any pin, e.g. a live /goal loop) is done.
             owner = self._run_session_slot
+            new_owner = owner is None
             if owner is None:
                 owner = (
                     run_slot.share()
@@ -1596,11 +1636,19 @@ class EventService:
                         self._run_semaphore, wait=wait_for_capacity
                     )
                 )
-                self._run_session_slot = owner
             elif run_slot is not None:
                 # A reservation offered on top of an already-held session is
                 # redundant; return it so it is not leaked.
                 run_slot.release()
+            if (
+                self._closing
+                or self._explicit_interrupt_generation != request_generation
+            ):
+                if new_owner:
+                    owner.release()
+                return
+            if new_owner:
+                self._run_session_slot = owner
             slot = owner.share()
 
             worker: asyncio.Future | None = None
@@ -2096,6 +2144,27 @@ class EventService:
         else:
             await self.reject_pending_actions(request.reason)
 
+    async def react(
+        self,
+        emoji: str,
+        target_event_id: str | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the user's reaction on a message; it does not run the agent.
+
+        Raises:
+            ValueError: The emoji is not allowed or there is no such message.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        conversation = self._conversation
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            partial(conversation.react, emoji, target_event_id, removed=removed),
+        )
+
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""
         if not self._conversation:
@@ -2223,6 +2292,21 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
+
+    async def switch_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort on an ACP conversation.
+
+        Same lifecycle as :meth:`switch_acp_model`: a live switch runs in a
+        worker thread, a not-yet-run conversation only persists the value.
+        """
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.switch_acp_effort, effort)
+
+    async def close_connections(self, code: int, reason: str) -> None:
+        """Close the client sockets subscribed to this conversation."""
+        await self._pub_sub.close_connections(code, reason)
 
     async def close(self):
         if self.bash_event_service is not None:

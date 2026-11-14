@@ -407,46 +407,25 @@ def test_async_alive_returns_true_on_successful_health_check(mock_urlopen):
     mock_urlopen.assert_called_once_with("http://localhost:8000/health", timeout=5.0)
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        pytest.param(204, True, id="204_status"),
+        pytest.param(500, False, id="server_error"),
+        pytest.param(404, False, id="client_error"),
+    ],
+)
 @patch("openhands.sdk.workspace.remote.async_remote_workspace.urlopen")
-def test_async_alive_returns_true_on_204_status(mock_urlopen):
-    """Test alive property returns True when health endpoint returns 204 No Content."""
+def test_async_alive_reflects_health_status(mock_urlopen, status, expected):
     workspace = AsyncRemoteWorkspace(
         host="http://localhost:8000", working_dir="workspace"
     )
 
-    mock_urlopen.return_value = MockHTTPResponse(status=204)
+    mock_urlopen.return_value = MockHTTPResponse(status=status)
 
     result = workspace.alive
 
-    assert result is True
-
-
-@patch("openhands.sdk.workspace.remote.async_remote_workspace.urlopen")
-def test_async_alive_returns_false_on_server_error(mock_urlopen):
-    """Test alive property returns False when health endpoint returns 5xx status."""
-    workspace = AsyncRemoteWorkspace(
-        host="http://localhost:8000", working_dir="workspace"
-    )
-
-    mock_urlopen.return_value = MockHTTPResponse(status=500)
-
-    result = workspace.alive
-
-    assert result is False
-
-
-@patch("openhands.sdk.workspace.remote.async_remote_workspace.urlopen")
-def test_async_alive_returns_false_on_client_error(mock_urlopen):
-    """Test alive property returns False when health endpoint returns 4xx status."""
-    workspace = AsyncRemoteWorkspace(
-        host="http://localhost:8000", working_dir="workspace"
-    )
-
-    mock_urlopen.return_value = MockHTTPResponse(status=404)
-
-    result = workspace.alive
-
-    assert result is False
+    assert result is expected
 
 
 @patch("openhands.sdk.workspace.remote.async_remote_workspace.urlopen")

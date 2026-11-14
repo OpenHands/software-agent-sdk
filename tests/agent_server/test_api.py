@@ -7,18 +7,16 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import libtmux
 import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import (
-    config as config_module,
-    conversation_service as conversation_service_module,
-)
 from openhands.agent_server.api import (
     _cleanup_stale_tmux_sessions,
     _default_server_tmux_tmpdir,
@@ -28,6 +26,12 @@ from openhands.agent_server.api import (
     create_app,
 )
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.server_context import (
+    ServerContext,
+    build_server_context,
+    server_context_of,
+)
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 
 
@@ -566,6 +570,11 @@ class TestRootRedirect:
         assert response.status_code == 200
 
 
+def _context_without_side_services() -> ServerContext:
+    """A context whose lifespan starts neither VSCode nor tool preload."""
+    return build_server_context(Config(enable_vscode=False, preload_tools=False))
+
+
 class TestServiceParallelization:
     """Test that services are started and stopped in parallel."""
 
@@ -603,17 +612,18 @@ class TestServiceParallelization:
                 return_value=mock_conversation_service,
             ),
             patch(
-                "openhands.agent_server.api.get_vscode_service",
-                return_value=mock_vscode_service,
-            ),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service",
+                "openhands.agent_server.api.ToolPreloadService",
                 return_value=mock_tool_preload_service,
             ),
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=replace(
+                    build_server_context(Config()),
+                    vscode_service=mock_vscode_service,
+                )
+            )
 
             async with api_lifespan(mock_app):
                 pass
@@ -647,11 +657,7 @@ class TestServiceParallelization:
                 return_value=mock_conversation_service,
             ),
             patch(
-                "openhands.agent_server.api.get_vscode_service",
-                return_value=mock_vscode_service,
-            ),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service",
+                "openhands.agent_server.api.ToolPreloadService",
                 return_value=mock_tool_preload_service,
             ),
         ):
@@ -659,7 +665,10 @@ class TestServiceParallelization:
             mock_app = AsyncMock()
             mock_backend_manager = AsyncMock()
             mock_app.state = SimpleNamespace(
-                config=Config(),
+                server_context=replace(
+                    build_server_context(Config()),
+                    vscode_service=mock_vscode_service,
+                ),
                 canvas_extension_backend_manager=mock_backend_manager,
             )
 
@@ -682,21 +691,20 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
 
             # This should not raise any exceptions
             async with api_lifespan(mock_app):
                 pass
 
             # Verify conversation service was set up
-            assert mock_app.state.conversation_service == mock_conversation_service
+            context = mock_app.state.server_context
+            assert context.conversation_service == mock_conversation_service
 
     async def test_registry_starts_before_conversation_recovery(self):
         events = []
@@ -713,15 +721,13 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service",
-                return_value=None,
-            ),
         ):
             mock_app = AsyncMock()
             mock_app.state = SimpleNamespace(
-                config=Config(), conversation_registry=registry
+                server_context=replace(
+                    _context_without_side_services(),
+                    conversation_registry=cast(ConversationRegistry, registry),
+                )
             )
 
             async with api_lifespan(mock_app):
@@ -745,13 +751,11 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
                 assert expected_tmux_tmpdir.is_dir()
@@ -773,13 +777,11 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
 
@@ -809,13 +811,11 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
             async with api_lifespan(mock_app):
                 assert os.environ[overridden] == "C.UTF-8"
 
@@ -842,13 +842,11 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(substitute)
 
@@ -881,13 +879,11 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
             with caplog.at_level("WARNING"):
                 async with api_lifespan(mock_app):
                     pass
@@ -912,13 +908,11 @@ class TestServiceParallelization:
                 "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
-            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch(
-                "openhands.agent_server.api.get_tool_preload_service", return_value=None
-            ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(
+                server_context=_context_without_side_services()
+            )
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
 
@@ -929,44 +923,39 @@ class TestServiceParallelization:
 class TestRootPath:
     """Tests for _get_root_path function and root_path configuration."""
 
-    def test_get_root_path_returns_slash_when_web_url_is_none(self):
-        """Test that _get_root_path returns '' when web_url is not configured."""
-        config = Config(web_url=None)
-        assert _get_root_path(config) == ""
+    @pytest.mark.parametrize(
+        ("web_url", "expected"),
+        [
+            pytest.param(None, "", id="web_url_is_none"),
+            pytest.param(
+                "https://example.com/runtime/123",
+                "/runtime/123",
+                id="extracts_path_from_url",
+            ),
+            pytest.param("https://example.com", "", id="root_url"),
+            pytest.param("https://example.com/api/", "/api", id="trailing_slash"),
+            pytest.param(
+                "https://work-1-abc123.prod-runtime.all-hands.dev/runtime/456/api",
+                "/runtime/456/api",
+                id="complex_path",
+            ),
+        ],
+    )
+    def test_get_root_path(self, web_url, expected):
+        config = Config(web_url=web_url)
+        assert _get_root_path(config) == expected
 
-    def test_get_root_path_extracts_path_from_url(self):
-        """Test that _get_root_path extracts the path component from web_url."""
-        config = Config(web_url="https://example.com/runtime/123")
-        assert _get_root_path(config) == "/runtime/123"
-
-    def test_get_root_path_returns_slash_for_root_url(self):
-        """Test that _get_root_path returns '/' for a URL without path."""
-        config = Config(web_url="https://example.com")
-        assert _get_root_path(config) == ""
-
-    def test_get_root_path_with_trailing_slash(self):
-        """Test that _get_root_path preserves trailing slash."""
-        config = Config(web_url="https://example.com/api/")
-        assert _get_root_path(config) == "/api"
-
-    def test_get_root_path_with_complex_path(self):
-        """Test _get_root_path with a complex nested path."""
-        config = Config(
-            web_url="https://work-1-abc123.prod-runtime.all-hands.dev/runtime/456/api"
-        )
-        assert _get_root_path(config) == "/runtime/456/api"
-
-    def test_fastapi_instance_uses_root_path(self):
-        """Test that FastAPI instance is created with correct root_path."""
-        config = Config(web_url="https://example.com/mypath")
+    @pytest.mark.parametrize(
+        ("web_url", "expected"),
+        [
+            pytest.param("https://example.com/mypath", "/mypath", id="web_url_path"),
+            pytest.param(None, "", id="default_when_no_web_url"),
+        ],
+    )
+    def test_fastapi_instance_uses_root_path(self, web_url, expected):
+        config = Config(web_url=web_url)
         app = create_app(config)
-        assert app.root_path == "/mypath"
-
-    def test_fastapi_instance_uses_default_root_path_when_no_web_url(self):
-        """Test that FastAPI instance uses '/' root_path when web_url is None."""
-        config = Config(web_url=None)
-        app = create_app(config)
-        assert app.root_path == ""
+        assert app.root_path == expected
 
 
 class TestConfigWebUrl:
@@ -1143,6 +1132,27 @@ class TestHttpExceptionLogging:
         assert all(r.exc_info is None for r in info_records)
 
 
+@pytest.mark.parametrize("status_code", [429, 503])
+def test_http_exception_keeps_its_headers(status_code):
+    """Headers set on an HTTPException reach the client, for 4xx and 5xx alike."""
+    from fastapi import HTTPException as FastAPIHTTPException
+
+    app = create_app(Config(static_files_path=None))
+
+    @app.get("/__test__/raise_with_headers")
+    def _raise():
+        raise FastAPIHTTPException(
+            status_code=status_code,
+            detail="slow down",
+            headers={"Retry-After": "30"},
+        )
+
+    response = TestClient(app).get("/__test__/raise_with_headers")
+
+    assert response.status_code == status_code
+    assert response.headers["retry-after"] == "30"
+
+
 def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeypatch):
     """create_app(config) must persist and notify per that config, not OH_* env.
 
@@ -1152,8 +1162,6 @@ def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeyp
     """
     monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "env-conversations"))
     monkeypatch.setenv("OH_WEBHOOKS_0_BASE_URL", "http://env-webhook.invalid/hooks")
-    monkeypatch.setattr(config_module, "_default_config", None)
-    monkeypatch.setattr(conversation_service_module, "_conversation_service", None)
     config = Config(
         static_files_path=None,
         session_api_keys=[],
@@ -1163,6 +1171,7 @@ def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeyp
 
     app = create_app(config)
     with TestClient(app):
-        service = app.state.conversation_service
+        service = server_context_of(app).conversation_service
+        assert service is not None
         assert service.conversations_dir == tmp_path / "conversations"
         assert service.webhook_specs == []

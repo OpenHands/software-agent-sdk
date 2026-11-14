@@ -11,11 +11,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import websockets
-from fastapi import HTTPException, status
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+from websockets.typing import Subprotocol
 
+from openhands.sdk.errors import Unprocessable, UpstreamFailed
 from openhands.sdk.logger import get_logger
 
 
@@ -56,10 +57,6 @@ _HOP_BY_HOP_HEADERS = frozenset(
 # The serving uvicorn adds its own ``date`` and ``server`` to every response
 # without de-duplicating, so copying the upstream's would send two of each.
 _RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
-
-# Stream chunk size for request/response bodies. Set it explicitly so proxy
-# behavior does not depend on an httpx implementation default.
-_CHUNK_SIZE = 64 * 1024
 
 
 def _filter_headers(headers) -> dict[str, str]:
@@ -129,7 +126,7 @@ async def proxy_http(
         story trivial.
     """
     if request.headers.get("x-expose-secrets"):
-        raise HTTPException(422, "Runtime secret exposure is unsupported")
+        raise Unprocessable("Runtime secret exposure is unsupported")
     url = workspace.host + strip_auth_query(upstream_path)
     headers = _filter_headers(request.headers)
     # If the client authenticated via the workspace-session cookie (used by
@@ -172,18 +169,12 @@ async def proxy_http(
         if not isinstance(exc, httpx.HTTPError):
             raise
         logger.warning("Conversation upstream connection failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Conversation container unreachable",
-        ) from exc
+        raise UpstreamFailed("Conversation container unreachable") from exc
 
     if reject_redirects and upstream.is_redirect:
         await stack.aclose()
         await _invoke_close(on_close)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Upstream redirect is not allowed",
-        )
+        raise UpstreamFailed("Upstream redirect is not allowed")
 
     async def _response_body() -> AsyncIterator[bytes]:
         try:
@@ -210,13 +201,20 @@ async def bridge_websocket(
     workspace: ProxyTarget,
     *,
     upstream_path: str,
+    accept_client: bool = False,
 ) -> None:
     """Bridge a WebSocket session between the browser and an inner container.
 
-    Precondition: ``client_ws`` MUST already be accepted by the caller. The
-    bridge does not call ``accept()`` itself because the outer server's
-    WebSocket-auth helper accepts on success and calling ``accept()`` a
-    second time would raise.
+    Precondition: unless ``accept_client`` is set, ``client_ws`` MUST already
+    be accepted by the caller, because the outer server's WebSocket-auth
+    helper accepts on success and calling ``accept()`` a second time would
+    raise.
+
+    With ``accept_client``, the client's subprotocol offer is forwarded
+    upstream and ``client_ws`` is accepted with the subprotocol the upstream
+    selected (or none), so subprotocol negotiation passes through the bridge.
+    If the upstream connection fails, ``client_ws`` is accepted without a
+    subprotocol and then closed with 1011.
 
     Closure semantics: when either side closes (or errors), we close the
     other side and return. No reconnect.
@@ -235,22 +233,36 @@ async def bridge_websocket(
     if workspace.api_key:
         upstream_headers["X-Session-API-Key"] = workspace.api_key
 
+    subprotocols = None
+    if accept_client:
+        offered = client_ws.scope.get("subprotocols") or []
+        subprotocols = [Subprotocol(protocol) for protocol in offered] or None
+
     try:
         async with websockets.connect(
             upstream_url,
             additional_headers=upstream_headers or None,
+            subprotocols=subprotocols,
         ) as upstream_ws:
+            if accept_client:
+                await client_ws.accept(subprotocol=upstream_ws.subprotocol)
             await _bridge_websocket_loop(client_ws, upstream_ws)
     except websockets.exceptions.InvalidStatus as exc:
         logger.warning("Upstream WebSocket rejected (%s) to %s", exc, workspace.host)
         # 1011 == "internal error"; closest match for an upstream HTTP failure
         # since browsers can't see HTTP status codes from a failed upgrade.
-        await client_ws.close(code=1011)
+        await _close_client_after_upstream_failure(client_ws)
     except (OSError, websockets.exceptions.WebSocketException) as exc:
         logger.warning(
             "Upstream WebSocket connect failed to %s: %s", workspace.host, exc
         )
-        await client_ws.close(code=1011)
+        await _close_client_after_upstream_failure(client_ws)
+
+
+async def _close_client_after_upstream_failure(client_ws: WebSocket) -> None:
+    if client_ws.client_state == WebSocketState.CONNECTING:
+        await client_ws.accept()
+    await client_ws.close(code=1011)
 
 
 async def _bridge_websocket_loop(client_ws: WebSocket, upstream_ws) -> None:
