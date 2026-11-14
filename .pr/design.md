@@ -75,6 +75,6 @@ Verified live: `create_app()` with flag off → `search-content` routes: **NONE*
 | Repo | Anchor issue | Notes |
 |---|---|---|
 | software-agent-sdk | #6767 | SDK PR gate requires same-repo ready-for-dev issue; #6767 is the content-search issue (do **not** link #6627 — that is the tag-filter issue, a different feature) |
-| OpenHands/OpenHands | #19378 | Canvas gate requires same-repo issue; #19378 (`enhancement` + `ready-for-dev`) covers within-conversation find — our PR closes the "search unavailable" gap for local users |
+| OpenHands/OpenHands | #7940 | Canvas gate requires same-repo issue; #7940 is the original conversation-list search request. #19378 is within-conversation find — a different feature, not an anchor for this PR |
 
 Both PRs open as **drafts** with `HUMAN:` first line + `AGENT:` AI disclosure, per the repos' PR-description validator.
