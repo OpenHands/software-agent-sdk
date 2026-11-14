@@ -1,3 +1,5 @@
+import asyncio
+
 from browser_use.dom.markdown_extractor import extract_clean_markdown
 from browser_use.dom.service import DomService
 
@@ -7,6 +9,9 @@ from openhands.tools.browser_use.recording import RecordingSession
 
 
 logger = get_logger(__name__)
+
+# How long _close_tab waits for browser-use's tab list to drop a closed tab.
+CLOSE_TAB_SETTLE_SECONDS = 3.0
 
 
 # =============================================================================
@@ -59,6 +64,40 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         """Close the browser session and cleanup recording resources."""
         await self._cleanup_recording()
         return await super()._close_browser()
+
+    async def _close_tab(self, tab_id: str) -> str:
+        """Close a tab and return once the tab list no longer shows it.
+
+        browser-use answers as soon as Chrome acknowledges
+        ``Target.closeTarget``, but its tab list (cached page targets) drops the
+        tab only when ``Target.detachedFromTarget`` is handled, a few
+        milliseconds later. Without waiting, a ``browser_list_tabs`` right
+        after a close still lists the closed tab.
+        """
+        session = self.browser_session
+        if not session:
+            return await super()._close_tab(tab_id)
+        target_id = await session.get_target_id_from_tab_id(tab_id)
+        result = await super()._close_tab(tab_id)
+        await self._wait_until_target_gone(target_id)
+        return result
+
+    async def _wait_until_target_gone(self, target_id: str) -> None:
+        session = self.browser_session
+        manager = getattr(session, "session_manager", None) if session else None
+        if manager is None:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CLOSE_TAB_SETTLE_SECONDS
+        while manager.get_target(target_id) is not None:
+            if loop.time() >= deadline:
+                logger.warning(
+                    "Closed tab %s is still listed after %.1fs",
+                    target_id[-4:],
+                    CLOSE_TAB_SETTLE_SECONDS,
+                )
+                return
+            await asyncio.sleep(0.01)
 
     async def _close_session(self, session_id: str) -> str:
         """Close a specific browser session and cleanup recording if needed."""
