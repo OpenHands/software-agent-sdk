@@ -21,6 +21,26 @@ ConversationID = uuid.UUID
 TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
 TAG_VALUE_MAX_LENGTH = 256
 
+CONVERSATION_MENTION_SCHEME = "conversation:"
+"""Link scheme of a conversation mention: ``[Title](conversation:<id hex>)``.
+UIs render such a link as a way to open that conversation; anywhere else it
+reads as the title."""
+
+_MENTION_TITLE_MAX = 80
+
+
+def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) -> str:
+    """A markdown link that points at a conversation.
+
+    The title is the user's or an agent's text, so it is cut to one line
+    without brackets, parentheses, quotes or backslashes: it can neither end
+    the link early nor end a bracketed header the link sits in.
+    """
+    hex_id = uuid.UUID(str(conversation_id)).hex
+    text = re.sub(r"[\s\"\[\]()\\`]+", " ", title or "").strip()
+    text = text[:_MENTION_TITLE_MAX].strip() or "untitled conversation"
+    return f"[{text}]({CONVERSATION_MENTION_SCHEME}{hex_id})"
+
 
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:

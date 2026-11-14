@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@fb75ae907585c1634a85fd5168a795dd48eb4d65 (2026-11-12). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **990 sub-features**.
+The map has **995 sub-features**.
 
 ## Baseline preconditions
 
@@ -100,6 +100,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F33 | [Python SDK remote client (RemoteConversation, RemoteWorkspace)](F33-sdk-remote-client.md) | the Python SDK in this checkout against the server: RemoteWorkspace commands, files, git and settings readers; RemoteConversation create, run, callbacks, streaming, reattach, fork, confirmation, pause, interrupt, stop hooks, client tools, completion logs | behavior only: `Workspace(host=...)`, `RemoteWorkspace`, `RemoteConversation` | llm, tmux, git | 43 |
 | F34 | [TypeScript client (@openhands/typescript-client)](F34-typescript-client.md) | the TypeScript client against this checkout: server and version gate, workspace, bash, conversation, state, events and socket clients, hooks and MCP clients, endpoint audit and drift | behavior only: `@openhands/typescript-client` (`clients/typescript`) | llm, node, uvx, git, tmux, network | 33 |
 | F37 | [Emoji reactions and feature flags](F37-reactions.md) | the `conversation_reactions` feature flag (stored and runtime env), the user's reactions over REST and the TypeScript client, validation, active-branch targets, the agent's `react`/`unreact` tools, what the model sees | `POST /api/conversations/{id}/reactions` (the flag's routes are F18's) | llm | 12 |
+| F38 | [Conversation mentions](F38-conversation-mentions.md) | the `conversation_mentions` feature flag, the agent's read-only `find_conversations` and `read_conversation` tools, mention links `[Title](conversation:<id>)` in its answers | behavior only: agent tools (the flag's routes are F18's) | llm | 5 |
 
 ## Not mapped
 

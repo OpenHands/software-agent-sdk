@@ -165,11 +165,12 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 
 
 @pytest.mark.asyncio
-async def test_conversation_reactions_is_listed_and_off(client):
+async def test_every_feature_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
-        ("conversation_reactions", False)
+        ("conversation_reactions", False),
+        ("conversation_mentions", False),
     ]
 
 
@@ -181,6 +182,16 @@ def test_feature_tools_follow_the_flags():
         "react",
         "unreact",
     ]
+    assert [
+        t.name for t in experimental_feature_tools({"conversation_mentions": True})
+    ] == ["find_conversations", "read_conversation"]
+    # Each flag adds only its own tools.
+    assert [
+        t.name
+        for t in experimental_feature_tools(
+            {"conversation_reactions": True, "conversation_mentions": True}
+        )
+    ] == ["react", "unreact", "find_conversations", "read_conversation"]
 
 
 def _runtime() -> LaunchRuntime:
@@ -200,7 +211,7 @@ def test_finalize_adds_feature_tools_to_openhands_agents_only():
 
 
 @pytest.mark.asyncio
-async def test_new_conversations_get_reaction_tools_only_while_on(
+async def test_new_conversations_get_feature_tools_only_while_on(
     tmp_path, server_stores
 ):
     workspace = tmp_path / "workspace"
@@ -224,8 +235,15 @@ async def test_new_conversations_get_reaction_tools_only_while_on(
         server_stores.settings.update(turn_on)
         on, _ = await service.start_conversation(request())
 
+        def turn_on_mentions(settings: PersistedSettings) -> PersistedSettings:
+            settings.experimental_features = {"conversation_mentions": True}
+            return settings
+
+        server_stores.settings.update(turn_on_mentions)
+        mentions, _ = await service.start_conversation(request())
+
         tool_names = {}
-        for info in (off, on):
+        for info in (off, on, mentions):
             event_service = await service.get_event_service(info.id)
             assert event_service is not None
             agent = event_service.get_conversation().agent
@@ -233,6 +251,7 @@ async def test_new_conversations_get_reaction_tools_only_while_on(
 
     assert tool_names[off.id] == []
     assert tool_names[on.id] == ["react", "unreact"]
+    assert tool_names[mentions.id] == ["find_conversations", "read_conversation"]
 
 
 def test_host_switches_are_read_only_inside_a_runtime(monkeypatch):
