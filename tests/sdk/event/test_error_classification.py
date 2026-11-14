@@ -74,6 +74,18 @@ def test_code_based_classification_takes_priority_over_detail(
     assert classify_error(code, detail).kind == expected_kind
 
 
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [
+        ("LLMNotFoundError", FailureKind.CONFIG),
+        ("LLMProviderError", FailureKind.UNKNOWN),
+    ],
+)
+def test_mapped_provider_codes_ignore_untrusted_detail(code, kind):
+    for detail in ("", "invalid api key; rate limit; model not found; timeout"):
+        assert classify_error(code, detail).kind == kind
+
+
 def test_agent_error_event_defaults_to_unknown() -> None:
     """Without an explicit classification, AgentErrorEvent is UNKNOWN (diagnostic)."""
     event = AgentErrorEvent(

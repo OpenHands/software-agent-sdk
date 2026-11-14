@@ -7,7 +7,12 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMRateLimitError, is_quota_exhaustion_error
+from openhands.sdk.llm.exceptions import (
+    LLMAuthenticationError,
+    LLMBadRequestError,
+    LLMRateLimitError,
+    is_quota_exhaustion_error,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 
 
@@ -138,8 +143,10 @@ async def test_http_rate_limit_retry_and_budget_recovery(
         assert len(requests) == 1
 
     if status in (402, 403, 405, 406, 410):
-        with pytest.raises(Exception, match="Provider request failed"):
+        error_type = LLMAuthenticationError if status == 403 else LLMBadRequestError
+        with pytest.raises(error_type) as error:
             await call()
+        assert "Provider request failed" not in str(error.value)
         assert len(requests) == 1
         return
 
