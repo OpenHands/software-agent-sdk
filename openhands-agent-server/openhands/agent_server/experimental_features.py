@@ -59,7 +59,20 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [CONVERSATION_REACTIONS]
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
+    CONVERSATION_REACTIONS,
+    CONVERSATION_MENTIONS,
+]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -86,10 +99,14 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
     if is_enabled(features, CONVERSATION_REACTIONS.key):
         # Tool names as registered by openhands.tools.reaction.
-        return [Tool(name="react"), Tool(name="unreact")]
-    return []
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    return tools
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"

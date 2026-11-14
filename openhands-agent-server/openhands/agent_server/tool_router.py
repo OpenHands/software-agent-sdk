@@ -9,6 +9,9 @@ from pydantic import BaseModel
 # child on, so it is deliberately absent from get_default_tools().
 import openhands.tools.child_conversation  # noqa: E402, F401
 
+# Mention tools read this server's conversations, so they live here too.
+import openhands.tools.conversation_mentions  # noqa: E402, F401
+
 # Reactions work in any conversation; registering them here makes them
 # available to agents this server runs.
 import openhands.tools.reaction  # noqa: E402, F401
