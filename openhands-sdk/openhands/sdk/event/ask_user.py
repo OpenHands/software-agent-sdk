@@ -105,15 +105,18 @@ def is_from_person(event: Event) -> bool:
 
 
 def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
-    action = action_event.action
-    if action is None:
+    if action_event.action is None:
         return None
-    question = getattr(action, "question", None)
-    options = getattr(action, "options", None) or ()
+    # The action type lives in openhands-tools; read its fields as data.
+    data = action_event.action.model_dump()
+    question = data.get("question")
     if not isinstance(question, str):
         return None
-    labels = tuple(str(getattr(o, "label", o)) for o in options)
-    recommended = getattr(action, "recommended", None)
+    labels = tuple(
+        str(o.get("label", "")) if isinstance(o, dict) else str(o)
+        for o in data.get("options") or ()
+    )
+    recommended = data.get("recommended")
     return PendingAsk(
         ask_id=action_event.id,
         question=question,
