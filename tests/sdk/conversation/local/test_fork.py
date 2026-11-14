@@ -9,14 +9,25 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from pydantic import SecretStr
+from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation import Conversation, LocalConversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.secret import SecretSource
+from openhands.sdk.security.confirmation_policy import ConfirmRisky
+from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.security.toolshield_llm_analyzer import (
+    ToolShieldLLMSecurityAnalyzer,
+)
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _agent() -> Agent:
@@ -32,6 +43,16 @@ def _msg(event_id: str, text: str = "hi") -> MessageEvent:
         llm_message=Message(role="user", content=[TextContent(text=text)]),
         source="user",
     )
+
+
+class _LockedSecretSource(SecretSource):
+    """A secret source that holds something a deep copy cannot copy."""
+
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+
+    def get_value(self) -> str:
+        with self._lock:
+            return "locked-source-value"
 
 
 class ForkCopyMockAction(Action):
@@ -364,6 +385,250 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def _persisted_base_state(conv: LocalConversation) -> dict:
+    persistence_dir = conv.state.persistence_dir
+    assert persistence_dir is not None
+    return json.loads((Path(persistence_dir) / "base_state.json").read_text())
+
+
+def test_fork_keeps_source_cipher_for_persisted_secrets(tmp_path):
+    """A fork of a cipher-backed conversation stores its secrets encrypted (#5465).
+
+    The agent-server resumes a fork from its ``base_state.json``, so a key
+    persisted redacted there makes the fork's first LLM call fail.
+    """
+    cipher = Cipher("test-secret-key")
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+        cipher=cipher,
+        secrets={"GITHUB_TOKEN": "ghp-test"},
+    )
+    fork = src.fork()
+
+    state = _persisted_base_state(fork)
+    api_key = cipher.decrypt(state["agent"]["llm"]["api_key"])
+    assert api_key is not None
+    assert api_key.get_secret_value() == "test-key"
+
+    # Conversation secrets survive the fork too, under the same cipher.
+    sources = state["secret_registry"]["secret_sources"]
+    token = cipher.decrypt(sources["GITHUB_TOKEN"]["value"])
+    assert token is not None
+    assert token.get_secret_value() == "ghp-test"
+
+    # Resuming the fork from disk (the agent-server path) restores the key.
+    resumed = ConversationState.model_validate(state, context={"cipher": cipher})
+    resumed_key = resumed.agent.llm.api_key
+    assert isinstance(resumed_key, SecretStr)
+    assert resumed_key.get_secret_value() == "test-key"
+
+
+def test_fork_without_cipher_still_redacts_secrets(tmp_path):
+    """Forks of cipher-less conversations keep redacting persisted secrets."""
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+    )
+    fork = src.fork()
+
+    assert set(_persisted_base_state(fork)["agent"]["llm"]["api_key"]) == {"*"}
+
+
+def test_fork_keeps_confirmation_policy(tmp_path):
+    """A fork asks for confirmation under the same policy as its source.
+
+    The fork's base_state.json must carry it too: the agent-server resumes a
+    fork from that file.
+    """
+    policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM, confirm_unknown=False)
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+    )
+    src.set_confirmation_policy(policy)
+
+    fork = src.fork()
+
+    assert fork.state.confirmation_policy == policy
+    assert _persisted_base_state(fork)["confirmation_policy"] == {
+        "kind": "ConfirmRisky",
+        "threshold": "MEDIUM",
+        "confirm_unknown": False,
+    }
+
+
+def test_fork_copies_secret_registry():
+    """Registry-direct secrets must survive a fork.
+
+    base_state.json is the fork's only source of truth for secrets, so fork()
+    must copy the source's secret_registry into the fork's state; otherwise a
+    token injected via ``Conversation(secrets=...)`` is empty on the fork.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"MY_TOKEN": "s3kr3t-value"},
+        )
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("MY_TOKEN") == (
+            "s3kr3t-value"
+        )
+
+
+def test_fork_secret_change_does_not_reach_the_source_masking():
+    """The fork resolves and masks with a registry of its own: replacing a
+    secret on the fork leaves the source masking its own value."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"TOKEN": "source-token-value"},
+        )
+        src_registry = src.state.secret_registry
+        assert src_registry.get_secrets_as_env_vars("echo $TOKEN") == {
+            "TOKEN": "source-token-value"
+        }
+
+        fork = src.fork()
+        fork.update_secrets({"TOKEN": "fork-token-value"})
+        assert fork.state.secret_registry.get_secrets_as_env_vars("echo $TOKEN") == {
+            "TOKEN": "fork-token-value"
+        }
+
+        assert (
+            src.state.secret_registry.mask_secrets_in_output("out: source-token-value")
+            == "out: <secret-hidden>"
+        )
+
+
+def test_fork_keeps_a_replacement_agents_own_secrets():
+    """`fork(agent=...)` with an agent that brings secrets in its context has
+    them next to the ones copied from the source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"SOURCE_TOKEN": "source-value"},
+        )
+        replacement = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("k"), usage_id="other"),
+            tools=[],
+            agent_context=AgentContext(secrets={"AGENT_TOKEN": "agent-value"}),
+        )
+
+        fork = src.fork(agent=replacement)
+
+        registry = fork.state.secret_registry
+        assert registry.get_secret_value("AGENT_TOKEN") == "agent-value"
+        assert registry.get_secret_value("SOURCE_TOKEN") == "source-value"
+
+
+def test_fork_gives_independent_security_analyzer():
+    """The fork's analyzer is a copy of its own, down to the guardrail LLM: a
+    shared analyzer, or a shallow copy of one, would mix the two conversations
+    in a stateful analyzer such as ToolShieldLLMSecurityAnalyzer."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src.set_security_analyzer(
+            ToolShieldLLMSecurityAnalyzer(
+                llm=LLM(model="gpt-4o-mini", usage_id="guard"), history_window=7
+            )
+        )
+
+        fork = src.fork()
+
+        source_analyzer = src.state.security_analyzer
+        fork_analyzer = fork.state.security_analyzer
+        assert isinstance(source_analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert isinstance(fork_analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert fork_analyzer is not source_analyzer
+        assert fork_analyzer.llm is not source_analyzer.llm
+        assert fork_analyzer.history_window == 7
+        assert fork_analyzer.llm.model == "gpt-4o-mini"
+
+
+def test_fork_copies_a_secret_source_that_cannot_be_deep_copied():
+    """A custom secret source may hold a lock or a client; the fork still gets
+    a working copy of it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"LOCKED": _LockedSecretSource()},
+        )
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("LOCKED") == (
+            "locked-source-value"
+        )
+        fork_source = fork.state.secret_registry.secret_sources["LOCKED"]
+        assert fork_source is not src.state.secret_registry.secret_sources["LOCKED"]
+
+
+def test_fork_copies_invoked_skills():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src._state.invoked_skills = ["release-notes"]
+
+        fork = src.fork()
+
+        assert fork.state.invoked_skills == ["release-notes"]
+
+
+def test_fork_preserves_ciphered_security_analyzer_credentials():
+    """A fork persisted with the parent's cipher must keep the analyzer's
+    nested guardrail-LLM api_key instead of redacting it to base_state.json.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cipher = Cipher("stable-conversation-key")
+        src = LocalConversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            cipher=cipher,
+        )
+        src.set_security_analyzer(
+            ToolShieldLLMSecurityAnalyzer(
+                llm=LLM(
+                    model="gpt-4o-mini",
+                    api_key=SecretStr("sk-GUARD-xyz"),
+                    usage_id="guard",
+                )
+            )
+        )
+
+        fork = src.fork()
+
+        # Resume the fork from its base_state.json with the cipher, the same way
+        # the agent-server fork path reloads it.
+        assert fork.state.persistence_dir is not None
+        base = str(Path(fork.state.persistence_dir).parent)
+        resumed = LocalConversation(
+            agent=_agent(),
+            workspace=tmpdir,
+            persistence_dir=base,
+            conversation_id=fork.id,
+            cipher=cipher,
+        )
+
+        resumed_analyzer = resumed.state.security_analyzer
+        assert isinstance(resumed_analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert isinstance(resumed_analyzer.llm.api_key, SecretStr)
+        assert resumed_analyzer.llm.api_key.get_secret_value() == "sk-GUARD-xyz"
 
 
 def test_fork_preserves_max_budget_per_run():
