@@ -1494,3 +1494,79 @@ def test_mcp_oauth_callback_rejects_malformed_url_with_400(
     finally:
         with _oauth_probe_jobs_lock:
             _oauth_probe_jobs.clear()
+
+
+def test_mcp_oauth_callback_does_not_follow_redirects_and_uses_job_base(
+    client: TestClient,
+):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    listener_requests: list[tuple[str, str | None]] = []
+    redirect_target_requests: list[str] = []
+
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+
+    class RedirectTargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            redirect_target_requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    target_server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectTargetHandler)
+    target_port = target_server.server_address[1]
+
+    class ListenerHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            listener_requests.append((self.path, self.headers.get("Host")))
+            job.done.set()
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target_port}/steal")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    listener_server = ThreadingHTTPServer(("127.0.0.1", 0), ListenerHandler)
+    listener_port = listener_server.server_address[1]
+
+    listener_thread = threading.Thread(
+        target=listener_server.serve_forever, daemon=True
+    )
+    target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
+    listener_thread.start()
+    target_thread.start()
+
+    job.set_authorization_url("https://auth.example.com/authorize")
+    job.set_callback_ready(f"http://localhost:{listener_port}/callback")
+    try:
+        _register_oauth_job(job)
+        response = client.post(
+            f"/api/mcp/oauth/callback/{job.id}",
+            json={
+                "callback_url": (
+                    f"http://127.0.0.1:{listener_port}/callback"
+                    "?code=abc&state=xyz#ignored"
+                )
+            },
+        )
+        assert response.status_code == 200
+        assert listener_requests == [
+            ("/callback?code=abc&state=xyz", f"localhost:{listener_port}")
+        ]
+        assert redirect_target_requests == []
+    finally:
+        listener_server.shutdown()
+        listener_server.server_close()
+        target_server.shutdown()
+        target_server.server_close()
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
