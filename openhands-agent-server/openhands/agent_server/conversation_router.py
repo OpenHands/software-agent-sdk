@@ -237,7 +237,10 @@ async def get_conversation(
     return _with_runtime_info(registry, conversation)
 
 
-@conversation_router.get("/{conversation_id}/runtime")
+@conversation_router.get(
+    "/{conversation_id}/runtime",
+    responses={404: {"description": "Conversation not found"}},
+)
 async def get_local_conversation_runtime(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
@@ -249,7 +252,10 @@ async def get_local_conversation_runtime(
     return registry.runtime_info(conversation_id)
 
 
-@conversation_router.post("/{conversation_id}/runtime/reprovision")
+@conversation_router.post(
+    "/{conversation_id}/runtime/reprovision",
+    responses={404: {"description": "Conversation not found"}},
+)
 async def reprovision_local_conversation_runtime(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
