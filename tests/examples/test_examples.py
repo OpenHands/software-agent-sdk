@@ -35,6 +35,7 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "03_managing_installed_skills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "04_mixed_marketplace_skills",
 )
 
