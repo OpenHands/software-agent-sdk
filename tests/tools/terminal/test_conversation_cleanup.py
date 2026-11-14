@@ -41,6 +41,7 @@ class _InjectedExecutorTerminalTool(TerminalTool):
         executor: ToolExecutor | None = None,
         *,
         env: Mapping[str, str] | None = None,
+        max_observation_wait_seconds: float | None = None,
     ) -> Sequence[TerminalTool]:
         tools = TerminalTool.create(
             conv_state,
@@ -50,6 +51,7 @@ class _InjectedExecutorTerminalTool(TerminalTool):
             shell_path=shell_path,
             executor=executor,
             env=env,
+            max_observation_wait_seconds=max_observation_wait_seconds,
         )
         return [
             tool.model_copy(update={"executor": cls.injected_executor})
