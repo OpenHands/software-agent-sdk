@@ -154,6 +154,27 @@ def test_prompt_mock_preserves_reasoning_metadata(reasoning, provider_fields):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_completion_routes_lm_studio_model_to_custom_base_url(mock_completion):
+    """An LM Studio id like "<publisher>/<model>" against a custom base_url is
+    sent as an OpenAI-compatible call with the id unchanged (#4247)."""
+    mock_completion.return_value = create_mock_response("Hello")
+    llm = LLM(
+        usage_id="test-llm",
+        model="lmstudio-community/gemma-4-e4b-it-mlx",
+        base_url="http://lmstudio.local:8080/v1",
+        api_key=SecretStr("lm-studio"),
+        num_retries=0,
+    )
+
+    llm.completion(messages=[Message(role="user", content=[TextContent(text="Hi")])])
+
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "lmstudio-community/gemma-4-e4b-it-mlx"
+    assert kwargs["custom_llm_provider"] == "openai"
+    assert kwargs["api_base"] == "http://lmstudio.local:8080/v1"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_completion_basic(mock_completion):
     """Test basic LLM completion functionality."""
     mock_response = create_mock_response("Test response")
