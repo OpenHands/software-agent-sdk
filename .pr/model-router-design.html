@@ -33,7 +33,7 @@
 <main>
   <h1>Router-owned LLM switching path</h1>
   <section class="lede">
-    <p>This PR keeps the router as the conversation's active <code>agent.llm</code> and moves manual route selection into <code>RouterLLM</code>. The server and TypeScript client get additive <code>/model_router</code> endpoints so callers can inspect, manually switch, and resume automatic routing without replacing the whole LLM object.</p>
+    <p>This PR keeps the router as the conversation's active <code>agent.llm</code> and moves route selection into <code>RouterLLM</code>. The server and TypeScript client get an additive <code>/model_router</code> API so callers can inspect and update router selection without replacing the whole LLM object.</p>
     <div class="callout">★ Compatibility: the existing <code>switch_llm</code> and <code>switch_profile</code> paths remain unchanged. New APIs are additive and are intended as the future migration path.</div>
   </section>
 
@@ -50,15 +50,15 @@ POST /api/conversations/{id}/switch_profile
     </div>
     <div class="card">
       <h3>After</h3>
-      <pre>GET  /api/conversations/{id}/model_router
-→ { enabled, routing_mode, selected_llm_key, available_llms }
+      <pre>GET   /api/conversations/{id}/model_router
+→ { enabled, selection, last_route_key, routes }
 
-POST /api/conversations/{id}/model_router/switch
-{ "llm_key": "secondary" }
+PATCH /api/conversations/{id}/model_router
+{ "selection": { "mode": "manual", "manual_route_key": "secondary" } }
 
-POST /api/conversations/{id}/model_router/auto
-{}</pre>
-      <p>The conversation still points at the router. Manual switching updates <code>routing_mode</code> and <code>selected_llm_key</code> on the router-owned state.</p>
+PATCH /api/conversations/{id}/model_router
+{ "selection": { "mode": "auto" } }</pre>
+      <p>The conversation still points at the router. Callers update a small selection model; <code>last_route_key</code> remains an observational field for the most recent route decision.</p>
     </div>
   </div>
 
@@ -73,17 +73,17 @@ POST /api/conversations/{id}/model_router/auto
 
     <text x="30" y="170" class="txt" style="font-weight:700">After: model-router switch preserves the router and changes route state</text>
     <rect x="30" y="195" width="210" height="58" rx="10" class="new"/><text x="48" y="230" class="txt">switch_routed_llm(key)</text>
-    <rect x="305" y="195" width="190" height="58" rx="10" class="new"/><text x="325" y="222" class="txt">RouterLLM.switch_llm</text><text x="345" y="240" class="txt">routing_mode=manual</text>
-    <rect x="565" y="195" width="190" height="58" rx="10" class="new"/><text x="586" y="222" class="txt">agent.llm = RouterLLM</text><text x="606" y="240" class="txt">selected_llm_key</text>
+    <rect x="305" y="195" width="190" height="58" rx="10" class="new"/><text x="325" y="222" class="txt">RouterLLM.with_selection</text><text x="345" y="240" class="txt">mode=manual</text>
+    <rect x="565" y="195" width="190" height="58" rx="10" class="new"/><text x="586" y="222" class="txt">agent.llm = RouterLLM</text><text x="606" y="240" class="txt">manual_route_key</text>
     <path d="M240 224 H305" class="arrow"/><path d="M495 224 H565" class="arrow"/>
   </svg>
 
   <h2>Changed areas</h2>
   <div class="grid">
-    <div class="card"><span class="tag changed">SDK</span><strong>RouterLLM state</strong><p><code>openhands-sdk/openhands/sdk/llm/router/base.py</code> adds <code>routing_mode</code>, <code>selected_llm_key</code>, manual/auto methods, and delegates all sync/async LLM entry points through the selected route.</p></div>
+    <div class="card"><span class="tag changed">SDK</span><strong>RouterLLM state</strong><p><code>openhands-sdk/openhands/sdk/llm/router/base.py</code> adds a shared selection/status model, separates desired manual selection from <code>last_route_key</code>, and delegates all sync/async LLM entry points through the selected route.</p></div>
     <div class="card"><span class="tag changed">SDK</span><strong>Conversation API</strong><p><code>LocalConversation.switch_routed_llm()</code> and <code>resume_auto_llm_routing()</code> update router state while reusing the existing safe LLM replacement path and state synchronization.</p></div>
-    <div class="card"><span class="tag added">Server</span><strong>REST endpoints</strong><p><code>conversation_router.py</code> adds status, manual switch, and auto-resume endpoints. Invalid keys or non-router conversations map to 400.</p></div>
-    <div class="card"><span class="tag added">Client</span><strong>TypeScript parity</strong><p><code>ConversationClient</code>, <code>ConversationManager</code>, and <code>RemoteConversation</code> expose matching helper methods plus <code>ModelRouterStatus</code>.</p></div>
+    <div class="card"><span class="tag added">Server</span><strong>REST endpoints</strong><p><code>conversation_router.py</code> adds status and a single <code>PATCH</code> update endpoint. Invalid keys or non-router conversations map to 400.</p></div>
+    <div class="card"><span class="tag added">Client</span><strong>TypeScript parity</strong><p><code>ConversationClient</code>, <code>ConversationManager</code>, and <code>RemoteConversation</code> expose <code>updateModelRouter</code> plus manual/auto convenience helpers.</p></div>
   </div>
 
   <h2>Validation</h2>

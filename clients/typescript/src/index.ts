@@ -175,6 +175,8 @@ export type {
   LLM as LLMConfig,
   ServerInfo,
   Success,
+  ModelRouteInfo,
+  ModelRouterSelection,
   ModelRouterStatus,
   EventPage,
   ConversationCallbackType,

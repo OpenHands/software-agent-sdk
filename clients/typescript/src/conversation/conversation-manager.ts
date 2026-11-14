@@ -35,6 +35,7 @@ import {
   AgentBase,
   ConversationExecutionStatus,
   ConversationID,
+  ModelRouterSelection,
   ModelRouterStatus,
   Success,
 } from '../types/base';
@@ -392,19 +393,37 @@ export class ConversationManager {
   }
 
   /**
+   * Update route selection for a RouterLLM-backed conversation.
+   */
+  async updateModelRouter(
+    conversationId: ConversationID,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  /**
    * Switch a RouterLLM-backed conversation to a manual route.
    */
-  async switchModelRouter(conversationId: ConversationID, llmKey: string): Promise<void> {
-    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/switch`, {
-      llm_key: llmKey,
+  async switchModelRouter(
+    conversationId: ConversationID,
+    routeName: string
+  ): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_name: routeName,
     });
   }
 
   /**
    * Return a RouterLLM-backed conversation to automatic routing.
    */
-  async resumeAutoModelRouting(conversationId: ConversationID): Promise<void> {
-    await this.client.post<Success>(`/api/conversations/${conversationId}/model_router/auto`, {});
+  async resumeAutoModelRouting(conversationId: ConversationID): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
   }
 
   /**

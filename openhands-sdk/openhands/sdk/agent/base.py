@@ -257,15 +257,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             data["security_policy_filename"] = ""
         llm = data.get("llm")
         if isinstance(llm, dict) and "llms_for_routing" in llm:
-            from openhands.sdk.llm.router import MultimodalRouter, RandomRouter
+            from openhands.sdk.llm.router import RouterLLM
 
-            router_types = {
-                MultimodalRouter.model_fields["router_name"].default: MultimodalRouter,
-                RandomRouter.model_fields["router_name"].default: RandomRouter,
-            }
-            router_type = router_types.get(llm.get("router_name"))
-            if router_type is not None:
-                data["llm"] = router_type.model_validate(llm)
+            data["llm"] = RouterLLM.model_validate_router(llm)
         has_inline = data.get("system_prompt") is not None
         has_custom_filename = (
             "system_prompt_filename" in data
