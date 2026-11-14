@@ -381,7 +381,9 @@ class Config(BaseModel):
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
-            "The URL where this agent server instance is available externally"
+            "The URL where this agent server instance is available externally. "
+            "Its path becomes the root path, and install-time MCP OAuth uses "
+            "{web_url}/api/mcp/oauth/redirect as the provider redirect URI."
         ),
     )
     app_backend_public_url: str | None = Field(

@@ -2,146 +2,61 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Fallbacks keep the caller's accounting session</title>
+<title>Public MCP OAuth redirect for the agent-server</title>
 <style>
-:root{--fg:#20221f;--muted:#61665d;--subtle:#858a80;--bg:#fafaf6;--card:#fff;--accent:#284fa0;--soft:#edf2fc;--rule:#dedfd6;--code:#f0f1e9;--warn:#b65b17;--ok:#2b6a44;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans)}a{color:var(--accent);text-underline-offset:3px}code,pre{font-family:var(--mono)}code{font-size:.86em;background:var(--code);padding:2px 4px;border-radius:3px}pre{font-size:12px;line-height:1.7;white-space:pre-wrap;background:var(--code);padding:14px;border-radius:6px;overflow:auto}.wrap{max-width:1180px;margin:auto;padding:40px 32px 72px;display:grid;grid-template-columns:190px minmax(0,1fr);gap:44px}nav{position:sticky;top:30px;align-self:start;font-size:13px}nav strong,.eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase}nav ol{list-style:none;padding:0;margin-top:16px}nav li{margin:12px 0}nav a{text-decoration:none;color:var(--muted)}nav small{display:block;font:11px var(--mono);color:var(--subtle);margin-top:4px}header{padding-bottom:18px;border-bottom:1px solid var(--rule)}.eyebrow{font-weight:700;color:var(--accent)}h1{font-size:38px;line-height:1.15;letter-spacing:-.035em;margin:12px 0 16px;max-width:660px}h2{font-size:24px;line-height:1.3;letter-spacing:-.02em;margin:36px 0 12px}h3{font-size:16px;margin:0 0 8px}p{margin:10px 0}.lead{font-size:18px;color:var(--muted);max-width:730px}.callout{background:var(--soft);border-left:3px solid var(--accent);padding:12px 16px;margin:18px 0;font-size:15px}.src{font:11px/1.6 var(--mono)}.caption,.muted{font-size:13px;color:var(--muted)}figure{margin:22px 0}svg{width:100%;height:auto;display:block;background:var(--card);border:1px solid var(--rule);border-radius:8px}figcaption{font-size:13px;color:var(--muted);margin-top:9px}.pairs{display:grid;grid-template-columns:1fr 1fr;gap:16px}.panel{padding:18px;background:var(--card);border:1px solid var(--rule);border-radius:7px}.panel p{font-size:14px}table{border-collapse:collapse;width:100%;font-size:14px;margin:16px 0}th,td{text-align:left;border-bottom:1px solid var(--rule);padding:11px 12px;vertical-align:top}th{background:var(--code);font-size:12px}.good{color:var(--ok);font-weight:650}.bad{color:var(--warn)}details{border:1px solid var(--rule);padding:10px 14px;border-radius:6px;font-size:13px;margin-top:14px}summary{cursor:pointer;color:var(--muted)}footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);font-size:12px;color:var(--muted)}@media(max-width:850px){.wrap{display:block;padding:24px 18px 50px}nav{position:static;border-bottom:1px solid var(--rule);margin-bottom:24px}nav ol{display:flex;flex-wrap:wrap;gap:8px 18px}nav li{margin:0 0 10px}nav small{display:none}h1{font-size:32px}.pairs{grid-template-columns:1fr}table{font-size:12px}th,td{padding:9px 6px}}@media print{nav{display:none}.wrap{display:block;padding:0}details{display:none}a{color:inherit}}
+body{font-family:system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 16px;color:#1f2328;line-height:1.5}
+h1{font-size:1.6em}h2{margin-top:1.8em;border-bottom:1px solid #d0d7de;padding-bottom:.2em}
+code,pre{font-family:ui-monospace,monospace;font-size:.9em}pre{background:#f6f8fa;padding:12px;overflow:auto;border-radius:6px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{border:1px solid #d0d7de;border-radius:8px;padding:12px}
+.bad{border-color:#cf222e}.good{border-color:#1a7f37}table{border-collapse:collapse}td,th{border:1px solid #d0d7de;padding:6px 10px;text-align:left}
 </style>
 </head>
 <body>
-<div class="wrap">
-<nav aria-label="Document sections">
-<strong>Review map</strong>
-<ol>
-<li><a href="#ownership">1. Keep the caller's role</a><small>fallback_strategy.py · llm.py</small></li>
-<li><a href="#interfaces">2. Additive interfaces</a><small>Metrics · FallbackStrategy</small></li>
-<li><a href="#evidence">3. Five observed fixes</a><small>real SDK + local HTTP</small></li>
-<li><a href="#coverage">4. What the checks cover</a><small>transport · callbacks · costs</small></li>
-</ol>
-</nav>
-<main>
-<header>
-<div class="eyebrow">Stacked fix for SDK PR #6690</div>
-<h1>Fallbacks keep the caller's accounting session.</h1>
-<p class="lead">A fallback changes the model serving a request. Its tokens, cost and telemetry still belong to the agent, condenser or ask-agent role that made the request.</p>
-<p>The session refactor already records a fallback response in a conversation ledger. Its old post-call merge records the same usage again, and a profile's <code>usage_id="default"</code> can route auxiliary calls into the agent ledger. This fix gives a temporary fallback LLM the caller's existing session references and removes the second accounting path for SDK calls.</p>
-<p class="src"><a href="https://github.com/OpenHands/software-agent-sdk/blob/0a68ab94cb3f447254bdc68ce778048ce517be22/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L99">Before: fallback_strategy.py:99</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L106">After: fallback_strategy.py:106</a></p>
-<div class="callout">★ One successful provider request writes once to the caller's ledger. The individual records and completion logs identify the model that actually answered.</div>
-</header>
-<section id="ownership">
-<h2>1. Bind the request before calling the fallback</h2>
-<figure>
-<svg viewBox="0 0 900 390" role="img" aria-labelledby="flow-title flow-description">
-<title id="flow-title">An ask-agent fallback before and after the fix</title>
-<desc id="flow-description">Before, the fallback profile selects the default role and its metrics are merged into ask-agent, counting one response twice. After, a temporary fallback object is explicitly bound to ask-agent's session, which records one hundred tokens once.</desc>
-<defs>
-<marker id="arrow-old" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="var(--subtle)"/></marker>
-<marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="var(--warn)"/></marker>
-<linearGradient id="session-wash" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".10"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".02"/></linearGradient>
-<style>.old-box{fill:var(--code);stroke:var(--subtle);stroke-dasharray:5 3}.new-box{fill:var(--soft);stroke:var(--accent);stroke-width:1.5}.flow-title{font:700 16px var(--sans);fill:var(--fg)}.node-title{font:600 13px var(--mono);fill:var(--fg)}.node-detail{font:11px var(--sans);fill:var(--muted)}.location{font:10px var(--mono);fill:var(--accent)}.old-edge{fill:none;stroke:var(--subtle);stroke-width:1.5;stroke-dasharray:5 3}.new-edge{fill:none;stroke:var(--warn);stroke-width:1.8;stroke-dasharray:5 3}.total-old{font:700 16px var(--sans);fill:var(--warn)}.total-new{font:700 16px var(--sans);fill:var(--ok)}</style>
-</defs>
-<path d="M450 25V362" stroke="var(--rule)"/>
-<!-- Before: role selection and post-call merge both record the response. -->
-<g>
-<text class="flow-title" x="32" y="39">Before · profile role wins</text>
-<a href="https://github.com/OpenHands/software-agent-sdk/blob/0a68ab94cb3f447254bdc68ce778048ce517be22/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L99">
-<rect class="old-box" x="32" y="60" width="386" height="61" rx="6"/>
-<text class="node-title" x="48" y="83">try_fallback() → call_fn(fb)</text>
-<text class="node-detail" x="48" y="102">Saved fallback keeps usage_id="default"</text>
-<text class="location" x="259" y="113">fallback_strategy.py:99</text></a>
-<path class="old-edge" d="M225 121V147" marker-end="url(#arrow-old)"/>
-<a href="https://github.com/OpenHands/software-agent-sdk/blob/0a68ab94cb3f447254bdc68ce778048ce517be22/openhands-sdk/openhands/sdk/llm/llm.py#L975">
-<rect class="old-box" x="32" y="148" width="386" height="61" rx="6"/>
-<text class="node-title" x="48" y="171">session_for() → sessions["default"]</text>
-<text class="node-detail" x="48" y="190">Agent ledger receives +100 tokens</text>
-<text class="location" x="329" y="201">llm.py:975</text></a>
-<path class="old-edge" d="M225 209V235" marker-end="url(#arrow-old)"/>
-<a href="https://github.com/OpenHands/software-agent-sdk/blob/0a68ab94cb3f447254bdc68ce778048ce517be22/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L110">
-<rect class="old-box" x="32" y="236" width="386" height="61" rx="6"/>
-<text class="node-title" x="48" y="259">primary_metrics.merge(metrics_diff)</text>
-<text class="node-detail" x="48" y="278">Ask-agent ledger receives another +100</text>
-<text class="location" x="254" y="289">fallback_strategy.py:110</text></a>
-<text class="total-old" x="32" y="338">100 provider tokens → 200 recorded</text>
-<text class="node-detail" x="32" y="360">Same-role fallback also doubles its single ledger.</text>
-</g>
-<!-- After: one caller-owned session receives the successful response. -->
-<g>
-<text class="flow-title" x="482" y="39">After · caller role stays</text>
-<a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L106">
-<rect class="new-box" x="482" y="60" width="386" height="61" rx="6"/>
-<text class="node-title" x="498" y="83">fb.model_copy(usage_id=caller.role)</text>
-<text class="node-detail" x="498" y="102">Temporary copy disables nested fallbacks</text>
-<text class="location" x="704" y="113">fallback_strategy.py:106</text></a>
-<path class="new-edge" d="M675 121V147" marker-end="url(#arrow-new)"/>
-<a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L117">
-<rect class="new-box" x="482" y="148" width="386" height="61" rx="6"/>
-<text class="node-title" x="498" y="171">Reuse _session + _registry_session</text>
-<text class="node-detail" x="498" y="190">Existing role and aggregate ownership</text>
-<text class="location" x="704" y="201">fallback_strategy.py:117</text></a>
-<path class="new-edge" d="M675 209V235" marker-end="url(#arrow-new)"/>
-<a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/llm.py#L975">
-<rect class="new-box" x="482" y="236" width="386" height="61" rx="6" style="fill:url(#session-wash)"/>
-<text class="node-title" x="498" y="259">session_for() → caller's session</text>
-<text class="node-detail" x="498" y="278">Ask-agent records +100; its callbacks fire</text>
-<text class="location" x="779" y="289">llm.py:975</text></a>
-<text class="total-new" x="482" y="338">100 provider tokens → 100 recorded</text>
-<text class="node-detail" x="482" y="360">SDK calls skip the post-call metrics merge.</text>
-</g>
-</svg>
-<figcaption>Fig. 1 · The fallback profile supplies model configuration; the caller supplies accounting ownership. Orange arrows mark the changed path.</figcaption>
-</figure>
-<div class="pairs">
-<article class="panel"><h3>Context survives async fallback</h3><p><code>asyncio.to_thread()</code> carries the scoped call context into async fallback work. Explicit contexts already travel with the callback, so both paths preserve the conversation identity and prompt-cache key.</p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/llm.py#L1122">llm.py:1122 · _ahandle_error()</a></article>
-<article class="panel"><h3>Records keep the answering model</h3><p>Telemetry passes its current model into token, cost and latency entries. Session totals stay with the role while individual entries identify the fallback model.</p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L227">telemetry.py:227 · on_response()</a></article>
+<h1>Public MCP OAuth redirect for the agent-server</h1>
+<p>Fixes <a href="https://github.com/OpenHands/OpenHands/issues/18888">OpenHands#18888</a> and the agent-server half of
+<a href="https://github.com/OpenHands/OpenHands/issues/15430">OpenHands#15430</a>. Install-time MCP OAuth
+(<code>POST /api/mcp/oauth/start</code>) always registered <code>http://localhost:&lt;random port&gt;/callback</code>
+as the redirect URI. That port lives on the agent-server host, so the browser can only reach it when the
+browser and the agent-server share one machine and one network namespace.</p>
+
+<h2>Before / after</h2>
+<div class="grid">
+<div class="card bad"><b>Before</b>
+<pre>browser ── authorize ──▶ provider
+provider ── 302 ──▶ http://localhost:47071/callback
+                    (browser's own localhost:
+                     ERR_CONNECTION_REFUSED)
+probe waits 5 min ─▶ "Sign-in was not completed"</pre></div>
+<div class="card good"><b>After</b> (public URL known)
+<pre>browser ── authorize ──▶ provider
+provider ── 302 ──▶ https://canvas.example/api/mcp/oauth/redirect
+agent-server: find job by OAuth state, hand code to probe
+probe exchanges code ─▶ "Connected — N tool(s)"</pre></div>
 </div>
-</section>
-<section id="interfaces">
-<h2>2. Preserve existing call signatures</h2>
-<p>The original positional arguments remain valid. The fallback reuses existing session references; serialized LLM and profile shapes are unchanged. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L117">fallback_strategy.py:117</a></p>
-<div class="pairs">
-<div><h3>Before</h3><pre>try_fallback(model, error, metrics, call_fn)
-metrics.add_cost(value)
-metrics.add_response_latency(value, response_id)
-metrics.add_token_usage(...)</pre></div>
-<div><h3>After · optional keyword additions</h3><pre>try_fallback(model, error, metrics, call_fn,
-             *, primary=None)
-metrics.add_cost(value, *, model_name=None)
-metrics.add_response_latency(..., model_name=None)
-metrics.add_token_usage(..., model_name=None)</pre></div>
-</div>
-<p class="src"><a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L73">fallback_strategy.py:73</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/utils/metrics.py#L189">metrics.py:189</a></p>
-<p>The original four-argument <code>try_fallback()</code> API keeps its metrics-diff merge. SDK calls pass <code>primary=self</code>, reuse the caller's sessions and callbacks, and skip that merge. The fallback example's accounting description is updated to match. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/openhands-sdk/openhands/sdk/llm/fallback_strategy.py#L117">fallback_strategy.py:117</a></p>
-</section>
-<section id="evidence">
-<h2>3. Five operations, five corrected ledgers</h2>
-<p>The same script ran on PR #6690's <code>0a68ab94</code> and on this fix. Each operation sent one request that received HTTP 503, then one successful fallback request reporting <strong>100 prompt tokens</strong>.</p>
+
+<h2>Which redirect URI is used</h2>
 <table>
-<thead><tr><th scope="col">Public operation</th><th scope="col">Before: token increase</th><th scope="col">After: token increase</th></tr></thead>
-<tbody>
-<tr><td><code>run()</code>, first turn</td><td class="bad">default +200</td><td class="good">default +100</td></tr>
-<tr><td><code>run()</code>, second turn</td><td class="bad">default +200</td><td class="good">default +100</td></tr>
-<tr><td><code>run()</code>, third turn</td><td class="bad">default +200</td><td class="good">default +100</td></tr>
-<tr><td><code>ask_agent()</code></td><td class="bad">default +100; ask-agent-llm +100</td><td class="good">ask-agent-llm +100</td></tr>
-<tr><td><code>condense()</code></td><td class="bad">default +100; condenser +100</td><td class="good">condenser +100</td></tr>
-</tbody>
+<tr><th>OAuth client</th><th><code>web_url</code> / <code>OH_WEB_URL</code> set</th><th>only <code>callback_base_url</code> in the request</th><th>neither</th></tr>
+<tr><td>dynamically registered (DCR)</td><td><code>{web_url}/api/mcp/oauth/redirect</code></td><td><code>{callback_base_url}/api/mcp/oauth/redirect</code></td><td>loopback (unchanged)</td></tr>
+<tr><td>pre-registered (<code>client_id</code> or metadata URL)</td><td><code>{web_url}/api/mcp/oauth/redirect</code></td><td>loopback (unchanged)</td><td>loopback (unchanged)</td></tr>
 </table>
-<p class="src">Evidence: <a href="https://github.com/OpenHands/software-agent-sdk/blob/astra/fallback-caller-session/.pr/fallback-session-evidence.json">fallback-session-evidence.json</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/astra/fallback-caller-session/.pr/fallback-session-repro.py">fallback-session-repro.py</a></p>
-<p class="muted">macOS · Python 3.13.11 · real settings construction, profile save/load, conversation lifecycle and HTTP transport. The provider runs on loopback and supplies deterministic responses. These observations establish token totals and role attribution; they do not measure callback counts, actual provider billing or remote-service behavior.</p>
-<details><summary>Reproduce with the checkout's dependencies</summary><pre>OH_PERSISTENCE_DIR=/tmp/fallback-repro-state \
-OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True \
-uv run python .pr/fallback-session-repro.py --assert-fixed</pre><p>The final flag makes incorrect accounting fail with exit code 1. The script starts and shuts down its own local HTTP server and uses temporary profile and conversation directories.</p></details>
-</section>
-<section id="coverage">
-<h2>4. Regression checks cover the other boundaries</h2>
-<p><strong>1,791 tests passed; 2 expected failures.</strong> The LLM, conversation-session, model-switch and agent-server event-service checks passed. Two credential-path checks ran separately without the temporary persistence-directory override. The two fallback regression files account for 58 passing cases.</p>
-<p>The focused regression file checks sync and async Chat Completions and Responses calls, explicit and scoped contexts, standalone use, a colliding <code>default</code> role, and one LLM shared across registries. Two fallback calls followed by a recovered primary call verify cumulative tokens, cost, callback counts, returned metrics and actual-model labels. A separate case exercises the original direct <code>try_fallback()</code> API.</p>
-<p class="src"><a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/tests/sdk/llm/test_llm_fallback_sessions.py#L41">test_fallback_preserves_caller_accounting:41</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/6bfdc18917a3ec2847029f3b22cf1861bf8b99ec/tests/sdk/llm/test_llm_fallback_sessions.py#L230">test_direct_fallback_preserves_supplied_metrics:230</a></p>
-<details><summary>Focused regression command</summary><pre>uv run pytest tests/sdk/llm/test_llm_fallback_sessions.py \
-  tests/sdk/llm/test_llm_fallback.py tests/sdk/llm/test_llm_session.py -q</pre><p>These regression tests replace provider responses at the LiteLLM boundary. The loopback reproduction above separately exercises real HTTP transport.</p></details>
-</section>
-<footer>Temporary reviewer context in <code>.pr/</code> · Base: <a href="https://github.com/OpenHands/software-agent-sdk/commit/0a68ab94cb3f447254bdc68ce778048ce517be22">0a68ab94</a> · Source links identify the code revision reviewed.</footer>
-</main>
-</div>
+<p>A pre-registered client's redirect URIs are fixed at the provider, so a browser-supplied base must not
+change them; only the operator's <code>web_url</code> does. A DCR client stored from an earlier
+loopback registration is dropped and registered again when its redirect URIs do not contain the new URI.</p>
+
+<h2>API</h2>
+<pre>POST /api/mcp/oauth/start          body: MCPTestRequest + callback_base_url?: string  (plain http(s) base, no query/fragment/userinfo)
+GET  /api/mcp/oauth/redirect       new, unauthenticated, not in OpenAPI; ?code&amp;state[&amp;iss] or ?error[&amp;error_description]</pre>
+<p>The redirect route is outside the session-key dependency because the provider sends the user's browser
+there. It accepts a request only for a registered, unexpired job that is currently waiting for a redirect and
+whose OAuth <code>state</code> matches (constant-time compare). The first redirect wins; a replay gets 409;
+a provider error fails the probe with the provider's description.</p>
+
+<h2>Compatibility</h2>
+<ul>
+<li>No public URL configured and none sent: behavior is identical to before (loopback callback server, existing <code>/api/mcp/oauth/callback/{job}</code> relay).</li>
+<li><code>callback_base_url</code> is optional; older clients keep working.</li>
+<li>Agent Canvas sends <code>callback_base_url</code> = its backend origin (companion OpenHands PR).</li>
+</ul>
 </body>
 </html>
