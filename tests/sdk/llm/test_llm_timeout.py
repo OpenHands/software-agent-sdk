@@ -15,8 +15,13 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event.error_classification import (
+    ErrorClassification,
+    FailureKind,
+    classify_error,
+)
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMTimeoutError
+from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMTimeoutError
 
 
 # Default timeout in seconds (5 minutes)
@@ -443,3 +448,73 @@ async def test_exhausted_stream_timeout_transitions_conversation_to_error(
         await conversation.arun()
 
     assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_hard_timeouts_stop_retrying_after_the_timeout_budget() -> None:
+    """Attempts that all reach the hard timeout stop after two timeouts' worth
+    of time instead of using every retry, and the final error names the limit
+    and points at settings (#6249)."""
+    async with _hung_chat_completion_server() as (base_url, attempts):
+        llm = _streaming_llm(
+            base_url, timeout=1, stream_idle_timeout=None, num_retries=5
+        )
+
+        with pytest.raises(LLMTimeoutError) as exc_info:
+            await llm.acompletion(
+                messages=[Message(role="user", content=[TextContent(text="Hello")])],
+                on_token=lambda _: None,
+            )
+
+    assert len(attempts) == 2
+    detail = str(exc_info.value)
+    assert "LLM hard timeout after 1 seconds" in detail
+    assert "within the LLM timeout of 1s (gave up after 2 attempts" in detail
+    assert "higher timeout in the LLM settings" in detail
+    assert classify_error("LLMTimeoutError", detail) == ErrorClassification(
+        kind=FailureKind.CONFIG, retryable=False, user_action="settings"
+    )
+
+
+def test_quick_timeouts_keep_every_retry() -> None:
+    """Timeouts far below the per-attempt limit (e.g. a connect timeout) are
+    still retried ``num_retries`` times."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=300,
+        num_retries=3,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    calls: list[int] = []
+
+    @llm._make_retry_decorator()
+    def connect() -> None:
+        calls.append(1)
+        raise LiteLLMTimeout("Connection timed out.", "gpt-4o-mini", "openai")
+
+    with pytest.raises(LiteLLMTimeout, match=r"gave up after 3 attempts") as exc:
+        connect()
+
+    assert len(calls) == 3
+    assert "Connection timed out. The model did not" in str(exc.value)
+
+
+def test_non_timeout_errors_are_reraised_unchanged() -> None:
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+
+    @llm._make_retry_decorator()
+    def empty() -> None:
+        raise LLMNoResponseError("empty response")
+
+    with pytest.raises(LLMNoResponseError, match="^empty response$"):
+        empty()

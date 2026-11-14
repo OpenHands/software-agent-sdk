@@ -1331,6 +1331,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
             retry_listener=self._retry_listener_fn,
+            timeout=self.timeout,
         )
 
     def _timeout_error(self, detail: str, seconds: float) -> LiteLLMTimeout:
