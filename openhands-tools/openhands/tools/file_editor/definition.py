@@ -211,6 +211,7 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
     def create(
         cls,
         conv_state: "ConversationState",
+        restrict_to_workspace: bool = False,
     ) -> Sequence["FileEditorTool"]:
         """Initialize FileEditorTool with a FileEditorExecutor.
 
@@ -218,12 +219,17 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
             conv_state: Conversation state to get working directory from.
                          If provided, workspace_root will be taken from
                          conv_state.workspace
+            restrict_to_workspace: Refuse paths outside the workspace
+                         directory (after resolving ``..`` and symlinks).
         """
         # Import here to avoid circular imports
         from openhands.tools.file_editor.impl import FileEditorExecutor
 
         # Initialize the executor
-        executor = FileEditorExecutor(workspace_root=conv_state.workspace.working_dir)
+        executor = FileEditorExecutor(
+            workspace_root=conv_state.workspace.working_dir,
+            restrict_to_workspace=restrict_to_workspace,
+        )
 
         # Build the tool description with conditional image viewing support
         # Split TOOL_DESCRIPTION to insert image viewing line after the second bullet
