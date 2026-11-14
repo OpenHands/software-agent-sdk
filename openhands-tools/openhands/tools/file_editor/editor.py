@@ -857,12 +857,6 @@ class FileEditor:
                 "Markdown format:\n" + snippet_content + "\n"
             )
 
-        snippet_content = maybe_truncate(
-            snippet_content,
-            truncate_after=MAX_RESPONSE_LEN_CHAR,
-            truncate_notice=TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
-        )
-
         # Split on "\n" only, matching how read_file/_count_lines define lines, so that
         # characters splitlines() treats as breaks (\x0c, \u2028, ...) keep line numbers
         # consistent with insert/view_range. A terminating newline ends the last line
@@ -872,6 +866,11 @@ class FileEditor:
             lines.pop()
         snippet_content = "\n".join(
             [f"{i + start_line:6}\t{line}" for i, line in enumerate(lines)]
+        )
+        snippet_content = maybe_truncate(
+            snippet_content,
+            truncate_after=MAX_RESPONSE_LEN_CHAR,
+            truncate_notice=TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
         )
         output = f"Here's the result of running `cat -n` on {snippet_description}:\n"
         if snippet_content:
