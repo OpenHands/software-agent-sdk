@@ -1,0 +1,26 @@
+mode: is_input=False terminal_type=subprocess
+===== OBS 1 cmd='python3' =====
+[?2004lPython 3.11.18 (main, Oct 26 2026, 15:28:55) [GCC 13.3.0] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+>>>
+[The command has no new output after 3 seconds. You may wait longer to see additional output by sending empty command '', send other commands to interact with the current process, send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command, or use the timeout parameter in terminal for future commands.]
+===== OBS 2 cmd='print(6 * 7)' =====
+[An error occurred during execution.]
+
+[Below is the output of the previous command.]
+
+[Your command "print(6 * 7)" is NOT executed. The previous command is still running - You CANNOT send new commands until the previous command is completed. By setting `is_input` to `true`, you can interact with the current process: You may wait longer to see additional output by sending empty command '', send other commands to interact with the current process, send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command, or use the timeout parameter in terminal for future commands.]
+===== OBS 3 cmd='exit()' =====
+[An error occurred during execution.]
+
+[Below is the output of the previous command.]
+
+[Your command "exit()" is NOT executed. The previous command is still running - You CANNOT send new commands until the previous command is completed. By setting `is_input` to `true`, you can interact with the current process: You may wait longer to see additional output by sending empty command '', send other commands to interact with the current process, send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command, or use the timeout parameter in terminal for future commands.]
+===== OBS 4 cmd='echo back-in-shell' =====
+[An error occurred during execution.]
+
+[Below is the output of the previous command.]
+
+[Your command "echo back-in-shell" is NOT executed. The previous command is still running - You CANNOT send new commands until the previous command is completed. By setting `is_input` to `true`, you can interact with the current process: You may wait longer to see additional output by sending empty command '', send other commands to interact with the current process, send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command, or use the timeout parameter in terminal for future commands.]
+===== OBS 5 cmd=None =====
+done

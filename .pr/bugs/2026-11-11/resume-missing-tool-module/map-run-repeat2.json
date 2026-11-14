@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "file": "F27-hooks-subagents-tools.md",
+  "launch_flags": [],
+  "attempts": [
+    {
+      "run": "<scratch>/agent-server/20261111-090008-47b9-map-f27",
+      "ok": true,
+      "summary": {
+        "pass": 2,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "statuses": {
+        "Preconditions": "pass",
+        "Custom tool module (`F27.custom-tool-modules`).": "pass",
+        "Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug.": "xfail"
+      }
+    },
+    {
+      "run": "<scratch>/agent-server/20261111-090141-d9c4-map-f27",
+      "ok": true,
+      "summary": {
+        "pass": 2,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "statuses": {
+        "Preconditions": "pass",
+        "Custom tool module (`F27.custom-tool-modules`).": "pass",
+        "Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug.": "xfail"
+      }
+    }
+  ]
+}
