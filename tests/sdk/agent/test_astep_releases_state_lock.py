@@ -159,3 +159,45 @@ async def test_pause_during_llm_call_is_persisted_at_once(tmp_path):
     assert llm._probe["save_depth_during_call"] == 0
     saved = json.loads(convo._state._fs.read(BASE_STATE))
     assert saved["execution_status"] == ConversationExecutionStatus.PAUSED.value
+
+
+class _SecretPostingLLM(TestLLM):
+    """Adds a secret from another thread mid-``acompletion`` and records the
+    secret names ``base_state.json`` holds right after that call returns."""
+
+    _convo_box: list = PrivateAttr(default_factory=list)
+    _probe: dict = PrivateAttr(default_factory=dict)
+
+    async def acompletion(self, *args: Any, **kwargs: Any) -> LLMResponse:
+        convo = self._convo_box[0]
+        # The server's POST .../secrets handler calls update_secrets() from
+        # another thread.
+        await asyncio.to_thread(convo.update_secrets, {"POSTED_MID_STEP": "value"})
+        saved = json.loads(convo._state._fs.read(BASE_STATE))
+        self._probe["saved_names"] = sorted(saved["secret_registry"]["secret_sources"])
+        return await super().acompletion(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_secret_posted_during_llm_call_is_persisted_at_once(tmp_path):
+    """A secret added while the step has released the lock for the network
+    call is in base_state.json when update_secrets() returns, not at the end
+    of the step: a restart in that window must not lose it."""
+    llm = _SecretPostingLLM.from_messages([LLMContentPolicyViolationError()])
+    assert isinstance(llm, _SecretPostingLLM)
+    agent = Agent(llm=llm, tools=[])
+    convo = Conversation(
+        agent=agent, persistence_dir=str(tmp_path), workspace=str(tmp_path)
+    )
+    assert isinstance(convo, LocalConversation)
+    convo._ensure_agent_ready()
+    llm._convo_box.append(convo)
+    convo.send_message("hello")
+
+    # Nothing else is waiting to be saved, so only the secret's own save can
+    # put it in the file.
+    convo._step_holds_state_lock = True
+    with convo._state:
+        await agent.astep(convo, on_event=[].append)
+
+    assert llm._probe["saved_names"] == ["POSTED_MID_STEP"]
