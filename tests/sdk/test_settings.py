@@ -207,9 +207,11 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
 
     sections = {s.key: s for s in schema.sections}
     general_fields = {f.key: f for f in sections["general"].fields}
-    assert set(general_fields) == {"max_iterations"}
+    assert set(general_fields) == {"max_iterations", "max_budget_per_run"}
     assert general_fields["max_iterations"].default == 500
     assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
+    assert general_fields["max_budget_per_run"].default is None
+    assert general_fields["max_budget_per_run"].prominence is SettingProminence.MAJOR
 
     verification_fields = {f.key: f for f in sections["verification"].fields}
     assert set(verification_fields) == {
@@ -339,6 +341,7 @@ def test_conversation_settings_validates_observability_metadata() -> None:
 def test_conversation_settings_model_dump_roundtrip() -> None:
     settings = ConversationSettings(
         max_iterations=42,
+        max_budget_per_run=2.5,
         confirmation_mode=True,
         security_analyzer="none",
     )
@@ -381,6 +384,34 @@ def test_conversation_settings_create_request() -> None:
     assert overridden_request.max_iterations == 5
     assert isinstance(overridden_request.confirmation_policy, AlwaysConfirm)
     assert overridden_request.security_analyzer is None
+
+
+def test_conversation_settings_create_request_forwards_budget() -> None:
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
+
+    unset = ConversationSettings().create_request(
+        StartConversationRequest, agent=agent, workspace=workspace
+    )
+    budgeted = ConversationSettings(max_budget_per_run=2.5).create_request(
+        StartConversationRequest, agent=agent, workspace=workspace
+    )
+    overridden = ConversationSettings(max_budget_per_run=2.5).create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+        max_budget_per_run=None,
+    )
+
+    assert unset.max_budget_per_run is None
+    assert budgeted.max_budget_per_run == 2.5
+    assert overridden.max_budget_per_run is None
+
+
+@pytest.mark.parametrize("budget", [0, -1])
+def test_conversation_settings_rejects_non_positive_budget(budget: float) -> None:
+    with pytest.raises(ValidationError):
+        ConversationSettings(max_budget_per_run=budget)
 
 
 def test_conversation_settings_create_request_with_acp_agent() -> None:
