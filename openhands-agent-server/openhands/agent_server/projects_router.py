@@ -1,0 +1,1354 @@
+"""HTTP endpoints for projects.
+
+A project groups the conversations that work toward one goal. The user
+mainly talks to one of them, the coordinator, which starts and steers the
+others.
+Projects are persisted on the agent-server (file-backed JSON) so that every
+client connected to the same server sees the same list.
+
+Membership lives on the conversations, not in the project record: a
+conversation belongs to a project when its ``project`` tag holds the project's
+id. Child conversations copy their parent's tags, so the conversations a coordinator
+starts with ``start_child_conversation`` join its project without another call.
+
+Two limits. Projects are local to this server: the record, its files and its
+memory live in this server's persistence folder, and a conversation running in
+another server (a Docker runtime) is not a member here. And project scoping is
+a guard rail for the project tools, not a security boundary: every caller
+holds the same session key, so a conversation with a terminal can reach any
+route. The tools read the project from the caller's tags and the send route
+checks a sender's project, which keeps well-behaved agents inside their
+project and never lets one conversation approve or resume another's work.
+"""
+
+import asyncio
+from collections.abc import Callable
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Annotated, Any, BinaryIO, Literal
+from uuid import UUID, uuid4
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_settings_store,
+    get_stores,
+)
+from openhands.agent_server.experimental_features import feature_enabled_now
+from openhands.agent_server.models import StoredConversation
+from openhands.agent_server.persistence import (
+    FileProjectsStore,
+    FileSettingsStore,
+    PersistedProjects,
+    ProjectItem,
+    ServerStores,
+)
+from openhands.agent_server.project_artifacts import (
+    MAX_ARTIFACT_BYTES,
+    ArtifactNameTaken,
+    ArtifactSource,
+    ArtifactTooLarge,
+    ProjectArtifact,
+    ProjectArtifactStore,
+    open_workspace_file,
+    valid_artifact_name,
+)
+from openhands.agent_server.project_board import (
+    AGENT_RESOLVE_NOTE,
+    ResolvedBy,
+    TurnOutcome,
+)
+from openhands.agent_server.project_memory import (
+    MEMORY_INDEX,
+    MemoryConflict,
+    MemoryFile,
+    MemoryFileContent,
+    MemoryTooLarge,
+    ProjectMemoryStore,
+    valid_memory_name,
+)
+from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.utils import utc_now
+from openhands.sdk.conversation.request import AgentLaunchAdditions
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.title_utils import extract_message_text
+from openhands.sdk.conversation.types import (
+    ASK_TAG_KEY,
+    PROJECT_TAG_KEY,
+    PROJECTS_OFF_DETAIL,
+    RESOLVE_NOTE_TAG_KEY,
+    RESOLVED_TAG_KEY,
+    TURN_TAG_KEY,
+    ConversationTags,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    OperationFailed,
+    TooLarge,
+    Unprocessable,
+)
+from openhands.sdk.event import ActionEvent, Event, MessageEvent
+from openhands.sdk.logger import get_logger
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.settings.model import ConversationRuntime
+from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.datetime import OpenHandsUUID
+
+
+logger = get_logger(__name__)
+
+
+async def _require_projects(
+    settings_store: Annotated[FileSettingsStore, Depends(get_settings_store)],
+) -> None:
+    """Answer 404 while the user has the Projects feature off.
+
+    404 reads as "this server has no projects", which clients already handle;
+    the projects on disk are kept and come back when it is turned on again.
+    """
+    if not await feature_enabled_now("projects", settings_store):
+        raise NotFound(PROJECTS_OFF_DETAIL)
+
+
+projects_router = APIRouter(
+    prefix="/projects",
+    tags=["Projects"],
+    dependencies=[Depends(_require_projects)],
+)
+
+PROJECT_TAG = PROJECT_TAG_KEY
+# Set by OpenHands automations on the conversations they start.
+AUTOMATION_ID_TAG_KEY = "automationid"
+
+
+class ProjectAttention(str, Enum):
+    """What a conversation needs from the user.
+
+    Derived from the execution status, then refined by the conversation's tags: a
+    finished conversation whose last message asked something needs input, and a
+    resolved conversation is resolved unless it is blocked on the user.
+    """
+
+    NEEDS_YOU = "needs_you"
+    NEEDS_INPUT = "needs_input"
+    WORKING = "working"
+    IDLE = "idle"
+    RESOLVED = "resolved"
+
+
+_ATTENTION_BY_STATUS = {
+    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION: ProjectAttention.NEEDS_YOU,
+    ConversationExecutionStatus.PAUSED: ProjectAttention.NEEDS_YOU,
+    ConversationExecutionStatus.ERROR: ProjectAttention.NEEDS_YOU,
+    ConversationExecutionStatus.STUCK: ProjectAttention.NEEDS_YOU,
+    ConversationExecutionStatus.RUNNING: ProjectAttention.WORKING,
+    ConversationExecutionStatus.FINISHED: ProjectAttention.IDLE,
+    ConversationExecutionStatus.IDLE: ProjectAttention.IDLE,
+}
+_ATTENTION_ORDER = {
+    attention: index for index, attention in enumerate(ProjectAttention)
+}
+
+
+class NewProjectCoordinator(BaseModel):
+    """A coordinator conversation the server starts with the project."""
+
+    working_dir: str = Field(
+        ..., min_length=1, description="Workspace directory of the coordinator."
+    )
+    agent_profile_id: UUID | None = Field(
+        default=None,
+        description="Agent profile to run. Unset, the user's active profile.",
+    )
+    title: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Conversation title. Unset, it is titled automatically.",
+    )
+    conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Id for the coordinator, reserved by the client so it can find the "
+            "conversation after a lost response. Must not exist yet."
+        ),
+    )
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description="More tags for the coordinator; the server adds `project`.",
+    )
+    conversation_runtime: ConversationRuntime | None = Field(
+        default=None, description="As in a conversation start request."
+    )
+    agent_launch_additions: AgentLaunchAdditions | None = Field(
+        default=None,
+        description=(
+            "As in a conversation start request, such as a client's own "
+            "system-prompt addition for its coordinator."
+        ),
+    )
+    confirmation_policy: ConfirmationPolicyBase | None = Field(
+        default=None,
+        description="As in a conversation start request. Unset, the default.",
+    )
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None, description="As in a conversation start request."
+    )
+    max_iterations: int | None = Field(
+        default=None,
+        gt=0,
+        description="As in a conversation start request. Unset, the default.",
+    )
+
+    def start_options(self) -> dict[str, Any]:
+        """The fields passed on to the coordinator's start request."""
+        options: dict[str, Any] = {"tags": dict(self.tags)}
+        for name in (
+            "conversation_id",
+            "conversation_runtime",
+            "agent_launch_additions",
+            "confirmation_policy",
+            "security_analyzer",
+            "max_iterations",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                options[name] = value
+        return options
+
+
+class CreateProjectRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    description: str = Field(default="", max_length=4096)
+    coordinator_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "An existing conversation to make the coordinator. It is tagged "
+            "as a member of the new project."
+        ),
+    )
+    coordinator: NewProjectCoordinator | None = Field(
+        default=None,
+        description=(
+            "Start a new, idle coordinator conversation with the project, with "
+            "the coordinator's project tools. Not with "
+            "coordinator_conversation_id."
+        ),
+    )
+    worker_agent_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. "
+            "Unset, they start from the user's active agent profile."
+        ),
+    )
+
+
+class UpdateProjectRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    description: str | None = Field(default=None, max_length=4096)
+    coordinator_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "A conversation to make the coordinator; it is tagged as a member. "
+            "An explicit null clears the coordinator and leaves the "
+            "conversation a member."
+        ),
+    )
+    worker_agent_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. An "
+            "explicit null goes back to the user's active agent profile."
+        ),
+    )
+
+
+class ProjectsListResponse(BaseModel):
+    projects: list[ProjectItem] = Field(default_factory=list)
+
+
+class ProjectConversation(BaseModel):
+    """A conversation in a project, with what it needs from the user."""
+
+    conversation_id: OpenHandsUUID
+    title: str | None = None
+    execution_status: ConversationExecutionStatus
+    attention: ProjectAttention
+    resolved: ResolvedBy | None = Field(
+        default=None,
+        description=(
+            "`user` when the user resolved the conversation, `auto` when its "
+            "own agent or the server's judge found nothing left for the user "
+            "(see `resolve_note`). Backed by the `resolved` tag; a new user message "
+            "clears it."
+        ),
+    )
+    resolve_note: str | None = Field(
+        default=None,
+        description=(
+            "While `resolved` is `auto`: why, in one short line. "
+            f"`{AGENT_RESOLVE_NOTE}` when the conversation's agent resolved it, "
+            "the judge's probability that nothing is left for the user and "
+            "what it thinks the user owes (`0.93 nothing`), or a critic "
+            "score (`0.95 critic`). Backed by the `resolvenote` tag."
+        ),
+    )
+    turn: TurnOutcome | None = Field(
+        default=None,
+        description=(
+            "How the agent's last run ended: `asked` when its final message "
+            "asked the user something, `answered` otherwise. Backed by the "
+            "`turn` tag; a new user message clears it."
+        ),
+    )
+    ask: str | None = Field(
+        default=None,
+        description=(
+            "While `turn` is `asked`: the question the agent stopped on, in one "
+            "short line (at most 200 characters). Backed by the `ask` tag; a "
+            "new user message clears it."
+        ),
+    )
+    automation_id: str | None = Field(
+        default=None,
+        description="The automation that started this conversation, if any.",
+    )
+    parent_conversation_id: OpenHandsUUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectConversationsResponse(BaseModel):
+    project_id: OpenHandsUUID
+    coordinator: ProjectConversation | None = Field(
+        default=None,
+        description="The coordinator conversation, when it is set and exists.",
+    )
+    conversations: list[ProjectConversation] = Field(
+        default_factory=list,
+        description=(
+            "Every other member conversation, grouped by attention "
+            "(needs_you, needs_input, working, finished, idle, resolved) and "
+            "newest-updated first within each group."
+        ),
+    )
+
+
+class DeleteResponse(BaseModel):
+    deleted: bool = True
+
+
+# Helpers
+
+
+_Stores = Annotated[ServerStores, Depends(get_stores)]
+
+
+def _store(stores: ServerStores) -> FileProjectsStore:
+    return stores.projects
+
+
+async def _load(store: FileProjectsStore) -> PersistedProjects:
+    try:
+        persisted = await asyncio.to_thread(store.load)
+    except OSError:
+        logger.error("Projects read failed - file I/O error")
+        raise OperationFailed("Failed to read projects")
+    if persisted is None:
+        # ``load()`` returns None both for a missing file and for one it cannot
+        # parse. Answering an empty list for the second would hide the user's
+        # data, so report it instead.
+        if store.exists():
+            raise Conflict("Projects file is corrupted")
+        persisted = PersistedProjects()
+    return persisted
+
+
+async def _update(
+    store: FileProjectsStore,
+    apply: Callable[[PersistedProjects], PersistedProjects],
+) -> PersistedProjects:
+    """Apply ``apply`` under the file lock, off the event loop.
+
+    ``apply`` may raise a domain error to refuse the change; nothing is
+    written then.
+    """
+    try:
+        return await asyncio.to_thread(store.update, apply)
+    except RuntimeError as e:
+        logger.error(f"Projects update blocked: {e}")
+        raise Conflict("Projects file is corrupted")
+    except OSError:
+        logger.error("Projects update failed - file I/O error")
+        raise OperationFailed("Failed to save projects")
+
+
+def _without(current: PersistedProjects, project_id: UUID) -> PersistedProjects:
+    remaining = [p for p in current.projects if p.id != project_id]
+    if len(remaining) == len(current.projects):
+        return current
+    return current.model_copy(update={"projects": remaining})
+
+
+def _find_or_none(persisted: PersistedProjects, project_id: UUID) -> ProjectItem | None:
+    return next((p for p in persisted.projects if p.id == project_id), None)
+
+
+def _find(persisted: PersistedProjects, project_id: UUID) -> ProjectItem:
+    for project in persisted.projects:
+        if project.id == project_id:
+            return project
+    raise NotFound("Project not found")
+
+
+def _check_not_coordinating_elsewhere(
+    persisted: PersistedProjects, project_id: UUID, conversation_id: UUID
+) -> None:
+    for project in persisted.projects:
+        if (
+            project.id != project_id
+            and project.coordinator_conversation_id == conversation_id
+        ):
+            raise Conflict("Conversation is the coordinator of another project")
+
+
+async def _require_conversation(
+    service: ConversationService, conversation_id: UUID
+) -> None:
+    if await service.get_event_service(conversation_id) is None:
+        raise NotFound("Conversation not found")
+
+
+async def _join(
+    service: ConversationService, project_id: UUID, conversation_id: UUID
+) -> bool:
+    """Tag the conversation as a member; ``False`` when it does not exist."""
+    tags = await service.set_conversation_tag(
+        conversation_id, PROJECT_TAG, project_id.hex
+    )
+    return tags is not None
+
+
+async def _join_or_undo(
+    service: ConversationService,
+    store: FileProjectsStore,
+    project_id: UUID,
+    conversation_id: UUID,
+    undo: Callable[[PersistedProjects], PersistedProjects],
+) -> None:
+    """Tag a coordinator just saved on a project; undo the save if that fails."""
+    try:
+        joined = await _join(service, project_id, conversation_id)
+    except Exception:
+        await _update(store, undo)
+        raise
+    if not joined:
+        await _update(store, undo)
+        raise NotFound("Conversation not found")
+
+
+def _replace_project(
+    current: PersistedProjects, project_id: UUID, update: dict
+) -> tuple[PersistedProjects, ProjectItem | None]:
+    projects = []
+    updated: ProjectItem | None = None
+    for project in current.projects:
+        if project.id == project_id:
+            project = project.model_copy(update={**update, "updated_at": utc_now()})
+            updated = project
+        projects.append(project)
+    if updated is None:
+        return current, None
+    return current.model_copy(update={"projects": projects}), updated
+
+
+def _tag_value(tags: dict[str, str], key: str, allowed: tuple[str, ...]) -> Any:
+    value = tags.get(key)
+    return value if value in allowed else None
+
+
+def _attention(
+    execution_status: ConversationExecutionStatus,
+    resolved: str | None,
+    turn: str | None,
+) -> ProjectAttention:
+    attention = _ATTENTION_BY_STATUS.get(execution_status, ProjectAttention.IDLE)
+    # A running conversation is working even if a resolve has not been cleared yet:
+    # the tag is removed just after the new user message.
+    if attention in (ProjectAttention.NEEDS_YOU, ProjectAttention.WORKING):
+        return attention
+    if resolved is not None:
+        return ProjectAttention.RESOLVED
+    # A finished turn that asked something; an idle (reloaded) one stays idle.
+    if execution_status == ConversationExecutionStatus.FINISHED and turn == "asked":
+        return ProjectAttention.NEEDS_INPUT
+    return attention
+
+
+def _conversation(
+    stored: StoredConversation, execution_status: ConversationExecutionStatus
+) -> ProjectConversation:
+    resolved = _tag_value(stored.tags, RESOLVED_TAG_KEY, ("user", "auto"))
+    turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asked", "answered"))
+    return ProjectConversation(
+        conversation_id=stored.id,
+        title=stored.title,
+        execution_status=execution_status,
+        attention=_attention(execution_status, resolved, turn),
+        resolved=resolved,
+        resolve_note=(stored.tags.get(RESOLVE_NOTE_TAG_KEY) or None)
+        if resolved == "auto"
+        else None,
+        turn=turn,
+        ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asked" else None,
+        automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
+        parent_conversation_id=stored.parent_conversation_id,
+        created_at=stored.created_at,
+        updated_at=stored.updated_at,
+    )
+
+
+# Routes
+
+
+@projects_router.get("", response_model=ProjectsListResponse)
+async def list_projects(stores: _Stores) -> ProjectsListResponse:
+    """List all projects, oldest first."""
+    return ProjectsListResponse(projects=list((await _load(_store(stores))).projects))
+
+
+@projects_router.post(
+    "",
+    response_model=ProjectItem,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {"description": "Coordinator conversation or agent profile not found"},
+        409: {"description": "Coordinator already leads another project"},
+    },
+)
+async def create_project(
+    stores: _Stores,
+    payload: CreateProjectRequest,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectItem:
+    """Create a project, with an existing or a new coordinator conversation, or none."""
+    if payload.coordinator is not None and payload.coordinator_conversation_id:
+        raise Unprocessable("Pass coordinator or coordinator_conversation_id, not both")
+    if (
+        payload.coordinator is not None
+        and payload.coordinator.agent_profile_id is not None
+    ):
+        await _require_agent_profile(stores, payload.coordinator.agent_profile_id)
+    store = _store(stores)
+    project = ProjectItem(
+        id=uuid4(),
+        name=payload.name,
+        description=payload.description,
+        coordinator_conversation_id=payload.coordinator_conversation_id,
+        worker_agent_profile_id=payload.worker_agent_profile_id,
+    )
+    coordinator_id = payload.coordinator_conversation_id
+    if coordinator_id is not None:
+        await _require_conversation(service, coordinator_id)
+    if payload.worker_agent_profile_id is not None:
+        await _require_agent_profile(stores, payload.worker_agent_profile_id)
+
+    def apply(current: PersistedProjects) -> PersistedProjects:
+        if coordinator_id is not None:
+            _check_not_coordinating_elsewhere(current, project.id, coordinator_id)
+        return current.model_copy(update={"projects": [*current.projects, project]})
+
+    await _update(store, apply)
+    # Tag only once the record exists, so a refused write leaves no tag for
+    # a project that was never saved.
+    if coordinator_id is not None:
+        await _join_or_undo(
+            service,
+            store,
+            project.id,
+            coordinator_id,
+            lambda current: _without(current, project.id),
+        )
+    if payload.coordinator is not None:
+        project = await _start_new_coordinator(
+            service, store, project, payload.coordinator
+        )
+    return project
+
+
+async def _start_new_coordinator(
+    service: ConversationService,
+    store: FileProjectsStore,
+    project: ProjectItem,
+    new: NewProjectCoordinator,
+) -> ProjectItem:
+    """Start the coordinator after the record exists; drop the record if it fails."""
+    try:
+        info = await service.start_project_coordinator(
+            project.id.hex,
+            new.working_dir,
+            agent_profile_id=new.agent_profile_id,
+            title=new.title,
+            options=new.start_options(),
+        )
+    except ValueError as exc:
+        await _update(store, lambda current: _without(current, project.id))
+        raise Unprocessable(str(exc)) from exc
+    except BaseException:
+        await _update(store, lambda current: _without(current, project.id))
+        raise
+    updated = project.model_copy(
+        update={"coordinator_conversation_id": info.id, "updated_at": utc_now()}
+    )
+
+    def apply(current: PersistedProjects) -> PersistedProjects:
+        return current.model_copy(
+            update={
+                "projects": [
+                    updated if p.id == project.id else p for p in current.projects
+                ]
+            }
+        )
+
+    await _update(store, apply)
+    return updated
+
+
+async def _require_agent_profile(stores: ServerStores, profile_id: UUID) -> None:
+    store = stores.agent_profiles
+
+    def exists() -> bool:
+        return store.name_for_id(profile_id) is not None
+
+    if not await asyncio.to_thread(exists):
+        raise NotFound(f"Agent profile {profile_id} not found")
+
+
+@projects_router.get(
+    "/{project_id}",
+    response_model=ProjectItem,
+    responses={404: {"description": "Project not found"}},
+)
+async def get_project(project_id: UUID, stores: _Stores) -> ProjectItem:
+    """Get one project."""
+    return _find(await _load(_store(stores)), project_id)
+
+
+@projects_router.patch(
+    "/{project_id}",
+    response_model=ProjectItem,
+    responses={
+        404: {
+            "description": (
+                "Project, coordinator conversation or agent profile not found"
+            )
+        },
+        409: {"description": "Coordinator already leads another project"},
+    },
+)
+async def update_project(
+    project_id: UUID,
+    stores: _Stores,
+    payload: UpdateProjectRequest,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectItem:
+    """Rename a project, change its description, or set or clear its coordinator."""
+    store = _store(stores)
+    previous = _find(await _load(store), project_id)
+
+    update: dict = {}
+    if payload.name is not None:
+        update["name"] = payload.name
+    if payload.description is not None:
+        update["description"] = payload.description
+    coordinator_id: UUID | None = None
+    if "coordinator_conversation_id" in payload.model_fields_set:
+        coordinator_id = payload.coordinator_conversation_id
+        if coordinator_id is not None:
+            await _require_conversation(service, coordinator_id)
+        update["coordinator_conversation_id"] = coordinator_id
+    if "worker_agent_profile_id" in payload.model_fields_set:
+        if payload.worker_agent_profile_id is not None:
+            await _require_agent_profile(stores, payload.worker_agent_profile_id)
+        update["worker_agent_profile_id"] = payload.worker_agent_profile_id
+
+    updated: ProjectItem | None = None
+
+    def apply(current: PersistedProjects) -> PersistedProjects:
+        nonlocal updated
+        if coordinator_id is not None:
+            _check_not_coordinating_elsewhere(current, project_id, coordinator_id)
+        changed, updated = _replace_project(current, project_id, update)
+        return changed
+
+    await _update(store, apply)
+    if updated is None:
+        # Deleted between the read above and the locked write.
+        raise NotFound("Project not found")
+    if coordinator_id is not None:
+        saved = updated
+
+        def undo(current: PersistedProjects) -> PersistedProjects:
+            # Undo only our own change: a later write to this project wins.
+            if _find_or_none(current, project_id) != saved:
+                return current
+            restore = previous.model_dump(
+                include={"name", "description", "coordinator_conversation_id"}
+            )
+            former = previous.coordinator_conversation_id
+            if former is not None and any(
+                p.coordinator_conversation_id == former
+                for p in current.projects
+                if p.id != project_id
+            ):
+                restore["coordinator_conversation_id"] = None
+            return _replace_project(current, project_id, restore)[0]
+
+        await _join_or_undo(service, store, project_id, coordinator_id, undo)
+    return updated
+
+
+@projects_router.delete(
+    "/{project_id}",
+    response_model=DeleteResponse,
+    responses={404: {"description": "Project not found"}},
+)
+async def delete_project(project_id: UUID, stores: _Stores) -> DeleteResponse:
+    """Delete a project.
+
+    Conversations are left as they are, including their ``project`` tag; the
+    project's conversations endpoint answers 404 afterwards. The project's artifacts
+    are deleted.
+    """
+    removed = False
+
+    def apply(current: PersistedProjects) -> PersistedProjects:
+        nonlocal removed
+        remaining = _without(current, project_id)
+        removed = remaining is not current
+        return remaining
+
+    await _update(_store(stores), apply)
+    if not removed:
+        raise NotFound("Project not found")
+    await asyncio.to_thread(_artifacts(stores).delete_project, project_id)
+    return DeleteResponse()
+
+
+@projects_router.get(
+    "/{project_id}/conversations",
+    response_model=ProjectConversationsResponse,
+    responses={404: {"description": "Project not found"}},
+)
+async def list_project_conversations(
+    project_id: UUID,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectConversationsResponse:
+    """List a project's conversations, grouped by what they need from the user.
+
+    ``attention`` is derived from ``execution_status``: waiting for
+    confirmation, paused, error and stuck are ``needs_you``; running is
+    ``working``; finished and idle are ``idle``: nothing runs and nothing
+    waits on the user, but it is not resolved either.
+    """
+    project = _find(await _load(_store(stores)), project_id)
+    members = await service.list_tagged_conversations(PROJECT_TAG, project_id.hex)
+
+    coordinator: ProjectConversation | None = None
+    conversations: list[ProjectConversation] = []
+    for stored, execution_status in members:
+        conversation = _conversation(stored, execution_status)
+        if stored.id == project.coordinator_conversation_id:
+            coordinator = conversation
+        else:
+            conversations.append(conversation)
+    # ``members`` is newest-updated first and ``sort`` is stable.
+    conversations.sort(
+        key=lambda conversation: _ATTENTION_ORDER[conversation.attention]
+    )
+    return ProjectConversationsResponse(
+        project_id=project.id, coordinator=coordinator, conversations=conversations
+    )
+
+
+@projects_router.put(
+    "/{project_id}/conversations/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        404: {"description": "Project or conversation not found"},
+        409: {"description": "Conversation is the coordinator of another project"},
+    },
+)
+async def add_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    """Add an existing conversation to a project. Idempotent.
+
+    Sets the conversation's ``project`` tag and keeps its other tags. A
+    conversation belongs to at most one project, so this moves it from any
+    other project, unless it coordinates that one.
+    """
+    persisted = await _load(_store(stores))
+    _find(persisted, project_id)
+    _check_not_coordinating_elsewhere(persisted, project_id, conversation_id)
+    if not await _join(service, project_id, conversation_id):
+        raise NotFound("Conversation not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@projects_router.delete(
+    "/{project_id}/conversations/{conversation_id}",
+    response_model=DeleteResponse,
+    responses={
+        404: {"description": "Project not found, or conversation not a member"},
+        409: {"description": "Conversation is the project's coordinator"},
+    },
+)
+async def remove_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> DeleteResponse:
+    """Remove a conversation from a project by clearing its ``project`` tag.
+
+    The conversation itself is not changed otherwise. Child conversations keep
+    their own tag. Clear the coordinator before removing it.
+    """
+    project = _find(await _load(_store(stores)), project_id)
+    if project.coordinator_conversation_id == conversation_id:
+        raise Conflict("Conversation is the project's coordinator")
+    try:
+        tags = await service.set_conversation_tag(
+            conversation_id, PROJECT_TAG, None, expected=project_id.hex
+        )
+    except ValueError:
+        tags = None
+    if tags is None:
+        raise NotFound("Conversation not in project")
+    return DeleteResponse()
+
+
+class ResolveConversationRequest(BaseModel):
+    by: Literal["user", "agent"] = Field(
+        default="user",
+        description=(
+            "Who resolves. `user` (the user) sets `resolved=user`. `agent` is "
+            "the conversation's own agent, through its resolve_conversation "
+            f"tool: `resolved=auto` with the note `{AGENT_RESOLVE_NOTE}`, and "
+            "never over the user's own resolve."
+        ),
+    )
+
+
+async def _set_member_resolved(
+    project_id: UUID,
+    conversation_id: UUID,
+    stores: ServerStores,
+    service: ConversationService,
+    resolved: bool,
+    by: Literal["user", "agent"] = "user",
+) -> Response:
+    _find(await _load(_store(stores)), project_id)
+    info = await service.get_conversation(conversation_id)
+    if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
+        raise NotFound("Conversation not in project")
+    if resolved and by == "agent":
+        # The agent is inside its own tool call: answer at once (see
+        # ConversationService.resolve_for_agent).
+        service.resolve_for_agent(conversation_id)
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    if await service.set_resolved(conversation_id, resolved, by=by) is None:
+        raise NotFound("Conversation not in project")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@projects_router.post(
+    "/{project_id}/conversations/{conversation_id}/resolve",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        202: {"description": "`by=agent`: accepted; the tags change at once"},
+        404: {"description": "Project not found, or conversation not a member"},
+    },
+)
+async def resolve_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    stores: _Stores,
+    body: ResolveConversationRequest | None = None,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    """Resolve a member: for the user (``resolved=user``) by default, or for
+    its own agent (``by=agent``: ``resolved=auto``, note ``agent``). Idempotent.
+
+    The user's resolve replaces an automatic one and its note; the agent's
+    never replaces the user's, and answers 202 without waiting, because the
+    agent calls it from inside its own tool call. The user's next message in
+    the conversation reopens it, as before.
+    """
+    by = body.by if body is not None else "user"
+    return await _set_member_resolved(
+        project_id, conversation_id, stores, service, True, by
+    )
+
+
+@projects_router.post(
+    "/{project_id}/conversations/{conversation_id}/reopen",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "Project not found, or conversation not a member"}},
+)
+async def reopen_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    """Reopen a resolved member: removes ``resolved`` and its note. Idempotent."""
+    return await _set_member_resolved(
+        project_id, conversation_id, stores, service, False
+    )
+
+
+class ProjectTranscriptMessage(BaseModel):
+    id: str
+    source: str = Field(description="`user`, `agent` or `environment`.")
+    sender: str | None = Field(
+        default=None,
+        description="`conversation:<id hex>` when another conversation sent it.",
+    )
+    text: str = Field(description="The message text, cut at 4000 characters.")
+    finish: bool = Field(
+        default=False, description="True for the agent's `finish` message."
+    )
+    timestamp: str
+
+
+class ProjectTranscriptResponse(BaseModel):
+    conversation_id: OpenHandsUUID
+    messages: list[ProjectTranscriptMessage] = Field(
+        default_factory=list, description="Oldest first."
+    )
+
+
+_TRANSCRIPT_TEXT_MAX = 4000
+
+
+def _transcript(events: list[Event], limit: int) -> list[ProjectTranscriptMessage]:
+    messages: list[ProjectTranscriptMessage] = []
+    for event in reversed(events):
+        if len(messages) >= limit:
+            break
+        if isinstance(event, MessageEvent):
+            text, finish, sender = extract_message_text(event), False, event.sender
+        elif (
+            isinstance(event, ActionEvent)
+            and event.source == "agent"
+            and isinstance(event.action, FinishAction)
+        ):
+            text, finish, sender = event.action.message, True, None
+        else:
+            continue
+        text = (text or "").strip()
+        if len(text) > _TRANSCRIPT_TEXT_MAX:
+            text = text[:_TRANSCRIPT_TEXT_MAX].rstrip() + " [... cut]"
+        messages.append(
+            ProjectTranscriptMessage(
+                id=event.id,
+                source=event.source,
+                sender=sender,
+                text=text,
+                finish=finish,
+                timestamp=str(event.timestamp),
+            )
+        )
+    messages.reverse()
+    return messages
+
+
+@projects_router.get(
+    "/{project_id}/conversations/{conversation_id}/messages",
+    responses={404: {"description": "Project or conversation not found"}},
+)
+async def read_project_conversation(
+    project_id: UUID,
+    conversation_id: UUID,
+    stores: _Stores,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectTranscriptResponse:
+    """The latest messages of a project member, without its tool calls.
+
+    Lists the user's, the agent's and other conversations' messages and the
+    agent's `finish` on the active branch, oldest first, so a coordinator can
+    catch up on a conversation without reading every event.
+    """
+    _find(await _load(_store(stores)), project_id)
+    event_service = await service.get_event_service(conversation_id)
+    if (
+        event_service is None
+        or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
+    ):
+        raise NotFound("Conversation not in project")
+    conversation = event_service.get_conversation()
+    # Event log reads are safe without the state lock: events are append-only.
+    events = await asyncio.to_thread(conversation.state.active_branch)
+    return ProjectTranscriptResponse(
+        conversation_id=conversation_id, messages=_transcript(events, limit)
+    )
+
+
+# Artifacts
+
+
+class ProjectArtifactsResponse(BaseModel):
+    artifacts: list[ProjectArtifact] = Field(
+        default_factory=list, description="Newest-updated first."
+    )
+
+
+class SaveConversationArtifactRequest(BaseModel):
+    conversation_id: UUID = Field(
+        description="A member conversation whose workspace holds the file."
+    )
+    path: str = Field(
+        min_length=1,
+        description=(
+            "The file, relative to the conversation's working directory or "
+            "absolute inside it."
+        ),
+    )
+    name: str | None = Field(
+        default=None,
+        description="The artifact's name; the file's own name when left out.",
+    )
+
+
+def _artifacts(stores: ServerStores) -> ProjectArtifactStore:
+    return ProjectArtifactStore(_store(stores).persistence_dir)
+
+
+def _artifact_name(name: str) -> str:
+    if not valid_artifact_name(name):
+        raise Invalid(
+            "Invalid artifact name: use a flat file name of letters, "
+            "digits, spaces and ._()+-, not starting with a dot"
+        )
+    return name
+
+
+async def _save_artifact(
+    store: ProjectArtifactStore,
+    project_id: UUID,
+    name: str,
+    stream: BinaryIO,
+    *,
+    source: ArtifactSource,
+    conversation_id: UUID | None = None,
+) -> ProjectArtifact:
+    try:
+        return await asyncio.to_thread(
+            store.save,
+            project_id,
+            name,
+            stream,
+            source=source,
+            conversation_id=conversation_id,
+        )
+    except ArtifactTooLarge:
+        raise TooLarge(f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes")
+    except ArtifactNameTaken as e:
+        raise Conflict(f"Artifact {str(e)!r} differs from this name only in case")
+
+
+@projects_router.get(
+    "/{project_id}/artifacts",
+    response_model=ProjectArtifactsResponse,
+    responses={404: {"description": "Project not found"}},
+)
+async def list_project_artifacts(
+    project_id: UUID, stores: _Stores
+) -> ProjectArtifactsResponse:
+    """List the files the user uploaded to the project or its agents saved."""
+    _find(await _load(_store(stores)), project_id)
+    artifacts = await asyncio.to_thread(_artifacts(stores).list, project_id)
+    return ProjectArtifactsResponse(artifacts=artifacts)
+
+
+@projects_router.post(
+    "/{project_id}/artifacts",
+    response_model=ProjectArtifact,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {"description": "Invalid artifact name"},
+        404: {"description": "Project not found"},
+        413: {"description": "File too large"},
+    },
+)
+async def upload_project_artifact(
+    project_id: UUID,
+    stores: _Stores,
+    file: Annotated[UploadFile, File()],
+    name: Annotated[str | None, Form()] = None,
+) -> ProjectArtifact:
+    """Upload a file to the project. An artifact of the same name is replaced."""
+    _find(await _load(_store(stores)), project_id)
+    # Starlette has already spooled the body; still refuse an oversized one
+    # before copying it again.
+    if (file.size or 0) > MAX_ARTIFACT_BYTES:
+        raise TooLarge(f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes")
+    artifact_name = _artifact_name(name or Path(file.filename or "").name)
+    return await _save_artifact(
+        _artifacts(stores), project_id, artifact_name, file.file, source="user"
+    )
+
+
+@projects_router.post(
+    "/{project_id}/artifacts/from-conversation",
+    response_model=ProjectArtifact,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {"description": "Invalid name, or path outside the workspace"},
+        404: {"description": "Project not found, or conversation not a member"},
+        413: {"description": "File too large"},
+    },
+)
+async def save_conversation_artifact(
+    project_id: UUID,
+    payload: SaveConversationArtifactRequest,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectArtifact:
+    """Copy a file from a member conversation's workspace into the project.
+
+    The path must stay inside the conversation's working directory, symlinks
+    included. An artifact of the same name is replaced.
+    """
+    _find(await _load(_store(stores)), project_id)
+    event_service = await service.get_event_service(payload.conversation_id)
+    if (
+        event_service is None
+        or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
+    ):
+        raise NotFound("Conversation not in project")
+    working_dir = Path(event_service.stored.workspace.working_dir)
+    try:
+        stream = await asyncio.to_thread(open_workspace_file, working_dir, payload.path)
+    except ValueError as e:
+        raise Invalid(str(e))
+    with stream:
+        artifact_name = _artifact_name(payload.name or Path(payload.path).name)
+        return await _save_artifact(
+            _artifacts(stores),
+            project_id,
+            artifact_name,
+            stream,
+            source="agent",
+            conversation_id=payload.conversation_id,
+        )
+
+
+@projects_router.get(
+    "/{project_id}/artifacts/{name}",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            }
+        },
+        404: {"description": "Project or artifact not found"},
+    },
+)
+async def download_project_artifact(
+    project_id: UUID, name: str, stores: _Stores
+) -> FileResponse:
+    """Download an artifact as an attachment.
+
+    Like the workspace file and trajectory downloads, it is sent as
+    ``application/octet-stream`` with ``Content-Disposition: attachment``, so
+    an uploaded HTML or SVG file is saved, never rendered from the server's
+    origin.
+    """
+    update_last_execution_time()
+    _find(await _load(_store(stores)), project_id)
+    found = await asyncio.to_thread(
+        _artifacts(stores).get, project_id, _artifact_name(name)
+    )
+    if found is None:
+        raise NotFound("Artifact not found")
+    artifact, path = found
+    return FileResponse(
+        path=path,
+        filename=artifact.name,
+        media_type="application/octet-stream",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+@projects_router.delete(
+    "/{project_id}/artifacts/{name}",
+    response_model=DeleteResponse,
+    responses={404: {"description": "Project or artifact not found"}},
+)
+async def delete_project_artifact(
+    project_id: UUID, name: str, stores: _Stores
+) -> DeleteResponse:
+    """Delete an artifact."""
+    _find(await _load(_store(stores)), project_id)
+    if not await asyncio.to_thread(
+        _artifacts(stores).delete, project_id, _artifact_name(name)
+    ):
+        raise NotFound("Artifact not found")
+    return DeleteResponse()
+
+
+# Memory
+
+
+class ProjectMemoryResponse(BaseModel):
+    files: list[MemoryFile] = Field(
+        default_factory=list, description="`MEMORY.md` first, then topic files."
+    )
+
+
+class WriteMemoryRequest(BaseModel):
+    content: str = Field(description="The whole new file.")
+    base_revision: str | None = Field(
+        default=None,
+        description=(
+            "The revision this change is based on, from the last read; leave it "
+            "out (or null) to create a new file. A different current revision "
+            "answers 409 with the current file to merge."
+        ),
+    )
+
+
+def _memory(stores: ServerStores) -> ProjectMemoryStore:
+    return ProjectMemoryStore(_store(stores).persistence_dir)
+
+
+def _memory_name(name: str) -> str:
+    if not valid_memory_name(name):
+        raise Invalid(
+            f"Memory files are {MEMORY_INDEX} or lowercase names of "
+            "letters, digits and ._- ending in .md"
+        )
+    return name
+
+
+def _memory_conflict(exc: MemoryConflict) -> Conflict:
+    return Conflict(
+        {
+            "message": "The memory file changed since that revision",
+            "current": exc.current.model_dump(mode="json") if exc.current else None,
+        }
+    )
+
+
+@projects_router.get(
+    "/{project_id}/memory",
+    response_model=ProjectMemoryResponse,
+    responses={404: {"description": "Project not found"}},
+)
+async def list_project_memory(
+    project_id: UUID, stores: _Stores
+) -> ProjectMemoryResponse:
+    """List the project's memory files."""
+    _find(await _load(_store(stores)), project_id)
+    return ProjectMemoryResponse(
+        files=await asyncio.to_thread(_memory(stores).list, project_id)
+    )
+
+
+@projects_router.get(
+    "/{project_id}/memory/{name}",
+    response_model=MemoryFileContent,
+    responses={404: {"description": "Project or memory file not found"}},
+)
+async def read_project_memory(
+    project_id: UUID, name: str, stores: _Stores
+) -> MemoryFileContent:
+    """Read one memory file with its revision."""
+    _find(await _load(_store(stores)), project_id)
+    found = await asyncio.to_thread(_memory(stores).get, project_id, _memory_name(name))
+    if found is None:
+        raise NotFound("Memory file not found")
+    return found
+
+
+@projects_router.put(
+    "/{project_id}/memory/{name}",
+    response_model=MemoryFileContent,
+    responses={
+        404: {"description": "Project not found"},
+        409: {"description": "Stale base_revision; the body has the current file"},
+        413: {"description": "The file is too large"},
+    },
+)
+async def write_project_memory(
+    project_id: UUID, name: str, payload: WriteMemoryRequest, stores: _Stores
+) -> MemoryFileContent:
+    """Create or replace a memory file, based on the revision last read."""
+    _find(await _load(_store(stores)), project_id)
+    try:
+        return await asyncio.to_thread(
+            _memory(stores).write,
+            project_id,
+            _memory_name(name),
+            payload.content,
+            payload.base_revision,
+        )
+    except MemoryConflict as exc:
+        raise _memory_conflict(exc)
+    except MemoryTooLarge as exc:
+        raise TooLarge(str(exc))
+
+
+@projects_router.delete(
+    "/{project_id}/memory/{name}",
+    response_model=DeleteResponse,
+    responses={
+        404: {"description": "Project or memory file not found"},
+        409: {"description": "Stale base_revision; the body has the current file"},
+    },
+)
+async def delete_project_memory(
+    project_id: UUID,
+    name: str,
+    stores: _Stores,
+    base_revision: Annotated[str | None, Query()] = None,
+) -> DeleteResponse:
+    """Delete a memory file; with ``base_revision``, only if it is unchanged."""
+    _find(await _load(_store(stores)), project_id)
+    try:
+        deleted = await asyncio.to_thread(
+            _memory(stores).delete, project_id, _memory_name(name), base_revision
+        )
+    except MemoryConflict as exc:
+        raise _memory_conflict(exc)
+    if not deleted:
+        raise NotFound("Memory file not found")
+    return DeleteResponse()

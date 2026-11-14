@@ -28,7 +28,7 @@ conversation = Conversation()
 tools = TerminalTool.create(
     conv_state=conversation.state,
     terminal_type="subprocess",
-    shell_path="/usr/local/bin/bash"
+    shell_path="/usr/local/bin/bash",
 )
 ```
 
@@ -104,9 +104,7 @@ if not bash_path:
     raise RuntimeError("bash not found in PATH")
 
 tools = TerminalTool.create(
-    conv_state=conversation.state,
-    terminal_type="subprocess",
-    shell_path=bash_path
+    conv_state=conversation.state, terminal_type="subprocess", shell_path=bash_path
 )
 ```
 
@@ -122,7 +120,7 @@ You can force a specific type using the `terminal_type` parameter:
 ```python
 tools = TerminalTool.create(
     conv_state=conversation.state,
-    terminal_type="subprocess"  # or "tmux"
+    terminal_type="subprocess",  # or "tmux"
 )
 ```
 
@@ -133,17 +131,14 @@ tools = TerminalTool.create(
 ```python
 tools = TerminalTool.create(
     conv_state=conversation.state,
-    no_change_timeout_seconds=60  # Wait 60 seconds instead of default 10
+    no_change_timeout_seconds=60,  # Wait 60 seconds instead of default 10
 )
 ```
 
 ### Username
 
 ```python
-tools = TerminalTool.create(
-    conv_state=conversation.state,
-    username="myuser"
-)
+tools = TerminalTool.create(conv_state=conversation.state, username="myuser")
 ```
 
 ## Troubleshooting
@@ -165,8 +160,7 @@ This means bash is not available in your system's PATH. Solutions:
 2. If bash is installed but not in PATH, pass the explicit path when creating the tool:
    ```python
    tools = TerminalTool.create(
-       conv_state=conversation.state,
-       shell_path="/usr/local/bin/bash"
+       conv_state=conversation.state, shell_path="/usr/local/bin/bash"
    )
    ```
 

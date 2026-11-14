@@ -1,14 +1,15 @@
 import asyncio
+import functools
 import importlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -26,10 +27,14 @@ from openhands.agent_server.event_service import (
     RunSlot,
 )
 from openhands.agent_server.experimental_features import (
+    PROJECT_TOOL_NAMES,
     experimental_feature_tools,
+    experimental_feature_withheld_tools,
+    feature_enabled_now,
     host_experimental_features,
 )
 from openhands.agent_server.launch import (
+    LaunchFailure,
     is_codex_source,
     launch_source,
     live_launch_runtime,
@@ -55,7 +60,29 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.persistence.models import ProjectItem
+from openhands.agent_server.project_board import (
+    AGENT_RESOLVE_NOTE,
+    ConversationOutcomeSubscriber,
+)
+from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
+from openhands.agent_server.project_profiles import ensure_project_profile
+from openhands.agent_server.project_prompts import (
+    SenderRole,
+    project_context,
+    sender_header,
+    without_worker_guidance,
+)
+from openhands.agent_server.project_wake import (
+    conversation_context,
+    latest_turn_start,
+    notify_coordinator,
+    notify_coordinator_of_stop,
+    reconcile_coordinator_updates,
+    relay_user_message,
+)
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.resolution_judge import make_resolution_judge
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
     ConversationTelemetryContext,
@@ -70,9 +97,15 @@ from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.persistence_const import BASE_STATE
-from openhands.sdk.conversation.request import ConversationWorktreeOptions
+from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
+    ConversationConfig,
+    ConversationWorktreeOptions,
+)
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -80,6 +113,13 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
+)
+from openhands.sdk.conversation.types import (
+    BOARD_TAG_KEYS,
+    PROJECT_TAG_KEY,
+    RESOLVE_NOTE_TAG_KEY,
+    RESOLVED_TAG_KEY,
+    conversation_sender,
 )
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
@@ -96,6 +136,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.tool import Tool
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -417,8 +458,14 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    state_fields = state.model_dump(mode="json")
+    # ``meta.json`` gets new tags at once; ``base_state.json`` only on the
+    # state's next save, which a run that holds the state lock (e.g. while an
+    # LLM call retries) can delay. Read tags from the metadata so a PATCH is
+    # visible right away.
+    state_fields["tags"] = dict(stored.tags)
     return ConversationInfo(
-        **state.model_dump(mode="json"),
+        **state_fields,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -578,6 +625,134 @@ class _ConversationRecord:
     stored_signature: int | None = None
 
 
+PROJECT_MEMBER_TOOLS = (
+    "write_artifact",
+    "read_artifact",
+    "list_artifacts",
+    "read_project_memory",
+    "update_project_memory",
+)
+"""Tools every project conversation gets: save deliverables and keep the
+project's memory."""
+
+
+PROJECT_WORKER_TOOLS = (*PROJECT_MEMBER_TOOLS, "resolve_conversation")
+"""Tools the server adds to a conversation a project member starts. Workers
+also resolve their own conversation when nothing is left in it; the
+coordinator is not on the board, so it does not."""
+
+
+PROJECT_COORDINATOR_TOOLS = (
+    "list_project_conversations",
+    "message_project_conversation",
+    "read_project_conversation",
+    "start_child_conversation",
+    *PROJECT_MEMBER_TOOLS,
+)
+"""Tools the server adds to a coordinator it starts with a new project."""
+
+
+async def _logged_turn_sender(event_service: EventService) -> str | None:
+    """``sender`` of the latest message that started a turn, from the log.
+
+    For an outcome subscriber that did not see the turn begin (the server
+    restarted in between); ``None`` means the user, or no turn found.
+    """
+    start = await latest_turn_start(event_service)
+    return start.sender if start is not None else None
+
+
+RESERVED_TAG_KEYS = BOARD_TAG_KEYS | {PROJECT_TAG_KEY}
+"""Tags the server owns: project membership and the board's state.
+
+A client's tag ``PATCH`` keeps their current values (see :func:`_client_tags`);
+the projects routes change them.
+"""
+
+
+def _client_tags(current: Mapping[str, str], requested: Mapping[str, str]) -> dict:
+    """The tags a client's full-set ``PATCH`` leaves on a conversation.
+
+    The reserved keys keep their current values, so a client that read the
+    tags a moment ago cannot undo a board update made since, nor set board
+    state or membership. Resolving goes through the project's resolve and
+    reopen routes.
+    """
+    tags = {k: v for k, v in requested.items() if k not in RESERVED_TAG_KEYS}
+    for key in RESERVED_TAG_KEYS:
+        if key in current:
+            tags[key] = current[key]
+    return tags
+
+
+def _coordinator_profile_id(stores: ServerStores) -> UUID | None:
+    """The predefined coordinator profile, or the user's active one."""
+    return ensure_project_profile("coordinator", stores) or _active_agent_profile_id(
+        stores
+    )
+
+
+def _active_agent_profile_id(stores: ServerStores) -> UUID | None:
+    settings = stores.settings.load() or PersistedSettings()
+    active = settings.active_agent_profile_id
+    return UUID(str(active)) if active else None
+
+
+def _load_project(stores: ServerStores, project_hex: str) -> ProjectItem | None:
+    persisted = stores.projects.load()
+    return next(
+        (
+            p
+            for p in (persisted.projects if persisted else [])
+            if p.id.hex == project_hex
+        ),
+        None,
+    )
+
+
+async def _project_prompt(
+    stores: ServerStores | None,
+    project_hex: str,
+    started_by: tuple[str | None, UUID] | None,
+) -> tuple[str | None, SenderRole]:
+    """The ``<PROJECT>`` block for a conversation of ``project_hex``.
+
+    ``started_by`` is the title and id of the conversation that starts a
+    worker, or ``None`` for the coordinator. Returns the block's body (``None``
+    when the project cannot be read) and how the starter relates to the
+    project, for the header of the worker's brief.
+    """
+    try:
+        project = (
+            await asyncio.to_thread(_load_project, stores, project_hex)
+            if stores is not None
+            else None
+        )
+    except (OSError, ValueError):
+        logger.warning("Projects unreadable; no project context for %s", project_hex)
+        project = None
+    role: SenderRole = "member"
+    if started_by is not None and project is not None:
+        if project.coordinator_conversation_id == started_by[1]:
+            role = "coordinator"
+    if project is None or stores is None:
+        return None, role
+    memory = None
+    try:
+        store = ProjectMemoryStore(stores.projects.persistence_dir)
+        index = await asyncio.to_thread(store.get, project.id, MEMORY_INDEX)
+        memory = index.content if index is not None else None
+    except (ValueError, OSError):
+        logger.warning("Project memory unreadable for project %s", project_hex)
+    context = project_context(
+        project.name,
+        project.description,
+        started_by=None if started_by is None else (*started_by, role),
+        memory=memory,
+    )
+    return context, role
+
+
 @dataclass
 class ConversationService:
     """Manage persisted conversations and their live runtimes.
@@ -618,11 +793,21 @@ class ConversationService:
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
     )
+    # Per conversation: serializes ``set_conversation_tag``'s read-merge-write.
+    _tag_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
+        default_factory=WeakValueDictionary, init=False
+    )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+    # Agent resolves still writing; kept so they are not garbage collected.
+    _agent_resolves: set[asyncio.Task] = field(default_factory=set, init=False)
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
+    # Set by get_instance(), once the projects store has its config: catch up
+    # on coordinator updates a restart left undelivered.
+    reconcile_projects_on_start: bool = False
+    _reconcile_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
@@ -1586,8 +1771,19 @@ class ConversationService:
         conversation_id: UUID,
         run_slot: RunSlot,
         *,
+        title: str | None = None,
+        initial_sender: str | None = None,
+        server_tools: Sequence[Tool] = (),
         gateway_run: bool = False,
+        reuse_existing: bool = True,
     ) -> tuple[ConversationInfo, bool]:
+        """Create a conversation from ``request``.
+
+        A project worker passes the rest: ``title``, the ``initial_sender`` of
+        its first message, and ``server_tools`` the server adds to its agent.
+        Without ``reuse_existing``, an id another create took meanwhile is
+        refused instead of reused.
+        """
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:
@@ -1690,8 +1886,11 @@ class ConversationService:
                 ),
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
-                client_tools=client_tools,
+                client_tools=[*client_tools, *server_tools],
                 experimental_feature_tools=experimental_feature_tools(
+                    experimental_features
+                ),
+                withheld_tools=experimental_feature_withheld_tools(
                     experimental_features
                 ),
                 load_memory=load_memory,
@@ -1784,6 +1983,8 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
+        if title is not None:
+            stored = stored.model_copy(update={"title": title})
         initial_message = request.initial_message
         return await self._launch_prepared_conversation(
             stored,
@@ -1795,7 +1996,8 @@ class ConversationService:
                 if initial_message
                 else None
             ),
-            reuse_request=request,
+            initial_sender=initial_sender,
+            reuse_request=request if reuse_existing else None,
             max_budget_per_run=request.max_budget_per_run,
         )
 
@@ -1806,6 +2008,7 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
         gateway_run: bool = False,
@@ -1846,7 +2049,9 @@ class ConversationService:
             )
         try:
             if initial_message is not None:
-                await event_service.send_message(initial_message, False)
+                await event_service.send_message(
+                    initial_message, False, sender=initial_sender
+                )
                 await event_service.run(run_slot=run_slot)
 
             state = await event_service.get_state()
@@ -2036,6 +2241,169 @@ class ConversationService:
         )
         return True
 
+    async def update_conversation_from_client(
+        self, conversation_id: UUID, request: UpdateConversationRequest
+    ) -> bool:
+        """``update_conversation`` for a client's ``PATCH``.
+
+        Its tags are merged under the conversation's tag lock, so the
+        server-owned keys (:data:`RESERVED_TAG_KEYS`) keep their values; see
+        :func:`_client_tags`.
+        """
+        if request.tags is None:
+            return await self.update_conversation(conversation_id, request)
+        async with self._tag_lock(conversation_id):
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return False
+            tags = _client_tags(event_service.stored.tags, request.tags)
+            return await self.update_conversation(
+                conversation_id, request.model_copy(update={"tags": tags})
+            )
+
+    async def set_resolved(
+        self,
+        conversation_id: UUID,
+        resolved: bool,
+        *,
+        by: Literal["user", "agent"] = "user",
+    ) -> dict[str, str] | None:
+        """Resolve a conversation, or reopen it.
+
+        The user's resolve (``by="user"``) sets ``resolved=user``; the
+        conversation's own agent (``by="agent"``) sets ``resolved=auto`` with
+        the note :data:`AGENT_RESOLVE_NOTE`, unless the user already resolved
+        it. Otherwise the auto-resolve note goes. Returns the tags after the
+        change, or ``None`` when the conversation does not exist.
+        """
+        async with self._tag_lock(conversation_id):
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return None
+            current = dict(event_service.stored.tags)
+            if resolved and by == "agent" and current.get(RESOLVED_TAG_KEY) == "user":
+                return current
+            tags = dict(current)
+            tags.pop(RESOLVE_NOTE_TAG_KEY, None)
+            tags.pop(RESOLVED_TAG_KEY, None)
+            if resolved and by == "agent":
+                tags[RESOLVED_TAG_KEY] = "auto"
+                tags[RESOLVE_NOTE_TAG_KEY] = AGENT_RESOLVE_NOTE
+            elif resolved:
+                tags[RESOLVED_TAG_KEY] = "user"
+            if tags != current:
+                await self.update_conversation(
+                    conversation_id, UpdateConversationRequest(tags=tags)
+                )
+            return dict(event_service.stored.tags)
+
+    def resolve_for_agent(self, conversation_id: UUID) -> None:
+        """Resolve a conversation for its own agent, without waiting.
+
+        The agent asks from inside a tool call, and a running conversation
+        holds its state lock for the whole call, so waiting for the state's
+        copy of the tags would hold the call until it times out. The tags
+        are saved first, so the board sees the resolve at once; the state's
+        copy follows when the tool call ends.
+        """
+
+        async def resolve() -> None:
+            try:
+                await self.set_resolved(conversation_id, True, by="agent")
+            except Exception:
+                logger.warning(
+                    "Agent resolve failed for conversation %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+
+        task = asyncio.create_task(resolve())
+        self._agent_resolves.add(task)
+        task.add_done_callback(self._agent_resolves.discard)
+
+    def _tag_lock(self, conversation_id: UUID) -> asyncio.Lock:
+        lock = self._tag_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._tag_locks[conversation_id] = lock
+        return lock
+
+    async def list_tagged_conversations(
+        self, key: str, value: str
+    ) -> list[tuple[StoredConversation, ConversationExecutionStatus]]:
+        """Return conversations whose tag ``key`` equals ``value``.
+
+        Reads the in-memory catalog with refreshed execution statuses, as the
+        status-filtered search does, so no full ``ConversationState`` is
+        loaded. Results are newest-updated first; deleting conversations are
+        left out.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        await self._reconcile_active_records()
+        await self._refresh_execution_statuses()
+        matches = [
+            (record.stored, record.execution_status)
+            for record in self._conversation_records.values()
+            if record.stored.tags.get(key) == value
+            and record.execution_status != ConversationExecutionStatus.DELETING
+        ]
+        matches.sort(key=lambda item: item[0].updated_at, reverse=True)
+        return matches
+
+    async def set_conversation_tag(
+        self,
+        conversation_id: UUID,
+        key: str,
+        value: str | None,
+        *,
+        expected: str | None = None,
+        only_if_absent: bool = False,
+    ) -> dict[str, str] | None:
+        """Set or remove one tag, keeping the conversation's other tags.
+
+        ``UpdateConversationRequest.tags`` replaces the whole set, so callers
+        that change a single tag would otherwise race each other. Changes made
+        here are serialized; a concurrent ``PATCH`` of the full set still
+        replaces it.
+
+        Args:
+            conversation_id: The conversation to change.
+            key: The tag key.
+            value: The new value, or ``None`` to remove the tag.
+            expected: When given, change the tag only if it currently holds
+                this value.
+            only_if_absent: Change nothing when the tag is already set.
+
+        Returns:
+            The conversation's tags after the change, or ``None`` when the
+            conversation does not exist.
+
+        Raises:
+            ValueError: If ``expected`` is given and does not match.
+        """
+        async with self._tag_lock(conversation_id):
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return None
+            tags = dict(event_service.stored.tags)
+            if expected is not None and tags.get(key) != expected:
+                raise ValueError(f"Tag '{key}' does not hold the expected value")
+            if only_if_absent and key in tags:
+                return tags
+            if value is None:
+                if key not in tags:
+                    return tags
+                del tags[key]
+            else:
+                if tags.get(key) == value:
+                    return tags
+                tags[key] = value
+            await self.update_conversation(
+                conversation_id, UpdateConversationRequest(tags=tags)
+            )
+            return dict(event_service.stored.tags)
+
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
 
@@ -2186,6 +2554,228 @@ class ConversationService:
             fork_event_service.stored, state, self._children_of(fork_conv_id)
         )
 
+    async def _projects_enabled(self) -> bool:
+        """Whether the user has Projects on right now."""
+        return await feature_enabled_now(
+            "projects", self.stores.settings if self.stores else None
+        )
+
+    async def _project_worker_profile(
+        self, parent_stored: StoredConversation
+    ) -> UUID | None:
+        """The agent profile a project member's new conversation starts from.
+
+        A conversation a project member starts is a normal conversation of
+        the user's, not a copy of its parent: it runs the project's
+        ``worker_agent_profile_id``, or else the user's active agent
+        profile. ``None`` (no project, no profile, or a workspace a normal
+        start cannot take) keeps the copy of the parent's agent.
+        """
+        project_hex = parent_stored.tags.get(PROJECT_TAG_KEY)
+        stores = self.stores
+        if (
+            stores is None
+            or not project_hex
+            or not isinstance(parent_stored.workspace, LocalWorkspace)
+        ):
+            return None
+
+        def lookup() -> UUID | None:
+            try:
+                project_id = UUID(hex=project_hex)
+            except ValueError:
+                return None
+            persisted = stores.projects.load()
+            project = next(
+                (
+                    p
+                    for p in (persisted.projects if persisted else [])
+                    if p.id == project_id
+                ),
+                None,
+            )
+            if project is not None and project.worker_agent_profile_id is not None:
+                return project.worker_agent_profile_id
+            predefined = ensure_project_profile("worker", stores)
+            if predefined is not None:
+                return predefined
+            return _active_agent_profile_id(stores)
+
+        try:
+            return await asyncio.to_thread(lookup)
+        except Exception:
+            logger.warning(
+                "Cannot choose a worker agent profile for project %s; the new "
+                "conversation copies its parent's agent",
+                project_hex,
+                exc_info=True,
+            )
+            return None
+
+    async def _start_project_worker(
+        self,
+        parent_service: EventService,
+        request: StartChildConversationRequest,
+        profile_id: UUID,
+        run_slot: RunSlot,
+    ) -> StartChildConversationResponse:
+        """Start a project member's new conversation from an agent profile.
+
+        It keeps what makes it part of the project: the ``project`` tag, the
+        parent's workspace (in a worktree when asked), the parent link, the
+        user's confirmation policy, plugins, hooks and secrets, the parent
+        as sender of the task (with a header saying so), the worker's prompt
+        and project context, and the project tools a worker uses.
+        It does not take the parent's agent, launch additions or client tools.
+        """
+        parent_stored = parent_service.stored
+        parent_id = parent_stored.id
+        child_id = uuid4()
+        context, role = await _project_prompt(
+            self.stores,
+            parent_stored.tags[PROJECT_TAG_KEY],
+            (parent_stored.title, parent_id),
+        )
+        config = {
+            name: getattr(parent_stored, name)
+            for name in ConversationConfig.model_fields
+        }
+        config.update(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            worktree=request.isolation == "worktree",
+            worktree_options=None,
+            secrets_encrypted=False,
+            client_tools=[],
+            agent_launch_additions=AgentLaunchAdditions(
+                prompt_preset=PromptPreset.PROJECT_WORKER,
+                project_context=context,
+            ),
+            initial_message=SendMessageRequest(
+                role="user",
+                content=[
+                    TextContent(
+                        text=sender_header(parent_stored.title, parent_id, role=role)
+                    ),
+                    TextContent(text=request.task),
+                ],
+            ),
+            # A worker joins the project and nothing else: the parent's other
+            # tags (an app's role or controller markers) describe the parent.
+            tags={PROJECT_TAG_KEY: parent_stored.tags[PROJECT_TAG_KEY]},
+            autotitle=request.title is None,
+            prompt=None,
+        )
+        start = StartConversationRequest(
+            **config,
+            agent_profile_id=profile_id,
+            max_budget_per_run=(parent_service.get_conversation().max_budget_per_run),
+        )
+        try:
+            info, _ = await self._create_conversation(
+                start,
+                child_id,
+                run_slot,
+                title=request.title,
+                initial_sender=conversation_sender(parent_id),
+                server_tools=[Tool(name=name) for name in PROJECT_WORKER_TOOLS],
+            )
+        except Exception as exc:
+            if not isinstance(exc, LaunchFailure):
+                raise
+            raise ValueError(
+                f"Cannot start the conversation from agent profile {profile_id}: {exc}"
+            ) from exc
+        stored = self._conversation_records[child_id].stored
+        return StartChildConversationResponse(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            status=info.execution_status.value,
+            title=info.title,
+            workspace=str(stored.workspace.working_dir),
+            isolation="worktree" if stored.worktree else "shared",
+        )
+
+    async def start_project_coordinator(
+        self,
+        project_hex: str,
+        working_dir: str,
+        *,
+        agent_profile_id: UUID | None = None,
+        title: str | None = None,
+        options: Mapping[str, Any] | None = None,
+    ) -> ConversationInfo:
+        """Start an idle coordinator conversation for a new project.
+
+        It runs ``agent_profile_id``, or else the predefined coordinator
+        profile (or the user's active one when that cannot be made), with
+        the coordinator's prompt, project context and project tools added by
+        the server, and joins the project through its ``project`` tag. It gets no first
+        message: it waits for the user. ``options`` are more
+        ``StartConversationRequest`` fields from the client (its own tags,
+        a reserved ``conversation_id``, launch additions, policies).
+
+        Raises ValueError when there is no profile to run, the reserved id is
+        taken, or it cannot start.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        stores = self.stores
+        if agent_profile_id is None and stores is None:
+            raise ValueError("This server has no profile stores")
+        profile_id = agent_profile_id or await asyncio.to_thread(
+            _coordinator_profile_id, cast(ServerStores, stores)
+        )
+        if profile_id is None:
+            raise ValueError(
+                "No agent profile to start the coordinator from: pass "
+                "agent_profile_id or set an active agent profile"
+            )
+        extra = dict(options or {})
+        tags = {**extra.pop("tags", {}), PROJECT_TAG_KEY: project_hex}
+        context, _ = await _project_prompt(self.stores, project_hex, None)
+        additions = AgentLaunchAdditions.model_validate(
+            extra.pop("agent_launch_additions", None) or {}
+        ).model_copy(
+            update={
+                "prompt_preset": PromptPreset.PROJECT_COORDINATOR,
+                "project_context": context,
+            }
+        )
+        start = StartConversationRequest(
+            **extra,
+            agent_launch_additions=additions,
+            workspace=LocalWorkspace(working_dir=working_dir),
+            agent_profile_id=profile_id,
+            tags=tags,
+            autotitle=title is None,
+        )
+        conversation_id = start.conversation_id or uuid4()
+        if self._has_conversation(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} already exists")
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            try:
+                info, _ = await self._create_conversation(
+                    start,
+                    conversation_id,
+                    run_slot,
+                    title=title,
+                    server_tools=[
+                        Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS
+                    ],
+                    # A concurrent create with the same reserved id must not
+                    # hand one coordinator to two projects.
+                    reuse_existing=False,
+                )
+            except Exception as exc:
+                if not isinstance(exc, LaunchFailure):
+                    raise
+                raise ValueError(
+                    f"Cannot start the coordinator from agent profile "
+                    f"{profile_id}: {exc}"
+                ) from exc
+        return info
+
     async def start_child_conversation(
         self,
         parent_id: UUID,
@@ -2202,6 +2792,10 @@ class ConversationService:
         a usable base commit; otherwise (or with ``isolation="shared"``) it
         shares the parent's directory. The link is recorded via
         ``parent_conversation_id``.
+
+        A project member's child is a normal conversation of the user's
+        instead (see :meth:`_start_project_worker`): it runs an agent profile,
+        not a copy of its parent's agent.
 
         Returns ``None`` when *parent_id* does not exist.
 
@@ -2220,63 +2814,142 @@ class ConversationService:
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
-            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
-            # A child spends under the same cap as its parent.
-            max_budget_per_run = parent_service.get_conversation().max_budget_per_run
-            child_id = uuid4()
+            # With Projects off, a member's child is an ordinary child: no
+            # project tag, tools, guidance or memory (the parent keeps its own).
+            if PROJECT_TAG_KEY in parent_stored.tags and (
+                await self._projects_enabled()
+            ):
+                return await self._start_project_child(
+                    parent_service, request, run_slot
+                )
+            return await self._start_copied_child(parent_service, request, run_slot)
 
-            # Reuse the worktree machinery of a regular start: a worktree is
-            # planned (and its guidance appended to the child's agent) only when
-            # the parent workspace has a usable git base commit; otherwise
-            # the child shares it.
-            worktree = (
-                _plan_conversation_worktree(
-                    parent_stored.workspace,
-                    child_id,
-                    self.conversation_worktree_root,
-                    None,
-                )
-                if request.isolation == "worktree"
-                else None
+    async def _start_project_child(
+        self,
+        parent_service: EventService,
+        request: StartChildConversationRequest,
+        run_slot: RunSlot,
+    ) -> StartChildConversationResponse:
+        """A project member's child: a worker from an agent profile, or, with
+        no profile to start from, a copy of the parent's agent that still runs
+        the worker's prompt, project context and tools."""
+        parent_stored = parent_service.stored
+        worker_profile = await self._project_worker_profile(parent_stored)
+        if worker_profile is not None:
+            return await self._start_project_worker(
+                parent_service, request, worker_profile, run_slot
             )
-            launched = await asyncio.to_thread(
-                lambda: finalize(
-                    parent_agent,
-                    live_launch_runtime(
-                        self.acp_skill_sourcing, enable_browser=self.enable_browser
-                    ),
-                    extra_suffixes=[worktree.guidance] if worktree else (),
-                )
+        project_hex = parent_stored.tags[PROJECT_TAG_KEY]
+        context, role = await _project_prompt(
+            self.stores, project_hex, (parent_stored.title, parent_stored.id)
+        )
+        return await self._start_copied_child(
+            parent_service,
+            request,
+            run_slot,
+            additions=AgentLaunchAdditions(
+                prompt_preset=PromptPreset.PROJECT_WORKER,
+                project_context=context,
+            ),
+            header=sender_header(parent_stored.title, parent_stored.id, role=role),
+            withheld_tools=(),
+            extra_tags={PROJECT_TAG_KEY: project_hex},
+        )
+
+    async def _start_copied_child(
+        self,
+        parent_service: EventService,
+        request: StartChildConversationRequest,
+        run_slot: RunSlot,
+        *,
+        additions: AgentLaunchAdditions | None = None,
+        header: str | None = None,
+        withheld_tools: Sequence[str] = PROJECT_TOOL_NAMES,
+        extra_tags: Mapping[str, str] | None = None,
+    ) -> StartChildConversationResponse:
+        """A child that runs a copy of its parent's agent.
+
+        It keeps the parent's tags except project membership and board state;
+        ``extra_tags`` adds to them. ``header`` opens the task message.
+        """
+        parent_stored = parent_service.stored
+        parent_id = parent_stored.id
+        parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+        # A child spends under the same cap as its parent.
+        max_budget_per_run = parent_service.get_conversation().max_budget_per_run
+        child_id = uuid4()
+
+        # Reuse the worktree machinery of a regular start: a worktree is
+        # planned (and its guidance appended to the child's agent) only when
+        # the parent workspace has a usable git base commit; otherwise
+        # the child shares it.
+        worktree = (
+            _plan_conversation_worktree(
+                parent_stored.workspace,
+                child_id,
+                self.conversation_worktree_root,
+                None,
             )
-            workspace = (
-                _create_conversation_worktree(worktree)
-                if worktree is not None
-                else parent_stored.workspace
-            )
-            now = utc_now()
-            child_stored = parent_stored.model_copy(
-                update={
-                    "id": child_id,
-                    "workspace": workspace,
-                    "worktree": request.isolation == "worktree",
-                    "title": request.title,
-                    "metrics": None,
-                    "created_at": now,
-                    "updated_at": now,
-                    "parent_conversation_id": parent_id,
-                    "forked_from_conversation_id": None,
-                    "forked_from_event_id": None,
-                }
-            )
-            info, _ = await self._launch_prepared_conversation(
-                child_stored,
-                launched,
-                run_slot=run_slot,
-                max_budget_per_run=max_budget_per_run,
-                initial_message=Message(
-                    role="user", content=[TextContent(text=request.task)]
+            if request.isolation == "worktree"
+            else None
+        )
+        suffixes = [worktree.guidance] if worktree else []
+        # The child inherits the parent's agent, and with it any legacy
+        # guidance naming the conversation that started the parent.
+        child_agent = without_worker_guidance(parent_agent)
+        launched = await asyncio.to_thread(
+            lambda: finalize(
+                child_agent,
+                live_launch_runtime(
+                    self.acp_skill_sourcing, enable_browser=self.enable_browser
                 ),
+                additions=additions,
+                extra_suffixes=suffixes,
+                withheld_tools=tuple(withheld_tools),
             )
+        )
+        workspace = (
+            _create_conversation_worktree(worktree)
+            if worktree is not None
+            else parent_stored.workspace
+        )
+        now = utc_now()
+        child_stored = parent_stored.model_copy(
+            update={
+                "id": child_id,
+                "workspace": workspace,
+                "worktree": request.isolation == "worktree",
+                "title": request.title,
+                "metrics": None,
+                "created_at": now,
+                "updated_at": now,
+                "parent_conversation_id": parent_id,
+                "forked_from_conversation_id": None,
+                "forked_from_event_id": None,
+                "tags": {
+                    **{
+                        key: value
+                        for key, value in parent_stored.tags.items()
+                        if key not in BOARD_TAG_KEYS and key != PROJECT_TAG_KEY
+                    },
+                    **(extra_tags or {}),
+                },
+            }
+        )
+        info, _ = await self._launch_prepared_conversation(
+            child_stored,
+            launched,
+            run_slot=run_slot,
+            max_budget_per_run=max_budget_per_run,
+            initial_message=Message(
+                role="user",
+                content=[
+                    *([TextContent(text=header)] if header else []),
+                    TextContent(text=request.task),
+                ],
+            ),
+            initial_sender=conversation_sender(parent_id),
+        )
 
         return StartChildConversationResponse(
             conversation_id=child_id,
@@ -2355,8 +3028,21 @@ class ConversationService:
             self._eviction_task = asyncio.create_task(
                 self._evict_idle_conversations_loop()
             )
+        if self.reconcile_projects_on_start:
+            self._reconcile_task = asyncio.create_task(
+                self._reconcile_coordinator_updates()
+            )
 
         return self
+
+    async def _reconcile_coordinator_updates(self) -> None:
+        try:
+            delivered = await reconcile_coordinator_updates(self)
+        except Exception:
+            logger.warning("Catching up on coordinator updates failed", exc_info=True)
+            return
+        if delivered:
+            logger.info("Delivered %d missed coordinator update(s)", delivered)
 
     async def _renew_all_leases_loop(self) -> None:
         """Single background task that renews leases for all active conversations.
@@ -2444,6 +3130,11 @@ class ConversationService:
                         pending.setdefault(secret_name, binding)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._reconcile_task is not None:
+            self._reconcile_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reconcile_task
+            self._reconcile_task = None
         if self._eviction_task is not None:
             self._eviction_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -2545,6 +3236,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            reconcile_projects_on_start=True,
         )
 
     async def _start_event_service(
@@ -2594,6 +3286,28 @@ class ConversationService:
             # the caller instead of being silently logged on a later publish.
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
+            )
+            await event_service.subscribe_to_events(
+                ConversationOutcomeSubscriber(
+                    conversation_id=stored.id,
+                    tags=lambda: event_service.stored.tags,
+                    set_tag=self.set_conversation_tag,
+                    on_finished=functools.partial(notify_coordinator, self, stored.id),
+                    on_user_message=functools.partial(
+                        relay_user_message, self, stored.id
+                    ),
+                    on_stopped=functools.partial(
+                        notify_coordinator_of_stop, self, stored.id
+                    ),
+                    turn_sender_lookup=functools.partial(
+                        _logged_turn_sender, event_service
+                    ),
+                    projects_enabled=self._projects_enabled,
+                    judge=make_resolution_judge(
+                        functools.partial(_agent_llm, event_service),
+                        functools.partial(conversation_context, event_service),
+                    ),
+                )
             )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
@@ -2792,6 +3506,11 @@ def _generate_title_traced(
         on_error=on_error,
         prompt=prompt,
     )
+
+
+def _agent_llm(event_service: EventService) -> LLM | None:
+    conversation = event_service._conversation
+    return getattr(conversation.agent, "llm", None) if conversation else None
 
 
 @dataclass

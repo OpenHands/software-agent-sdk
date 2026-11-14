@@ -769,9 +769,16 @@ async def update_conversation(
 ) -> Success:
     """Update conversation metadata.
 
-    This endpoint allows updating conversation details like title.
+    This endpoint allows updating conversation details like title. ``tags``
+    replaces the whole set, except the tags the server owns: ``project``
+    (change membership with the project routes), ``turn``, ``ask`` and
+    ``resolvenote`` keep their values. ``resolved`` may be set to ``user`` or
+    removed, which resolves or reopens the conversation; prefer the project
+    routes ``.../resolve`` and ``.../reopen``.
     """
-    updated = await conversation_service.update_conversation(conversation_id, request)
+    updated = await conversation_service.update_conversation_from_client(
+        conversation_id, request
+    )
     if not updated:
         raise NotFound()
     return Success()
@@ -887,8 +894,10 @@ async def start_child_conversation(
 
     The child inherits the parent's configuration and workspace (optionally
     isolated in a git worktree), is linked via ``parent_conversation_id`` and
-    receives ``task`` as its first user message. This is the default launcher
-    behind the ``start_child_conversation`` tool.
+    receives ``task`` as its first user message. When the parent belongs to a
+    project, the child runs the project's worker agent profile, or the
+    user's active one, instead of a copy of the parent's agent. This is the
+    default launcher behind the ``start_child_conversation`` tool.
     """
     try:
         result = await conversation_service.start_child_conversation(

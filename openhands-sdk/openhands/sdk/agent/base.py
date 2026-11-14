@@ -460,6 +460,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
+        project_context: str | None = None
         secret_infos: tuple[SecretInfo, ...] = ()
 
         if agent_context is not None:
@@ -478,6 +479,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
+            project_context = agent_context.project_context or None
             secret_infos = tuple(
                 SecretInfo(
                     name=info["name"] or "",
@@ -514,6 +516,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
             memory_context=memory_context,
+            project_context=project_context,
             secret_infos=secret_infos,
         )
 

@@ -19,8 +19,10 @@ from openhands.agent_server.event_router import (
     send_message,
 )
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.models import ConversationMessageRequest
 from openhands.agent_server.openai import service as gateway
 from openhands.agent_server.openai.service import GatewayConflict, OpenAIAgentRunResult
+from openhands.agent_server.server_context import ServerContext
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
@@ -30,6 +32,16 @@ from openhands.sdk.llm.message import TextContent
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.workspace import LocalWorkspace
 from tests.agent_server.conftest import install_test_context
+
+
+async def _send_direct(request: SendMessageRequest, event_service: EventService):
+    """Call the send route the way FastAPI does for a plain user message."""
+    return await send_message(
+        uuid4(),
+        ConversationMessageRequest(**request.model_dump()),
+        event_service,
+        cast(ServerContext, None),
+    )
 
 
 class _InterleavedEventService:
@@ -70,7 +82,7 @@ class _InterleavedEventService:
     async def reserve_run_slot(self):
         return None
 
-    async def send_message(self, message, run=False, run_slot=None):
+    async def send_message(self, message, run=False, run_slot=None, **kwargs):
         content = message.content[0].text
         self.sent.append(content)
         if content == "gateway":
@@ -165,7 +177,7 @@ async def test_direct_event_cannot_change_gateway_reply_and_usage(
             assert docker_result["usage"]["prompt_tokens"] == 11
             assert docker_result["usage"]["completion_tokens"] == 2
 
-    await send_message(
+    await _send_direct(
         SendMessageRequest(role="user", content=[TextContent(text="direct")], run=True),
         event_service,
     )
@@ -197,7 +209,7 @@ async def test_cancelled_local_gateway_allows_next_direct_event() -> None:
     with pytest.raises(asyncio.CancelledError):
         await gateway_task
 
-    await send_message(
+    await _send_direct(
         SendMessageRequest(role="user", content=[TextContent(text="direct")], run=True),
         event_service,
     )
@@ -241,7 +253,7 @@ async def test_cancelled_new_gateway_lookup_allows_next_direct_event(
 
         event_service = await original_lookup(conversation_id)
         assert event_service is not None
-        await send_message(
+        await _send_direct(
             SendMessageRequest(
                 role="user", content=[TextContent(text="direct")], run=False
             ),
@@ -299,7 +311,7 @@ async def test_docker_gateway_waits_for_rearmed_direct_run() -> None:
             self._run_task = object() if self.wait_count == 1 else None
             return ConversationExecutionStatus.FINISHED
 
-        async def send_message(self, message, run=False, run_slot=None):
+        async def send_message(self, message, run=False, run_slot=None, **kwargs):
             assert self._run_task is None, "Gateway saved during a direct run"
             await super().send_message(message, run, run_slot)
 

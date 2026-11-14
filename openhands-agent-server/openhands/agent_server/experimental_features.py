@@ -19,14 +19,20 @@ user's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
 ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 
+import asyncio
 import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from openhands.sdk.tool.spec import Tool
+
+
+if TYPE_CHECKING:
+    from openhands.agent_server.persistence import SettingsStore
 
 
 @dataclass(frozen=True)
@@ -59,7 +65,47 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [CONVERSATION_REACTIONS]
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
+PROJECTS = ExperimentalFeatureDefinition(
+    key="projects",
+    label="Projects",
+    description=(
+        "Group conversations into projects: a coordinator conversation hands "
+        "work to other conversations, hears back from them, and keeps project "
+        "files and memory. Turned off, the projects API is unavailable and new "
+        "conversations get no project tools; existing projects are kept."
+    ),
+)
+
+PROJECT_TOOL_NAMES: tuple[str, ...] = (
+    "list_project_conversations",
+    "message_project_conversation",
+    "read_project_conversation",
+    "write_artifact",
+    "read_artifact",
+    "list_artifacts",
+    "read_project_memory",
+    "update_project_memory",
+    "resolve_conversation",
+)
+"""Tools registered by openhands.tools.project. A client lists the coordinator's
+in its agent spec and the server adds the workers', so they are withheld from
+new conversations while Projects is off rather than added while it is on."""
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
+    CONVERSATION_REACTIONS,
+    CONVERSATION_MENTIONS,
+    PROJECTS,
+]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -86,10 +132,41 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
     if is_enabled(features, CONVERSATION_REACTIONS.key):
         # Tool names as registered by openhands.tools.reaction.
-        return [Tool(name="react"), Tool(name="unreact")]
-    return []
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    return tools
+
+
+def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[str]:
+    """Tools a new conversation does not get, even if its spec lists them."""
+    return [] if is_enabled(features, PROJECTS.key) else list(PROJECT_TOOL_NAMES)
+
+
+async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:
+    """Whether the user has ``key`` on right now (host switches in a runtime).
+
+    For server behavior that follows the switch at once, such as a route or a
+    wake-up. An unreadable settings file, or no store, counts as off.
+    """
+    host_features = host_experimental_features()
+    if host_features is not None:
+        return is_enabled(host_features, key)
+    if settings_store is None:
+        return False
+    from openhands.agent_server.persistence import PersistedSettings
+
+    try:
+        settings = await asyncio.to_thread(
+            lambda: settings_store.load() or PersistedSettings()
+        )
+    except (PermissionError, OSError):
+        return False
+    return is_enabled(settings.experimental_features, key)
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"

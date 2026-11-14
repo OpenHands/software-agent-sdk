@@ -43,6 +43,33 @@
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/6609"
     },
     {
+      "endpoints": [
+        "DELETE /api/projects/{}",
+        "DELETE /api/projects/{}/artifacts/{}",
+        "DELETE /api/projects/{}/conversations/{}",
+        "DELETE /api/projects/{}/memory/{}",
+        "GET /api/projects",
+        "GET /api/projects/{}",
+        "GET /api/projects/{}/artifacts",
+        "GET /api/projects/{}/artifacts/{}",
+        "GET /api/projects/{}/conversations",
+        "GET /api/projects/{}/conversations/{}/messages",
+        "GET /api/projects/{}/memory",
+        "GET /api/projects/{}/memory/{}",
+        "PATCH /api/projects/{}",
+        "POST /api/projects",
+        "POST /api/projects/{}/conversations/{}/reopen",
+        "POST /api/projects/{}/conversations/{}/resolve",
+        "POST /api/projects/{}/artifacts",
+        "POST /api/projects/{}/artifacts/from-conversation",
+        "PUT /api/projects/{}/conversations/{}",
+        "PUT /api/projects/{}/memory/{}"
+      ],
+      "reason": "Client-ahead API for Projects, added with the Agent Server endpoints in the same PR.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/6602"
+    },
+    {
       "endpoints": ["POST /api/acp/models"],
       "reason": "Client-ahead API stacked on the pending Agent Server ACP model discovery endpoint.",
       "owner": "OpenHands SDK maintainers",

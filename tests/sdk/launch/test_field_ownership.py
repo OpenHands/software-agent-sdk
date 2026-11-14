@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.launch import LaunchStores, resolve
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.mcp.config import MCPServer
@@ -99,6 +100,7 @@ OPENHANDS_CONTEXT = {
     "load_project_skills": Fixed(True),
     "load_memory": LAUNCH,
     "memory_context": LAUNCH,
+    "project_context": LAUNCH,
     "disabled_skills": PROFILE,
     "secrets": NotOnProfile("a profile is secret-free; secrets ride the request"),
     "current_datetime": LAUNCH,
@@ -116,6 +118,7 @@ OPENHANDS_FIELDS: dict[str, Any] = {
     "meta_profile_llms": Reference("meta_profile_ref"),
     "tool_concurrency_limit": PROFILE,
     "persona": PROFILE,
+    "prompt_preset": PROFILE,
     "mcp_config": Reference("mcp_server_refs"),
     "agent_context": Nested(OPENHANDS_CONTEXT),
     "condenser": PROFILE,
@@ -240,6 +243,7 @@ def _non_default_openhands_profile() -> OpenHandsAgentProfile:
         agent="PlanningAgent",
         tools=[Tool(name="terminal")],
         persona="persona",
+        prompt_preset=PromptPreset.PROJECT_WORKER,
         system_message_suffix="suffix",
         disabled_skills=["beta"],
         condenser=NoOpCondenserSettings(),

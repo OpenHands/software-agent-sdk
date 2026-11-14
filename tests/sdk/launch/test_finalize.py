@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.launch import (
     AgentLaunchError,
@@ -231,3 +232,40 @@ def test_client_tools_are_added_once():
     )
 
     assert _tool_names(launched) == ["canvas_ui", "launch_child"]
+
+
+def test_a_deployment_role_sets_the_preset_and_the_project_block():
+    agent = _agent(AgentContext(system_message_suffix="PROFILE"))
+
+    launched = finalize(
+        agent,
+        LaunchRuntime(),
+        additions=AgentLaunchAdditions(
+            prompt_preset=PromptPreset.PROJECT_WORKER,
+            project_context="  Project: Docs  ",
+        ),
+    )
+
+    assert isinstance(launched.agent, Agent)
+    assert launched.agent.prompt_preset == PromptPreset.PROJECT_WORKER
+    context = launched.agent.agent_context
+    assert context is not None
+    assert context.project_context == "Project: Docs"
+    # The user's suffix stays theirs.
+    assert context.system_message_suffix == "PROFILE"
+
+
+def test_an_acp_agent_gets_the_project_block_in_its_suffix():
+    agent = ACPAgent(acp_command=["true"])
+
+    launched = finalize(
+        agent,
+        LaunchRuntime(),
+        additions=AgentLaunchAdditions(
+            prompt_preset=PromptPreset.PROJECT_WORKER, project_context="Project: Docs"
+        ),
+    )
+
+    context = launched.agent.agent_context
+    assert context is not None
+    assert context.system_message_suffix == "<PROJECT>\nProject: Docs\n</PROJECT>"

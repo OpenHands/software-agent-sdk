@@ -28,6 +28,7 @@ __all__ = [
     "NotSupported",
     "OperationFailed",
     "RateLimited",
+    "TooLarge",
     "Unauthenticated",
     "Unavailable",
     "Unprocessable",
@@ -88,6 +89,10 @@ class Invalid(DomainError, ValueError):
 
 class Unprocessable(Invalid):
     """The request is well formed but cannot be acted on as given."""
+
+
+class TooLarge(DomainError):
+    """The request carries more than the server accepts."""
 
 
 class Unauthenticated(DomainError):

@@ -18,6 +18,7 @@ export { GitClient } from './client/git-client';
 export { LLMMetadataClient } from './client/llm-client';
 export { MCPClient } from './client/mcp-client';
 export { ProfilesClient } from './client/profiles-client';
+export { PROJECT_ATTENTION_ORDER, ProjectsClient, projectIdKey } from './client/projects-client';
 export { MetaProfilesClient } from './client/meta-profiles-client';
 export { SettingsClient } from './client/settings-client';
 export { SkillsClient } from './client/skills-client';
@@ -70,6 +71,26 @@ export type {
   ActivateAgentProfileResponse,
 } from './client/agent-profiles-client';
 export type { MetaProfilesClientOptions } from './client/meta-profiles-client';
+export type {
+  CreateProjectRequest,
+  NewProjectCoordinator,
+  Project,
+  ProjectArtifact,
+  ProjectArtifactsResponse,
+  ProjectAttention,
+  ProjectConversation,
+  ProjectConversationsResponse,
+  ProjectDeleteResponse,
+  ProjectMemoryFile,
+  ProjectMemoryFileContent,
+  ProjectMemoryResponse,
+  ProjectsClientOptions,
+  ProjectsListResponse,
+  ProjectTranscriptMessage,
+  ProjectTranscriptResponse,
+  SaveConversationArtifactRequest,
+  UpdateProjectRequest,
+} from './client/projects-client';
 export type {
   ExperimentalFeature,
   SettingsClientOptions,

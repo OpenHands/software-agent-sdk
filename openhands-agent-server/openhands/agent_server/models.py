@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -482,6 +482,78 @@ class ConfirmationResponseRequest(BaseModel):
 
 class Success(BaseModel):
     success: bool = True
+
+
+MessageRunOutcome = Literal[
+    "started",
+    "queued",
+    "waiting_for_confirmation",
+    "paused",
+    "error",
+    "stuck",
+    "not_run",
+]
+
+
+class ConversationMessageRequest(SendMessageRequest):
+    """A message posted to a running conversation's events.
+
+    The sender fields live here, not on :class:`SendMessageRequest`, because
+    that model is also a new conversation's ``initial_message``, where they
+    would mean nothing.
+    """
+
+    sender_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The conversation sending this message, such as a project's "
+            "coordinator. The saved message then records it as its `sender` "
+            "(`conversation:<id hex>`) and starts with a line telling the "
+            "receiving agent who sent it and that it approves nothing on the "
+            "user's behalf. A sender in a project may only message "
+            "conversations of the same project. Its runs are always guarded "
+            "as with `refuse_pending_confirmation`. Leave it out for the "
+            "user's own messages."
+        ),
+    )
+    refuse_pending_confirmation: bool = Field(
+        default=False,
+        description=(
+            "With `run`, never run a conversation that waits on the user: "
+            "waiting for confirmation (the run would approve its pending "
+            "actions), paused, error or stuck (it would resume or retry work "
+            "the user stopped or has not seen). A conversation already in "
+            "one of these answers 409 and nothing is saved; one that reaches "
+            "one while the message is delivered keeps the message and is not "
+            "run (`run` is that status). For senders other than the user."
+        ),
+    )
+
+
+class SendMessageResponse(Success):
+    """What became of a message sent with ``run``."""
+
+    run: MessageRunOutcome | None = Field(
+        default=None,
+        description=(
+            "Set when the request asked to run. `started`: a run was started "
+            "for the message. `queued`: a run was already active; it takes the "
+            "message, or the conversation runs again when it ends. "
+            "`waiting_for_confirmation`, `paused`, `error` or `stuck` (only "
+            "for a guarded run: `refuse_pending_confirmation` or "
+            "`sender_conversation_id`): the conversation reached that "
+            "state while the message was delivered, so it was not run and the "
+            "message waits for the user. `not_run`: a "
+            "stop arrived meanwhile and the conversation was left as it is."
+        ),
+    )
+    previous_status: ConversationExecutionStatus | None = Field(
+        default=None,
+        description=(
+            "The conversation's execution status just before the message; "
+            "set for a guarded run."
+        ),
+    )
 
 
 class FileUploadResult(Success):

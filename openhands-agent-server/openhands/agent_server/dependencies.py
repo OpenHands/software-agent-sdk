@@ -24,6 +24,7 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.persistence import (
+    FileProjectsStore,
     FileSecretsStore,
     FileSettingsStore,
     FileWorkspacesStore,
@@ -97,6 +98,10 @@ def get_provider_connections_store(stores: _Stores) -> ProviderConnectionStore:
 
 def get_workspaces_store(stores: _Stores) -> FileWorkspacesStore:
     return stores.workspaces
+
+
+def get_projects_store(stores: _Stores) -> FileProjectsStore:
+    return stores.projects
 
 
 def get_llm_profile_store(stores: _Stores) -> LLMProfileStore:

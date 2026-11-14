@@ -90,7 +90,11 @@ def mock_event_service():
     service = AsyncMock(spec=EventService)
     service._gateway_run_lock = asyncio.Lock()
     service._active_gateway_runs = 0
-    service.send_message = AsyncMock()
+
+    async def send_message(message, run=False, *args, **kwargs):
+        return "started" if run else None
+
+    service.send_message = AsyncMock(side_effect=send_message)
     return service
 
 
@@ -140,7 +144,7 @@ class TestSendMessageEndpoint:
             )
 
             assert response.status_code == 200
-            assert response.json() == {"success": True}
+            assert response.json() == {"success": True, "run": "started"}
 
             # Verify send_message was called with correct parameters
             mock_event_service.send_message.assert_called_once()
@@ -320,7 +324,7 @@ class TestSendMessageEndpoint:
             )
 
             assert response.status_code == 200
-            assert response.json() == {"success": True}
+            assert response.json() == {"success": True, "run": "started"}
 
             # Verify system message was processed correctly
             mock_event_service.send_message.assert_called_once()
