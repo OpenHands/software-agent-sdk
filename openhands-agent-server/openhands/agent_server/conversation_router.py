@@ -1,6 +1,7 @@
 """Conversation router for OpenHands SDK."""
 
 import json
+from collections.abc import Iterable
 from typing import Annotated
 from uuid import UUID
 
@@ -29,9 +30,10 @@ from openhands.agent_server.dependencies import (
     get_conversation_registry,
     get_conversation_service,
     get_llm_profile_store,
+    get_stores,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import CondensationUnavailable
+from openhands.agent_server.event_service import CondensationUnavailable, EventService
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -56,6 +58,7 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -67,6 +70,7 @@ from openhands.sdk.errors import (
     Conflict,
     Invalid,
     NotFound,
+    OperationFailed,
     RateLimited,
     Unprocessable,
     UpstreamTimeout,
@@ -78,6 +82,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -89,6 +94,126 @@ conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 _OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
 _OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
 _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
+
+
+def _mcp_server_payload(server: MCPServer) -> dict[str, object]:
+    return server.model_dump(
+        mode="json",
+        context={"expose_secrets": True},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+
+
+def _mcp_settings_conflicts(
+    settings: PersistedSettings, servers: dict[str, MCPServer]
+) -> list[str]:
+    return sorted(
+        name
+        for name, server in servers.items()
+        if name in settings.agent_settings.mcp_config
+        and _mcp_server_payload(settings.agent_settings.mcp_config[name])
+        != _mcp_server_payload(server)
+    )
+
+
+def _raise_if_mcp_settings_conflict(
+    settings: PersistedSettings, servers: dict[str, MCPServer]
+) -> None:
+    conflicts = _mcp_settings_conflicts(settings, servers)
+    if conflicts:
+        raise Conflict(
+            "MCP server already exists in settings with a different config: "
+            f"{', '.join(conflicts)}"
+        )
+
+
+def _profile_id_for_mcp_persistence(
+    stores: ServerStores,
+    event_service: EventService,
+    servers: dict[str, MCPServer],
+) -> UUID:
+    profile = event_service.stored.launched_agent_profile
+    if profile is None:
+        raise Invalid(
+            "Cannot persist MCP servers to an agent profile because this "
+            "conversation was not started with agent_profile_id."
+        )
+    profile_id = profile.agent_profile_id
+    if stores.agent_profiles.name_for_id(profile_id) is None:
+        raise NotFound(f"Agent profile with id '{profile_id}' not found")
+    _raise_if_mcp_settings_conflict(
+        stores.settings.load() or PersistedSettings(), servers
+    )
+    return profile_id
+
+
+def _persist_mcp_servers_to_agent_profile(
+    stores: ServerStores,
+    profile_id: UUID,
+    servers: dict[str, MCPServer],
+) -> None:
+    if not servers:
+        return
+    try:
+        _persist_mcp_servers_to_settings(stores, servers)
+        _append_mcp_server_refs_to_profile(stores, profile_id, servers.keys())
+    except RuntimeError as exc:
+        raise OperationFailed("Failed to update settings") from exc
+    except OSError as exc:
+        raise OperationFailed("Failed to update agent profile") from exc
+
+
+def _persist_mcp_servers_to_settings(
+    stores: ServerStores, servers: dict[str, MCPServer]
+) -> None:
+    def add_servers(settings: PersistedSettings) -> PersistedSettings:
+        _raise_if_mcp_settings_conflict(settings, servers)
+        missing_servers = {
+            name: server
+            for name, server in servers.items()
+            if name not in settings.agent_settings.mcp_config
+        }
+        if not missing_servers:
+            return settings
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={
+                "mcp_config": {
+                    **settings.agent_settings.mcp_config,
+                    **missing_servers,
+                }
+            }
+        )
+        return settings
+
+    stores.settings.update(add_servers)
+
+
+def _append_mcp_server_refs_to_profile(
+    stores: ServerStores,
+    profile_id: UUID,
+    server_names: Iterable[str],
+) -> None:
+    with stores.agent_profiles.lock():
+        profile_name = stores.agent_profiles.name_for_id(profile_id)
+        if profile_name is None:
+            raise NotFound(f"Agent profile with id '{profile_id}' not found")
+        profile = stores.agent_profiles.load(profile_name)
+        if profile.mcp_server_refs is None:
+            return
+        refs = list(profile.mcp_server_refs)
+        seen = set(refs)
+        for name in server_names:
+            if name not in seen:
+                refs.append(name)
+                seen.add(name)
+        if refs == profile.mcp_server_refs:
+            return
+        stores.agent_profiles.save(
+            profile.model_copy(
+                update={"mcp_server_refs": refs, "revision": profile.revision + 1}
+            )
+        )
 
 
 def _request_with_observability_headers(
@@ -528,7 +653,12 @@ async def resume_goal_in_conversation(
 @conversation_router.post(
     "/{conversation_id}/mcp",
     responses=error_responses(
-        {NotFound: "Item not found", Invalid: "Invalid MCP server update"}
+        {
+            Conflict: "MCP settings conflict",
+            Invalid: "Invalid MCP server update",
+            NotFound: "Item not found",
+            OperationFailed: "Profile persistence failed",
+        }
     ),
 )
 async def add_conversation_mcp_servers(
@@ -536,6 +666,7 @@ async def add_conversation_mcp_servers(
     request: AddMCPServersRequest,
     conversation_service: ConversationService = Depends(get_conversation_service),
     cipher: Cipher | None = Depends(get_cipher),
+    stores: ServerStores = Depends(get_stores),
 ) -> Success:
     """Add modern MCP servers to one conversation."""
     event_service = await conversation_service.get_event_service(conversation_id)
@@ -545,10 +676,17 @@ async def add_conversation_mcp_servers(
         name: server.with_decrypted_secrets(cipher=cipher)
         for name, server in request.mcp_servers.items()
     }
+    profile_id = (
+        _profile_id_for_mcp_persistence(stores, event_service, mcp_servers)
+        if request.persist_to_agent_profile
+        else None
+    )
     try:
         await event_service.add_mcp_servers(mcp_servers)
     except ValueError as exc:
         raise Invalid(str(exc)) from exc
+    if profile_id is not None:
+        _persist_mcp_servers_to_agent_profile(stores, profile_id, mcp_servers)
     return Success()
 
 

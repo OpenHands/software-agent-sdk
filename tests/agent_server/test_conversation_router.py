@@ -1,6 +1,7 @@
 """Tests for conversation_router.py endpoints."""
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -38,7 +39,12 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles.agent_profile import (
+    LaunchedAgentProfile,
+    OpenHandsAgentProfile,
+)
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from openhands.sdk.workspace import LocalWorkspace
@@ -1724,6 +1730,117 @@ def test_add_conversation_mcp_servers_success(
         servers = mock_event_service.add_mcp_servers.call_args.args[0]
         assert set(servers) == {"docs"}
         assert servers["docs"].command == "true"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_persists_to_launched_agent_profile(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    stores = client_context(client).stores
+    profile = OpenHandsAgentProfile(
+        name="profile", llm_profile_ref="default", mcp_server_refs=[]
+    )
+    stores.agent_profiles.save(profile)
+    mock_event_service.stored = SimpleNamespace(
+        launched_agent_profile=LaunchedAgentProfile(
+            agent_profile_id=profile.id, revision=profile.revision
+        )
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={
+                "mcp_servers": {"docs": {"command": "true"}},
+                "persist_to_agent_profile": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        loaded_profile = stores.agent_profiles.load("profile")
+        assert loaded_profile.mcp_server_refs == ["docs"]
+        assert loaded_profile.revision == profile.revision + 1
+        settings = stores.settings.load()
+        assert settings is not None
+        assert settings.agent_settings.mcp_config["docs"].command == "true"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_persist_requires_agent_profile(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_event_service.stored = SimpleNamespace(launched_agent_profile=None)
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={
+                "mcp_servers": {"docs": {"command": "true"}},
+                "persist_to_agent_profile": True,
+            },
+        )
+
+        assert response.status_code == 400
+        assert "agent_profile_id" in response.json()["detail"]
+        mock_event_service.add_mcp_servers.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_persist_rejects_settings_conflict(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    stores = client_context(client).stores
+    profile = OpenHandsAgentProfile(
+        name="profile", llm_profile_ref="default", mcp_server_refs=[]
+    )
+    stores.agent_profiles.save(profile)
+    stores.settings.update(
+        lambda settings: settings.model_copy(
+            update={
+                "agent_settings": settings.agent_settings.model_copy(
+                    update={"mcp_config": {"docs": MCPServer(command="false")}}
+                )
+            }
+        )
+    )
+    mock_event_service.stored = SimpleNamespace(
+        launched_agent_profile=LaunchedAgentProfile(
+            agent_profile_id=profile.id, revision=profile.revision
+        )
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={
+                "mcp_servers": {"docs": {"command": "true"}},
+                "persist_to_agent_profile": True,
+            },
+        )
+
+        assert response.status_code == 409
+        assert "different config" in response.json()["detail"]
+        mock_event_service.add_mcp_servers.assert_not_called()
+        assert stores.agent_profiles.load("profile").mcp_server_refs == []
     finally:
         client.app.dependency_overrides.clear()
 

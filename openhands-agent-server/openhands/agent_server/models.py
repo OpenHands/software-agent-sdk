@@ -501,6 +501,13 @@ class AddMCPServersRequest(BaseModel):
         default_factory=dict,
         description="MCP servers to add to this conversation by server name.",
     )
+    persist_to_agent_profile: bool = Field(
+        default=False,
+        description=(
+            "Also persist these MCP servers to settings and the launched agent "
+            "profile, when this conversation was started with agent_profile_id."
+        ),
+    )
 
 
 class UpdateSecretsRequest(BaseModel):
