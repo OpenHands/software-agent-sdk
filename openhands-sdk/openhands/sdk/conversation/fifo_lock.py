@@ -77,22 +77,33 @@ class FIFOLock:
             me = threading.Condition(self._mutex)
             self._waiters.append(me)
 
-            while True:
-                # If I'm at the front of the queue and nobody owns it → acquire
-                if self._waiters[0] is me and self._owner is None:
-                    self._waiters.popleft()
-                    self._owner = ident
-                    self._count = 1
-                    return True
+            try:
+                while True:
+                    # If I'm at the front of the queue and nobody owns it → acquire
+                    if self._waiters[0] is me and self._owner is None:
+                        self._waiters.popleft()
+                        self._owner = ident
+                        self._count = 1
+                        return True
 
-                if timeout >= 0:
-                    remaining = timeout - (time.monotonic() - start)
-                    if remaining <= 0:
-                        self._waiters.remove(me)
-                        return False
-                    me.wait(remaining)
-                else:
-                    me.wait()
+                    if timeout >= 0:
+                        remaining = timeout - (time.monotonic() - start)
+                        if remaining <= 0:
+                            self._waiters.remove(me)
+                            return False
+                        me.wait(remaining)
+                    else:
+                        me.wait()
+            except BaseException:
+                # A signal (e.g. Ctrl+C on the main thread) can interrupt the
+                # wait or the hand-off that follows it. Drop the dead waiter,
+                # and if the lock is left free while others wait, wake the
+                # front waiter — nothing else will.
+                if me in self._waiters:
+                    self._waiters.remove(me)
+                if self._owner is None and self._waiters:
+                    self._waiters[0].notify()
+                raise
 
     def release(self) -> None:
         """
