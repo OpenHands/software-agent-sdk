@@ -41,10 +41,11 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.condense-status`: that refusal is a client error (4xx), not a 500.
 - `F10.condense-llm-failure`: when the condenser's model is unreachable, condense answers 500 with an `error_id`, leaves the `CondensationRequest` pending and records no `Condensation`.
 - `F10.condense-errors`: an unknown id is 404 `Conversation not found`, a malformed id 422, a missing key 401 (and records nothing).
-- `F10.ask-agent`: `POST /ask_agent` answers a question about the conversation with DeepSeek (200 `{"response": ...}`), records no message and pushes no message on the socket, and leaves the status unchanged.
+- `F10.ask-agent`: `POST /ask_agent` answers a question about the conversation with DeepSeek (200 `{"response": ...}`), records no message or action and pushes none on the socket, and leaves the status unchanged; the only event it adds is one `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`, in the event log and on the socket.
 - `F10.ask-agent-errors`: a missing `question` is 422, a missing key 401, and an unreachable model 500 with an `error_id`.
-- `F10.ask-agent-running`: while a run waits on its model, `ask_agent` answers at once (it does not wait for the step), records nothing and leaves the status `running`.
+- `F10.ask-agent-running`: while a run waits on its model, `ask_agent` answers at once (it does not wait for the step), records nothing but its `stats` update (usage under `ask-agent-llm`) and leaves the status `running`.
 - `F10.ask-agent-unknown`: an unknown conversation id is 404, as the route documents.
+- `F10.ask-agent-usage-saved`: the usage of an ask is part of the conversation's `stats` on `GET /api/conversations/{id}` right after the call (an `ask-agent-llm` entry, as in the `stats` event the ask recorded) and is still there after a restart.
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
 
@@ -110,6 +111,8 @@ NOPE=$(python3 -c 'import uuid; print(uuid.uuid4())')
 MSG=openhands.sdk.event.llm_convertible.message.MessageEvent
 CREQ=openhands.sdk.event.condenser.CondensationRequest
 COND=openhands.sdk.event.condenser.Condensation
+ACT=openhands.sdk.event.llm_convertible.action.ActionEvent
+STATE=openhands.sdk.event.conversation_state.ConversationStateUpdateEvent
 OFFLINE_LLM='{"model": "openai/qa-offline", "api_key": "qa-offline-key", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}'
 S=$(control-agent-server conversation start --placeholder-agent --no-autotitle --no-run --prompt QA_F10_M1 --print-id)
 control-agent-server api POST "/api/conversations/$S/events" --json '{"role": "user", "content": [{"type": "text", "text": "QA_F10_M2"}], "run": false}' --expect 200 --quiet
@@ -450,6 +453,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   while its socket is open.
   ```sh
   N_MSG=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --field .)
+  N_ACT=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$ACT --field .)
   N_ALL=$(control-agent-server api GET "/api/conversations/$A/events/count" --field .)
   N_PELICAN=$(control-agent-server api GET "/api/conversations/$A/events/count" --query body=PELICAN --query source=agent --field .)
   control-agent-server ws start "/sockets/events/$A" --name qa-f10-ask --duration 120
@@ -458,18 +462,24 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
     --expect 200 --check response matches '(?i)pelican' --timeout 120 --save F10.ask-agent/ask
   control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --check . eq "$N_MSG" --save F10.ask-agent/messages
   control-agent-server api GET "/api/conversations/$A/events/count" --query body=PELICAN --query source=agent --check . eq "$N_PELICAN"
-  control-agent-server api GET "/api/conversations/$A/events/count" --check . eq "$N_ALL"
+  control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$ACT --check . eq "$N_ACT"
+  control-agent-server api GET "/api/conversations/$A/events/count" --check . eq "$((N_ALL + 1))"
+  control-agent-server api GET "/api/conversations/$A/events/search" --query kind=$STATE --query sort_order=TIMESTAMP_DESC --query limit=1 --quiet \
+    --check items.0.key eq stats --check items.0.value.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens ge 1 --save F10.ask-agent/stats-event
   control-agent-server api GET "/api/conversations/$A" --quiet --check execution_status eq finished
+  control-agent-server ws read qa-f10-ask --wait 15 --kinds ConversationStateUpdateEvent --contains '"ask-agent-llm"' --expect-min 1 --save F10.ask-agent/stats-frame
   control-agent-server ws stop qa-f10-ask --kinds MessageEvent,ActionEvent --expect-none --save F10.ask-agent/frames
   ```
   The answer names the codename, which only the conversation's history holds
-  (the check is on that fact, not the wording). Nothing is recorded: the
-  message count, the count of agent events that mention the codename (the
-  source run's own reply or reasoning may already mention it, so the check
-  compares with the count before the call) and the total event count are
-  unchanged. Nothing is pushed: the socket was live before the call (its
-  `full_state` snapshot had arrived, and the same kind of socket delivered
-  `Condensation` frames in `F10.condense-llm`), and `A` is still `finished`.
+  (the check is on that fact, not the wording). Neither the question nor the
+  answer is recorded: the message count, the action count and the count of
+  agent events that mention the codename (the source run's own reply or
+  reasoning may already mention it, so the check compares with the count
+  before the call) are unchanged. The log grows by exactly one event, a
+  `stats` `ConversationStateUpdateEvent` whose `usage_to_metrics` has an
+  `ask-agent-llm` entry with the call's tokens; the socket, live before the
+  call (its `full_state` snapshot had arrived), delivers that frame and no
+  `MessageEvent` or `ActionEvent`, and `A` is still `finished`.
 - **Bad input, no key, unreachable model (`F10.ask-agent-errors`).**
   ```sh
   control-agent-server api POST "/api/conversations/$A/ask_agent" --json '{}' --expect 422 --check detail.0.loc.1 eq question --save F10.ask-agent-errors/missing-question
@@ -491,7 +501,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api POST "/api/conversations/$R/ask_agent" --json '{"question": "QA_F10_SIDE_Q"}' --expect 200 \
     --check response eq QA_F10_SIDE --expect-max-ms 15000 --timeout 60 --save F10.ask-agent-running/ask
   control-agent-server api GET "/api/conversations/$R" --quiet --check execution_status eq running --save F10.ask-agent-running/still-running
-  control-agent-server api GET "/api/conversations/$R/events/count" --check . eq "$N_R"
+  control-agent-server api GET "/api/conversations/$R/events/count" --check . eq "$((N_R + 1))"
+  control-agent-server api GET "/api/conversations/$R/events/search" --query kind=$STATE --query sort_order=TIMESTAMP_DESC --query limit=1 --quiet \
+    --check items.0.key eq stats --check items.0.value.usage_to_metrics.ask-agent-llm exists --save F10.ask-agent-running/stats-event
   control-agent-server sink read --name qa-f10-side --contains QA_F10_SIDE_Q --expect-min 1 --expect-max 1
   control-agent-server api POST "/api/conversations/$R/interrupt" --expect 200 --quiet
   control-agent-server conversation wait "$R" --until paused --timeout 30
@@ -500,9 +512,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   The stub's first call (the run's step) is still hanging when the question
   arrives; the second call carries the question and answers `QA_F10_SIDE`
   within a fraction of a second, so `ask_agent` neither takes the state lock
-  the step holds nor waits for it. `R` is still `running`, its event count is
-  unchanged, and after the interrupt (which frees the run slot) no event
-  carries the side answer.
+  the step holds nor waits for it. `R` is still `running`, its log grew only
+  by the ask's `stats` update (an `ask-agent-llm` entry), and after the
+  interrupt (which frees the run slot) no event carries the side answer.
 - **Unknown conversation (`F10.ask-agent-unknown`).** The route
   documents 404, like condense and navigate.
   ```sh
@@ -549,6 +561,40 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   A second `Condensation` is recorded and ask_agent still names the codename
   from the reloaded history (the condenser keeps the first two events, the
   system prompt and the user's message); `A` stays `finished`.
+- **Ask usage on GET and after a restart (`F10.ask-agent-usage-saved`), known bug #6844.**
+  A conversation of its own on an `llm-stub` with fixed usage numbers: the
+  run's reply reports 11 prompt and 7 completion tokens, the ask's reply 5
+  and 3. The bullet restarts the run, so it comes last.
+  ```sh
+  USAGE=$(control-agent-server fixture llm-stub --name qa-f10-usage --step 'reply:QA_F10_USAGE_RUN@usage=11,7' \
+    --step 'reply:QA_F10_USAGE_ASK@usage=5,3' --print-path)
+  U=$(control-agent-server conversation start --no-autotitle --prompt QA_F10_USAGE --wait --until finished,error --timeout 60 --print-id \
+    --body-json "{\"agent\": {\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$USAGE/v1\", \"num_retries\": 0}, \"tools\": []}}")
+  control-agent-server api GET "/api/conversations/$U" --quiet --check execution_status eq finished \
+    --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7
+  control-agent-server api POST "/api/conversations/$U/ask_agent" --json '{"question": "QA_F10_USAGE_Q"}' --expect 200 \
+    --check response eq QA_F10_USAGE_ASK --save F10.ask-agent-usage-saved/ask
+  control-agent-server api GET "/api/conversations/$U/events/search" --query kind=$STATE --query sort_order=TIMESTAMP_DESC --query limit=1 --quiet \
+    --check items.0.key eq stats --check items.0.value.usage_to_metrics.ask-agent-llm.accumulated_token_usage.prompt_tokens eq 5 \
+    --check items.0.value.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens eq 3 --save F10.ask-agent-usage-saved/stats-event
+  control-agent-server api GET "/api/conversations/$U" --max-chars 300 \
+    --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 \
+    --check stats.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens eq 3 \
+    --save F10.ask-agent-usage-saved/get  # bug: status eq 200 && checks.0.ok eq true && checks.1.actual eq null
+  control-agent-server restart
+  control-agent-server api GET "/api/conversations/$U" --max-chars 300 \
+    --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 \
+    --check stats.usage_to_metrics.ask-agent-llm.accumulated_token_usage.prompt_tokens eq 5 \
+    --check stats.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens eq 3 --save F10.ask-agent-usage-saved/after-restart
+  ```
+  The run's usage is on GET (7 completion tokens under `default`), the ask
+  answers, and the `stats` event the ask recorded reports 5 and 3 tokens
+  under `ask-agent-llm`. Expected: GET shows the same `ask-agent-llm` entry
+  right away and after a restart
+  ([#6844](https://github.com/OpenHands/software-agent-sdk/issues/6844), fix in [#6845](https://github.com/OpenHands/software-agent-sdk/pull/6845)).
+  Today GET still lists only `default`: the ask updates the live stats
+  without saving the conversation's state, GET reads the saved state, and a
+  restart right after the ask loses the entry.
 
 ## Gotchas
 
@@ -584,12 +630,14 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   it does not wait for the step (`F10.ask-agent-running`), unlike `condense`,
   `fork` and `navigate`, which take the state lock (from source; not driven
   here).
-  On a conversation that has not been reloaded it records no event at all
-  (`F10.ask-agent` checks the total count). On one reloaded after a restart,
-  each call records and pushes a `stats` `ConversationStateUpdateEvent`
-  whose `usage_to_metrics` includes an `ask-agent-llm` entry, while GET's
-  `stats` keeps only the stored `default` and `condenser` usage (seen on
-  DeepSeek; not asserted). It passes the agent's tools to
+  Each call records and pushes one `stats` `ConversationStateUpdateEvent`
+  whose `usage_to_metrics` includes an `ask-agent-llm` entry
+  (`F10.ask-agent` checks the total count), so a client that counts events
+  around an ask sees one more. GET's `stats` does not show the
+  `ask-agent-llm` entry until the conversation's state is next saved (a
+  message, a run), and a restart before that loses it
+  (`F10.ask-agent-usage-saved`,
+  [#6844](https://github.com/OpenHands/software-agent-sdk/issues/6844)). It passes the agent's tools to
   the model and returns the first text block, so on a conversation with no
   messages yet DeepSeek's answer came back as an empty `response` (200).
 - `fork` and `navigate` return `ConversationInfo` with
