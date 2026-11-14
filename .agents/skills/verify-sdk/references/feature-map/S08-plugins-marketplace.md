@@ -24,7 +24,7 @@ Examples: `examples/05_skills_and_plugins/02_loading_plugins/main.py`, `examples
 - `S08.source-parsing`: `github:owner/repo`, https, ssh and `git://` URLs (GitHub, GitLab, Bitbucket, self-hosted) and local paths are classified; GitHub `blob`/`tree` URLs split into repo, branch and subpath; `repo_path` must be relative without `..`. Unit: `tests/sdk/extensions/test_fetch.py`, `tests/sdk/plugin/test_source.py`, `tests/sdk/plugin/test_plugin_loader.py::TestPluginSource`. Example: none. Real-LLM: none.
 - `S08.installed-plugins`: `install_plugin(source, ref=, installed_dir=, force=)` copies a fetched plugin into `~/.openhands/plugins/installed/` and records it in `.installed.json`; `list_installed_plugins`, `load_installed_plugins` (enabled only), `disable_plugin`/`enable_plugin`, `get_installed_plugin`, `update_plugin` and `uninstall_plugin` act on that store. Unit: `tests/sdk/plugin/test_installed_plugins.py`. Example: `examples/05_skills_and_plugins/02_loading_plugins/main.py` (demos 2 to 6). Real-LLM: none.
 - `S08.installation-manager`: the generic `InstallationManager[T]` validates names (no path traversal), records requested and resolved refs, keeps the enabled flag across `force` reinstalls, re-clones on `update`, and migrates legacy `plugins`/`skills` keys of `.installed.json` into `extensions`. Unit: `tests/sdk/extensions/installation/`. Example: none. Real-LLM: none.
-- `S08.ambient-plugins`: `load_user_plugins()` (`~/.agents/plugins`, then `~/.openhands/plugins`, then enabled installed plugins) and `load_project_plugins(work_dir)` (work dir and git root, `.agents/plugins` then `.openhands/plugins`) are merged into every `LocalConversation`, project over user; an explicitly attached plugin of the same name wins, and ambient plugins are not listed in `resolved_plugins`. Unit: `tests/sdk/plugin/test_discovery.py`, `tests/sdk/conversation/test_local_conversation_plugins.py::TestAmbientPluginAutoLoad`. Example: none. Real-LLM: none.
+- `S08.ambient-plugins`: `load_user_plugins()` (`~/.agents/plugins`, then `~/.openhands/plugins`, then enabled installed plugins) and `load_project_plugins(work_dir)` (work dir and git root, `.agents/plugins` then `.openhands/plugins`) are merged into every `LocalConversation`, project over user; an explicitly attached plugin of the same name wins, and ambient plugins are not listed in `resolved_plugins`. The conversation state records the skill and MCP server names ambient plugins contributed (`ambient_plugin_skills`, `ambient_plugin_mcp_servers`), so a resumed conversation drops a since-disabled or removed plugin's skills and MCP servers before re-discovery; a failed discovery keeps the previous contributions. Unit: `tests/sdk/plugin/test_discovery.py`, `tests/sdk/conversation/test_local_conversation_plugins.py::TestAmbientPluginAutoLoad`. Example: none. Real-LLM: none.
 - `S08.marketplace-manifest`: `Marketplace.load(dir)` reads `.plugin/marketplace.json` or `.claude-plugin/marketplace.json` with `name`, `owner`, `metadata`, `plugins` (string source or `{source: github|url, repo, url, ref, path}`) and `skills`, and `resolve_plugin_source(entry)` turns an entry into `(source, ref, repo_path)` relative to the marketplace. Unit: `tests/sdk/marketplace/test_marketplace.py`. Example: `examples/05_skills_and_plugins/04_mixed_marketplace_skills/main.py` (default mode prints the manifest). Real-LLM: none.
 - `S08.marketplace-registry`: `MarketplaceRegistry(registrations)` rejects duplicate names, fetches and caches each manifest lazily (keeping the resolved ref), and `resolve_plugin("name@market")` or `resolve_plugin("name")` returns a `PluginSource`, raising `PluginNotFoundError`, `AmbiguousPluginError` or `MarketplaceNotFoundError`. Unit: `tests/sdk/marketplace/test_marketplace_registry.py`. Example: none. Real-LLM: none.
 - `S08.marketplace-auto-load`: `AgentContext(registered_marketplaces=[MarketplaceRegistration(name, source, ref, repo_path, auto_load=True | [names])])` loads the chosen plugins and standalone skills when the conversation starts; a plugin wins over a standalone skill of the same name, explicit `plugins=` win over auto-loaded ones, a marketplace that fails to fetch is skipped, and `auto_load=False` only registers it. Unit: `tests/sdk/conversation/test_local_conversation_plugins.py::TestLocalConversationPlugins` (`test_auto_load_marketplace_plugins`, `test_auto_load_marketplace_standalone_skills`, `test_plugin_wins_over_standalone_on_name_collision`, `test_auto_load_marketplace_continues_after_fetch_failure`, `test_registered_only_marketplace_does_not_auto_load`, `test_explicit_plugins_override_auto_loaded_marketplace_plugins`), `tests/sdk/skills/test_installed_skills.py::TestLoadMarketplaceStandaloneSkills`. Example: none. Real-LLM: none.
@@ -147,7 +147,7 @@ The programs build every plugin, marketplace and git repository inside the run (
   - The git source is fetched through the secret.
   - `TOKEN` comes from the conversation secret (`nekot-terces`), never from the host.
 
-  Known failure (reproduced 2026-10-13, not yet filed): the server receives the host's `TOKEN` (`nekot-tsoh` is `host-token` reversed) instead of the conversation secret `secret-token`. A placeholder with no host variable (`${PLUGIN_KEY}`) correctly takes the secret. The cause is that `Plugin.load` reads `.mcp.json` through `load_mcp_config` with no secret lookup. `expand_mcp_variables` uses `check_env=True`, so at load time `${TOKEN}` is replaced from `os.environ`. When the conversation later applies its secrets, the placeholder is already gone. Any variable a plugin names that also exists in the agent process's environment leaks that value into the plugin's MCP server, and the user's secret is ignored.
+  Known failure (reproduced 2026-11-12, [#6643](https://github.com/OpenHands/software-agent-sdk/issues/6643)): the server receives the host's `TOKEN` (`nekot-tsoh` is `host-token` reversed) instead of the conversation secret `secret-token`. A placeholder with no host variable (`${PLUGIN_KEY}`) correctly takes the secret. The cause is that `Plugin.load` reads `.mcp.json` through `load_mcp_config` with no secret lookup. `expand_mcp_variables` uses `check_env=True`, so at load time `${TOKEN}` is replaced from `os.environ`. When the conversation later applies its secrets, the placeholder is already gone. Any variable a plugin names that also exists in the agent process's environment leaks that value into the plugin's MCP server, and the user's secret is ignored.
 - **A plugin source that cannot be fetched (`S08.conversation-attach`, `S08.fetch-cache`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -175,7 +175,7 @@ The programs build every plugin, marketplace and git repository inside the run (
   control-sdk program S08/attach --arg fetch-ref \
     --check default_version eq v2 --check v1_after_cached_clone eq v1 --check v1_resolved_is_v1_sha eq true
   ```
-  Expected: the second fetch checks out the tag and returns v1 with v1's SHA. Fixed: a known failure on 2026-10-13 (the shallow single-branch cache silently returned v2 content and SHA); it passes since #5685, re-verified 2026-11-03.
+  Expected: the second fetch checks out the tag and returns v1 with v1's SHA.
 - **The install store (`S08.installed-plugins`, `S08.ambient-plugins`).** Plugins are installed into the default store, which lives under the run's `OH_PERSISTENCE_DIR`:
   - a git plugin at tag `v1`
   - a local plugin
@@ -196,6 +196,18 @@ The programs build every plugin, marketplace and git repository inside the run (
     --check uninstall eq true --check uninstall_again eq false --check dir_removed eq true \
     --check listed_end eq '["localplug"]' --check get_missing eq null
   ```
+- **Resuming after an ambient plugin is disabled (`S08.ambient-plugins`).** An installed Claude Code plugin `resplug` (a skill, a command and a `.mcp.json` server) loads into a persisted conversation on its first message. The plugin is then disabled, the same `conversation_id` is reopened with its persisted agent (`LocalConversation(agent=None, conversation_id=...)`) and sent a message; then it is enabled and reopened again.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S08/store --arg resume \
+    --check enabled.skills eq '["resplug-skill", "resplug:review"]' --check enabled.mcp_servers eq '["resplug-mcp"]' \
+    --check enabled.recorded_skills eq '["resplug-skill", "resplug:review"]' --check enabled.recorded_mcp eq '["resplug-mcp"]' \
+    --check disable eq true --check resumed_same_id eq true \
+    --check after_disable.skills eq '[]' --check after_disable.mcp_servers eq '[]' \
+    --check after_disable.recorded_skills eq '[]' --check after_disable.recorded_mcp eq '[]' \
+    --check after_enable.skills eq '["resplug-skill", "resplug:review"]' --check after_enable.mcp_servers eq '["resplug-mcp"]'
+  ```
+  The resumed conversation's persisted agent no longer carries the disabled plugin's skill, command or MCP server, and its ownership record is empty; enabling the plugin brings them back on the next resume.
 - **Updating a plugin that was installed at a tag (`S08.installed-plugins`).** This is the same program. `gitplug` was installed at `v1` and `main` has since moved to 2.0.0. `update_plugin("gitplug")` then runs; it re-fetches with `ref=None`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -203,7 +215,7 @@ The programs build every plugin, marketplace and git repository inside the run (
     --check update_requested_ref eq null --check update_version eq 2.0.0 \
     --check update_resolved_is_v2 eq true --check installed_file_version eq 2.0.0
   ```
-  Expected: the plugin moves to the latest version, as the docstring says ("Update an installed extension to the latest version"). Fixed: a known failure on 2026-10-13 (the plugin stayed at 1.0.0 while `requested_ref` was cleared, the same cache as the previous bullet); it passes since #5685, re-verified 2026-11-03.
+  Expected: the plugin moves to the latest version, as the docstring says ("Update an installed extension to the latest version").
 - **The generic installation manager and legacy metadata (`S08.installation-manager`).** These calls go to `InstallationManager` directly:
   - a manifest named `../escaped`
   - a non-kebab-case name

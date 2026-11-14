@@ -1,8 +1,8 @@
-# Planning, task tracking, oracle, ToM and workflow tools
+# Planning, task tracking, oracle, ToM, workflow and reaction tools
 
-Tools an SDK program adds to an agent to help it plan and coordinate rather than to touch the system directly. `task_tracker` keeps a structured task list (`plan` replaces it, `view` shows it, each item `todo`, `in_progress` or `done`) and saves it as `TASKS.json` in the conversation's persistence directory. The planning preset (`get_planning_agent(llm)`) is a read-only agent with `glob`, `grep` and `planning_file_editor`, a planning system prompt that fixes a five-section plan structure, and a larger summarizing condenser; `planning_file_editor` can view any file but edit only `PLAN.md`, which it creates with section headers at `.agents_tmp/PLAN.md` (or a legacy root `PLAN.md`, or an absolute `plan_path`). Example 24 chains a planning conversation and an execution conversation over the same workspace. `ask_oracle` sends the agent's question to a second model, the saved LLM profile named `oracle`, and returns its answer. `tom_consult` and `sleeptime_compute` wrap the `tom-swe` Theory-of-Mind agent: one gives personalized guidance for a vague request, the other indexes past conversations into a user model stored under the user persistence directory. `workflow` (from `workflow_tool_set`) runs a Python script the agent writes, `async def main(wf)`, in a restricted namespace where `wf.run_agent`, `wf.map_agents`, `wf.pipeline` and `wf.reduce_agent` fan work out to registered sub-agents with a concurrency cap and a one-hour limit.
+Tools an SDK program adds to an agent to help it plan and coordinate rather than to touch the system directly. `task_tracker` keeps a structured task list (`plan` replaces it, `view` shows it, each item `todo`, `in_progress` or `done`) and saves it as `TASKS.json` in the conversation's persistence directory. The planning preset (`get_planning_agent(llm)`) is a read-only agent with `glob`, `grep` and `planning_file_editor`, a planning system prompt that fixes a five-section plan structure, and a larger summarizing condenser; `planning_file_editor` can view any file but edit only `PLAN.md`, which it creates with section headers at `.agents_tmp/PLAN.md` (or a legacy root `PLAN.md`, or an absolute `plan_path`). Example 24 chains a planning conversation and an execution conversation over the same workspace. `ask_oracle` sends the agent's question to a second model, the saved LLM profile named `oracle`, and returns its answer. `tom_consult` and `sleeptime_compute` wrap the `tom-swe` Theory-of-Mind agent: one gives personalized guidance for a vague request, the other indexes past conversations into a user model stored under the user persistence directory. `workflow` (from `workflow_tool_set`) runs a Python script the agent writes, `async def main(wf)`, in a restricted namespace where `wf.run_agent`, `wf.map_agents`, `wf.pipeline` and `wf.reduce_agent` fan work out to registered sub-agents with a concurrency cap and a one-hour limit. `react` and `unreact` (`openhands.tools.reaction`) let the agent put a small emoji (`eyes`, `+1`, `white_check_mark`, `tada`, `thinking_face`, `heart`) on a message, by default the user's latest one, as a sign it saw it; each successful call records a non-LLM `ReactionEvent` right after the tool's observation, and the program's user reacts with `conversation.react(emoji, target_event_id=None, removed=False)`, which by default targets the agent's latest message or `finish` and does not start a run.
 
-Source: `openhands-tools/openhands/tools/task_tracker/`, `openhands-tools/openhands/tools/planning_file_editor/`, `openhands-tools/openhands/tools/preset/planning.py`, `openhands-tools/openhands/tools/ask_oracle/`, `openhands-tools/openhands/tools/tom_consult/`, `openhands-tools/openhands/tools/workflow/`, `openhands-sdk/openhands/sdk/context/prompts/sections/planning.py`
+Source: `openhands-tools/openhands/tools/task_tracker/`, `openhands-tools/openhands/tools/planning_file_editor/`, `openhands-tools/openhands/tools/preset/planning.py`, `openhands-tools/openhands/tools/ask_oracle/`, `openhands-tools/openhands/tools/tom_consult/`, `openhands-tools/openhands/tools/workflow/`, `openhands-sdk/openhands/sdk/context/prompts/sections/planning.py`, `openhands-tools/openhands/tools/reaction/`, `openhands-sdk/openhands/sdk/event/reaction.py`
 
 Needs: `llm` (examples, real oracle and ToM calls, workflow sub-agents)
 
@@ -30,6 +30,7 @@ Examples: `examples/01_standalone_sdk/24_planning_agent_workflow.py`, `examples/
 - `S16.workflow-pipeline`: `wf.pipeline(items, stage1, stage2, ...)` runs sync or async stages per item with no barrier between stages, keeps item order, and drops a failed item to `None`; it needs at least one stage. Unit: `tests/tools/workflow/test_workflow_tool.py` (`test_pipeline_*`). Example: none. Real-LLM: none.
 - `S16.workflow-errors-and-output`: the script can catch common exceptions and `ExceptionGroup`s; uncaught errors come back formatted (with group details); the input `wf.reduce_agent` sends its sub-agent is cut to 12,000 characters, by whole trailing elements ("items omitted to fit") or characters; the script's own return value reaches the LLM whole. Unit: `tests/tools/workflow/test_workflow_tool.py` (`test_workflow_script_can_catch_*`, `test_format_exception_includes_exception_group_details`, `test_format_value_*`). Example: none. Real-LLM: none.
 - `S16.workflow-lifecycle`: closing the context closes the task manager once, and `run_agent` after close raises. Unit: `tests/tools/workflow/test_workflow_tool.py` (`test_workflow_context_close_propagates_to_manager`, `test_workflow_context_close_is_idempotent`, `test_run_agent_raises_after_close`). Example: none. Real-LLM: none.
+- `S16.reactions`: `Tool(name=ReactTool.name)` / `Tool(name=UnreactTool.name)` (`react`, `unreact`) put an emoji on, or take it off, the user's latest message or the `message_id` given; each call returns `Reacted :<emoji>:.` / `Removed :<emoji>:.` and the agent records one agent `ReactionEvent` right after the observation; an emoji outside the six is rejected as a tool validation error. `conversation.react(emoji)` records a user `ReactionEvent` on the agent's latest answer (`finish` or message) with its text ending, raises `ValueError` for an unknown emoji, leaves the run status alone, and the agent sees it as one `[The user reacted ...]` line on its next turn, while its own reactions stay out of what it sees. Unit: `tests/tools/reaction/test_reaction_tools.py`. Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
 
@@ -38,6 +39,7 @@ Examples: `examples/01_standalone_sdk/24_planning_agent_workflow.py`, `examples/
 - Oracle: save a profile first, `LLMProfileStore(dir).save("oracle", LLM(...), include_secrets=True)` (`ORACLE_PROFILE_NAME` from `openhands.tools.ask_oracle`), then `Agent(tools=[Tool(name=AskOracleTool.name)])` and `LocalConversation(..., profile_store_dir=dir)`. `S16.oracle-*`.
 - ToM: `from openhands.tools.tom_consult import TomConsultTool, SleeptimeComputeTool, SleeptimeComputeAction`; `Tool(name=TomConsultTool.name, params=tom_params)`; `OH_PERSISTENCE_DIR` moves the user-model store. `S16.tom-*`.
 - Workflow: `from openhands.tools.workflow import WorkflowToolSet`; `Tool(name=WorkflowToolSet.name)`; sub-agents come from `register_agent_if_absent(name=..., factory_func=..., description=...)` (`openhands.sdk.subagent`) or the built-ins; `WorkflowTool.create(executor=...)` injects a custom executor. `S16.workflow-*`.
+- Reactions: `from openhands.tools.reaction import ReactTool, UnreactTool`; `Agent(tools=[Tool(name=ReactTool.name), Tool(name=UnreactTool.name)])` (not in any preset); `conversation.react("heart")`, `ReactionEvent` from `openhands.sdk.event`. `S16.reactions`.
 - Integration runner: `tests/integration/run_infer.py --tool-preset planning` swaps in `get_planning_tools()`.
 
 ## Driving it
@@ -175,6 +177,32 @@ Preconditions:
   control-sdk exec --model-env --expect-output EXAMPLE_COST -- python examples/01_standalone_sdk/52_dynamic_workflow.py
   ```
   The parent agent writes and runs a workflow that fans `coverage_auditor` sub-agents over the repository and prints the reducer's report.
+
+- **Emoji reactions, scripted (`S16.reactions`).** A persisted conversation whose agent has only `react` and `unreact`. Turn 1 ("Please look into the build."): the agent reacts `eyes`, tries `rocket`, takes `eyes` back, reacts `white_check_mark`, and finishes. The program then calls `conversation.react("heart")` and `conversation.react("rocket")`; turn 2 ("Thanks, that's all.") finishes, with a recording LLM keeping what each call was sent.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S16/reactions \
+    --check status_turn1 eq finished --check status_after_user_react eq finished --check status_turn2 eq finished \
+    --check reactions len-eq 4 --check event_before_first_reaction eq ObservationEvent \
+    --check reactions.0.source eq agent --check reactions.0.emoji eq eyes --check reactions.0.on_first_message eq true \
+    --check reactions.1.emoji eq eyes --check reactions.1.removed eq true --check reactions.1.on_first_message eq true \
+    --check reactions.2.emoji eq white_check_mark --check reactions.2.on_first_message eq true \
+    --check reactions.3.source eq user --check reactions.3.emoji eq heart --check reactions.3.on_first_finish eq true \
+    --check reactions.3.text_ending eq "The build is green." \
+    --check observations.0.text eq "Reacted :eyes:." --check observations.1.text eq "Removed :eyes:." \
+    --check agent_errors len-eq 1 --check agent_errors.0 contains "Error validating tool 'react'" \
+    --check bad_user_emoji contains "Unknown emoji 'rocket'" --check user_reaction_target_is_finish eq true \
+    --check agent_reaction_preceded_by len-eq 3 --check agent_reaction_preceded_by.0 eq ObservationEvent \
+    --check agent_reaction_preceded_by.1 eq ObservationEvent --check agent_reaction_preceded_by.2 eq ObservationEvent \
+    --check turn2_sees_user_heart eq true --check turn2_user_reaction_lines eq 1 --check turn2_sees_own_reaction_line eq false
+  ```
+- **Emoji reactions with a real model (`S16.reactions`).** Live; the model gets `react` and `unreact` and one message asking it to react `eyes` first and then answer.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
+  control-sdk program S16/reactions --arg live \
+    --check execution_status eq finished --check react_calls ge 1 \
+    --check agent_reactions.0.emoji eq eyes --check agent_reactions.0.on_message eq true
+  ```
 
 ## Gotchas
 

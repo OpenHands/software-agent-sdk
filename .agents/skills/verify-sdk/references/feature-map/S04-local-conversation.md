@@ -28,7 +28,7 @@ Examples: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`, `
 - `S04.secrets-masking`: secret values echoed by a command are replaced by `<secret-hidden>` in observations and never reach the persisted events. Unit: `tests/tools/terminal/test_secrets_masking.py`, `tests/cross/test_agent_secrets_integration.py`. Example: `examples/01_standalone_sdk/12_custom_secrets.py`. Real-LLM: none.
 - `S04.visualizer-default`: by default a `DefaultConversationVisualizer` prints each event as a Rich panel; `visualizer=None` turns it off; a class or instance can be passed. Unit: `tests/sdk/conversation/local/test_conversation_visualize_param.py`. Example: `examples/01_standalone_sdk/10_persistence.py`. Real-LLM: none.
 - `S04.visualizer-custom`: a `ConversationVisualizerBase` subclass passed as `visualizer=` receives every event through `on_event`; each event type has its own `visualize` rendering. Unit: `tests/sdk/conversation/test_visualizer.py`. Example: `examples/01_standalone_sdk/26_custom_visualizer.py`. Real-LLM: none.
-- `S04.fork`: `fork()` deep-copies the conversation under a new id (or `conversation_id=`), starts IDLE, leaves the source untouched, resets metrics unless `reset_metrics=False`, accepts `agent=` and `tags=` (`title=` is deprecated and ignored locally since #4814; only `RemoteConversation` stores it), shares the workspace, and persists so the fork survives a reload. Unit: `tests/sdk/conversation/local/test_fork.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
+- `S04.fork`: `fork()` deep-copies the conversation under a new id (or `conversation_id=`), starts IDLE, leaves the source untouched, resets metrics unless `reset_metrics=False`, accepts `agent=` and `tags=` (`title=` is deprecated and ignored locally; only `RemoteConversation` stores it), shares the workspace, and persists so the fork survives a reload. Unit: `tests/sdk/conversation/local/test_fork.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
 - `S04.fork-branch`: events carry parent ids forming a tree; `fork(from_event_id=...)` copies only that branch, and `navigate_to(event_id)` moves HEAD so the next event starts a sibling branch (`None` empties the active branch). Unit: `tests/sdk/conversation/local/test_conversation_tree.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
 - `S04.goal-loop`: `run_goal(conversation, objective, judge_llm, max_iterations=N)` sends the objective, runs, asks the judge LLM for a verdict, re-prompts with the missing items, and returns a `GoalOutcome` with status `"complete"` or `"capped"`, the iteration count and the verdict. Unit: `tests/sdk/conversation/goal/`. Example: `examples/01_standalone_sdk/54_goal_completion_loop.py`. Real-LLM: none.
 - `S04.interactive-terminal`: with `Tool(name=TerminalTool.name, params={"no_change_timeout_seconds": 3})` the agent can start `python3`, feed it input and exit; an `LLMConvertibleEvent` callback collects the raw LLM messages. Unit: `tests/tools/terminal/test_terminal_session.py::test_python_interactive_input`, `::test_interactive_command`. Example: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`. Real-LLM: `tests/integration/tests/t07_interactive_commands.py`.
@@ -80,13 +80,13 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check names_match eq true --check numbered_in_order eq true --check files_follow_event_ids eq true \
     --check callback_saw_file_every_time eq true --check files_grew_one_by_one eq true --check status eq finished
   ```
-- **Damaged event files (`S04.persist-events`).** A finished conversation is reopened after one change at a time to its `events/` folder: an empty file (what an interrupted write leaves), invalid JSON, a deleted file. A deleted file is skipped and the other events reload (#6197); an empty or invalid file still makes the reload fail with an error that names the file or the JSON problem (the recovery `S05.event-log-recovery` expects).
+- **Damaged event files (`S04.persist-events`).** A finished conversation is reopened after one change at a time to its `events/` folder: an empty file (what an interrupted write leaves), invalid JSON, a deleted file. The conversation reopens every time without an error: a deleted file is skipped and the other events reload; an empty or invalid file is read as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) in the same place, so the event count is unchanged (`S05.event-log-recovery`).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S04/lifecycle --arg corrupt \
     --check events_before eq 6 --check intact.events eq 6 \
-    --check empty_middle.error contains "Missing event file" --check empty_last.error contains "Missing event file" \
-    --check invalid_json_middle.error contains "Invalid JSON" \
+    --check empty_middle.error missing --check empty_middle.events eq 6 --check empty_last.error missing --check empty_last.events eq 6 \
+    --check invalid_json_middle.error missing --check invalid_json_middle.events eq 6 \
     --check missing_middle.error missing --check missing_middle.events eq 5 \
     --check missing_last.error missing --check missing_last.events eq 5
   ```
@@ -239,7 +239,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check repl.collected_tool_messages eq 5 --check repl.collected_roles contains tool \
     --check prompt_is_input.waiting eq true --check prompt_is_input.reply contains "hello John 42"
   ```
-  Before #6651, with the default tmux pane pool, every terminal call first interrupted a command that was still running (`_prepare_pooled_session` sent Ctrl+C after a no-change timeout), so a program waiting on `input()` could not be answered (`is_input=True` returned `No previous running command to interact with.`, and a plain `John` reached bash). Follow-up calls now reach the running command's pane untouched.
+  Known failure (reproduced 2026-11-12, [#6752](https://github.com/OpenHands/software-agent-sdk/issues/6752)): with the default tmux pane pool, an `is_input=True` follow-up reaches the running command untouched (`prompt_is_input` passes), but a plain command typed into the running REPL is preceded by Ctrl+C and a `clear` typed into Python, so `repl.reply` starts with `KeyboardInterrupt` and `NameError: name 'clear' is not defined` and `42` falls past the 200 characters the program keeps. The subprocess backend refuses the plain command instead.
 - **Final response, title and tags (`S04.final-response`, `S04.title-and-tags`).** `get_agent_final_response` on finished conversations; `generate_title` from the agent's LLM, an explicit LLM, a reply with `<think>` reasoning, a failing LLM and no user message; tags kept on disk, bad keys and long values refused.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

@@ -532,6 +532,7 @@ Preconditions:
 
 ## Gotchas
 
+- `F24.offline-safe` starts a server whose `HTTPS_PROXY` refuses every connection, so LiteLLM's model cost-map fetch fails at import. Under load that startup can crash with an `ImportError` or `DeadlockError` in `litellm.rust_bridge.catalog` (#6749); the bullet then fails at `launch`, and a rerun on a quiet machine passes.
 - The models route returns `OPENAI_CODEX_MODELS`
   (`openhands-sdk/openhands/sdk/llm/auth/openai.py`), not the `codex` ACP
   provider's deprecated `available_models`. The two lists matched until #5436

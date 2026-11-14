@@ -1,0 +1,1 @@
+../../..<scratch>/agent-server/20261111-090144-e780-map-f21/fixtures/qa-f21-types/exported.ts(5,224): error TS2353: Object literal may only specify known properties, and '"acp_effort"' does not exist in type 'Shape<ACPAgentProfile>'.
