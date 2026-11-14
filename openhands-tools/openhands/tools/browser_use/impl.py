@@ -11,10 +11,13 @@ import os
 import shutil
 import sys
 import threading
+import time
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
 from uuid import uuid4
+
+import psutil
 
 
 if TYPE_CHECKING:
@@ -356,6 +359,52 @@ def _get_chromium_error_message() -> str:
     )
 
 
+def _kill_processes(processes: list[psutil.Process], timeout: float = 3.0) -> None:
+    """Kill the processes that are still running and wait briefly for them.
+
+    Used for a browser that a timed-out cleanup left behind, which otherwise
+    outlives the conversation and the program (re-parented to PID 1).
+    """
+    killed: list[psutil.Process] = []
+    for process in processes:
+        try:
+            if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                process.kill()
+                killed.append(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as e:
+            logger.warning("Could not kill browser process %s: %s", process.pid, e)
+    if not killed:
+        return
+    logger.warning(
+        "Killed %d browser process(es) left running after cleanup", len(killed)
+    )
+    # Poll rather than wait(): Chromium is a direct child that asyncio's child
+    # watcher also waits on, and reaping it here makes asyncio log a bogus
+    # "exit status already read" for it.
+    deadline = time.monotonic() + timeout
+    while True:
+        survivors = [p for p in killed if _still_running(p)]
+        if not survivors or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    if survivors:
+        logger.warning(
+            "Browser process(es) still running after kill: %s",
+            ", ".join(str(p.pid) for p in survivors),
+        )
+
+
+def _still_running(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True
+
+
 class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     """Executor that wraps browser-use MCP server for OpenHands integration."""
 
@@ -545,8 +594,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 self._consecutive_failures,
             )
             # Best-effort cleanup of the old browser process/session.
-            # If the browser truly crashed this will fail fast; if it's
-            # wedged this avoids leaking the process.
+            # If the browser truly crashed this will fail fast. A wedged
+            # browser can outlast the cleanup, so its processes are killed
+            # afterwards and the server forgets the session either way;
+            # otherwise the next action reuses the hung session.
+            processes = self._browser_processes()
             try:
                 self._async_executor.run_async(self.cleanup, timeout=5.0)
             except Exception as e:
@@ -555,6 +607,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     "(expected if browser crashed): %s",
                     e,
                 )
+            _kill_processes(processes)
+            self._forget_browser_session()
             self._initialized = False
             self._consecutive_failures = 0
             error_text = (
@@ -814,6 +868,40 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
 
+    def _browser_processes(self) -> list[psutil.Process]:
+        """The local browser process and its descendants, if one is running."""
+        # getattr: close() also runs on an executor whose __init__ failed.
+        server = getattr(self, "_server", None)
+        session = getattr(server, "browser_session", None)
+        watchdog = getattr(session, "_local_browser_watchdog", None)
+        process = getattr(watchdog, "_subprocess", None)
+        if not isinstance(process, psutil.Process):
+            return []
+        try:
+            return [process, *process.children(recursive=True)]
+        except psutil.Error:
+            return [process]
+
+    def _forget_browser_session(self) -> None:
+        """Drop the server's session references so the next action starts anew.
+
+        A cancelled cleanup leaves the old session's event bus running on the
+        portal loop, which then holds up the executor's close, so stop it too.
+        """
+        session = self._server.browser_session
+        self._server.browser_session = None
+        self._server.tools = None
+        self._server.active_sessions.clear()
+        event_bus = getattr(session, "event_bus", None)
+        if event_bus is None:
+            return
+        try:
+            self._async_executor.run_async(
+                event_bus.stop(clear=True, timeout=1), timeout=3.0
+            )
+        except Exception as e:
+            logger.debug("Stopping the old browser session's event bus failed: %s", e)
+
     def close(self):
         """Close the browser executor and cleanup resources."""
         with self._close_lock:
@@ -823,12 +911,15 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     self._release_shared_executor_creation_lock()
                 return
             self._cleanup_initiated = True
+            processes = self._browser_processes()
             try:
                 # Run cleanup in the async executor with a shorter timeout
                 self._async_executor.run_async(self.cleanup, timeout=30.0)
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
+                # A hung browser can outlast the cleanup; don't leave it behind.
+                _kill_processes(processes)
                 # Remove the browser profile directory to avoid disk accumulation.
                 # browser_use doesn't clean up the user_data_dir on shutdown.
                 user_data_dir = self._config.get("user_data_dir")

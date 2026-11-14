@@ -16,12 +16,12 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from fastapi import HTTPException
 from pydantic import SecretStr
 
 from openhands.agent_server import event_router
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import (
     CondensationUnavailable,
@@ -54,6 +54,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.credential import CredentialSyncError
+from openhands.sdk.errors import DomainError
 from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -65,6 +66,7 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -137,14 +139,14 @@ async def test_gateway_does_not_save_while_a_previous_run_remains_active(
     event_service._run_task = previous_run
     event_service.send_message = AsyncMock()
     try:
-        with pytest.raises(HTTPException) as error:
+        with pytest.raises(DomainError) as error:
             await run_gateway_message(SendMessageRequest(), event_service)
     finally:
         previous_run.cancel()
         with suppress(asyncio.CancelledError):
             await previous_run
 
-    assert error.value.status_code == 504
+    assert status_for(error.value) == 504
     event_service.send_message.assert_not_awaited()
 
 
@@ -3596,15 +3598,8 @@ class TestStatsCallbackNoDeadlock:
         service._emit_event_from_thread = MagicMock(name="_emit_event_from_thread")
 
         callbacks: list = []
-        service._setup_stats_streaming(
-            MagicMock(
-                get_all_llms=lambda: [
-                    MagicMock(
-                        telemetry=MagicMock(set_stats_update_callback=callbacks.append)
-                    )
-                ]
-            )
-        )
+        conversation.llm_registry.set_stats_update_callback = callbacks.append
+        service._setup_stats_streaming(conversation)
         assert len(callbacks) == 1, "stats_callback must be registered exactly once"
         return service, state, callbacks[0]
 
@@ -3919,8 +3914,8 @@ def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
     callbacks = []
-    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
-    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+    conversation = MagicMock()
+    conversation.llm_registry.set_log_completions_callback = callbacks.append
 
     object.__setattr__(
         event_service,
@@ -3929,12 +3924,38 @@ def test_llm_log_callback_swallows_emit_failures(
     )
 
     with caplog.at_level("ERROR"):
-        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
-        callbacks[0]("completion.json", "{}")
+        event_service._setup_llm_log_streaming(conversation)
+        callbacks[0]("completion.json", "{}", "test-usage", "gpt-4o")
 
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()
     assert "Failed to emit LLM completion log event" in caplog.text
+
+
+@pytest.mark.parametrize("option", ["log_completions", "log_completions_to_file"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_llm_log_streaming_accepts_both_logging_names(event_service, option, enabled):
+    """Both the canonical and deprecated field names wire the same session.
+
+    ``_setup_llm_log_streaming`` registers its callback on the registry
+    unconditionally (every session of the conversation, including those a
+    later ``switch_llm`` opens); whether a completion is actually logged is
+    gated by ``Telemetry.completion_logging_enabled`` at log time, not by
+    registration. So the alias must set that flag the same way regardless of
+    which field name was used to construct the ``LLM``.
+    """
+    llm = LLM.model_validate(
+        {"model": "openai/gpt-4o-mini", "usage_id": "test-usage", option: enabled}
+    )
+    registry = LLMRegistry()
+    registry.add(llm)
+    conversation = MagicMock(llm_registry=registry)
+    with patch.object(
+        type(llm.session.telemetry), "set_log_completions_callback"
+    ) as register:
+        event_service._setup_llm_log_streaming(conversation)
+    register.assert_called_once()
+    assert llm.session.telemetry.completion_logging_enabled is enabled
 
 
 def _make_stored(tmp_path: Path) -> StoredConversation:

@@ -26,6 +26,7 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from websockets.typing import Subprotocol
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.canvas_extensions.bridge import (
     APP_BACKEND_SESSION_COOKIE_NAME,
     APP_BACKEND_SESSION_TTL_SECONDS,
@@ -35,6 +36,7 @@ from openhands.agent_server.canvas_extensions_bridge_router import (
     app_backend_bridge_router,
 )
 from openhands.agent_server.config import Config
+from tests.agent_server.conftest import install_test_context
 
 
 CONTROL_KEY = "control-key"
@@ -143,6 +145,7 @@ async def _live_bridge(
     stream_closed = threading.Event()
     backend_observation: dict[str, str | None] = {}
     backend = FastAPI()
+    add_domain_error_handler(backend)
 
     @backend.get("/prefix/static/app.js")
     async def static_asset(request: Request) -> JSONResponse:
@@ -203,11 +206,15 @@ async def _live_bridge(
         bridge_port = _free_port()
         public_url = f"https://127.0.0.1:{bridge_port}"
         app = FastAPI()
-        app.state.config = Config(
-            session_api_keys=[CONTROL_KEY],
-            allow_cors_origins=[CANVAS_ORIGIN],
-            app_backend_public_url=public_url,
-            trust_forwarded_headers=trust_forwarded_headers,
+        add_domain_error_handler(app)
+        install_test_context(
+            app,
+            Config(
+                session_api_keys=[CONTROL_KEY],
+                allow_cors_origins=[CANVAS_ORIGIN],
+                app_backend_public_url=public_url,
+                trust_forwarded_headers=trust_forwarded_headers,
+            ),
         )
         app.state.app_backend_session_store = AppBackendSessionStore(
             ttl_seconds=ttl_seconds
@@ -570,6 +577,7 @@ async def test_untrusted_forwarded_proto_does_not_change_origin_on_launch_config
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(config_file))
 
     backend = FastAPI()
+    add_domain_error_handler(backend)
 
     @backend.get("/echo")
     async def echo() -> JSONResponse:
@@ -579,10 +587,14 @@ async def test_untrusted_forwarded_proto_does_not_change_origin_on_launch_config
         bridge_port = _free_port()
         public_url = f"{public_scheme}://127.0.0.1:{bridge_port}"
         app = FastAPI()
-        app.state.config = Config(
-            session_api_keys=[CONTROL_KEY],
-            allow_cors_origins=[CANVAS_ORIGIN],
-            app_backend_public_url=public_url,
+        add_domain_error_handler(app)
+        install_test_context(
+            app,
+            Config(
+                session_api_keys=[CONTROL_KEY],
+                allow_cors_origins=[CANVAS_ORIGIN],
+                app_backend_public_url=public_url,
+            ),
         )
         app.state.app_backend_session_store = AppBackendSessionStore()
         app.state.canvas_extension_backend_manager = _ReadyBackendManager(
@@ -641,4 +653,9 @@ async def test_unreachable_backend_error_names_the_canvas_backend(
 
     unreachable = await client.get(f"{root}/prefix/static/app.js")
     assert unreachable.status_code == 502
-    assert unreachable.json() == {"detail": "Canvas App backend unreachable"}
+    # 5xx details are not shown to clients; the server log and ``exception``
+    # field carry them, as for every 5xx the agent server answers.
+    assert unreachable.json() == {
+        "detail": "Internal Server Error",
+        "exception": "502: Canvas App backend unreachable",
+    }

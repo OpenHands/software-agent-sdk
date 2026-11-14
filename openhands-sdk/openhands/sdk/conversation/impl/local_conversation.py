@@ -60,7 +60,12 @@ from openhands.sdk.event.reaction import (
     find_reaction_target,
     reaction_target_text,
 )
-from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookMatcher,
+    create_hook_callback,
+)
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
@@ -195,6 +200,24 @@ def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # event the source's own branch walk bridges to instead.
     bridged = source._effective_parent_id(source.get_index(event.id), event)
     return copied.model_copy(update={"parent_id": bridged})
+
+
+def _hooks_not_in(hooks: HookConfig, existing: HookConfig) -> HookConfig:
+    """Return the matchers of ``hooks`` that ``existing`` does not already hold."""
+
+    def unseen(added: list[HookMatcher], present: list[HookMatcher]):
+        return [matcher for matcher in added if matcher not in present]
+
+    return HookConfig(
+        pre_tool_use=unseen(hooks.pre_tool_use, existing.pre_tool_use),
+        post_tool_use=unseen(hooks.post_tool_use, existing.post_tool_use),
+        user_prompt_submit=unseen(
+            hooks.user_prompt_submit, existing.user_prompt_submit
+        ),
+        session_start=unseen(hooks.session_start, existing.session_start),
+        session_end=unseen(hooks.session_end, existing.session_end),
+        stop=unseen(hooks.stop, existing.stop),
+    )
 
 
 def _same_llm_config(a: LLM, b: LLM) -> bool:
@@ -368,11 +391,16 @@ class LocalConversation(BaseConversation):
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
+        # The registry owns this conversation's LLM sessions (usage metrics and
+        # telemetry per usage_id); the call context carries them to every LLM
+        # call. Agent LLMs are registered later, in _ensure_agent_ready().
+        self.llm_registry = LLMRegistry()
         self._llm_call_context = (
             _parent_llm_call_context or LLMCallContext()
         ).for_conversation(
             str(desired_id),
             prompt_cache_key=prompt_cache_key,
+            sessions=self.llm_registry.sessions,
         )
 
         # Resolve client-defined tools, then register them and inject the matching
@@ -583,7 +611,6 @@ class LocalConversation(BaseConversation):
 
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
-        self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
@@ -1544,6 +1571,12 @@ class LocalConversation(BaseConversation):
 
     def _merge_runtime_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
         existing_config = self._state.hook_config
+        if existing_config is not None:
+            # Loading the same plugin again must not run its hooks twice, so
+            # keep only the matchers the live config does not already hold.
+            plugin_hooks = _hooks_not_in(plugin_hooks, existing_config)
+            if plugin_hooks.is_empty():
+                return
         merged_config = (
             HookConfig.merge([existing_config, plugin_hooks])
             if existing_config is not None
@@ -1907,7 +1940,6 @@ class LocalConversation(BaseConversation):
         condenser_llm = new_llm.model_copy(
             update={"usage_id": condenser.llm.usage_id},
         )
-        condenser_llm.reset_metrics()
         return condenser.model_copy(update={"llm": condenser_llm})
 
     def _reject_llm_switch_on_acp(self) -> None:
@@ -1926,8 +1958,8 @@ class LocalConversation(BaseConversation):
         entry with that key already exists and has the same config, the
         cached LLM is reused. If its config differs (e.g. ``default``, which
         agent initialization registers, posted with another model), the
-        passed ``llm`` replaces the entry and takes over the metrics already
-        recorded under that ``usage_id``.
+        passed ``llm`` replaces the entry. Usage keeps accumulating in the
+        session the registry holds for that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
@@ -1948,10 +1980,6 @@ class LocalConversation(BaseConversation):
             if registered is not None:
                 self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
-            if registered is not None:
-                # Keep one metrics object per usage_id: ConversationStats
-                # tracks the registered LLM's, so accrued usage is retained.
-                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:
@@ -2268,12 +2296,20 @@ class LocalConversation(BaseConversation):
         responsive. No-op unless this thread holds the lock, so direct ``astep``
         calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
         an ``await``; every other holder takes it only briefly.
+
+        The state's deferred-save depth is released with the lock, so a change
+        made by another thread meanwhile (e.g. ``pause()``) is written to
+        ``base_state.json`` at once instead of at the end of the step.
         """
-        lock = self._state._lock
+        state = self._state
+        lock = state._lock
         if not lock.owned():
             yield
             return
         held_flag = self._step_holds_state_lock
+        # Only changed under the lock, so stash it here and restore it below.
+        save_depth = state._save_depth
+        state._save_depth = 0
         depth = lock.release_all()
         # Keep the flag honest while released so a concurrent switch_llm (on the
         # event-loop thread) takes the now-free lock instead of racing mutators.
@@ -2282,6 +2318,7 @@ class LocalConversation(BaseConversation):
             yield
         finally:
             lock.reacquire(depth)
+            state._save_depth = save_depth
             self._step_holds_state_lock = held_flag
 
     @observe(name="conversation.run")

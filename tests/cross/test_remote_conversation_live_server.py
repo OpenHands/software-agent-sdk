@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import asyncio
 import io
 import json
 import os
@@ -18,8 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -31,11 +31,7 @@ from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
-from openhands.agent_server import (
-    config as config_module,
-    conversation_service as service_module,
-)
-from openhands.agent_server.config import load_config
+from openhands.agent_server.config import Config, load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.event_store import EventLog
@@ -156,7 +152,7 @@ def test_deferred_websocket_initialization_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     async def accept_app_backend_websocket(
-        websocket: WebSocket, _extension_name: str, _path: str
+        websocket: WebSocket, _extension_name: str, _path: str, _config: Config
     ) -> None:
         await websocket.accept()
         await websocket.close()
@@ -385,8 +381,6 @@ def test_recovery_provenance_served_over_http_and_websocket(server_env):
 
 
 def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
-    monkeypatch.setattr(config_module, "_default_config", None)
-    monkeypatch.setattr(service_module, "_conversation_service", None)
     with live_server_env(tmp_path, monkeypatch) as server_env:
         agent = Agent(
             llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
@@ -1155,17 +1149,13 @@ def test_remote_conversation_created_from_agent_settings(server_env):
 def test_openai_chat_completions_gateway_over_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
 ):
-    from openhands.agent_server import (
-        config as config_module,
-        conversation_service as service_module,
-    )
     from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 
-    monkeypatch.setattr(config_module, "_default_config", None)
-    monkeypatch.setattr(service_module, "_conversation_service", None)
     monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
 
-    profiles_dir = tmp_path / "profiles"
+    # Where the live server's own stores keep LLM profiles (live_server_env
+    # points OH_PERSISTENCE_DIR at ``tmp_path / ".openhands"``).
+    profiles_dir = tmp_path / ".openhands" / "profiles"
     store = LLMProfileStore(base_dir=profiles_dir)
     store.save(
         "smoke",
@@ -1173,293 +1163,408 @@ def test_openai_chat_completions_gateway_over_real_server(
         include_secrets=True,
     )
 
-    def llm_profiles() -> LLMProfileStore:
-        return LLMProfileStore(base_dir=profiles_dir)
+    with live_server_env(tmp_path, monkeypatch) as env:
+        with httpx.Client() as client:
+            models_response = client.get(f"{env['host']}/v1/models", timeout=2.0)
+            assert models_response.status_code == 200
+            assert models_response.json()["data"] == [
+                {
+                    "id": "openhands_smoke",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "openhands",
+                }
+            ]
 
-    with (
-        patch(
-            "openhands.agent_server.openai.service.get_llm_profile_store", llm_profiles
-        ),
-        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
-    ):
-        with live_server_env(tmp_path, monkeypatch) as env:
-            with httpx.Client() as client:
-                models_response = client.get(f"{env['host']}/v1/models", timeout=2.0)
-                assert models_response.status_code == 200
-                assert models_response.json()["data"] == [
+            response = client.post(
+                f"{env['host']}/v1/chat/completions",
+                json={
+                    "model": "openhands_smoke",
+                    "messages": [
+                        {"role": "system", "content": "Answer briefly."},
+                        {"role": "user", "content": "Say hello."},
+                    ],
+                },
+                timeout=10.0,
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["object"] == "chat.completion"
+            assert body["model"] == "openhands_smoke"
+            assert body["choices"][0]["message"] == {
+                "role": "assistant",
+                "content": "Hello from patched LLM",
+            }
+            assert body["usage"] == {
+                "prompt_tokens": 7,
+                "completion_tokens": 5,
+                "total_tokens": 12,
+            }
+            conversation_id = response.headers["X-OpenHands-ServerConversation-ID"]
+            UUID(conversation_id)
+            persisted_response = client.get(
+                f"{env['host']}/api/conversations/{conversation_id}", timeout=2.0
+            )
+            assert persisted_response.status_code == 200
+            assert persisted_response.json()["workspace"]["working_dir"] == str(
+                env["workspace_path"]
+            )
+
+            reused_response = client.post(
+                f"{env['host']}/v1/chat/completions",
+                headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+                json={
+                    "model": "openhands_smoke",
+                    "messages": [
+                        {"role": "user", "content": "Say hello again."},
+                    ],
+                },
+                timeout=10.0,
+            )
+            assert reused_response.status_code == 200
+            assert (
+                reused_response.headers["X-OpenHands-ServerConversation-ID"]
+                == conversation_id
+            )
+            assert reused_response.json()["choices"][0]["message"] == {
+                "role": "assistant",
+                "content": "Hello from patched LLM",
+            }
+            # A continued turn reports only its own model call, not the
+            # conversation's running total (7/5 per call, two calls so far).
+            assert reused_response.json()["usage"] == {
+                "prompt_tokens": 7,
+                "completion_tokens": 5,
+                "total_tokens": 12,
+            }
+
+            from openai import BadRequestError, OpenAI
+
+            openai_client = OpenAI(
+                api_key="unused",
+                base_url=f"{env['host']}/v1",
+                timeout=10,
+            )
+            reused_stream = openai_client.chat.completions.create(
+                model="openhands_smoke",
+                messages=[{"role": "user", "content": "Say hello a third time."}],
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+            )
+            reused_usage = [chunk.usage for chunk in reused_stream if chunk.usage]
+            assert len(reused_usage) == 1
+            assert reused_usage[0].prompt_tokens == 7
+            assert reused_usage[0].completion_tokens == 5
+            assert reused_usage[0].total_tokens == 12
+
+            stream = openai_client.chat.completions.create(
+                model="openhands_smoke",
+                messages=[
+                    {"role": "developer", "content": "Answer tersely."},
+                    {"role": "user", "content": "Say hello as a stream."},
+                ],
+                stream=True,
+                stream_options={"include_usage": True},
+                user="compat-test-user",
+            )
+            chunks = list(stream)
+            streamed_text = "".join(
+                chunk.choices[0].delta.content or ""
+                for chunk in chunks
+                if chunk.choices
+            )
+            usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+            assert streamed_text == "Hello from patched LLM"
+            assert usage_chunks[-1].prompt_tokens == 7
+            assert usage_chunks[-1].completion_tokens == 5
+            assert usage_chunks[-1].total_tokens == 12
+
+            stream = openai_client.chat.completions.create(
+                model="openhands_smoke",
+                messages=[
                     {
-                        "id": "openhands_smoke",
-                        "object": "model",
-                        "created": 0,
-                        "owned_by": "openhands",
-                    }
-                ]
-
-                response = client.post(
-                    f"{env['host']}/v1/chat/completions",
-                    json={
-                        "model": "openhands_smoke",
-                        "messages": [
-                            {"role": "system", "content": "Answer briefly."},
-                            {"role": "user", "content": "Say hello."},
-                        ],
+                        "role": "user",
+                        "content": "Say hello as a default stream.",
                     },
-                    timeout=10.0,
-                )
-                assert response.status_code == 200
-                body = response.json()
-                assert body["object"] == "chat.completion"
-                assert body["model"] == "openhands_smoke"
-                assert body["choices"][0]["message"] == {
-                    "role": "assistant",
-                    "content": "Hello from patched LLM",
-                }
-                assert body["usage"] == {
-                    "prompt_tokens": 7,
-                    "completion_tokens": 5,
-                    "total_tokens": 12,
-                }
-                conversation_id = response.headers["X-OpenHands-ServerConversation-ID"]
-                UUID(conversation_id)
-                persisted_response = client.get(
-                    f"{env['host']}/api/conversations/{conversation_id}", timeout=2.0
-                )
-                assert persisted_response.status_code == 200
-                assert persisted_response.json()["workspace"]["working_dir"] == str(
-                    env["workspace_path"]
-                )
+                ],
+                stream=True,
+            )
+            chunks = list(stream)
+            streamed_text = "".join(
+                chunk.choices[0].delta.content or ""
+                for chunk in chunks
+                if chunk.choices
+            )
+            usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+            assert streamed_text == "Hello from patched LLM"
+            assert usage_chunks == []
 
-                reused_response = client.post(
-                    f"{env['host']}/v1/chat/completions",
-                    headers={"X-OpenHands-ServerConversation-ID": conversation_id},
-                    json={
-                        "model": "openhands_smoke",
-                        "messages": [
-                            {"role": "user", "content": "Say hello again."},
-                        ],
-                    },
-                    timeout=10.0,
-                )
-                assert reused_response.status_code == 200
-                assert (
-                    reused_response.headers["X-OpenHands-ServerConversation-ID"]
-                    == conversation_id
-                )
-                assert reused_response.json()["choices"][0]["message"] == {
-                    "role": "assistant",
-                    "content": "Hello from patched LLM",
-                }
-                # A continued turn reports only its own model call, not the
-                # conversation's running total (7/5 per call, two calls so far).
-                assert reused_response.json()["usage"] == {
-                    "prompt_tokens": 7,
-                    "completion_tokens": 5,
-                    "total_tokens": 12,
-                }
+            raw_response = openai_client.responses.with_raw_response.create(
+                model="openhands_smoke",
+                instructions="Answer briefly.",
+                input="Say hello through Responses.",
+                store=False,
+            )
+            responses_result = raw_response.parse()
+            assert responses_result.object == "response"
+            assert responses_result.status == "completed"
+            assert responses_result.model == "openhands_smoke"
+            assert responses_result.output_text == "Hello from patched LLM"
+            assert responses_result.previous_response_id is None
+            assert responses_result.usage is not None
+            assert responses_result.usage.input_tokens == 7
+            assert responses_result.usage.output_tokens == 5
+            assert responses_result.usage.total_tokens == 12
+            assert responses_result.id.startswith("resp_")
+            UUID(hex=responses_result.id.removeprefix("resp_"))
+            response_system_text = "\n".join(
+                part.text
+                for message in patched_llm[-1]
+                if message.role == "system"
+                for part in message.content
+                if isinstance(part, TextContent)
+            )
+            response_user_text = "\n".join(
+                part.text
+                for message in patched_llm[-1]
+                if message.role == "user"
+                for part in message.content
+                if isinstance(part, TextContent)
+            )
+            assert "Answer briefly." in response_system_text
+            assert "Answer briefly." not in response_user_text
+            assert "Say hello through Responses." in response_user_text
 
-                from openai import BadRequestError, OpenAI
+            responses_conversation_id = raw_response.headers[
+                "X-OpenHands-ServerConversation-ID"
+            ]
+            UUID(responses_conversation_id)
 
-                openai_client = OpenAI(
-                    api_key="unused",
-                    base_url=f"{env['host']}/v1",
-                    timeout=10,
-                )
-                reused_stream = openai_client.chat.completions.create(
+            llm_calls_before_rejected_continuation = len(patched_llm)
+            with pytest.raises(BadRequestError) as exc_info:
+                openai_client.responses.create(
                     model="openhands_smoke",
-                    messages=[{"role": "user", "content": "Say hello a third time."}],
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    extra_headers={
-                        "X-OpenHands-ServerConversation-ID": conversation_id
-                    },
-                )
-                reused_usage = [chunk.usage for chunk in reused_stream if chunk.usage]
-                assert len(reused_usage) == 1
-                assert reused_usage[0].prompt_tokens == 7
-                assert reused_usage[0].completion_tokens == 5
-                assert reused_usage[0].total_tokens == 12
-
-                stream = openai_client.chat.completions.create(
-                    model="openhands_smoke",
-                    messages=[
-                        {"role": "developer", "content": "Answer tersely."},
-                        {"role": "user", "content": "Say hello as a stream."},
-                    ],
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    user="compat-test-user",
-                )
-                chunks = list(stream)
-                streamed_text = "".join(
-                    chunk.choices[0].delta.content or ""
-                    for chunk in chunks
-                    if chunk.choices
-                )
-                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
-                assert streamed_text == "Hello from patched LLM"
-                assert usage_chunks[-1].prompt_tokens == 7
-                assert usage_chunks[-1].completion_tokens == 5
-                assert usage_chunks[-1].total_tokens == 12
-
-                stream = openai_client.chat.completions.create(
-                    model="openhands_smoke",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": "Say hello as a default stream.",
-                        },
-                    ],
-                    stream=True,
-                )
-                chunks = list(stream)
-                streamed_text = "".join(
-                    chunk.choices[0].delta.content or ""
-                    for chunk in chunks
-                    if chunk.choices
-                )
-                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
-                assert streamed_text == "Hello from patched LLM"
-                assert usage_chunks == []
-
-                raw_response = openai_client.responses.with_raw_response.create(
-                    model="openhands_smoke",
-                    instructions="Answer briefly.",
-                    input="Say hello through Responses.",
+                    input="This must not continue server-side.",
+                    previous_response_id=responses_result.id,
                     store=False,
                 )
-                responses_result = raw_response.parse()
-                assert responses_result.object == "response"
-                assert responses_result.status == "completed"
-                assert responses_result.model == "openhands_smoke"
-                assert responses_result.output_text == "Hello from patched LLM"
-                assert responses_result.previous_response_id is None
-                assert responses_result.usage is not None
-                assert responses_result.usage.input_tokens == 7
-                assert responses_result.usage.output_tokens == 5
-                assert responses_result.usage.total_tokens == 12
-                assert responses_result.id.startswith("resp_")
-                UUID(hex=responses_result.id.removeprefix("resp_"))
-                response_system_text = "\n".join(
-                    part.text
-                    for message in patched_llm[-1]
-                    if message.role == "system"
-                    for part in message.content
-                    if isinstance(part, TextContent)
-                )
-                response_user_text = "\n".join(
-                    part.text
-                    for message in patched_llm[-1]
-                    if message.role == "user"
-                    for part in message.content
-                    if isinstance(part, TextContent)
-                )
-                assert "Answer briefly." in response_system_text
-                assert "Answer briefly." not in response_user_text
-                assert "Say hello through Responses." in response_user_text
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.response.json()["detail"] == (
+                "previous_response_id is not supported; replay input items instead"
+            )
+            assert len(patched_llm) == llm_calls_before_rejected_continuation
 
-                responses_conversation_id = raw_response.headers[
-                    "X-OpenHands-ServerConversation-ID"
-                ]
-                UUID(responses_conversation_id)
-
-                llm_calls_before_rejected_continuation = len(patched_llm)
-                with pytest.raises(BadRequestError) as exc_info:
-                    openai_client.responses.create(
-                        model="openhands_smoke",
-                        input="This must not continue server-side.",
-                        previous_response_id=responses_result.id,
-                        store=False,
-                    )
-                assert exc_info.value.status_code == 400
-                assert exc_info.value.response.json()["detail"] == (
-                    "previous_response_id is not supported; replay input items instead"
-                )
-                assert len(patched_llm) == llm_calls_before_rejected_continuation
-
-                second_stateless_response = (
-                    openai_client.responses.with_raw_response.create(
-                        model="openhands_smoke",
-                        input=[
-                            {
-                                "role": "developer",
-                                "content": "Use replayed context.",
-                            },
-                            {
-                                "role": "user",
-                                "content": "Say hello through Responses.",
-                            },
-                            *[
-                                cast(
-                                    ResponseInputItemParam,
-                                    item.model_dump(mode="json", exclude_none=True),
-                                )
-                                for item in responses_result.output
-                            ],
-                            {
-                                "role": "user",
-                                "content": "Follow up using the prior answer.",
-                            },
+            second_stateless_response = (
+                openai_client.responses.with_raw_response.create(
+                    model="openhands_smoke",
+                    input=[
+                        {
+                            "role": "developer",
+                            "content": "Use replayed context.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "Say hello through Responses.",
+                        },
+                        *[
+                            cast(
+                                ResponseInputItemParam,
+                                item.model_dump(mode="json", exclude_none=True),
+                            )
+                            for item in responses_result.output
                         ],
-                        store=False,
-                    )
+                        {
+                            "role": "user",
+                            "content": "Follow up using the prior answer.",
+                        },
+                    ],
+                    store=False,
                 )
-                second_stateless_result = second_stateless_response.parse()
-                assert second_stateless_result.output_text == "Hello from patched LLM"
-                assert (
-                    second_stateless_response.headers[
-                        "X-OpenHands-ServerConversation-ID"
-                    ]
-                    != responses_conversation_id
-                )
-                stateless_system_text = "\n".join(
-                    part.text
-                    for message in patched_llm[-1]
-                    if message.role == "system"
-                    for part in message.content
-                    if isinstance(part, TextContent)
-                )
-                stateless_history_text = "\n".join(
-                    part.text
-                    for message in patched_llm[-1]
-                    if message.role == "user"
-                    for part in message.content
-                    if isinstance(part, TextContent)
-                )
-                assert "Use replayed context." in stateless_system_text
-                assert "Use replayed context." not in stateless_history_text
-                assert '<message role="user">' in stateless_history_text
-                assert '<message role="assistant">' in stateless_history_text
-                assert "Say hello through Responses." in stateless_history_text
-                assert "Hello from patched LLM" in stateless_history_text
-                assert "Follow up using the prior answer." in stateless_history_text
+            )
+            second_stateless_result = second_stateless_response.parse()
+            assert second_stateless_result.output_text == "Hello from patched LLM"
+            assert (
+                second_stateless_response.headers["X-OpenHands-ServerConversation-ID"]
+                != responses_conversation_id
+            )
+            stateless_system_text = "\n".join(
+                part.text
+                for message in patched_llm[-1]
+                if message.role == "system"
+                for part in message.content
+                if isinstance(part, TextContent)
+            )
+            stateless_history_text = "\n".join(
+                part.text
+                for message in patched_llm[-1]
+                if message.role == "user"
+                for part in message.content
+                if isinstance(part, TextContent)
+            )
+            assert "Use replayed context." in stateless_system_text
+            assert "Use replayed context." not in stateless_history_text
+            assert '<message role="user">' in stateless_history_text
+            assert '<message role="assistant">' in stateless_history_text
+            assert "Say hello through Responses." in stateless_history_text
+            assert "Hello from patched LLM" in stateless_history_text
+            assert "Follow up using the prior answer." in stateless_history_text
 
-                streaming_response = client.post(
-                    f"{env['host']}/v1/responses",
-                    json={
-                        "model": "openhands_smoke",
-                        "input": "This must not run as a buffered stream.",
-                        "stream": True,
-                    },
-                    timeout=2.0,
-                )
-                assert streaming_response.status_code == 400
-                assert streaming_response.json()["detail"] == (
-                    "Streaming responses are not supported yet"
-                )
+            streaming_response = client.post(
+                f"{env['host']}/v1/responses",
+                json={
+                    "model": "openhands_smoke",
+                    "input": "This must not run as a buffered stream.",
+                    "stream": True,
+                },
+                timeout=2.0,
+            )
+            assert streaming_response.status_code == 400
+            assert streaming_response.json()["detail"] == (
+                "Streaming responses are not supported yet"
+            )
 
-                store_response = client.post(
-                    f"{env['host']}/v1/responses",
+            store_response = client.post(
+                f"{env['host']}/v1/responses",
+                json={
+                    "model": "openhands_smoke",
+                    "input": "This must not run as a stored response.",
+                    "store": True,
+                },
+                timeout=2.0,
+            )
+            assert store_response.status_code == 400
+            assert store_response.json()["detail"] == (
+                "Persistent response storage (store=True) is not supported yet"
+            )
+
+
+@pytest.mark.parametrize("mode", ["new", "reused", "docker-inner"])
+def test_openai_gateway_rejects_direct_event_during_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm, mode: str
+) -> None:
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / ".openhands" / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    original_acompletion = LLM.acompletion
+    gateway_started = threading.Event()
+    release_gateway = threading.Event()
+    hold_gateway = {"enabled": False}
+
+    async def gated_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        user_text = "\n".join(
+            part.text
+            for message in messages
+            if message.role == "user"
+            for part in message.content
+            if isinstance(part, TextContent)
+        )
+        if hold_gateway["enabled"] and "Direct turn." not in user_text:
+            gateway_started.set()
+            assert await asyncio.to_thread(release_gateway.wait, 5)
+        result = await original_acompletion(self, messages, tools, **kwargs)
+        reply = "Direct reply" if "Direct turn." in user_text else "Gateway reply"
+        return result.model_copy(
+            update={
+                "message": Message(role="assistant", content=[TextContent(text=reply)])
+            }
+        )
+
+    monkeypatch.setattr(LLM, "acompletion", gated_acompletion)
+
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        gateway_url = f"{env['host']}/v1/chat/completions"
+        if mode != "new":
+            seed = client.post(
+                gateway_url,
+                json={
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Start conversation."}],
+                },
+                timeout=10,
+            )
+            assert seed.status_code == 200, seed.text
+            conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
+        else:
+            conversation_id = str(uuid4())
+        event_url = f"{env['host']}/api/conversations/{conversation_id}/events"
+
+        hold_gateway["enabled"] = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            gateway_endpoint = (
+                f"{event_url}/_gateway/run" if mode == "docker-inner" else gateway_url
+            )
+            gateway_body = (
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Gateway turn."}],
+                    "run": True,
+                }
+                if mode == "docker-inner"
+                else {
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Gateway turn."}],
+                }
+            )
+            gateway_future = pool.submit(
+                client.post,
+                gateway_endpoint,
+                headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+                json=gateway_body,
+                timeout=10,
+            )
+            try:
+                assert gateway_started.wait(5)
+                direct = pool.submit(
+                    client.post,
+                    event_url,
                     json={
-                        "model": "openhands_smoke",
-                        "input": "This must not run as a stored response.",
-                        "store": True,
+                        "content": [{"type": "text", "text": "Direct turn."}],
+                        "run": True,
                     },
-                    timeout=2.0,
-                )
-                assert store_response.status_code == 400
-                assert store_response.json()["detail"] == (
-                    "Persistent response storage (store=True) is not supported yet"
-                )
+                    timeout=5,
+                ).result(timeout=5)
+            finally:
+                release_gateway.set()
+            gateway = gateway_future.result(timeout=10)
+
+        assert gateway.status_code == 200, gateway.text
+        assert direct.status_code == 409, direct.text
+        assert direct.json()["detail"] == "Gateway run in progress; message not saved"
+        if mode == "docker-inner":
+            assert gateway.json()["final_response"] == "Gateway reply"
+            assert gateway.json()["usage"]["prompt_tokens"] == 7
+            assert gateway.json()["usage"]["completion_tokens"] == 5
+        else:
+            assert gateway.json()["choices"][0]["message"]["content"] == (
+                "Gateway reply"
+            )
+        user_events = client.get(event_url + "/count", params={"source": "user"})
+        assert user_events.status_code == 200
+        expected_count = 1 + (mode != "new")
+        assert user_events.json() == expected_count
+        assert len(patched_llm) == expected_count
+
+        later = client.post(
+            event_url,
+            json={"content": [{"type": "text", "text": "Later turn."}], "run": False},
+        )
+        assert later.status_code == 200, later.text
+        user_events = client.get(event_url + "/count", params={"source": "user"})
+        assert user_events.status_code == 200
+        assert user_events.json() == expected_count + 1
 
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
@@ -1469,18 +1574,12 @@ def test_openai_gateway_replays_frozen_llm_fixtures(
 
     from openai import OpenAI
 
-    from openhands.agent_server import (
-        config as config_module,
-        conversation_service as service_module,
-    )
     from openhands.agent_server.models import StartConversationRequest
     from openhands.sdk import Message, TextContent
     from openhands.sdk.llm.llm_profile_store import LLMProfileStore
     from openhands.sdk.testing import TestLLM
     from openhands.sdk.workspace import LocalWorkspace
 
-    monkeypatch.setattr(config_module, "_default_config", None)
-    monkeypatch.setattr(service_module, "_conversation_service", None)
     monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
 
     fixtures_dir = Path(__file__).parents[1] / "fixtures" / "openai_gateway"
@@ -1489,7 +1588,9 @@ def test_openai_gateway_replays_frozen_llm_fixtures(
         json.loads((fixtures_dir / "litellm_haiku_completion.json").read_text()),
     ]
 
-    profiles_dir = tmp_path / "profiles"
+    # Where the live server's own stores keep LLM profiles (live_server_env
+    # points OH_PERSISTENCE_DIR at ``tmp_path / ".openhands"``).
+    profiles_dir = tmp_path / ".openhands" / "profiles"
     store = LLMProfileStore(base_dir=profiles_dir)
     for fixture in fixtures:
         store.save(
@@ -1513,44 +1614,38 @@ def test_openai_gateway_replays_frozen_llm_fixtures(
         event_service.get_conversation().switch_llm(llm)
         return info.id
 
-    with patch(
-        "openhands.agent_server.openai.service.get_llm_profile_store",
-        lambda: LLMProfileStore(base_dir=profiles_dir),
-    ):
-        with live_server_env(tmp_path, monkeypatch) as env:
-            for fixture in fixtures:
-                expected_content = fixture["response"]["choices"][0]["message"][
-                    "content"
-                ]
-                llm = TestLLM.from_messages(
-                    [
-                        Message(
-                            role="assistant",
-                            content=[TextContent(text=expected_content)],
-                        )
-                    ],
-                    model=fixture["backing_model"],
-                    usage_id=f"frozen-{fixture['profile_name']}",
-                )
-                conversation_id = asyncio.run(
-                    start_conversation_with_test_llm(env["conversation_service"], llm)
-                )
-                client = OpenAI(
-                    api_key="unused",
-                    base_url=f"{env['host']}/v1",
-                    default_headers={
-                        "X-OpenHands-ServerConversation-ID": str(conversation_id)
-                    },
-                    timeout=10,
-                )
-                completion = client.chat.completions.create(
-                    model=fixture["gateway_model"],
-                    messages=fixture["messages"],
-                )
+    with live_server_env(tmp_path, monkeypatch) as env:
+        for fixture in fixtures:
+            expected_content = fixture["response"]["choices"][0]["message"]["content"]
+            llm = TestLLM.from_messages(
+                [
+                    Message(
+                        role="assistant",
+                        content=[TextContent(text=expected_content)],
+                    )
+                ],
+                model=fixture["backing_model"],
+                usage_id=f"frozen-{fixture['profile_name']}",
+            )
+            conversation_id = asyncio.run(
+                start_conversation_with_test_llm(env["conversation_service"], llm)
+            )
+            client = OpenAI(
+                api_key="unused",
+                base_url=f"{env['host']}/v1",
+                default_headers={
+                    "X-OpenHands-ServerConversation-ID": str(conversation_id)
+                },
+                timeout=10,
+            )
+            completion = client.chat.completions.create(
+                model=fixture["gateway_model"],
+                messages=fixture["messages"],
+            )
 
-                assert completion.model == fixture["gateway_model"]
-                assert completion.choices[0].message.content == expected_content
-                assert llm.call_count == 1
+            assert completion.model == fixture["gateway_model"]
+            assert completion.choices[0].message.content == expected_content
+            assert llm.call_count == 1
 
 
 @pytest.mark.skipif(
