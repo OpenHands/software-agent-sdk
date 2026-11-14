@@ -119,7 +119,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check finish_over_budget.status eq finished --check finish_over_budget.codes len-eq 0 \
     --check factory_accepts_budget eq true
   ```
-  Fixed: a known failure on 2026-10-13 (the public `Conversation(...)` factory refused `max_budget_per_run` with a `TypeError`); the factory takes it since #6257, and the bullet passes again on 2026-11-03.
+  Expected: the public `Conversation(...)` factory accepts `max_budget_per_run` (`factory_accepts_budget` is true).
 - **Stuck on a repeating action (`S01.stuck-detect`, `S01.stuck-recover`).** Five identical `ls` calls: the fourth pair sets STUCK; a new message moves it to IDLE and the run then reaches the script's `finish`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -135,7 +135,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
   control-sdk conversation send "$CID" --text "List files" --run --check execution_status eq stuck
   control-sdk conversation run "$CID" --check script_left lt 2
   ```
-Expected: `run()` on a detector-STUCK conversation makes at least one more LLM call. Before #6648, the detector still saw the repeated pairs since the last user message and set STUCK again before any LLM call (`script_left` stayed 2); resuming now starts a fresh detection window, as a new user message does.
+  Expected: `run()` on a detector-STUCK conversation makes at least one more LLM call: resuming starts a fresh detection window, as a new user message does.
 - **Custom thresholds (`S01.stuck-thresholds`).** Three identical `ls` calls with the defaults (no stuck) and with `stuck_detection_thresholds={"action_observation": 2}`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -265,6 +265,7 @@ Expected: `run()` on a detector-STUCK conversation makes at least one more LLM c
 
 ## Gotchas
 
+- A rejected `response_schema` on a terminal tool raises `ValueError` after the terminal has already started its tmux server, and nothing closes it: `close()` leaves the server running after the program exits ([#6748](https://github.com/OpenHands/software-agent-sdk/issues/6748)). `S01.structured-output` passes but leaves two such servers per run; end them with `TMUX_TMPDIR=<run tmux dir> tmux -L <socket> kill-server`.
 - `01_hello_world.py` is in `_EXCLUDED_EXAMPLES` in `tests/examples/test_examples.py`, so the `test-examples` label never runs it; the other seven examples here do run there (`pytest tests/examples/test_examples.py --run-examples`).
 - All examples read `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`; `56_structured_output.py` defaults `LLM_MODEL` to `anthropic/claude-sonnet-4-5-20250929`, the rest to `gpt-5.5`. `17_image_input.py` asserts `llm.vision_is_active()` and fails fast on a text-only model; it also fetches an image from python.org.
 - Examples run with the repo root as workspace and write files there (`FACTS.txt`, `image_report.md`, the document from example 18).

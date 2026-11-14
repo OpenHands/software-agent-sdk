@@ -1,0 +1,86 @@
+$ export SDK_VERIFY_RUN=$(control-sdk new --field run)
+control-sdk program S04/views --arg interactive \
+  --check repl.status eq finished --check repl.waiting eq true --check repl.reply contains 42 \
+  --check repl.collected_tool_messages eq 5 --check repl.collected_roles contains tool \
+  --check prompt_is_input.waiting eq true --check prompt_is_input.reply contains "hello John 42"
+{
+  "ok": true,
+  "mode": "interactive",
+  "repl": {
+    "status": "finished",
+    "waiting": true,
+    "reply": "python3\nPython 3.11.18 (main, Oct 26 2026, 15:28:55) [GCC 13.3.0] on linux\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\n>>>\nKeyboardInterrupt\n>>> clear\nTraceback (most recent",
+    "collected_roles": [
+      "assistant",
+      "system",
+      "tool",
+      "user"
+    ],
+    "collected_tool_messages": 5
+  },
+  "prompt_is_input": {
+    "status": "finished",
+    "waiting": true,
+    "reply": "hello John 42\n[The command completed with exit code 0.]\n[Current working directory: <scratch>/sdk/S04-it-1/work/S04-local-conversation-19",
+    "collected_roles": [
+      "assistant",
+      "system",
+      "tool",
+      "user"
+    ],
+    "collected_tool_messages": 3
+  },
+  "prompt_plain": {
+    "status": "finished",
+    "waiting": true,
+    "reply": "bash: John: command not found\n[The command completed with exit code 127.]\n[Current working directory: <scratch>/sdk/S04-it-1/work/S04-loc",
+    "collected_roles": [
+      "assistant",
+      "system",
+      "tool",
+      "user"
+    ],
+    "collected_tool_messages": 3
+  },
+  "_exit": 0,
+  "_seconds": 33.6,
+  "checks": [
+    {
+      "check": "repl.status eq finished",
+      "ok": true,
+      "actual": "finished"
+    },
+    {
+      "check": "repl.waiting eq true",
+      "ok": true,
+      "actual": "true"
+    },
+    {
+      "check": "repl.reply contains 42",
+      "ok": false,
+      "actual": "python3\nPython 3.11.18 (main, Oct 26 2026, 15:28:55) [GCC 13.3.0] on linux\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\n>>>\nKeyboardInterrupt\n>>> clear\nTraceback (most recent"
+    },
+    {
+      "check": "repl.collected_tool_messages eq 5",
+      "ok": true,
+      "actual": "5"
+    },
+    {
+      "check": "repl.collected_roles contains tool",
+      "ok": true,
+      "actual": "[\"assistant\", \"system\", \"tool\", \"user\"]"
+    },
+    {
+      "check": "prompt_is_input.waiting eq true",
+      "ok": true,
+      "actual": "true"
+    },
+    {
+      "check": "prompt_is_input.reply contains hello John 42",
+      "ok": true,
+      "actual": "hello John 42\n[The command completed with exit code 0.]\n[Current working directory: <scratch>/sdk/S04-it-1/work/S04-local-conversation-19"
+    }
+  ]
+}
+
+[exit 1 after 34s]

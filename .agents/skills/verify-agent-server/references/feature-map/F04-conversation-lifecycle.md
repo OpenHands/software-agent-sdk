@@ -51,7 +51,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
 - `F04.patch-whitespace-title`: a whitespace-only title is rejected instead of erasing the stored title.
 - `F04.patch-unknown-id`: PATCH on an unknown id answers the 404 the OpenAPI document declares, not 200 `{"success": false}`.
-- `F04.delete`: DELETE stops a running conversation (`PauseEvent`, `InterruptEvent`), removes its state, keeps the workspace, removes a worktree conversation's worktree but keeps its branch, orphans children, and later reads are 404 (socket close 4004); a malformed id is 422 and no key is 401.
+- `F04.delete`: DELETE closes the conversation's open sockets with 4004, stops a running conversation, removes its state, keeps the workspace, removes a worktree conversation's worktree but keeps its branch, orphans children, and later reads are 404 (socket close 4004); a malformed id is 422 and no key is 401.
 - `F04.delete-unknown-id`: DELETE on an unknown or already deleted id answers the 404 the OpenAPI document declares, not 400.
 - `F04.restart-persist`: after a restart the catalog, statuses, titles, tags, final responses and event replay are unchanged, and deleted conversations stay deleted.
 - `F04.read-no-hydrate`: after a restart, GET, the batch get, search and count read a cold conversation without loading it (no `owner_lease.json`), while `agent_final_response` loads it and claims the lease.
@@ -85,9 +85,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
   `DELETE /api/conversations/{conversation_id}`.
 - WebSocket (owned by the events family, used here as a second view):
   `/sockets/events/{conversation_id}` replays the initial message and run,
-  pushes `ConversationStateUpdateEvent` key `tags` on PATCH, `PauseEvent` and
-  `InterruptEvent` when a running conversation is deleted, and closes with 4004
-  for a deleted id.
+  pushes `ConversationStateUpdateEvent` key `tags` on PATCH, closes an open
+  socket with 4004 when its conversation is deleted, and closes with 4004 for
+  a deleted id.
 - SDK: `RemoteConversation(agent=..., workspace=RemoteWorkspace(...))` posts
   the create (and re-attaches with `conversation_id`), reads state with
   `GET /api/conversations/{id}`, `set_title()` sends the PATCH, and `close()`
@@ -654,8 +654,7 @@ EOF
   N4=$(control-agent-server api GET /api/conversations/count --field .)
   control-agent-server ws start "/sockets/events/$DEL" --name qa-f04-delete --duration 60
   control-agent-server api DELETE "/api/conversations/$DEL" --expect 200 --check success eq true --timeout 30 --save F04.delete/delete
-  control-agent-server ws read qa-f04-delete --kinds PauseEvent --expect-min 1 --wait 15
-  control-agent-server ws stop qa-f04-delete --kinds InterruptEvent --expect-min 1 --wait 15 --save F04.delete/live
+  control-agent-server ws stop qa-f04-delete --kinds PauseEvent,InterruptEvent --expect-none --expect-close 4004 --save F04.delete/live
   control-agent-server api GET "/api/conversations/$DEL" --expect 404 --save F04.delete/get-after
   control-agent-server api GET "/api/conversations/$DEL/agent_final_response" --expect 404
   control-agent-server api GET /api/conversations --query ids="$DEL" --check 0 eq null
@@ -671,8 +670,10 @@ EOF
   if git -C "$REPO" worktree list | grep -q "worktrees/$WT/"; then false; fi
   test -n "$(git -C "$REPO" branch --list "openhands/$WT")"
   ```
-  The running conversation is paused and interrupted, then gone from every
-  read view and from disk; the workspace file and the child (with a dangling
+  The open socket is closed with 4004 `Conversation deleted` before the
+  DELETE answers and before the running conversation is paused and
+  interrupted, so it receives no `PauseEvent` or `InterruptEvent`; the
+  conversation is then gone from every read view and from disk; the workspace file and the child (with a dangling
   `parent_conversation_id`) remain. The worktree conversation's worktree is
   removed (directory and `git worktree` entry) while its branch stays. A repeated
   delete and an unknown id are `F04.delete-unknown-id`.
@@ -894,9 +895,10 @@ EOF
 - `parent_conversation_id` needs the same `working_dir` as the parent. DELETE
   does not cascade: children keep a dangling `parent_conversation_id`, and a
   worktree and its `openhands/<id>` branch stay behind.
-- An events socket that was already open during a DELETE receives the pause
-  frames and then a 4004 close before the DELETE answers; new connections
-  get 4004 too (`F06.ws-delete-close`).
+- An events socket that was already open during a DELETE gets a 4004 close
+  before the DELETE answers, and before the run is paused, so it sees no
+  pause or interrupt frames (`F04.delete`); new connections get 4004 too
+  (`F06.ws-delete-close`).
 - Saved LLM profiles cannot be named in `agent_settings`; start from one with
   `agent_profile_id` (an Agent Profile whose `llm_profile_ref` names it), as
   in `F04.create-agent-profile`.
