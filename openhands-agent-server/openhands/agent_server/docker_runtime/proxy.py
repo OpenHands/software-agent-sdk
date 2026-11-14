@@ -1,0 +1,312 @@
+"""HTTP and WebSocket forwarding to authenticated conversation containers."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack
+from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+import httpx
+import websockets
+from starlette.requests import Request
+from starlette.responses import StreamingResponse
+from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+from websockets.typing import Subprotocol
+
+from openhands.sdk.errors import Unprocessable, UpstreamFailed
+from openhands.sdk.logger import get_logger
+
+
+class ProxyTarget(Protocol):
+    @property
+    def host(self) -> str: ...
+
+    @property
+    def api_key(self) -> str | None: ...
+
+
+logger = get_logger(__name__)
+
+# Hop-by-hop headers (RFC 7230) — must not be forwarded by a proxy.
+_HOP_BY_HOP_HEADERS = frozenset(
+    {
+        "authorization",
+        "x-session-api-key",
+        "cookie",
+        "set-cookie",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        # ``host`` and ``content-length`` are recomputed by httpx; forwarding
+        # the original values causes spurious 400s when bodies are re-chunked.
+        # ``proxy_http`` re-adds the client's ``content-length`` when it
+        # streams that client's body unchanged.
+        "host",
+        "content-length",
+    }
+)
+
+# The serving uvicorn adds its own ``date`` and ``server`` to every response
+# without de-duplicating, so copying the upstream's would send two of each.
+_RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
+
+
+def _filter_headers(headers) -> dict[str, str]:
+    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
+
+
+def strip_auth_query(path: str) -> str:
+    parsed = urlsplit(path)
+    query = urlencode(
+        [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower()
+            not in {"session_api_key", "x-session-api-key", "authorization"}
+        ]
+    )
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment)
+    )
+
+
+async def _invoke_close(callback: Callable[[], Any] | None) -> None:
+    if callback is None:
+        return
+    try:
+        res = callback()
+        if inspect.isawaitable(res):
+            await res
+    except Exception:
+        logger.debug("Error in proxy on_close callback", exc_info=True)
+
+
+async def proxy_http(
+    request: Request,
+    workspace: ProxyTarget,
+    *,
+    upstream_path: str,
+    timeout: float | None = None,
+    body: bytes | None = None,
+    on_close: Callable[[], Any] | None = None,
+    reject_redirects: bool = False,
+) -> StreamingResponse:
+    """Forward ``request`` to the per-conversation container.
+
+    Args:
+        request: Incoming Starlette request on the outer agent-server.
+        workspace: The proxy target for the target container.
+        upstream_path: Path (including any query string) on the inner
+            agent-server to forward to. Typically the same path the outer
+            server received, since the inner agent-server exposes the same
+            API surface.
+        timeout: Per-request timeout in seconds. ``None`` (the default) means
+            no read timeout — conversation event streams can be long-lived.
+        body: Replacement request body. By default the incoming body is streamed.
+        on_close: Awaited or invoked once the streamed response is fully consumed,
+            client disconnects, or connection fails. Callers use this to release
+            a session attachment or lease that must outlive the route handler
+            (see ``DockerConversationRegistry.attach_session``).
+        reject_redirects: Reject upstream redirects instead of forwarding a
+            location that could escape a fixed-destination proxy.
+
+    Notes:
+        A fresh :class:`httpx.AsyncClient` is created per request. We avoid a
+        long-lived pool because the outer server can serve many concurrent
+        conversations and each one talks to a different upstream port — and
+        because making the client per-request keeps the lifespan/teardown
+        story trivial.
+    """
+    if request.headers.get("x-expose-secrets"):
+        raise Unprocessable("Runtime secret exposure is unsupported")
+    url = workspace.host + strip_auth_query(upstream_path)
+    headers = _filter_headers(request.headers)
+    # If the client authenticated via the workspace-session cookie (used by
+    # iframe / img embeds that can't attach custom headers), there's no
+    # ``X-Session-API-Key`` on the inbound request — but the inner
+    # agent-server only knows about the header. Synthesize one from the
+    # workspace's stored key so the inner accepts the proxied request.
+    if workspace.api_key:
+        headers["X-Session-API-Key"] = workspace.api_key
+
+    async def _request_body() -> AsyncIterator[bytes]:
+        async for chunk in request.stream():
+            if chunk:
+                yield chunk
+
+    # Keep the client's body framing: a fixed-length body stays fixed-length
+    # (httpx skips chunking when Content-Length is set) and a request without
+    # a body is sent without one, instead of an empty chunked body.
+    content: bytes | AsyncIterator[bytes] | None = body
+    if body is None and "transfer-encoding" in request.headers:
+        content = _request_body()
+    elif body is None and "content-length" in request.headers:
+        headers["Content-Length"] = request.headers["content-length"]
+        content = _request_body()
+
+    # Keep HTTPX's contexts open until StreamingResponse consumes the body.
+    stack = AsyncExitStack()
+    try:
+        client = await stack.enter_async_context(
+            httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
+            )
+        )
+        upstream = await stack.enter_async_context(
+            client.stream(request.method, url, headers=headers, content=content)
+        )
+    except BaseException as exc:
+        await stack.aclose()
+        await _invoke_close(on_close)
+        if not isinstance(exc, httpx.HTTPError):
+            raise
+        logger.warning("Conversation upstream connection failed")
+        raise UpstreamFailed("Conversation container unreachable") from exc
+
+    if reject_redirects and upstream.is_redirect:
+        await stack.aclose()
+        await _invoke_close(on_close)
+        raise UpstreamFailed("Upstream redirect is not allowed")
+
+    async def _response_body() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await stack.aclose()
+            await _invoke_close(on_close)
+
+    return StreamingResponse(
+        _response_body(),
+        status_code=upstream.status_code,
+        headers={
+            k: v
+            for k, v in _filter_headers(upstream.headers).items()
+            if k.lower() not in _RESPONSE_DROP_HEADERS
+        },
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+async def bridge_websocket(
+    client_ws: WebSocket,
+    workspace: ProxyTarget,
+    *,
+    upstream_path: str,
+    accept_client: bool = False,
+) -> None:
+    """Bridge a WebSocket session between the browser and an inner container.
+
+    Precondition: unless ``accept_client`` is set, ``client_ws`` MUST already
+    be accepted by the caller, because the outer server's WebSocket-auth
+    helper accepts on success and calling ``accept()`` a second time would
+    raise.
+
+    With ``accept_client``, the client's subprotocol offer is forwarded
+    upstream and ``client_ws`` is accepted with the subprotocol the upstream
+    selected (or none), so subprotocol negotiation passes through the bridge.
+    If the upstream connection fails, ``client_ws`` is accepted without a
+    subprotocol and then closed with 1011.
+
+    Closure semantics: when either side closes (or errors), we close the
+    other side and return. No reconnect.
+    """
+    upstream_url = workspace.host.replace("http://", "ws://").replace(
+        "https://", "wss://"
+    ) + strip_auth_query(upstream_path)
+
+    # The local sockets router accepts auth via header / query param / first
+    # message. By the time we get here the outer has already accepted the
+    # socket — but the inner is a separate server that requires its own
+    # auth. Mint the inner-side ``X-Session-API-Key`` from the workspace's
+    # shared key. (If both outer and inner have no key requirement, the
+    # workspace.api_key is None and we send no header — that's fine.)
+    upstream_headers: dict[str, str] = {}
+    if workspace.api_key:
+        upstream_headers["X-Session-API-Key"] = workspace.api_key
+
+    subprotocols = None
+    if accept_client:
+        offered = client_ws.scope.get("subprotocols") or []
+        subprotocols = [Subprotocol(protocol) for protocol in offered] or None
+
+    try:
+        async with websockets.connect(
+            upstream_url,
+            additional_headers=upstream_headers or None,
+            subprotocols=subprotocols,
+        ) as upstream_ws:
+            if accept_client:
+                await client_ws.accept(subprotocol=upstream_ws.subprotocol)
+            await _bridge_websocket_loop(client_ws, upstream_ws)
+    except websockets.exceptions.InvalidStatus as exc:
+        logger.warning("Upstream WebSocket rejected (%s) to %s", exc, workspace.host)
+        # 1011 == "internal error"; closest match for an upstream HTTP failure
+        # since browsers can't see HTTP status codes from a failed upgrade.
+        await _close_client_after_upstream_failure(client_ws)
+    except (OSError, websockets.exceptions.WebSocketException) as exc:
+        logger.warning(
+            "Upstream WebSocket connect failed to %s: %s", workspace.host, exc
+        )
+        await _close_client_after_upstream_failure(client_ws)
+
+
+async def _close_client_after_upstream_failure(client_ws: WebSocket) -> None:
+    if client_ws.client_state == WebSocketState.CONNECTING:
+        await client_ws.accept()
+    await client_ws.close(code=1011)
+
+
+async def _bridge_websocket_loop(client_ws: WebSocket, upstream_ws) -> None:
+    async def _client_to_upstream() -> None:
+        try:
+            while True:
+                message = await client_ws.receive()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                if "bytes" in message and message["bytes"] is not None:
+                    await upstream_ws.send(message["bytes"])
+                elif "text" in message and message["text"] is not None:
+                    await upstream_ws.send(message["text"])
+        except WebSocketDisconnect:
+            return
+
+    async def _upstream_to_client() -> None:
+        try:
+            async for message in upstream_ws:
+                if isinstance(message, (bytes, bytearray)):
+                    await client_ws.send_bytes(bytes(message))
+                else:
+                    await client_ws.send_text(message)
+        except websockets.exceptions.ConnectionClosed:
+            return
+
+    tasks = {
+        asyncio.create_task(_client_to_upstream()),
+        asyncio.create_task(_upstream_to_client()),
+    }
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await upstream_ws.close()
+        except Exception as exc:
+            logger.debug("Upstream WebSocket close failed (%s)", type(exc).__name__)
+        try:
+            await client_ws.close()
+        except Exception as exc:
+            logger.debug("Client WebSocket close failed (%s)", type(exc).__name__)

@@ -122,11 +122,6 @@
           "unknown"
         ],
         [
-          "models/agent-profile.d.ts::interface:OpenHandsAgentProfile/property:skills::unknown",
-          "unknown",
-          "unknown[]"
-        ],
-        [
           "models/api.d.ts::interface:EventPage/type-parameter:TEvent::unknown",
           "unknown",
           "unknown"
@@ -532,6 +527,18 @@
         ],
         [
           "client/server-client.d.ts::class:ServerClient/method:getRoot/type-parameter:T::unknown",
+          "unknown",
+          "unknown"
+        ]
+      ]
+    },
+    {
+      "category": "type-guard",
+      "reason": "A type guard accepts any value by design; its predicate narrows the value to a concrete type.",
+      "owner": "enyst",
+      "entries": [
+        [
+          "client/http-client.d.ts::function:isHttpError/parameter:value::unknown",
           "unknown",
           "unknown"
         ]

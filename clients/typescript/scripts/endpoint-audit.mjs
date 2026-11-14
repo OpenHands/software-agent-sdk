@@ -37,7 +37,10 @@ const norm = (verb, p) =>
 // ---------------------------------------------------------------------------
 async function loadSpec(spec) {
   if (spec.source === 'pinned-agent-server-release') {
-    const result = await loadPinnedAgentServerOpenApi({ repositoryRoot: ROOT });
+    const result = await loadPinnedAgentServerOpenApi({
+      repositoryRoot: ROOT,
+      explicitSchemaPath: process.env.AGENT_SERVER_OPENAPI_PATH,
+    });
     return { doc: result.schema, source: result.source };
   }
   if (spec.url) {

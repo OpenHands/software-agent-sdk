@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -6,8 +7,18 @@ import pytest
 from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
+from openhands.sdk.tool import ToolDefinition, registry as registry_module
+from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
+from openhands.sdk.tool.registry import (
+    _is_abstract_method,
+    _resolver_from_subclass,
+    list_registered_tools,
+    list_tool_catalog,
+    list_usable_tools,
+    resolve_tool,
+    seal_tool_catalog,
+    unseal_tool_catalog,
+)
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolExecutor
@@ -89,6 +100,36 @@ class _UnavailableHelloTool(_SimpleHelloTool):
         return False
 
 
+class _DescribedHelloTool(_SimpleHelloTool):
+    catalog_description = "Say hello, briefly."
+
+
+class _InternalHelloTool(_SimpleHelloTool):
+    user_selectable = False
+
+
+@pytest.fixture(autouse=True)
+def _isolated_registry(monkeypatch):
+    from openhands.sdk.tool import client_tool, registry
+
+    monkeypatch.setattr(registry, "_SEALED_CATALOG", None)
+    for module, name in (
+        (registry, "_REG"),
+        (registry, "_USABILITY_REG"),
+        (registry, "_TOOL_CLASSES"),
+        (client_tool, "_client_action_types"),
+        (client_tool, "_client_action_schemas"),
+        (client_tool, "_client_tool_names"),
+    ):
+        monkeypatch.setattr(
+            module, name, type(getattr(module, name))(getattr(module, name))
+        )
+
+
+def _catalog() -> dict[str, dict]:
+    return {entry.name: entry.model_dump() for entry in list_tool_catalog()}
+
+
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
@@ -152,3 +193,216 @@ def test_register_tool_type_uses_create_params():
     observation = tool(_HelloAction(name="Alice"))
     assert isinstance(observation, _HelloObservation)
     assert observation.message == "Howdy, Alice?"
+
+
+def test_tool_registration_typed_inspection():
+    """ToolDefinition subclass resolution checks create concrete classmethod."""
+
+    class ValidTool(ToolDefinition[Action, Any]):
+        @classmethod
+        def create(cls, *args, **kwargs):
+            return [cls(description="test", action_type=Action)]
+
+    assert not _is_abstract_method(ValidTool, "create")
+    resolver = _resolver_from_subclass("valid_tool", ValidTool)
+    conv_state = MagicMock()
+    resolved = resolver({}, conv_state)
+    assert len(resolved) == 1
+
+    class AbstractTool(ToolDefinition[Action, Any]):
+        pass
+
+    assert _is_abstract_method(AbstractTool, "create")
+    with pytest.raises(TypeError, match="must define .create"):
+        _resolver_from_subclass("abstract_tool", AbstractTool)
+
+
+def test_catalog_reports_selectability_and_usability():
+    register_tool("catalog_plain", _SimpleHelloTool)
+    register_tool("catalog_internal", _InternalHelloTool)
+    register_tool("catalog_unusable", _UnavailableHelloTool)
+
+    catalog = _catalog()
+
+    assert catalog["catalog_plain"] == {
+        "name": "catalog_plain",
+        "user_selectable": True,
+        "usable": True,
+        "description": "",
+        "in_default_set": False,
+    }
+    assert catalog["catalog_internal"]["user_selectable"] is False
+    assert catalog["catalog_unusable"]["usable"] is False
+
+
+def test_catalog_offers_a_builtin_under_its_snake_case_name(monkeypatch):
+    """A built-in is keyed by class name internally but offered like any tool."""
+    from openhands.sdk.tool import builtins
+
+    catalog = _catalog()
+
+    assert "switch_llm" in catalog
+    assert "SwitchLLMTool" not in catalog
+    assert builtins.SwitchLLMTool.name == "switch_llm"
+
+
+def test_catalog_marks_the_default_set(monkeypatch):
+    register_tool("catalog_extra", _SimpleHelloTool)
+    catalog = _catalog()
+
+    assert catalog["switch_llm"]["in_default_set"] is True
+    assert catalog["catalog_extra"]["in_default_set"] is False
+
+
+def test_catalog_does_not_offer_the_meta_profile_router(monkeypatch):
+    entry = _catalog().get("route_task_to_model")
+
+    assert entry is None or entry["user_selectable"] is False
+
+
+def test_a_builtin_registered_by_class_name_is_offered_once(monkeypatch):
+    """A built-in registered under its class name is listed once."""
+    from openhands.sdk.tool import builtins
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES,
+        _DescribedHelloTool.__name__,
+        _DescribedHelloTool,
+    )
+    register_tool(_DescribedHelloTool.__name__, _DescribedHelloTool)
+
+    names = [entry.name for entry in list_tool_catalog()]
+
+    assert _DescribedHelloTool.__name__ not in names
+    assert names.count(_DescribedHelloTool.name) == 1
+
+
+def test_builtin_resolves_under_its_snake_case_name():
+    from openhands.sdk.tool import builtins
+
+    resolved = resolve_tool(Tool(name="switch_llm"), _create_mock_conv_state())
+
+    assert [t.name for t in resolved] == ["switch_llm"]
+    assert isinstance(resolved[0], builtins.SwitchLLMTool)
+
+
+def test_catalog_carries_the_class_blurb(monkeypatch):
+    register_tool("catalog_described", _DescribedHelloTool)
+
+    assert _catalog()["catalog_described"]["description"] == "Say hello, briefly."
+
+
+def test_catalog_description_defaults_to_empty():
+    register_tool("catalog_undescribed", _SimpleHelloTool)
+
+    assert _catalog()["catalog_undescribed"]["description"] == ""
+
+
+def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
+    """A built-in is listed by class name, so its usability comes from the class."""
+    from openhands.sdk.tool import builtins
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "UnusableBuiltin", _UnavailableHelloTool
+    )
+
+    assert _catalog()[_UnavailableHelloTool.name] == {
+        "name": _UnavailableHelloTool.name,
+        "user_selectable": True,
+        "usable": False,
+        "description": "",
+        "in_default_set": False,
+    }
+
+
+def test_catalog_can_skip_usability_probes(monkeypatch):
+    from openhands.sdk.tool import builtins
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "UnusableBuiltin", _UnavailableHelloTool
+    )
+    probed: list[str] = []
+    monkeypatch.setattr(
+        registry_module,
+        "_check_tool_usable",
+        lambda name, checker: probed.append(name) or False,
+    )
+
+    entries = {e.name: e for e in list_tool_catalog(check_usable=False)}
+
+    assert probed == []
+    assert entries[_UnavailableHelloTool.name].usable is True
+
+
+def test_builtin_lookup_sees_builtins_added_later(monkeypatch):
+    from openhands.sdk.tool import builtins
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "LateBuiltin", _UnavailableHelloTool
+    )
+
+    assert builtins.builtin_tool_class(_UnavailableHelloTool.name) is (
+        _UnavailableHelloTool
+    )
+
+
+def test_a_tool_registered_under_a_builtin_name_is_not_swapped_for_it():
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.profiles import OpenHandsAgentProfile
+    from openhands.sdk.settings import OpenHandsAgentSettings
+    from openhands.sdk.tool.defaults import canonical_tool_name
+
+    assert canonical_tool_name("ThinkTool") == "think"
+    register_tool("ThinkTool", _SimpleHelloTool)
+    spec = Tool(name="ThinkTool", params={"greeting": "hi"})
+
+    profile = OpenHandsAgentProfile(name="x", llm_profile_ref="y", tools=[spec])
+    agent = OpenHandsAgentSettings(llm=LLM(model="m"), tools=[spec]).create_agent()
+
+    assert canonical_tool_name("ThinkTool") == "ThinkTool"
+    assert profile.tools == [spec]
+    assert agent.tools == [spec]
+
+
+def test_a_builtin_class_name_is_not_collapsed_onto_a_registered_tool():
+    from openhands.sdk.tool.defaults import canonical_tool_name
+
+    register_tool("think", _SimpleHelloTool)
+
+    assert canonical_tool_name("think") == "think"
+    assert canonical_tool_name("ThinkTool") == "ThinkTool"
+
+
+def test_sealed_catalog_ignores_later_registrations(monkeypatch):
+    """Registrations after sealing are per-conversation and stay out."""
+    register_tool("catalog_at_startup", _SimpleHelloTool)
+    seal_tool_catalog()
+
+    register_tool("catalog_after_seal", _SimpleHelloTool)
+    register_client_tools(
+        [ClientToolSpec(name="catalog_client_tool", description="client side")]
+    )
+
+    assert "catalog_at_startup" in _catalog()
+    assert "catalog_after_seal" in list_registered_tools()
+    assert "catalog_after_seal" not in _catalog()
+    assert "catalog_client_tool" not in _catalog()
+
+
+def test_sealed_catalog_keeps_the_class_registered_at_seal():
+    register_tool("catalog_resealed", _DescribedHelloTool)
+    seal_tool_catalog()
+
+    register_tool("catalog_resealed", _InternalHelloTool)
+
+    assert _catalog()["catalog_resealed"]["user_selectable"] is True
+    assert _catalog()["catalog_resealed"]["description"] == "Say hello, briefly."
+
+
+def test_unsealed_catalog_tracks_registrations_again():
+    seal_tool_catalog()
+    unseal_tool_catalog()
+
+    register_tool("catalog_after_unseal", _SimpleHelloTool)
+
+    assert "catalog_after_unseal" in _catalog()

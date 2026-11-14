@@ -4,15 +4,24 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-import openhands.agent_server.vscode_service as vscode_service_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import get_vscode_service
 from openhands.agent_server.runtime_router import create_runtime_router
+from openhands.agent_server.server_context import server_context_of
 from openhands.agent_server.vscode_service import VSCodeService
+from tests.agent_server.conftest import update_test_context
+
+
+def _conversation_service(app: FastAPI) -> ConversationService:
+    service = server_context_of(app).conversation_service
+    assert service is not None
+    return service
 
 
 @pytest.fixture
@@ -25,8 +34,11 @@ async def runtime_client(tmp_path):
     async with ConversationService(
         conversations_dir=config.conversations_path
     ) as service:
-        app.state.conversation_service = service
-        app.state.bash_event_service = BashEventService(tmp_path / "global-bash")
+        update_test_context(
+            app,
+            conversation_service=service,
+            bash_event_service=BashEventService(tmp_path / "global-bash"),
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
@@ -109,7 +121,6 @@ def test_canonical_runtime_openapi_preserves_methods_and_schemas():
         ("bash", "post", "execute_bash_command"),
         ("file", "get", "download"),
         ("git", "get", "changes"),
-        ("desktop", "get", "url"),
         ("vscode", "get", "url"),
     ]:
         operation = paths[
@@ -150,7 +161,8 @@ async def test_conversation_close_stops_runtime_terminal(runtime_client, tmp_pat
         while not (root / "pid").exists():
             await asyncio.sleep(0.01)
     pid = int((root / "pid").read_text())
-    service = await app.state.conversation_service.get_event_service(UUID(cid))
+    service = await _conversation_service(app).get_event_service(UUID(cid))
+    assert service is not None
     await service.close()
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
@@ -160,14 +172,23 @@ async def test_conversation_close_stops_runtime_terminal(runtime_client, tmp_pat
 async def test_scoped_vscode_defaults_to_conversation_workspace(
     runtime_client, tmp_path, monkeypatch
 ):
-    client, _ = runtime_client
+    client, app = runtime_client
     root = tmp_path / "workspace"
     cid = await _create(client, root)
     service = VSCodeService(port=18765)
-    monkeypatch.setattr(vscode_service_module, "_vscode_service", service)
+    app.dependency_overrides[get_vscode_service] = lambda: service
     response = await client.get(f"/api/conversations/{cid}/vscode/url")
     assert response.status_code == 200, response.text
     assert response.json()["url"] == service.get_vscode_url(workspace_dir=str(root))
+
+
+@pytest.mark.asyncio
+async def test_scoped_vscode_reports_a_disabled_editor(runtime_client, tmp_path):
+    client, app = runtime_client
+    cid = await _create(client, tmp_path / "workspace")
+    app.dependency_overrides[get_vscode_service] = lambda: None
+    response = await client.get(f"/api/conversations/{cid}/vscode/url")
+    assert response.status_code == 503, response.text
 
 
 def test_runtime_routes_are_registered_with_dispatch_adapter():
@@ -204,5 +225,51 @@ async def test_concurrent_runtime_requests_share_event_loop_bash_service(
         )
     )
     assert all(response.status_code == 200 for response in responses)
-    event_service = await app.state.conversation_service.get_event_service(UUID(cid))
+    event_service = await _conversation_service(app).get_event_service(UUID(cid))
+    assert event_service is not None
     assert instances == [event_service.bash_event_service]
+
+
+@pytest.mark.asyncio
+async def test_scoped_bash_routes_reject_malformed_conversation_id(runtime_client):
+    client, app = runtime_client
+    prefix = "/api/conversations/{runtime_conversation_id}/bash/"
+    routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path.startswith(prefix)
+    ]
+    assert len(routes) == 7
+    for route in routes:
+        path = route.path.replace("{runtime_conversation_id}", "not-a-uuid")
+        path = path.replace("{event_id}", "x").replace("{command_id}", "x")
+        for method in route.methods:
+            response = await client.request(method, path)
+            assert response.status_code == 422, (method, path, response.text)
+            locs = [error["loc"] for error in response.json()["detail"]]
+            assert ["path", "runtime_conversation_id"] in locs, response.text
+
+
+@pytest.mark.asyncio
+async def test_runtime_upload_onto_directory_or_under_file_is_400(
+    runtime_client, tmp_path
+):
+    client, _ = runtime_client
+    workspace = tmp_path / "upload-ws"
+    prefix = f"/api/conversations/{await _create(client, workspace)}"
+    (workspace / "is-a-dir").mkdir(parents=True)
+    (workspace / "a-file.txt").write_bytes(b"keep me")
+
+    for target, detail in (
+        ("is-a-dir", "Path is a directory"),
+        ("a-file.txt/child.txt", "A parent of the path is not a directory"),
+    ):
+        response = await client.post(
+            prefix + "/file/upload",
+            params={"path": str(workspace / target)},
+            files={"file": ("test.txt", b"content", "text/plain")},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == detail
+    assert (workspace / "is-a-dir").is_dir()
+    assert (workspace / "a-file.txt").read_bytes() == b"keep me"

@@ -17,8 +17,9 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import SecretStr
 
@@ -32,8 +33,12 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.pydantic_secrets import (
+    STRICT_DECRYPT_CONTEXT_KEY,
+    SecretDecryptionError,
+)
 
 
 # fcntl is Unix-only; on Windows, use msvcrt for file locking
@@ -237,8 +242,39 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         raise
 
 
-# Default storage directory (relative to working directory)
-DEFAULT_PERSISTENCE_DIR = Path("workspace/.openhands")
+# Appended to the "different key" refusals of read-modify-write paths.
+_KEY_HINT: Final[str] = (
+    "restore the key it was saved under as OH_SECRET_KEY, or add it to "
+    "OH_PREVIOUS_SECRET_KEYS"
+)
+
+
+def _has_stale_token(cipher: Cipher, data: Any) -> bool:
+    """Whether ``data`` holds a Fernet token not under ``cipher``'s current key."""
+    if isinstance(data, str):
+        return data.startswith(FERNET_TOKEN_PREFIX) and not cipher.is_current(data)
+    if isinstance(data, dict):
+        return any(_has_stale_token(cipher, v) for v in data.values())
+    if isinstance(data, list):
+        return any(_has_stale_token(cipher, v) for v in data)
+    return False
+
+
+def _file_has_stale_token(path: Path, cipher: Cipher | None) -> bool:
+    if cipher is None or not cipher.previous_keys or not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return _has_stale_token(cipher, data)
+
+
+def _load_context(cipher: Cipher | None, strict: bool) -> dict[str, Any] | None:
+    """Validation context for loading a store file with ``cipher``."""
+    if cipher is None:
+        return None
+    return {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
 
 
 class SettingsStore(ABC):
@@ -317,12 +353,16 @@ class FileSettingsStore(SettingsStore):
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".settings.lock"
 
-    def load(self) -> PersistedSettings | None:
+    def load(self, *, strict: bool = False) -> PersistedSettings | None:
         """Load settings from file.
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
         flows through to field validators using validate_secret().
+
+        A secret the cipher cannot decrypt loads as ``None``. With
+        ``strict=True`` (read-modify-write paths) the load fails instead,
+        returning ``None``, so the caller refuses to overwrite the file.
         """
         if not self._path.exists():
             logger.debug(f"Settings file not found: {self._path}")
@@ -334,8 +374,11 @@ class FileSettingsStore(SettingsStore):
 
             # Pass cipher in context for automatic decryption of all secret fields
             # This flows through to field validators using validate_secret()
-            context = {"cipher": self.cipher} if self.cipher else None
+            context = _load_context(self.cipher, strict)
             return PersistedSettings.from_persisted(data, context=context)
+        except SecretDecryptionError as e:
+            logger.error(f"Cannot load settings for update: {e}")
+            return None
         except (PermissionError, OSError) as e:
             # Critical filesystem errors should be re-raised
             logger.error(f"Cannot access settings file: {e}")
@@ -406,20 +449,37 @@ class FileSettingsStore(SettingsStore):
                 data loss from overwriting existing settings with defaults.
         """
         with _file_lock(self._lock_path):
-            settings = self.load()
+            settings = self.load(strict=True)
             if settings is None:
                 # File doesn't exist or is empty - safe to use defaults
                 if self._path.exists():
                     # File exists but load() returned None - corrupted or unreadable
                     raise RuntimeError(
                         f"Cannot load settings from {self._path}. "
-                        "File may be corrupted or encrypted with a different key. "
+                        "File may be corrupted or encrypted with a different key "
+                        f"({_KEY_HINT}). "
                         "Refusing to overwrite with defaults to prevent data loss."
                     )
                 settings = PersistedSettings()
             updated = update_fn(settings)
             self.save(updated)
             return updated
+
+    def reencrypt(self) -> bool:
+        """Re-encrypt values saved under a previous key under the current key.
+
+        Returns ``True`` when the file was rewritten. The file is left as is
+        when nothing in it is stale, or when a value in it cannot be
+        decrypted with any configured key.
+        """
+        with _file_lock(self._lock_path):
+            if not _file_has_stale_token(self._path, self.cipher):
+                return False
+            settings = self.load(strict=True)
+            if settings is None:
+                return False
+            self.save(settings)
+            return True
 
 
 class FileSecretsStore(SecretsStore):
@@ -463,12 +523,16 @@ class FileSecretsStore(SecretsStore):
                 "for secure storage."
             )
 
-    def load(self) -> Secrets | None:
+    def load(self, *, strict: bool = False) -> Secrets | None:
         """Load secrets from file.
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
         flows through to field validators using validate_secret().
+
+        A secret the cipher cannot decrypt loads as ``None``. With
+        ``strict=True`` (read-modify-write paths) the load fails instead,
+        returning ``None``, so the caller refuses to overwrite the file.
         """
         if not self._path.exists():
             logger.debug(f"Secrets file not found: {self._path}")
@@ -479,8 +543,11 @@ class FileSecretsStore(SecretsStore):
                 data = json.load(f)
 
             # Pass cipher in context for automatic decryption of all secret fields
-            context = {"cipher": self.cipher} if self.cipher else None
+            context = _load_context(self.cipher, strict)
             return Secrets.model_validate(data, context=context)
+        except SecretDecryptionError as e:
+            logger.error(f"Cannot load secrets for update: {e}")
+            return None
         except (PermissionError, OSError) as e:
             # Critical filesystem errors should be re-raised
             logger.error(f"Cannot access secrets file: {e}")
@@ -497,7 +564,7 @@ class FileSecretsStore(SecretsStore):
     def save(self, secrets: Secrets) -> None:
         """Save secrets while preserving credential generations."""
         with _file_lock(self._lock_path):
-            current = self.load()
+            current = self.load(strict=True)
             if current is None:
                 if self._path.exists():
                     raise RuntimeError(
@@ -529,6 +596,22 @@ class FileSecretsStore(SecretsStore):
                     versions[name] = secrets_module.token_urlsafe(24)
 
             self._save_with_versions(secrets, versions)
+
+    def reencrypt(self) -> bool:
+        """Re-encrypt values saved under a previous key under the current key.
+
+        Returns ``True`` when the file was rewritten. The file is left as is
+        when nothing in it is stale, or when a value in it cannot be
+        decrypted with any configured key.
+        """
+        with _file_lock(self._lock_path):
+            if not _file_has_stale_token(self._path, self.cipher):
+                return False
+            secrets = self.load(strict=True)
+            if secrets is None:
+                return False
+            self._save_with_versions(secrets, self._load_versions())
+            return True
 
     def _save_with_versions(
         self,
@@ -595,14 +678,15 @@ class FileSecretsStore(SecretsStore):
                 data loss from overwriting existing secrets with defaults.
         """
         with _file_lock(self._lock_path):
-            secrets = self.load()
+            secrets = self.load(strict=True)
             if secrets is None:
                 # File doesn't exist - safe to use defaults
                 if self._path.exists():
                     # File exists but load() returned None - corrupted or unreadable
                     raise RuntimeError(
                         f"Cannot load secrets from {self._path}. "
-                        "File may be corrupted or encrypted with a different key. "
+                        "File may be corrupted or encrypted with a different key "
+                        f"({_KEY_HINT}). "
                         "Refusing to overwrite with defaults to prevent data loss."
                     )
                 secrets = Secrets()
@@ -629,14 +713,15 @@ class FileSecretsStore(SecretsStore):
                 data loss from overwriting existing secrets with defaults.
         """
         with _file_lock(self._lock_path):
-            secrets = self.load()
+            secrets = self.load(strict=True)
             if secrets is None:
                 # File doesn't exist - nothing to delete
                 if self._path.exists():
                     # File exists but load() returned None - corrupted or unreadable
                     raise RuntimeError(
                         f"Cannot load secrets from {self._path}. "
-                        "File may be corrupted or encrypted with a different key. "
+                        "File may be corrupted or encrypted with a different key "
+                        f"({_KEY_HINT}). "
                         "Refusing to modify to prevent data loss."
                     )
                 return False
@@ -651,12 +736,13 @@ class FileSecretsStore(SecretsStore):
 
     def load_versioned_secret(self, name: str) -> tuple[str, str]:
         with _file_lock(self._lock_path):
-            secrets = self.load()
+            secrets = self.load(strict=True)
             if secrets is None:
                 if self._path.exists():
                     raise RuntimeError(
                         f"Cannot load secrets from {self._path}. "
-                        "File may be corrupted or encrypted with a different key. "
+                        "File may be corrupted or encrypted with a different key "
+                        f"({_KEY_HINT}). "
                         "Refusing to modify to prevent data loss."
                     )
                 raise KeyError(name)
@@ -679,12 +765,13 @@ class FileSecretsStore(SecretsStore):
         value: str,
     ) -> str:
         with _file_lock(self._lock_path):
-            secrets = self.load()
+            secrets = self.load(strict=True)
             if secrets is None:
                 if self._path.exists():
                     raise RuntimeError(
                         f"Cannot load secrets from {self._path}. "
-                        "File may be corrupted or encrypted with a different key. "
+                        "File may be corrupted or encrypted with a different key "
+                        f"({_KEY_HINT}). "
                         "Refusing to modify to prevent data loss."
                     )
                 raise KeyError(name)
@@ -720,7 +807,11 @@ class WorkspacesStore(ABC):
         self,
         update_fn: Callable[[PersistedWorkspaces], PersistedWorkspaces],
     ) -> PersistedWorkspaces:
-        """Atomically update workspaces with file locking."""
+        """Atomically update workspaces with file locking.
+
+        ``update_fn`` returns its argument unchanged to signal a no-op, in
+        which case nothing is written.
+        """
 
 
 class FileWorkspacesStore(WorkspacesStore):
@@ -784,36 +875,27 @@ class FileWorkspacesStore(WorkspacesStore):
                     )
                 workspaces = PersistedWorkspaces()
             updated = update_fn(workspaces)
-            self.save(updated)
+            # ``update_fn`` returns its input unchanged when there is nothing
+            # to change (a re-add, a delete that matched nothing); skip the
+            # write so a no-op neither creates nor rewrites the file.
+            if updated is not workspaces:
+                self.save(updated)
             return updated
 
 
-# ── Global Store Access ──────────────────────────────────────────────────
-
-_settings_store: FileSettingsStore | None = None
-_secrets_store: FileSecretsStore | None = None
-_provider_connections_store: ProviderConnectionStore | None = None
-_workspaces_store: FileWorkspacesStore | None = None
-_llm_profile_store: LLMProfileStore | None = None
-_agent_profile_store: AgentProfileStore | None = None
-_store_lock = threading.Lock()
+# ── Per-server stores ────────────────────────────────────────────────────
 
 
-def _get_persistence_dir(config: Config | None = None) -> Path:
-    """Get the persistence directory from config or default."""
+def _get_persistence_dir(config: Config) -> Path:
+    """Get the workspace-relative persistence directory for ``config``."""
     # Absent OH_PERSISTENCE_DIR, fall back to config's conversations_path parent.
-    default = (
-        config.conversations_path.parent / ".openhands"
-        if config is not None
-        else DEFAULT_PERSISTENCE_DIR
-    )
-    return get_user_persistence_dir(default)
+    return get_user_persistence_dir(config.conversations_path.parent / ".openhands")
 
 
 def _get_profile_persistence_dir() -> Path:
-    """Get the base dir for LLM/agent profile stores.
+    """Get the base dir for the settings, secrets and profile stores.
 
-    Profiles can hold credentials (LLM API keys), so absent
+    These can hold credentials (LLM API keys), so absent
     ``OH_PERSISTENCE_DIR`` they fall back to the user's ``~/.openhands``
     rather than the workspace-relative agent-server default, keeping bare
     local profile secrets in the expected user config directory.
@@ -821,170 +903,129 @@ def _get_profile_persistence_dir() -> Path:
     return get_user_persistence_dir()
 
 
-def _get_cipher(config: Config | None = None) -> Cipher | None:
-    """Get cipher from config for encrypting secrets."""
-    if config is not None:
-        return config.cipher
-    return None
+@dataclass(frozen=True)
+class ServerStores:
+    """The persistent stores of one server (re)initialisation.
 
+    A server builds one instance per :class:`Config` it runs with (at start-up
+    and again on ``POST /api/init``) and reaches every store through it, so all
+    of them agree on the cipher and the directories resolved when it was built.
+    There is no process-wide store: code that needs one is handed the instance
+    (or the store) it should use.
 
-def get_settings_store(config: Config | None = None) -> FileSettingsStore:
-    """Get the global settings store instance (thread-safe).
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
-
-    Warning:
-        The cipher key (OH_SECRET_KEY) must NOT change during runtime.
-        The store singleton caches the cipher from first initialization.
-        If the cipher key changes:
-        - New data may be encrypted with a stale key
-        - Existing data may fail to decrypt
-        - This could trigger data loss protection in update operations
-
-        To use a new cipher key, restart the server process.
-        For testing, use :func:`reset_stores` to clear the singletons.
-    """
-    global _settings_store
-    if _settings_store is not None:
-        return _settings_store
-
-    with _store_lock:
-        # Double-check after acquiring lock
-        if _settings_store is None:
-            _settings_store = FileSettingsStore(
-                persistence_dir=_get_profile_persistence_dir(),
-                cipher=_get_cipher(config),
-            )
-        return _settings_store
-
-
-def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
-    """Get the global secrets store instance (thread-safe).
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
+    Building the instance touches no file. Each store is created on first use
+    and then reused; several of their constructors create their directory.
 
     Warning:
-        The cipher key (OH_SECRET_KEY) must NOT change during runtime.
-        The store singleton caches the cipher from first initialization.
-        If the cipher key changes:
-        - New data may be encrypted with a stale key
-        - Existing data may fail to decrypt
-        - This could trigger data loss protection in update operations
-
-        To use a new cipher key, restart the server process.
-        For testing, use :func:`reset_stores` to clear the singletons.
+        The cipher key is fixed for the lifetime of the instance. To use a new
+        key, build a new instance from the new config.
     """
-    global _secrets_store
-    if _secrets_store is not None:
-        return _secrets_store
 
-    with _store_lock:
-        # Double-check after acquiring lock
-        if _secrets_store is None:
-            _secrets_store = FileSecretsStore(
-                persistence_dir=_get_profile_persistence_dir(),
-                cipher=_get_cipher(config),
-            )
-        return _secrets_store
+    cipher: Cipher | None
+    """Encrypts the settings and secrets stores at rest."""
+    profile_dir: Path
+    """Base of the settings, secrets, provider-connection and profile stores:
+    ``OH_PERSISTENCE_DIR`` when set, else ``~/.openhands``."""
+    workspace_dir: Path
+    """Base of the workspaces store: ``OH_PERSISTENCE_DIR`` when set, else
+    ``.openhands`` next to the config's conversations directory."""
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False, compare=False
+    )
+    _built: dict[str, object] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    @classmethod
+    def from_config(cls, config: Config) -> ServerStores:
+        """Resolve the cipher and directories ``config`` selects."""
+        return cls(
+            cipher=config.cipher,
+            profile_dir=_get_profile_persistence_dir(),
+            workspace_dir=_get_persistence_dir(config),
+        )
+
+    def _once[StoreT](self, name: str, build: Callable[[], StoreT]) -> StoreT:
+        with self._lock:
+            if name not in self._built:
+                self._built[name] = build()
+            return cast(StoreT, self._built[name])
+
+    @property
+    def settings(self) -> FileSettingsStore:
+        return self._once(
+            "settings",
+            lambda: FileSettingsStore(
+                persistence_dir=self.profile_dir, cipher=self.cipher
+            ),
+        )
+
+    @property
+    def secrets(self) -> FileSecretsStore:
+        return self._once(
+            "secrets",
+            lambda: FileSecretsStore(
+                persistence_dir=self.profile_dir, cipher=self.cipher
+            ),
+        )
+
+    @property
+    def provider_connections(self) -> ProviderConnectionStore:
+        """Stored at ``<profile_dir>/provider-connections``.
+
+        The store itself is cipher-agnostic; callers pass the cipher per call
+        so keys are encrypted at rest.
+        """
+        return self._once(
+            "provider_connections",
+            lambda: ProviderConnectionStore(
+                base_dir=self.profile_dir / "provider-connections"
+            ),
+        )
+
+    @property
+    def workspaces(self) -> FileWorkspacesStore:
+        return self._once(
+            "workspaces",
+            lambda: FileWorkspacesStore(persistence_dir=self.workspace_dir),
+        )
+
+    @property
+    def llm_profiles(self) -> LLMProfileStore:
+        """Stored at ``<profile_dir>/profiles``, never workspace-relative."""
+        return self._once(
+            "llm_profiles",
+            lambda: LLMProfileStore(
+                base_dir=self.profile_dir / "profiles",
+                provider_store=self.provider_connections,
+            ),
+        )
+
+    @property
+    def agent_profiles(self) -> AgentProfileStore:
+        """Stored at ``<profile_dir>/agent-profiles``."""
+        return self._once(
+            "agent_profiles",
+            lambda: AgentProfileStore(base_dir=self.profile_dir / "agent-profiles"),
+        )
 
 
-def get_provider_connections_store(
-    config: Config | None = None,  # noqa: ARG001
-) -> ProviderConnectionStore:
-    """Get the global provider connections store instance (thread-safe).
+def reencrypt_stale_stores(stores: ServerStores) -> None:
+    """Re-encrypt the settings and secrets stores under the current key.
 
-    Stored at ``<dir>/provider-connections`` alongside ``profiles`` /
-    ``agent-profiles``. The store itself is cipher-agnostic; callers pass the
-    request cipher per call so keys are encrypted at rest.
+    Runs at startup when ``previous_secret_keys`` is configured, so a rotated
+    key does not wait for the next write. Failures are logged, never raised:
+    the stores stay readable through the previous keys either way.
     """
-    global _provider_connections_store
-    if _provider_connections_store is not None:
-        return _provider_connections_store
-
-    with _store_lock:
-        if _provider_connections_store is None:
-            _provider_connections_store = ProviderConnectionStore(
-                base_dir=_get_profile_persistence_dir() / "provider-connections",
-            )
-        return _provider_connections_store
-
-
-def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
-    """Get the global workspaces store instance (thread-safe).
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
-    """
-    global _workspaces_store
-    if _workspaces_store is not None:
-        return _workspaces_store
-
-    with _store_lock:
-        if _workspaces_store is None:
-            _workspaces_store = FileWorkspacesStore(
-                persistence_dir=_get_persistence_dir(config),
-            )
-        return _workspaces_store
-
-
-def get_llm_profile_store() -> LLMProfileStore:
-    """Get the global ``LLMProfileStore`` instance (thread-safe).
-
-    Stored at ``<dir>/profiles`` where ``<dir>`` is ``OH_PERSISTENCE_DIR``
-    when set, else ``~/.openhands``. This honors isolated agent-server
-    instances while keeping bare local profile secrets in the user's
-    config directory (never workspace-relative). See
-    :func:`_get_profile_persistence_dir`.
-    """
-    global _llm_profile_store
-    if _llm_profile_store is not None:
-        return _llm_profile_store
-
-    # Resolve the provider store first: it takes ``_store_lock`` itself, and
-    # ``_store_lock`` is non-reentrant, so calling it while already holding the
-    # lock below would deadlock.
-    provider_store = get_provider_connections_store()
-    with _store_lock:
-        if _llm_profile_store is None:
-            _llm_profile_store = LLMProfileStore(
-                base_dir=_get_profile_persistence_dir() / "profiles",
-                provider_store=provider_store,
-            )
-        return _llm_profile_store
-
-
-def get_agent_profile_store() -> AgentProfileStore:
-    """Get the global ``AgentProfileStore`` instance (thread-safe).
-
-    Stored at ``<dir>/agent-profiles`` where ``<dir>`` is resolved by
-    :func:`_get_profile_persistence_dir`, for the same reason as
-    :func:`get_llm_profile_store`.
-    """
-    global _agent_profile_store
-    if _agent_profile_store is not None:
-        return _agent_profile_store
-
-    with _store_lock:
-        if _agent_profile_store is None:
-            _agent_profile_store = AgentProfileStore(
-                base_dir=_get_profile_persistence_dir() / "agent-profiles",
-            )
-        return _agent_profile_store
-
-
-def reset_stores() -> None:
-    """Reset global store instances (for testing)."""
-    global _settings_store, _secrets_store, _provider_connections_store
-    global _workspaces_store, _llm_profile_store, _agent_profile_store
-    with _store_lock:
-        _settings_store = None
-        _secrets_store = None
-        _provider_connections_store = None
-        _workspaces_store = None
-        _llm_profile_store = None
-        _agent_profile_store = None
+    cipher = stores.cipher
+    if cipher is None or not cipher.previous_keys:
+        return
+    for name, store in (
+        ("settings", stores.settings),
+        ("secrets", stores.secrets),
+    ):
+        try:
+            if store.reencrypt():
+                logger.info(f"Re-encrypted the {name} store under the current key")
+        except Exception:
+            logger.error(f"Could not re-encrypt the {name} store", exc_info=True)

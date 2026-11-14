@@ -1,10 +1,15 @@
 import asyncio
 import os
+import shutil
+import sys
 import tempfile
+import threading
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -15,22 +20,36 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 from starlette.requests import Request
+from starlette.types import ASGIApp
 
+from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.canvas_extensions.backend import (
+    CanvasExtensionBackendManager,
+)
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
+from openhands.agent_server.canvas_extensions_bridge_router import (
+    app_backend_bridge_router,
+)
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
+    V1_SESSION_API_KEY_ENV,
     Config,
-    get_default_config,
+    export_session_api_key,
+    load_config,
 )
-from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_service import (
-    CredentialBindingActivationRequired,
-    get_default_conversation_service,
+from openhands.agent_server.conversation_lease import _is_pid_alive
+from openhands.agent_server.conversation_router import (
+    conversation_catalog_router,
+    conversation_router,
 )
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
 )
@@ -38,8 +57,10 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.desktop_router import desktop_router
-from openhands.agent_server.event_router import event_router
+from openhands.agent_server.errors import status_for
+from openhands.agent_server.experimental_features_router import (
+    experimental_features_router,
+)
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -49,27 +70,32 @@ from openhands.agent_server.init_router import (
     require_initialized,
 )
 from openhands.agent_server.llm_router import llm_router
+from openhands.agent_server.local_secret_resolver import local_secret_resolution
 from openhands.agent_server.mcp_router import mcp_router
+from openhands.agent_server.meta_profiles_router import meta_profiles_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
+from openhands.agent_server.persistence import reencrypt_stale_stores
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
 )
-from openhands.agent_server.runtime_router import create_runtime_router
+from openhands.agent_server.server_context import (
+    build_server_context,
+    install_server_context,
+    server_context_of,
+)
 from openhands.agent_server.server_details_router import (
     get_server_info,
     mark_initialization_complete,
     server_details_router,
 )
-from openhands.agent_server.session_socket import session_router
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
-from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.sub_agents_router import sub_agents_router
 from openhands.agent_server.telemetry import (
     build_telemetry_sink,
@@ -88,87 +114,233 @@ from openhands.agent_server.telemetry.models import (
     RequestFailedProperties,
 )
 from openhands.agent_server.telemetry.sanitizer import normalize_exception
-from openhands.agent_server.tool_preload_service import get_tool_preload_service
+from openhands.agent_server.tool_preload_service import ToolPreloadService
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
-from openhands.agent_server.vscode_service import get_vscode_service
-from openhands.agent_server.workspace_router import workspace_router
 from openhands.agent_server.workspaces_router import workspaces_router
+from openhands.sdk.errors import DomainError
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
-from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
+from openhands.tools.terminal.constants import (
+    TMUX_SOCKET_NAME,
+    TMUX_SOCKET_OWNER_OPTION,
+)
+from openhands.tools.terminal.env import UTF8_FALLBACK_LOCALE, ensure_utf8_locale
+from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
 logger = get_logger(__name__)
 
 
+# tmux binds $TMUX_TMPDIR/tmux-<uid>/<socket name>, and fails with "File name
+# too long" when that does not fit sockaddr_un.sun_path (108 bytes on Linux,
+# 104 on macOS and the BSDs, NUL included).
+_MAX_TMUX_SOCKET_PATH = 107 if sys.platform.startswith("linux") else 103
+_MAX_TMUX_SOCKET_NAME = len(f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}")
+_SHORT_TMUX_TMPDIR_ROOT = Path("/tmp")
+
+
+def _fits_tmux_socket(tmux_tmpdir: Path) -> bool:
+    if os.name != "posix":
+        return True
+    socket_dir = Path(os.path.realpath(tmux_tmpdir)) / f"tmux-{os.getuid()}"
+    socket_path_len = len(os.fsencode(socket_dir)) + 1 + _MAX_TMUX_SOCKET_NAME
+    return socket_path_len <= _MAX_TMUX_SOCKET_PATH
+
+
 def _default_server_tmux_tmpdir() -> Path:
-    return Path(tempfile.gettempdir()) / f"openhands-agent-server-{os.getpid()}"
+    name = f"openhands-agent-server-{os.getpid()}"
+    tmux_tmpdir = Path(tempfile.gettempdir()) / name
+    if _fits_tmux_socket(tmux_tmpdir):
+        return tmux_tmpdir
+    # macOS's per-user $TMPDIR (/var/folders/...) is too deep for a socket.
+    return _SHORT_TMUX_TMPDIR_ROOT / name
 
 
-def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
+def _ensure_server_tmux_tmpdir() -> tuple[Path, bool, bool]:
+    """Return the tmux directory, whether it was defaulted, and whether this
+    call created it (only then is it removed at shutdown)."""
     existing = os.getenv("TMUX_TMPDIR")
-    if existing:
-        return Path(existing), False
+    if existing and _fits_tmux_socket(Path(existing)):
+        return Path(existing), False, False
 
     tmux_tmpdir = _default_server_tmux_tmpdir()
+    created = not tmux_tmpdir.exists()
     tmux_tmpdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)
-    logger.info(
-        "TMUX_TMPDIR not set; defaulting to per-server tmux directory %s",
-        tmux_tmpdir,
-    )
-    return tmux_tmpdir, True
+    if existing:
+        logger.warning(
+            "TMUX_TMPDIR %s is too long for tmux socket paths; "
+            "using per-server tmux directory %s instead",
+            existing,
+            tmux_tmpdir,
+        )
+    else:
+        logger.info(
+            "TMUX_TMPDIR not set; defaulting to per-server tmux directory %s",
+            tmux_tmpdir,
+        )
+    return tmux_tmpdir, True, created
+
+
+def _isolated_socket_names(socket_dir: Path) -> list[str]:
+    """Return per-instance socket names present in *socket_dir*."""
+    return [
+        path.name
+        for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
+        if path.is_socket()
+    ]
+
+
+def _kill_sessions(server: libtmux.Server) -> None:
+    for session in server.sessions:
+        try:
+            session.kill()
+        except Exception as e:
+            logger.warning("Failed to kill tmux session %s: %s", session, e)
+
+
+def _socket_owner_pid(server: libtmux.Server) -> int | None:
+    """Return the recorded owner PID for a socket, or None when unknown."""
+    try:
+        raw = server.show_option(
+            TMUX_SOCKET_OWNER_OPTION, global_=True, scope=None, ignore_errors=True
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return None
+
+
+def _reclaim_stale_tmux_sockets(socket_dir: Path) -> None:
+    """Reclaim the legacy socket and any isolated socket whose owner is gone."""
+    try:
+        _kill_sessions(libtmux.Server(socket_name=TMUX_SOCKET_NAME))
+    except Exception as e:
+        logger.warning("Failed to cleanup tmux socket %s: %s", TMUX_SOCKET_NAME, e)
+
+    for socket_name in _isolated_socket_names(socket_dir):
+        try:
+            server = libtmux.Server(socket_name=socket_name)
+            owner_pid = _socket_owner_pid(server)
+            if owner_pid is not None and _is_pid_alive(owner_pid):
+                logger.debug(
+                    "Leaving tmux socket %s alone; owner pid %s is alive",
+                    socket_name,
+                    owner_pid,
+                )
+                continue
+            _kill_sessions(server)
+        except Exception as e:
+            logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
 
 
 def _cleanup_stale_tmux_sessions() -> None:
-    """Clean up any stale tmux sessions on server startup.
+    """Clean up legacy and isolated terminal sockets on server startup.
 
-    Tmux sessions live in a separate process that survives agent-server restarts.
-    This function kills all existing sessions on the shared OpenHands tmux socket
-    to prevent accumulation of orphaned sessions.
+    The legacy socket (``openhands``) is always reclaimed. Per-instance
+    sockets (``openhands-<32 hex>``) are only reclaimed when their owning
+    process is gone: several agent-servers may share one externally supplied
+    ``TMUX_TMPDIR``, and killing a live sibling's sessions silently destroys
+    that conversation's terminal.
+
+    The scan holds the same cross-process creation lock that terminal setup
+    takes between creating a socket and recording its owner, so a socket that
+    is still being set up by a live process is never reclaimed as stale.
     """
+    if os.name != "posix":
+        return
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+
     try:
-        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
-        sessions = server.sessions
-        if not sessions:
-            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
-            return
-
-        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
-
-        for session in sessions:
-            try:
-                logger.debug("Killing tmux session: %s", session.name)
-                session.kill()
-            except Exception as e:
-                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
-
-        logger.info("Tmux cleanup completed")
-
+        with _socket_creation_lock():
+            _reclaim_stale_tmux_sockets(socket_dir)
     except Exception as e:
-        # Don't let tmux cleanup failures prevent server startup
-        logger.warning("Failed to cleanup tmux sessions: %s", e)
+        # The lock only closes a rare startup race; it must never stop cleanup
+        # from running (or the server from starting).
+        logger.warning("tmux socket creation lock unavailable: %s", e)
+        _reclaim_stale_tmux_sockets(socket_dir)
+
+
+TRACE_FLUSH_TIMEOUT_MILLIS = 5000
+
+
+async def _flush_trace_export() -> None:
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        return
+    outcome: Future[bool] = Future()
+    outcome.set_running_or_notify_cancel()
+
+    def flush() -> None:
+        try:
+            outcome.set_result(provider.force_flush(TRACE_FLUSH_TIMEOUT_MILLIS))
+        except Exception as exc:
+            outcome.set_exception(exc)
+
+    threading.Thread(target=flush, name="shutdown-trace-flush", daemon=True).start()
+    try:
+        flushed = await asyncio.wait_for(
+            asyncio.wrap_future(outcome), TRACE_FLUSH_TIMEOUT_MILLIS / 1000
+        )
+    except TimeoutError:
+        flushed = False
+    except Exception:
+        logger.warning("Shutdown trace flush failed", exc_info=True)
+        return
+    if not flushed:
+        logger.warning(
+            "Shutdown trace flush timed out after %d ms", TRACE_FLUSH_TIMEOUT_MILLIS
+        )
 
 
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
-    tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
+    original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
+    original_session_api_key = os.environ.get(V1_SESSION_API_KEY_ENV)
+    tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
+        _ensure_server_tmux_tmpdir()
+    )
+    # Stale-session cleanup below queries tmux before any terminal exists.
+    locale_override = ensure_utf8_locale() if os.name == "posix" else None
+    secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
+        backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
+        if backend_manager is not None:
+            await backend_manager.reap_orphans()
 
-        config: Config = api.state.config
+        context = server_context_of(api)
+        config = context.config
         deferred = config.deferred_init
+        conversation_registry = context.conversation_registry
+
+        # Answer our own LookupSecret URLs in-process; a loopback fetch made
+        # from the event loop cannot be served by the loop blocked on it. The
+        # store is looked up per resolution: POST /api/init replaces it.
+        secret_resolution = local_secret_resolution(
+            lambda: server_context_of(api).stores.secrets
+        )
+        secret_resolution.__enter__()
 
         # Deferred pods boot with telemetry disabled and are rebuilt by
         # InitService, so they emit `server_started` there instead.
-        api.state.telemetry_sink = await build_telemetry_sink(config)
+        api.state.telemetry_sink = await build_telemetry_sink(
+            config, context.stores.settings
+        )
         if not deferred:
             emit_server_started()
 
-        vscode_service = get_vscode_service()
-        tool_preload_service = get_tool_preload_service()
+        seal_tool_catalog()
+
+        vscode_service = context.vscode_service
+        tool_preload_service = ToolPreloadService() if config.preload_tools else None
 
         # Define async functions for starting each service
         async def start_vscode_service():
@@ -247,17 +419,35 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
-        service = get_default_conversation_service()
+        await asyncio.to_thread(reencrypt_stale_stores, context.stores)
+        #
+        # A key that came from the config file is visible only in ``config``;
+        # in-process callers of this server read it from the environment.
+        export_session_api_key(config)
+        service = ConversationService.get_instance(config, context.stores)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
-        bash_svc = get_default_bash_event_service()
-        api.state.bash_event_service = bash_svc
+        bash_svc = BashEventService(
+            bash_events_dir=config.bash_events_dir, cipher=config.cipher
+        )
 
-        async with service:
-            api.state.conversation_service = service
+        conversation_registry.configure_service(service)
+        # Runtime cleanup must precede external-catalog recovery so stale
+        # runtime owners cannot lose their expired leases to the outer service.
+        await conversation_registry.start()
 
-            config = api.state.config
+        async with bash_svc, service:
+            # The same config, stores and registry, now with their services.
+            install_server_context(
+                api,
+                replace(
+                    context,
+                    conversation_service=service,
+                    bash_event_service=bash_svc,
+                ),
+            )
+
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
@@ -273,6 +463,10 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 yield
             finally:
+                session_store = getattr(api.state, "app_backend_session_store", None)
+                if session_store is not None:
+                    await session_store.shutdown()
+                await conversation_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -282,13 +476,45 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     finally:
         # Outer finally so a startup failure cannot leak the drain task, and
         # after `async with service` so terminal events are still accepted.
+        if secret_resolution is not None:
+            secret_resolution.__exit__(None, None, None)
+        unseal_tool_catalog()
+        backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
+        if backend_manager is not None:
+            await backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
+        await _flush_trace_export()
 
-        if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
-            tmux_tmpdir
-        ):
-            os.environ.pop("TMUX_TMPDIR", None)
+        if tmux_tmpdir_was_defaulted:
+            if os.environ.get("TMUX_TMPDIR") == str(tmux_tmpdir):
+                if original_tmux_tmpdir is None:
+                    os.environ.pop("TMUX_TMPDIR", None)
+                else:
+                    os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if locale_override is not None:
+            locale_name, original_locale = locale_override
+            if os.environ.get(locale_name) == UTF8_FALLBACK_LOCALE:
+                if original_locale is None:
+                    os.environ.pop(locale_name, None)
+                else:
+                    os.environ[locale_name] = original_locale
+        if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
+            if original_session_api_key is None:
+                os.environ.pop(V1_SESSION_API_KEY_ENV, None)
+            else:
+                os.environ[V1_SESSION_API_KEY_ENV] = original_session_api_key
+        if tmux_tmpdir_was_created:
+            # Only the per-server directory this process created; a
+            # user-provided TMUX_TMPDIR is never removed.
+            try:
+                shutil.rmtree(tmux_tmpdir)
+            except OSError as e:
+                logger.warning(
+                    "Failed to remove per-server tmux directory %s: %s",
+                    tmux_tmpdir,
+                    e,
+                )
 
 
 def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> None:
@@ -349,13 +575,25 @@ def _get_root_path(config: Config) -> str:
     return root_path
 
 
+class AgentServerApp(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # ServerErrorMiddleware creates unhandled 500 responses outside user
+        # middleware, so CORS must wrap the complete stack to decorate them.
+        config = server_context_of(self).config
+        return CORSDispatcher(
+            super().build_middleware_stack(),
+            allow_origins=config.allow_cors_origins,
+            allow_origin_regex=config.allow_cors_origin_regex,
+        )
+
+
 def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
         Basic FastAPI application with title, description, and lifespan.
     """
-    return FastAPI(
+    return AgentServerApp(
         title="OpenHands Agent Server",
         version=version("openhands-agent-server"),
         description=(
@@ -366,17 +604,19 @@ def _create_fastapi_instance(config: Config) -> FastAPI:
     )
 
 
-def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
-    """Helper function to find HTTPException in ExceptionGroup.
+def _find_http_exception(
+    exc: BaseExceptionGroup,
+) -> HTTPException | DomainError | None:
+    """Find the first HTTPException or domain error in an ExceptionGroup.
 
     Args:
-        exc: BaseExceptionGroup to search for HTTPException.
+        exc: BaseExceptionGroup to search.
 
     Returns:
-        HTTPException if found, None otherwise.
+        The first HTTPException or DomainError found, None otherwise.
     """
     for inner_exc in exc.exceptions:
-        if isinstance(inner_exc, HTTPException):
+        if isinstance(inner_exc, (HTTPException, DomainError)):
             return inner_exc
         # Recursively search nested ExceptionGroups
         if isinstance(inner_exc, BaseExceptionGroup):
@@ -388,6 +628,7 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
 
 def _add_api_routes(app: FastAPI) -> None:
     """Add all API routes to the FastAPI application."""
+    conversation_registry = server_context_of(app).conversation_registry
     app.include_router(server_details_router)
 
     # The /api/init endpoint bypasses both the session-key auth and the
@@ -402,19 +643,21 @@ def _add_api_routes(app: FastAPI) -> None:
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
     # here so that we don't expand the CSRF surface across the whole API.
-    # check_session_api_key reads config from request.app.state at request time,
-    # so keys delivered via POST /api/init are honoured without re-registering routes.
+    # check_session_api_key reads the server context at request time, so keys
+    # delivered via POST /api/init are honoured without re-registering routes.
     dependencies = [
-        Depends(check_session_api_key),
         # Dormant gate: 503s every /api/* route until POST /api/init completes.
         # No-op for non-deferred deployments.
         Depends(require_initialized),
+        Depends(check_session_api_key),
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(file_discovery_router)
-    api_router.include_router(create_runtime_router())
-    api_router.include_router(event_router)
+    # Collection routes must precede runtime catch-alls such as
+    # ``/conversations/{conversation_id}``.
+    api_router.include_router(conversation_catalog_router)
+    conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
     api_router.include_router(credential_binding_router)
     api_router.include_router(tool_router)
@@ -422,25 +665,28 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(git_router)
     api_router.include_router(file_router)
     api_router.include_router(vscode_router)
-    api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
     api_router.include_router(sub_agents_router)
     api_router.include_router(plugins_router)
     api_router.include_router(canvas_extensions_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(acp_router)
     api_router.include_router(provider_connections_router)
     api_router.include_router(mcp_router)
+    api_router.include_router(experimental_features_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
     api_router.include_router(agent_profiles_router)
+    api_router.include_router(meta_profiles_router)
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    app.include_router(api_router)
-
-    app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
+    app.include_router(
+        openai_router,
+        dependencies=[Depends(require_initialized), Depends(check_openai_api_key)],
+    )
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
@@ -448,14 +694,21 @@ def _add_api_routes(app: FastAPI) -> None:
     # workspace artifacts work — browsers cannot attach custom headers to
     # those requests.
     workspace_api_router = APIRouter(
-        prefix="/api", dependencies=[Depends(check_workspace_session)]
+        prefix="/api",
+        dependencies=[Depends(require_initialized), Depends(check_workspace_session)],
     )
-    workspace_api_router.include_router(workspace_router)
+    workspace_api_router.include_router(conversation_registry.workspace_router)
     app.include_router(workspace_api_router)
+    app.include_router(api_router)
 
-    app.include_router(sockets_router)
-
-    app.include_router(session_router)
+    app.include_router(
+        app_backend_bridge_router,
+        dependencies=[Depends(require_initialized)],
+    )
+    app.include_router(
+        conversation_registry.sockets_router,
+        dependencies=[Depends(require_initialized)],
+    )
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:
@@ -523,21 +776,28 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
     return sanitized
 
 
+async def _domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
+    """Map a domain error to its status from ``ERROR_STATUS``, the only map."""
+    headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+    return _error_response(
+        request,
+        HTTPException(status_for(exc), exc.detail, headers),
+        exc.extra,
+    )
+
+
+def add_domain_error_handler(app: FastAPI) -> None:
+    """Answer ``openhands.sdk.errors`` categories with their mapped status.
+
+    ``create_app`` installs it with the other handlers; an app that mounts
+    agent-server routers on its own needs it too, or those errors become 500s.
+    """
+    app.exception_handler(DomainError)(_domain_error_handler)
+
+
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
-
-    @api.exception_handler(CredentialBindingActivationRequired)
-    async def _credential_binding_activation_required_handler(
-        _request: Request,
-        exc: CredentialBindingActivationRequired,
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": str(exc),
-                "retryable": True,
-            },
-        )
+    add_domain_error_handler(api)
 
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(
@@ -594,12 +854,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Check if this is an HTTPException that should be handled directly
         if isinstance(exc, HTTPException):
             return await _http_exception_handler(request, exc)
+        if isinstance(exc, DomainError):
+            return await _domain_error_handler(request, exc)
 
         # Check if this is a BaseExceptionGroup with HTTPExceptions
         if isinstance(exc, BaseExceptionGroup):
             http_exc = _find_http_exception(exc)
-            if http_exc:
+            if isinstance(http_exc, HTTPException):
                 return await _http_exception_handler(request, http_exc)
+            if isinstance(http_exc, DomainError):
+                return await _domain_error_handler(request, http_exc)
             # If no HTTPException found, treat as unhandled exception
             logger.error(
                 "Unhandled ExceptionGroup on %s %s [error_id=%s]",
@@ -627,70 +891,92 @@ def _add_exception_handlers(api: FastAPI) -> None:
     async def _http_exception_handler(
         request: Request, exc: HTTPException
     ) -> JSONResponse:
-        """Handle HTTPExceptions with appropriate logging."""
-        # Log 4xx errors at info level (expected client errors like auth failures)
-        if 400 <= exc.status_code < 500:
-            logger.info(
-                "HTTPException %d on %s %s: %s",
-                exc.status_code,
-                request.method,
-                request.url.path,
-                exc.detail,
-            )
-        # Log 5xx errors at error level. HTTPException is intentionally
-        # raised flow control — the route picked this status and detail
-        # on purpose — so a stack trace adds no information beyond
-        # `exc.detail` and makes routine upstream blips look
-        # indistinguishable from a process crash. Unhandled exceptions
-        # still get a full traceback via _unhandled_exception_handler
-        # above. Include the traceback only when DEBUG is on, as an
-        # opt-in debugging aid.
-        elif exc.status_code >= 500:
-            logger.error(
-                "HTTPException %d on %s %s: %s",
-                exc.status_code,
-                request.method,
-                request.url.path,
-                exc.detail,
-                exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
-            )
-            content = {
-                "detail": "Internal Server Error",
-                "exception": str(exc),
-            }
-            if DEBUG:
-                content["traceback"] = traceback.format_exc()
-            # Don't leak internal details to clients for 5xx errors in production
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=content,
-            )
+        """Handle HTTPExceptions raised by FastAPI itself (routing, security)."""
+        return _error_response(request, exc, {})
 
-        # Return clean JSON response for all non-5xx HTTP exceptions
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+def _error_response(
+    request: Request, exc: HTTPException, extra: Mapping[str, object]
+) -> JSONResponse:
+    """Render an error with logging; 5xx details are not shown to clients."""
+    # Log 4xx errors at info level (expected client errors like auth failures)
+    if 400 <= exc.status_code < 500:
+        logger.info(
+            "HTTPException %d on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+        )
+    # Log 5xx errors at error level. HTTPException is intentionally
+    # raised flow control — the route picked this status and detail
+    # on purpose — so a stack trace adds no information beyond
+    # `exc.detail` and makes routine upstream blips look
+    # indistinguishable from a process crash. Unhandled exceptions
+    # still get a full traceback via _unhandled_exception_handler
+    # above. Include the traceback only when DEBUG is on, as an
+    # opt-in debugging aid.
+    elif exc.status_code >= 500:
+        logger.error(
+            "HTTPException %d on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+            exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
+        )
+        content = {
+            "detail": "Internal Server Error",
+            "exception": str(exc),
+        }
+        if DEBUG:
+            content["traceback"] = traceback.format_exc()
+        # Don't leak internal details to clients for 5xx errors in production
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=content,
+            headers=exc.headers,
+        )
+
+    # Return clean JSON response for all non-5xx HTTP exceptions. Keep the
+    # exception's headers (e.g. Retry-After, WWW-Authenticate).
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, **extra},
+        headers=exc.headers,
+    )
 
 
 def create_app(config: Config | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
-        config: Configuration object. If None, uses default config.
+        config: Configuration object. If None, it is loaded from the config
+            file and the ``OH_*`` environment variables.
 
     Returns:
         Configured FastAPI application.
     """
     if config is None:
-        config = get_default_config()
+        config = load_config()
     app = _create_fastapi_instance(config)
-    app.state.config = config
+    install_server_context(app, build_server_context(config))
+    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager(
+        secrets_store=lambda: server_context_of(app).stores.secrets
+    )
+    app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)
     _setup_static_files(app, config)
-    app.add_middleware(
-        CORSDispatcher,
-        allow_origins=config.allow_cors_origins,
-        allow_origin_regex=config.allow_cors_origin_regex,
-    )
+    if config.conversation_runtime_selectable:
+        from openhands.agent_server.docker_runtime.hybrid import (
+            RuntimeDispatchMiddleware,
+        )
+
+        app.add_middleware(RuntimeDispatchMiddleware)
+    # CORS is not added as user middleware here: AgentServerApp wraps the
+    # complete stack (including ServerErrorMiddleware) in CORSDispatcher so
+    # unhandled 500 responses also carry CORS headers.
     _add_exception_handlers(app)
 
     return app

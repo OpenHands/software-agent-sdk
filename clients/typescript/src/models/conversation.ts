@@ -14,6 +14,7 @@ import {
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
+import type { ACPEffortOption } from './acp-model-discovery';
 import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
 
 export enum ConversationSortOrder {
@@ -39,11 +40,15 @@ export interface ConversationRuntimeInfo {
 
 export interface ConversationInfo {
   id: ConversationID;
+  /** Availability of the execution runtime backing this catalog entry. */
+  runtime_info?: ConversationRuntimeInfo | null;
   /**
    * Current execution status of the conversation.
    * Note: This field was renamed from agent_status to execution_status in the API.
    */
   execution_status: ConversationExecutionStatus;
+  current_effort?: string | null;
+  available_efforts?: ACPEffortOption[];
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */
@@ -55,6 +60,8 @@ export interface ConversationInfo {
   workspace: unknown;
   persistence_dir: string;
   max_iterations?: number;
+  /** USD limit on accumulated conversation cost; a completed step may overshoot. */
+  max_budget_per_run?: number | null;
   stuck_detection?: boolean;
   conversation_stats?: ConversationStats;
   /** API may return stats instead of conversation_stats */
@@ -116,6 +123,8 @@ export interface CreateConversationRequest {
   agent: AgentBase;
   initial_message?: Message;
   max_iterations: number;
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -126,6 +135,8 @@ export interface CreateACPConversationRequest {
   agent: ACPAgentConfig;
   initial_message?: Message;
   max_iterations: number;
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -135,12 +146,16 @@ export interface CreateACPConversationRequest {
 export interface UpdateConversationRequest {
   title?: string;
   tags?: Record<string, string>;
+  /** New positive USD limit; omit to keep it, null to remove the limit. */
+  max_budget_per_run?: number | null;
 }
 
 export interface StaticSecret {
   kind: 'StaticSecret';
   value?: string | null;
   description?: string | null;
+  scope?: string | null;
+  scope_description?: string | null;
 }
 
 export interface LookupSecret {
@@ -148,6 +163,8 @@ export interface LookupSecret {
   url: string;
   headers?: Record<string, string>;
   description?: string | null;
+  scope?: string | null;
+  scope_description?: string | null;
   /**
    * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
    */

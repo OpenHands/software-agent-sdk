@@ -3,35 +3,42 @@
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, Path, Request, status
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
     decrypt_incoming_llm_secrets,
-    get_cipher,
-    get_config,
     parse_expose_secrets_header,
-    store_errors,
+    profile_key_mismatch,
     translate_missing_cipher,
 )
-from openhands.agent_server.persistence import (
-    PersistedSettings,
+from openhands.agent_server.dependencies import (
     get_agent_profile_store,
+    get_cipher,
     get_llm_profile_store,
     get_provider_connections_store,
     get_settings_store,
 )
+from openhands.agent_server.persistence import (
+    FileSettingsStore,
+    PersistedSettings,
+    ProviderConnectionStore,
+)
+from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMError,
     LLMRateLimitError,
     LLMServiceUnavailableError,
     LLMTimeoutError,
+    is_quota_exhaustion_error,
 )
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
+    LLMProfileStore,
     ProfileLimitExceeded,
+    canonical_profile_name,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
@@ -39,6 +46,10 @@ from openhands.sdk.profiles import (
     delete_llm_profile,
     rename_llm_profile,
 )
+from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import SecretDecryptionError
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -69,7 +80,7 @@ class ProfileListResponse(BaseModel):
 
 
 class ProfileDetailResponse(BaseModel):
-    """``config.api_key`` is always nulled; use ``api_key_set`` instead."""
+    """Secrets are nulled unless explicitly requested via X-Expose-Secrets."""
 
     name: str
     config: dict[str, Any]
@@ -104,7 +115,9 @@ def _has_api_key(llm: LLM) -> bool:
     return bool(llm.api_key.get_secret_value().strip())
 
 
-def _profile_api_key_set(request: Request, llm: LLM) -> bool:
+def _profile_api_key_set(
+    provider_connections: ProviderConnectionStore, cipher: Cipher | None, llm: LLM
+) -> bool:
     """Effective key presence: the profile's own key, or its provider's.
 
     A profile linked to a provider connection carries no inline key (cleared on
@@ -115,28 +128,27 @@ def _profile_api_key_set(request: Request, llm: LLM) -> bool:
     connection_id = llm.provider_connection_id
     if not connection_id:
         return False
-    config = get_config(request)
-    cipher = get_cipher(request)
     # The provider store read can raise on a corrupted file; map it instead of
     # letting it surface as an unhandled 500 on GET /profiles/{name}.
-    with store_errors():
-        connection = get_provider_connections_store(config).get(
-            connection_id, cipher=cipher
-        )
+    connection = provider_connections.get(connection_id, cipher=cipher)
     return connection is not None and connection.api_key_value() is not None
 
 
 def _set_active_profile_if_matches(
-    request: Request, old_name: str, new_name: str | None
+    settings_store: FileSettingsStore, old_name: str, new_name: str | None
 ) -> bool:
-    config = get_config(request)
-    settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
-    if settings.active_profile != old_name:
+    active = settings.active_profile
+    # ``foo.json`` addresses profile ``foo`` in the store, so compare store keys.
+    if active is None or canonical_profile_name(active) != canonical_profile_name(
+        old_name
+    ):
         return False
 
     def update_active(settings: PersistedSettings) -> PersistedSettings:
-        settings.active_profile = new_name
+        settings.active_profile = (
+            canonical_profile_name(new_name) if new_name is not None else None
+        )
         return settings
 
     settings_store.update(update_active)
@@ -144,20 +156,19 @@ def _set_active_profile_if_matches(
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
-async def list_profiles(request: Request) -> ProfileListResponse:
+def list_profiles(
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+) -> ProfileListResponse:
     """List all saved LLM profiles.
 
     Returns the list of profiles along with the currently active profile name,
     if one has been activated. The active_profile tracks which LLM profile
     configuration is currently in use.
     """
-    config = get_config(request)
-    settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
-    store = get_llm_profile_store()
-    with store_errors():
-        summaries = store.list_summaries()
+    summaries = store.list_summaries()
 
     return ProfileListResponse(
         profiles=[ProfileInfo(**s) for s in summaries],
@@ -166,29 +177,33 @@ async def list_profiles(request: Request) -> ProfileListResponse:
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
-async def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
+def get_profile(
+    request: Request,
+    name: ProfileName,
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+    provider_connections: ProviderConnectionStore = Depends(
+        get_provider_connections_store
+    ),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> ProfileDetailResponse:
     """Get a profile's configuration.
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
     - ``encrypted``: Returns cipher-encrypted values (safe for frontend clients)
-    - ``plaintext``: Returns raw secret values (backend clients only!)
+    - ``plaintext``: Resolves linked providers and returns raw secret values
+      for backend clients constructing a runnable LLM configuration
     - (absent): Returns nulled ``api_key`` with ``api_key_set`` indicator
     """
     expose_mode = parse_expose_secrets_header(request)
-    cipher = get_cipher(request)
 
-    store = get_llm_profile_store()
     try:
-        with store_errors():
-            # Display the profile exactly as stored: don't inject the linked
-            # provider's credentials, and don't fail a read when the reference
-            # dangles. Effective key presence is reported via ``api_key_set``.
-            llm = store.load(name, cipher=cipher, resolve_provider=False)
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{name}' not found",
+        # Runtime reads need current provider credentials. Editor reads
+        # retain the stored reference, including dangling references.
+        llm = store.load(
+            name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
         )
+    except FileNotFoundError:
+        raise NotFound(f"Profile '{name}' not found")
 
     if expose_mode:
         context = build_expose_context(expose_mode, cipher)
@@ -199,7 +214,9 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
         config["api_key"] = None
 
     return ProfileDetailResponse(
-        name=name, config=config, api_key_set=_profile_api_key_set(request, llm)
+        name=name,
+        config=config,
+        api_key_set=_profile_api_key_set(provider_connections, cipher, llm),
     )
 
 
@@ -208,39 +225,38 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     response_model=ProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_profile(
-    request: Request,
+def save_profile(
     name: ProfileName,
     body: SaveProfileRequest,
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ProfileMutationResponse:
     """Save an LLM configuration as a named profile.
 
     Overwrites an existing profile of the same name. Returns 409 if creating
-    a new profile would exceed ``MAX_PROFILES``.
+    a new profile would exceed ``MAX_PROFILES``, or if the existing profile
+    holds a key the current cipher cannot decrypt (saved under another
+    ``OH_SECRET_KEY``): overwriting it would lose that key.
 
     When ``OH_SECRET_KEY`` is configured, secrets are encrypted at rest.
     Clients can submit cipher-encrypted secrets which will be decrypted
     server-side before re-encrypting with the storage cipher.
     """
-    cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
-    store = get_llm_profile_store()
     try:
-        with store_errors():
-            store.save(
-                name,
-                llm,
-                include_secrets=body.include_secrets,
-                cipher=cipher,
-                max_profiles=MAX_PROFILES,
-            )
+        store.save(
+            name,
+            llm,
+            include_secrets=body.include_secrets,
+            cipher=cipher,
+            max_profiles=MAX_PROFILES,
+        )
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(name, e)
     except ProfileLimitExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Profile limit reached ({MAX_PROFILES}). "
-                "Delete a profile before saving a new one."
-            ),
+        raise Conflict(
+            f"Profile limit reached ({MAX_PROFILES}). "
+            "Delete a profile before saving a new one."
         )
 
     logger.info(f"Saved profile '{name}' (include_secrets={body.include_secrets})")
@@ -275,15 +291,45 @@ class ValidateProfileResponse(BaseModel):
 # the correctness of the configuration itself.
 _TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError)
 
+# Upper bound, in seconds, on the single pre-flight attempt. A profile's own
+# ``timeout`` (300 s by default) and retry policy are for real conversations;
+# validation answers within this bound instead.
+PREFLIGHT_TIMEOUT_SECONDS = 15
+
+
+def _preflight_llm(llm: LLM) -> LLM:
+    """Copy ``llm`` for one bounded attempt at the configured model.
+
+    No retries, a short timeout, and no fallback LLMs (each would bring its
+    own retry policy, and a working fallback would hide a broken primary).
+    """
+    timeout = PREFLIGHT_TIMEOUT_SECONDS
+    if llm.timeout is not None:
+        timeout = min(llm.timeout, timeout)
+    return llm.model_copy(
+        update={"num_retries": 0, "timeout": timeout, "fallback_strategy": None}
+    )
+
+
+def _invalid(name: str, exc: LLMError) -> ValidateProfileResponse:
+    error_type = type(exc).__name__
+    safe_msg = redact_text_secrets(exc.message)
+    logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
+    return ValidateProfileResponse(
+        valid=False,
+        error=ValidateProfileError(type=error_type, message=safe_msg),
+    )
+
 
 @profiles_router.post(
     "/{name}/validate",
     response_model=ValidateProfileResponse,
 )
 async def validate_profile(
-    request: Request,
     name: ProfileName,
     body: ValidateProfileRequest,
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ValidateProfileResponse:
     """Pre-flight check: fire a minimal LLM completion to catch misconfigurations.
 
@@ -291,18 +337,30 @@ async def validate_profile(
     surface errors like invalid model names, missing provider prefixes, bad
     base URLs, and invalid API keys — *before* the profile is saved.
 
+    The ping is a single attempt bounded by ``PREFLIGHT_TIMEOUT_SECONDS``
+    (or the config's shorter ``timeout``); the config's retry policy is not
+    used, so an unreachable endpoint answers at once.
+
     Transient errors (rate limits, timeouts) are treated as non-blocking: the
     response is ``valid=True`` with no error, since those don't indicate a
-    misconfigured profile.
+    misconfigured profile. A 429 that reports an exhausted budget or quota is
+    not transient and fails the validation.
     """
-    cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
+    # Check a draft linked to a provider connection with the connection's
+    # credentials, as activation and ``switch_llm`` run it. No-op without
+    # ``provider_connection_id``; a dangling link is a 422 naming it.
+    llm = store.resolve_provider_connection(llm, cipher=cipher)
 
     messages = [
         Message(
+            role="system",
+            content=[TextContent(text="Reply with one token.")],
+        ),
+        Message(
             role="user",
             content=[TextContent(text="ping")],
-        )
+        ),
     ]
 
     try:
@@ -322,6 +380,7 @@ async def validate_profile(
 
             llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
 
+        llm = _preflight_llm(llm)
         # Mirror the runtime dispatch (see ``LLM.agenerate``) and stay
         # async so provider I/O doesn't pin the FastAPI event loop.
         if llm.uses_responses_api():
@@ -329,6 +388,8 @@ async def validate_profile(
         else:
             await llm.acompletion(messages=messages, max_tokens=1)
     except _TRANSIENT_ERROR_TYPES as exc:
+        if is_quota_exhaustion_error(exc):
+            return _invalid(name, exc)
         # Transient — don't block the save
         logger.info(
             f"Profile '{name}' pre-flight hit a transient error "
@@ -343,16 +404,7 @@ async def validate_profile(
         LLMServiceUnavailableError,
         LLMError,
     ) as exc:
-        error_type = type(exc).__name__
-        safe_msg = redact_text_secrets(exc.message)
-        logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
-        return ValidateProfileResponse(
-            valid=False,
-            error=ValidateProfileError(
-                type=error_type,
-                message=safe_msg,
-            ),
-        )
+        return _invalid(name, exc)
     except Exception as exc:
         # Unknown errors — block the save and surface the raw message so the
         # user can debug, but classify generically.
@@ -370,32 +422,34 @@ async def validate_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(
-    request: Request, name: ProfileName
+def delete_profile(
+    name: ProfileName,
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+    agent_store: AgentProfileStore = Depends(get_agent_profile_store),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ProfileMutationResponse:
     """Delete a saved profile (idempotent).
 
     Guarded by the agent-profile FK: returns 409 naming the referrers if any
     ``AgentProfile`` still cites this LLM profile via ``llm_profile_ref``.
     """
-    store = get_llm_profile_store()
-    agent_store = get_agent_profile_store()
     try:
-        with store_errors():
-            delete_llm_profile(agent_store, store, name)
+        delete_llm_profile(agent_store, store, name)
     except ProfileReferenced as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    if _set_active_profile_if_matches(request, name, None):
+        raise Conflict(str(e))
+    if _set_active_profile_if_matches(settings_store, name, None):
         logger.info(f"Cleared active_profile for deleted profile '{name}'")
     logger.info(f"Deleted profile '{name}'")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
 
 @profiles_router.post("/{name}/rename", response_model=ProfileMutationResponse)
-async def rename_profile(
-    request: Request,
+def rename_profile(
     name: ProfileName,
     body: RenameProfileRequest,
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+    agent_store: AgentProfileStore = Depends(get_agent_profile_store),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ProfileMutationResponse:
     """Rename a saved profile atomically.
 
@@ -406,24 +460,15 @@ async def rename_profile(
     setting is updated to the new name. Any ``AgentProfile.llm_profile_ref``
     citing the old name is cascaded to the new name in lock-step.
     """
-    store = get_llm_profile_store()
-    agent_store = get_agent_profile_store()
     try:
-        with store_errors():
-            rename_llm_profile(agent_store, store, name, body.new_name)
+        rename_llm_profile(agent_store, store, name, body.new_name)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{name}' not found",
-        )
+        raise NotFound(f"Profile '{name}' not found")
     except FileExistsError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Profile '{body.new_name}' already exists",
-        )
+        raise Conflict(f"Profile '{body.new_name}' already exists")
 
     if name != body.new_name and _set_active_profile_if_matches(
-        request, name, body.new_name
+        settings_store, name, body.new_name
     ):
         logger.info(f"Updated active_profile from '{name}' to '{body.new_name}'")
 
@@ -444,64 +489,71 @@ class ActivateProfileResponse(BaseModel):
 
 
 @profiles_router.post("/{name}/activate", response_model=ActivateProfileResponse)
-async def activate_profile(
-    request: Request, name: ProfileName
+def activate_profile(
+    name: ProfileName,
+    profile_store: LLMProfileStore = Depends(get_llm_profile_store),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> ActivateProfileResponse:
     """Activate a saved LLM profile.
 
     This endpoint:
     1. Loads the named profile's LLM configuration
-    2. Applies it to the current agent settings (updates ``agent_settings.llm``)
+    2. Applies it to the current OpenHands agent settings (updates
+       ``agent_settings.llm``); ACP settings have no LLM to update
     3. Records the profile name as the active profile for frontend tracking
 
-    Returns 404 if the profile does not exist.
+    Returns 404 if the profile does not exist, and 409 if its stored key
+    cannot be decrypted with the current cipher (saved under another
+    ``OH_SECRET_KEY``) instead of applying an LLM without a key.
 
     Use ``GET /api/profiles`` to see which profile is currently active via
     the ``active_profile`` field.
     """
-    cipher = get_cipher(request)
-    config = get_config(request)
-
     # Load the profile. ``load`` resolves any referenced provider connection
     # (read-at-use), so the LLM applied to settings already carries the shared
     # api_key / base_url; ``provider_connection_id`` is retained so a later
     # rotation re-resolves on the next activation or launch.
-    profile_store = get_llm_profile_store()
-    # A dangling provider_connection_id raises ProviderConnectionNotFound, which
-    # store_errors() maps to 422.
+    # A dangling provider_connection_id raises ProviderConnectionNotFound (422).
     try:
-        with store_errors():
-            llm = profile_store.load(name, cipher=cipher)
+        llm = profile_store.load(name, cipher=cipher, strict=True)
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(name, e)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{name}' not found",
-        )
+        raise NotFound(f"Profile '{name}' not found")
 
-    settings_store = get_settings_store(config)
+    llm_applied = False
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={"llm": llm}
-        )
-        settings.active_profile = name
+        nonlocal llm_applied
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            settings.agent_settings = settings.agent_settings.model_copy(
+                update={"llm": llm}
+            )
+            llm_applied = True
+        settings.active_profile = canonical_profile_name(name)
         return settings
 
     try:
         settings_store.update(apply_profile)
     except (OSError, PermissionError):
         logger.error("Failed to activate profile - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to activate profile")
+        raise OperationFailed("Failed to activate profile")
     except RuntimeError as e:
         logger.error(f"Failed to activate profile: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+        raise Conflict(
+            "Settings file is corrupted or encrypted with a different key: "
+            "restore that key as OH_SECRET_KEY or add it to "
+            "OH_PREVIOUS_SECRET_KEYS"
         )
 
     logger.info(f"Activated profile '{name}'")
     return ActivateProfileResponse(
         name=name,
-        message=f"Profile '{name}' activated and applied to current settings",
-        llm_applied=True,
+        message=(
+            f"Profile '{name}' activated and applied to current settings"
+            if llm_applied
+            else f"Profile '{name}' activated"
+        ),
+        llm_applied=llm_applied,
     )

@@ -2,6 +2,7 @@
 
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -32,12 +33,73 @@ def _resolve_lookup_secret_url(url: str) -> str:
     return urljoin(f"{base_url.rstrip('/')}/", url)
 
 
+LocalSecretResolver = Callable[[str], str | None]
+
+_local_secret_resolvers: list[LocalSecretResolver] = []
+
+
+def register_local_secret_resolver(resolver: LocalSecretResolver) -> None:
+    """Register an in-process resolver for ``LookupSecret`` URLs.
+
+    A process that both serves and consumes ``LookupSecret`` URLs — an
+    agent-server running an in-process conversation, say — cannot fetch them
+    over HTTP from its own event loop: the request can only be answered by the
+    loop that is blocked waiting for it, so it stalls until the client times
+    out. Registering a resolver lets such a process answer its own URLs
+    directly and skip the round trip.
+
+    The resolver receives the fully-resolved URL and returns the secret value,
+    or ``None`` when it does not serve that URL, in which case resolution falls
+    through to the next resolver and finally to HTTP.
+    """
+    if resolver not in _local_secret_resolvers:
+        _local_secret_resolvers.append(resolver)
+
+
+def unregister_local_secret_resolver(resolver: LocalSecretResolver) -> None:
+    """Remove a resolver registered with ``register_local_secret_resolver``."""
+    if resolver in _local_secret_resolvers:
+        _local_secret_resolvers.remove(resolver)
+
+
+def _resolve_secret_locally(url: str) -> str | None:
+    """Return a locally-served value for ``url``, or ``None`` if there is none."""
+    for resolver in list(_local_secret_resolvers):
+        try:
+            value = resolver(url)
+        except Exception:
+            logger.warning(
+                "Local secret resolver raised; falling back to HTTP", exc_info=True
+            )
+            continue
+        if value is not None:
+            return value
+    return None
+
+
 class SecretSource(DiscriminatedUnionMixin, ABC):
     """Source for a named secret which may be obtained dynamically"""
 
     description: str | None = Field(
         default=None,
         description="Optional description for this secret",
+    )
+    scope: str | None = Field(
+        default=None,
+        description=(
+            "Optional grouping name shown to the agent when rendering the "
+            "available secrets (e.g. 'personal', 'organization'). The SDK "
+            "attaches no meaning to the value; it only groups by it."
+        ),
+    )
+    scope_description: str | None = Field(
+        default=None,
+        description=(
+            "Optional guidance shown once above the secret's scope group when "
+            "rendering secrets, e.g. who actions are attributed to. Only the "
+            "first non-empty value within a scope is used; conflicts log a "
+            "warning."
+        ),
     )
 
     @abstractmethod
@@ -77,6 +139,9 @@ class LookupSecret(SecretSource):
         return _resolve_lookup_secret_url(url)
 
     def get_value(self) -> str:
+        local_value = _resolve_secret_locally(self.url)
+        if local_value is not None:
+            return local_value
         response = httpx.get(self.url, headers=self.headers, timeout=30.0)
         response.raise_for_status()
         return response.text

@@ -15,11 +15,13 @@ Behaves like a plain static file server:
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.errors import error_responses
+from openhands.sdk.errors import Invalid, NotFound
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -44,22 +46,13 @@ async def _resolve_workspace_dir(
 ) -> Path:
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Conversation not found: {conversation_id}",
-        )
+        raise NotFound(f"Conversation not found: {conversation_id}")
     workspace = event_service.stored.workspace
     if not isinstance(workspace, LocalWorkspace):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation workspace is not local; cannot be served",
-        )
+        raise NotFound("Conversation workspace is not local; cannot be served")
     workspace_dir = Path(workspace.working_dir).resolve()
     if not workspace_dir.is_dir():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace directory does not exist",
-        )
+        raise NotFound("Workspace directory does not exist")
     return workspace_dir
 
 
@@ -70,10 +63,7 @@ def _resolve_target(workspace_dir: Path, file_path: str) -> Path:
     """
     candidate = (workspace_dir / file_path).resolve()
     if candidate != workspace_dir and not candidate.is_relative_to(workspace_dir):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Path is outside the workspace",
-        )
+        raise Invalid("Path is outside the workspace")
     return candidate
 
 
@@ -81,25 +71,22 @@ def _serve_path(workspace_dir: Path, file_path: str) -> FileResponse:
     target = _resolve_target(workspace_dir, file_path)
 
     if target.is_dir():
-        index_file = target / "index.html"
+        # Re-check containment: ``index.html`` may itself be a symlink.
+        index_file = _resolve_target(
+            workspace_dir, str(target.relative_to(workspace_dir) / "index.html")
+        )
         if not index_file.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No index.html in directory",
-            )
+            raise NotFound("No index.html in directory")
         return FileResponse(path=index_file)
 
     if not target.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found",
-        )
+        raise NotFound("File not found")
     return FileResponse(path=target)
 
 
 @workspace_router.get(
     "/{conversation_id}/workspace",
-    responses={404: {"description": "File or conversation not found"}},
+    responses=error_responses({NotFound: "File or conversation not found"}),
 )
 async def serve_workspace_root(
     conversation_id: UUID,
@@ -112,7 +99,7 @@ async def serve_workspace_root(
 
 @workspace_router.get(
     "/{conversation_id}/workspace/{file_path:path}",
-    responses={404: {"description": "File or conversation not found"}},
+    responses=error_responses({NotFound: "File or conversation not found"}),
 )
 async def serve_workspace_file(
     conversation_id: UUID,

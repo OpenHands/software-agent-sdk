@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from litellm.exceptions import (
     APIConnectionError,
+    BadGatewayError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -15,11 +16,16 @@ from litellm.exceptions import (
 from pydantic import BaseModel, Field, PrivateAttr
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions.classifier import (
+    is_budget_exceeded_error,
+    is_transient_http_error,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_response import LLMResponse
     from openhands.sdk.llm.utils.metrics import Metrics
 
@@ -28,6 +34,7 @@ logger = get_logger(__name__)
 # Exceptions that trigger fallback to alternate LLMs (after retries exhausted).
 _LLM_FALLBACK_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
+    BadGatewayError,
     RateLimitError,
     ServiceUnavailableError,
     LiteLLMTimeout,
@@ -58,7 +65,10 @@ class FallbackStrategy(BaseModel):
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""
-        return isinstance(error, _LLM_FALLBACK_EXCEPTIONS)
+        return (
+            isinstance(error, _LLM_FALLBACK_EXCEPTIONS)
+            or is_transient_http_error(error)
+        ) and not is_budget_exceeded_error(error)
 
     def try_fallback(
         self,
@@ -66,14 +76,17 @@ class FallbackStrategy(BaseModel):
         primary_error: Exception,
         primary_metrics: Metrics,
         call_fn: Callable[[Any], LLMResponse],
+        *,
+        primary: LLM | None = None,
     ) -> LLMResponse | None:
-        """Try fallback LLMs in order. Merges metrics into primary on success.
+        """Try fallback models in the caller's role and session.
 
         Args:
             primary_model: The primary model name (for logging).
             primary_error: The error from the primary model.
-            primary_metrics: The primary LLM's Metrics to merge fallback costs into.
+            primary_metrics: The primary LLM's metrics for legacy direct callers.
             call_fn: A callable that takes an LLM instance and returns an LLMResponse.
+            primary: The caller whose usage ID and aggregate accounting are kept.
 
         Returns:
             LLMResponse from the first successful fallback, or None if all fail.
@@ -90,20 +103,29 @@ class FallbackStrategy(BaseModel):
                 f"{remaining} fallback(s) remaining"
             )
             try:
-                # Disable nested fallbacks to prevent recursive chains
-                saved_strategy = fb.fallback_strategy
-                fb.fallback_strategy = None
-                metrics_before = fb.metrics.deep_copy()
-                try:
-                    result = call_fn(fb)
-                finally:
-                    fb.fallback_strategy = saved_strategy
-                # Merge fallback metrics (cost + tokens) into primary
-                metrics_diff = fb.metrics.diff(metrics_before)
-                primary_metrics.merge(metrics_diff)
+                fallback = fb.model_copy(
+                    update={
+                        "usage_id": primary.usage_id
+                        if primary is not None
+                        else fb.usage_id,
+                        "fallback_strategy": None,
+                    }
+                )
+                metrics_before = (
+                    fallback.metrics.deep_copy() if primary is None else None
+                )
+                if primary is not None:
+                    fallback._session = primary.session
+                    fallback._registry_session = primary._registered_session()
+                result = call_fn(fallback)
+                if metrics_before is not None:
+                    primary_metrics.merge(fallback.metrics.diff(metrics_before))
                 logger.info(f"[Fallback Strategy] Fallback LLM ({fb.model}) succeeded")
                 return result
             except Exception as fb_error:
+                # A budget applies across models; another fallback cannot bypass it.
+                if is_budget_exceeded_error(fb_error):
+                    raise
                 logger.warning(
                     "[Fallback Strategy]"
                     f"Fallback {i + 1} ({fb.model}) failed: "

@@ -1,15 +1,19 @@
 """Tests for LLM router."""
 
+import httpx
+import litellm
 import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.errors import status_for
 from openhands.agent_server.llm_router import (
     list_models,
     list_providers,
     list_verified_models,
 )
+from openhands.sdk.errors import DomainError
 from openhands.sdk.llm.auth.openai import OPENAI_CODEX_MODELS
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 
@@ -54,6 +58,37 @@ async def test_list_models_filtered_by_provider():
     assert len(response.models) < len(all_models_response.models)
 
 
+@pytest.mark.parametrize("openrouter_in_catalog", [False, True])
+def test_list_models_filtered_by_openrouter_provider(
+    client, monkeypatch, openrouter_in_catalog
+):
+    """Verified routes survive catalog removal without leaking direct models."""
+    catalog = [
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+    ]
+    if openrouter_in_catalog:
+        catalog.append("openrouter/deepseek/deepseek-chat")
+    monkeypatch.setattr(litellm, "model_list", catalog)
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"openrouter/custom/model": {}} if openrouter_in_catalog else {},
+    )
+
+    response = client.get("/api/llm/models?provider=openrouter")
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert "openrouter/deepseek/deepseek-chat" in models
+    assert all(model.startswith("openrouter/") for model in models)
+    assert models == sorted(set(models))
+    if openrouter_in_catalog:
+        assert "openrouter/custom/model" in models
+    assert set(models) <= set(client.get("/api/llm/models").json()["models"])
+
+
 @pytest.mark.asyncio
 async def test_list_models_unknown_provider():
     """Test listing models with an unknown provider returns empty list."""
@@ -68,6 +103,7 @@ async def test_list_verified_models():
     assert response.models == VERIFIED_MODELS
     assert "openai" in response.models
     assert "anthropic" in response.models
+    assert "openrouter" in response.models
 
 
 def test_providers_endpoint_integration(client):
@@ -131,10 +167,16 @@ def test_openai_subscription_models_endpoint_integration(client):
     assert response.status_code == 200
     data = response.json()
     assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
-    assert "gpt-5.6-sol" in data["models"]
-    assert "gpt-5.6-terra" in data["models"]
-    assert "gpt-5.6-luna" in data["models"]
-    assert "gpt-5.5" in data["models"]
+    assert {
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    } <= set(data["models"])
 
 
 def test_openai_subscription_status_endpoint_does_not_return_tokens(
@@ -177,6 +219,32 @@ def test_openai_subscription_status_endpoint_does_not_return_tokens(
     assert "refresh_token" not in response.text
 
 
+def test_openai_subscription_status_offline_refresh_reads_disconnected(
+    client, monkeypatch
+):
+    """A refresh that cannot reach OpenAI reads as disconnected, not a 500."""
+    from openhands.agent_server import llm_router
+
+    class FakeAuth:
+        async def refresh_if_needed(self):
+            raise httpx.ConnectError("All connection attempts failed")
+
+        def get_credentials(self):
+            raise AssertionError("status must not read credentials after failure")
+
+    monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
+
+    response = client.get("/api/llm/subscription/openai/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "vendor": "openai",
+        "connected": False,
+        "account_email": None,
+        "expires_at": None,
+    }
+
+
 def test_openai_subscription_device_start_returns_opaque_poll_token(
     client, monkeypatch
 ):
@@ -205,6 +273,76 @@ def test_openai_subscription_device_start_returns_opaque_poll_token(
     assert data["verification_uri"] == "https://auth.example/device"
     assert data["interval_seconds"] == 7
     assert "openai-device-auth-id" not in response.text
+
+
+_UPSTREAM_FAILURES = [
+    pytest.param(httpx.ConnectError("All connection attempts failed"), 502, id="down"),
+    pytest.param(httpx.ConnectTimeout("timed out"), 504, id="timeout"),
+    pytest.param(
+        RuntimeError("Device code request failed with status 503"), 502, id="non-2xx"
+    ),
+]
+
+
+@pytest.mark.parametrize(("error", "expected_status"), _UPSTREAM_FAILURES)
+def test_openai_subscription_device_start_upstream_failure_is_gateway_error(
+    client, monkeypatch, error, expected_status
+):
+    """An unreachable or failing auth.openai.com is a gateway error, not a 500."""
+    from openhands.agent_server import llm_router
+
+    class FakeAuth:
+        async def start_device_login(self):
+            raise error
+
+    llm_router._PENDING_OPENAI_DEVICE_LOGINS.clear()
+    monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
+
+    response = client.post("/api/llm/subscription/openai/device/start")
+
+    assert response.status_code == expected_status
+    assert "OpenAI" in response.json()["exception"]
+    assert llm_router._PENDING_OPENAI_DEVICE_LOGINS == {}
+
+
+@pytest.mark.parametrize(("error", "expected_status"), _UPSTREAM_FAILURES)
+def test_openai_subscription_device_poll_upstream_failure_is_gateway_error(
+    client, monkeypatch, error, expected_status
+):
+    """A poll that cannot reach OpenAI is a gateway error and stays pending."""
+    from openhands.agent_server import llm_router
+    from openhands.sdk.llm.auth.openai import DeviceCode
+
+    llm_router._PENDING_OPENAI_DEVICE_LOGINS.clear()
+    llm_router._IN_FLIGHT_OPENAI_DEVICE_LOGINS.clear()
+    llm_router._PENDING_OPENAI_DEVICE_LOGINS["opaque-token"] = (
+        llm_router.PendingDeviceLogin(
+            device_code=DeviceCode(
+                verification_url="https://auth.example/device",
+                user_code="ABCD-EFGH",
+                device_auth_id="openai-device-auth-id",
+                interval=1,
+            ),
+            expires_at=int(llm_router.time.time() * 1000) + 60_000,
+            epoch=llm_router._OPENAI_DEVICE_LOGIN_EPOCH,
+        )
+    )
+
+    class FakeAuth:
+        async def poll_device_login(self, device_code, *, persist=True):
+            raise error
+
+    monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
+
+    response = client.post(
+        "/api/llm/subscription/openai/device/poll",
+        json={"device_code": "opaque-token"},
+    )
+
+    assert response.status_code == expected_status
+    assert "OpenAI" in response.json()["exception"]
+    assert "opaque-token" in llm_router._PENDING_OPENAI_DEVICE_LOGINS
+    assert "opaque-token" not in llm_router._IN_FLIGHT_OPENAI_DEVICE_LOGINS
 
 
 def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch):
@@ -313,10 +451,11 @@ async def test_openai_subscription_device_poll_failure_keeps_pending_login(
 
     monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
 
-    with pytest.raises(RuntimeError, match="temporary provider failure"):
+    with pytest.raises(DomainError) as exc_info:
         await llm_router.poll_openai_subscription_device_login(
             llm_router.SubscriptionDevicePollRequest(device_code="opaque-token")
         )
+    assert status_for(exc_info.value) == 502
     assert "opaque-token" in llm_router._PENDING_OPENAI_DEVICE_LOGINS
 
     success = await llm_router.poll_openai_subscription_device_login(

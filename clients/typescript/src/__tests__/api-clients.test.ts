@@ -5,12 +5,14 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
   RemoteWorkspace,
   Workspace,
 } from '../index';
 import {
+  ACPClient,
   AgentProfilesClient,
   AgentServerClient,
   AgentServerVersionError,
@@ -21,6 +23,7 @@ import {
   ConversationClient,
   DeviceFlowError,
   FileClient,
+  GitClient,
   HooksClient,
   isAgentServerVersionError,
   isOpenHandsCloudHost,
@@ -34,6 +37,7 @@ import {
   SharedClient,
   SkillsClient,
   SubAgentsClient,
+  ToolClient,
   WorkspacesClient,
 } from '../clients';
 import * as http from 'node:http';
@@ -125,6 +129,7 @@ describe('Auxiliary API clients', () => {
       expect(client.server).toBeInstanceOf(ServerClient);
       expect(client.conversations).toBeInstanceOf(ConversationClient);
       expect(client.settings).toBeInstanceOf(SettingsClient);
+      expect(client.git).toBeInstanceOf(GitClient);
       expect(client.host).toBe('http://example.com');
 
       await client.request({ method: 'GET', path: '/health' });
@@ -424,7 +429,7 @@ describe('Auxiliary API clients', () => {
         llm_profile_resolved: true,
         llm_api_key_set: true,
         mcp_server_refs: null,
-        resolved_mcp_servers: [],
+        resolved_mcp_config_keys: [],
         dangling_mcp_server_refs: [],
         acp_api_key_secret_name: null,
         acp_base_url_secret_name: null,
@@ -448,6 +453,54 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
+
+    it('materializeAgentProfile sends a draft as the profile body', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ agent_kind: 'openhands', valid: true, errors: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new AgentProfilesClient({ host: 'http://example.com' });
+      const draft = {
+        agent_kind: 'openhands' as const,
+        llm_profile_ref: 'gpt-4o',
+        tools: [{ name: 'terminal', params: {} }],
+      };
+      await client.materializeAgentProfile('draft', draft);
+
+      const [, init] = (global.fetch as Mock).mock.calls[0];
+      expect(JSON.parse(init.body)).toEqual({ profile: draft });
+    });
+  });
+
+  it('ToolClient.getToolCatalog gets /api/tools/catalog', async () => {
+    const catalog = {
+      tools: [
+        {
+          name: 'terminal',
+          user_selectable: true,
+          usable: true,
+          description: 'Run shell commands',
+          in_default_set: true,
+        },
+      ],
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(catalog), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ToolClient({ host: 'http://example.com' });
+
+    expect(await client.getToolCatalog()).toEqual(catalog);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/tools/catalog',
+      expect.objectContaining({ method: 'GET' })
+    );
   });
 
   it('Workspace exposes bash namespace', () => {
@@ -518,6 +571,41 @@ describe('Auxiliary API clients', () => {
         body: JSON.stringify({ llm: { model: 'gpt-4o', api_key: 'encrypted' } }),
       })
     );
+  });
+
+  it('ACPClient.discoverModels posts the agent and secrets and returns the discovery', async () => {
+    const discovery = {
+      agent_name: 'pi-acp',
+      agent_version: '0.0.33',
+      current_model_id: 'anthropic/claude-opus-4-8',
+      available_models: [{ model_id: 'anthropic/claude-opus-4-8', name: 'Opus 4.8' }],
+      supports_runtime_model_switch: true,
+      error: null,
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(discovery), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const request = {
+      agent_settings: { agent_kind: 'acp' as const, acp_server: 'pi' },
+      secrets: {
+        ANTHROPIC_API_KEY: {
+          kind: 'LookupSecret' as const,
+          url: '/api/settings/secrets/ANTHROPIC_API_KEY',
+        },
+      },
+    };
+
+    const client = new ACPClient({ host: 'http://example.com/', apiKey: 'secret' });
+    const result = await client.discoverModels(request);
+
+    expect(result).toEqual(discovery);
+    const [url, init] = (global.fetch as Mock).mock.calls[0];
+    expect(url).toBe('http://example.com/api/acp/models');
+    expect(init).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(init.body as string)).toEqual(request);
   });
 
   it('LLMMetadataClient.getOpenAISubscriptionModels returns models array', async () => {
@@ -1093,6 +1181,53 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('WorkspacesClient retries agent-server info after a transient failure', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'temporarily unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: '1.23.0', uptime: 1, idle_time: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workspaces: [], workspaceParents: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+
+    await expect(client.listWorkspaces()).rejects.toMatchObject({ status: 503 });
+    await expect(client.listWorkspaces()).resolves.toEqual({
+      workspaces: [],
+      workspaceParents: [],
+    });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/workspaces',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
   it('WorkspacesClient throws AgentServerVersionError for old agent servers', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
@@ -1157,6 +1292,29 @@ describe('Auxiliary API clients', () => {
         body: JSON.stringify({ command: 'echo hi', cwd: '/tmp', timeout: 3 }),
       })
     );
+  });
+
+  it('BashClient.stopCommand POSTs to the stop endpoint and swallows 404', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new BashClient({ host: 'http://example.com' });
+    await client.stopCommand('cmd-1');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/bash/bash_commands/cmd-1/stop',
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 })) as typeof fetch;
+
+    await expect(client.stopCommand('missing')).resolves.toBeUndefined();
   });
 
   it('ProfilesClient.listProfiles GETs the profiles endpoint', async () => {
@@ -1491,7 +1649,6 @@ describe('Auxiliary API clients', () => {
             {
               name: 'balanced',
               classifier_model: 'classifier',
-              default_model: 'default',
               num_classes: 2,
             },
           ],
@@ -1520,7 +1677,6 @@ describe('Auxiliary API clients', () => {
           name: 'my profile',
           config: {
             classifier_model: 'classifier',
-            default_model: 'default',
             classes: [{ description: 'UI', model: 'fast' }],
           },
         }),
@@ -1550,7 +1706,6 @@ describe('Auxiliary API clients', () => {
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const config = {
       classifier_model: 'classifier',
-      default_model: 'default',
       classes: [{ description: 'tests', model: 'slow' }],
     };
     const result = await client.saveMetaProfile('balanced', config);
@@ -1583,19 +1738,22 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.activateMetaProfile POSTs to the activate endpoint', async () => {
-    global.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' activated" }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-      ) as typeof fetch;
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          name: 'balanced',
+          message: "Meta-profile 'balanced' activated",
+          applied: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
 
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const result = await client.activateMetaProfile('balanced');
 
     expect(result.name).toBe('balanced');
+    expect(result.applied).toBe(true);
     expect(global.fetch).toHaveBeenCalledWith(
       'http://example.com/api/meta-profiles/balanced/activate',
       expect.objectContaining({ method: 'POST', body: '{}' })
@@ -1625,6 +1783,27 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: JSON.stringify({ llm }),
       })
+    );
+  });
+
+  it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.switchAcpEffort('low');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'low' }) })
     );
   });
 
@@ -1842,6 +2021,19 @@ describe('Auxiliary API clients', () => {
     expect(response.data).toBeInstanceOf(Blob);
     expect(await response.data.text()).toBe('zip-data');
   });
+
+  it.each([undefined, 'reload'] as const)(
+    'HttpClient forwards cache=%s without changing the default',
+    async (cache) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response('file contents')) as typeof fetch;
+      const client = new HttpClient({ baseUrl: 'http://example.com' });
+
+      const response = await client.get('/download.txt', { cache });
+
+      expect(response.data).toBe('file contents');
+      expect((global.fetch as Mock).mock.calls[0][1].cache).toBe(cache);
+    }
+  );
   it('SettingsClient manages LLM profiles', async () => {
     const responses = [
       { profiles: [{ name: 'fast', model: 'openai/gpt-4o', base_url: null, api_key_set: true }] },
@@ -1927,6 +2119,25 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: JSON.stringify({ profile_name: 'fast' }),
       })
+    );
+  });
+
+  it('ConversationClient.switchAcpEffort posts the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await new ConversationClient({ host: 'http://example.com' }).switchAcpEffort(
+      'conversation-1',
+      'high'
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'high' }) })
     );
   });
 
@@ -2080,6 +2291,112 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('updateConversation resolves with the updated ConversationInfo, not the PATCH Success body', async () => {
+    const updated = { id: 'c1', title: 'New title', execution_status: 'idle' };
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const mockFetch = () =>
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ success: true }))
+        .mockResolvedValueOnce(jsonResponse(updated)) as typeof fetch;
+
+    for (const client of [
+      new ConversationManager({ host: 'http://example.com' }),
+      new ConversationClient({ host: 'http://example.com' }),
+    ]) {
+      global.fetch = mockFetch();
+      const result = await client.updateConversation('c1', { title: 'New title' });
+
+      expect(result).toEqual(updated);
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        1,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+      );
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        2,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'GET' })
+      );
+    }
+  });
+
+  it('SettingsClient lists and switches experimental features', async () => {
+    const feature = {
+      key: 'qa_feature',
+      label: 'QA feature',
+      description: 'A feature for tests.',
+      enabled: true,
+    };
+    const responses = [[{ ...feature, enabled: false }], feature];
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([
+      { ...feature, enabled: false },
+    ]);
+    await expect(client.updateExperimentalFeature('qa_feature', true)).resolves.toEqual(feature);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/experimental',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/experimental/qa_feature',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
+    );
+  });
+
+  it('ConversationClient.react sends only the fields it is given', async () => {
+    const saved = {
+      id: 'r1',
+      kind: 'ReactionEvent',
+      source: 'user',
+      timestamp: '2026-11-07T00:00:00Z',
+      target_event_id: 'm1',
+      emoji: 'heart',
+      removed: false,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.react('conv-1', 'heart', { targetEventId: 'm1', removed: true });
+    await client.react('conv-1', '+1');
+
+    expect(isReactionEvent(event)).toBe(true);
+    expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/reactions'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      emoji: 'heart',
+      target_event_id: 'm1',
+      removed: true,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
+  });
+
   it('SettingsClient fetches and updates settings and secrets', async () => {
     const responses = [
       { agent_settings: { llm_model: 'gpt-4o' }, conversation_settings: {} },
@@ -2103,7 +2420,7 @@ describe('Auxiliary API clients', () => {
     const client = new SettingsClient({ host: 'http://example.com' });
     await client.getSettings({ exposeSecrets: 'encrypted' });
     await client.updateSettings({ conversation_settings_diff: { max_iterations: 50 } });
-    await client.listSecrets();
+    await client.listSecrets({ agentProfileId: 'profile-id' });
     await client.upsertSecret({ name: 'TOKEN', value: 'secret', description: 'token' });
     await expect(client.getSecret('TOKEN')).resolves.toBe('plain-secret');
     await client.deleteSecret('TOKEN/with slash');
@@ -2126,7 +2443,7 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
-      'http://example.com/api/settings/secrets',
+      'http://example.com/api/settings/secrets?agent_profile_id=profile-id',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
@@ -2198,13 +2515,16 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenNthCalledWith(
       4,
       'http://example.com/api/file/download?path=%2Fworkspace%2FREADME.md',
-      expect.objectContaining({ method: 'GET' })
+      expect.objectContaining({ method: 'GET', cache: 'no-store' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       5,
       'http://example.com/api/file/download-trajectory/conv%201',
       expect.objectContaining({ method: 'GET' })
     );
+    for (const index of [0, 1, 2, 4]) {
+      expect((global.fetch as Mock).mock.calls[index][1].cache).toBeUndefined();
+    }
   });
 
   it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {
@@ -2319,11 +2639,16 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       9,
-      'http://example.com/api/conversations/c1/runtime',
+      'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       10,
+      'http://example.com/api/conversations/c1/runtime',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      11,
       'http://example.com/api/conversations/c1/runtime/reprovision',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
     );
@@ -2730,5 +3055,48 @@ describe('Auxiliary API clients', () => {
     expect(captured.options?.method).toBe('GET');
     expect(captured.url?.toString()).toBe('http://example.com/api/bash/bash_events/');
     expect(JSON.parse(captured.body ?? 'null')).toEqual(['e1', 'missing']);
+  });
+
+  it('GitClient searches provider repositories', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: '123',
+              full_name: 'OpenHands/software-agent-sdk',
+              git_provider: 'github',
+              is_public: true,
+              stargazers_count: 7,
+              pushed_at: '2026-09-29T12:00:00Z',
+              main_branch: 'main',
+            },
+          ],
+          next_page_id: '2',
+          missing_token: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new GitClient({ host: 'http://example.com', apiKey: 'secret' });
+    const result = await client.searchRepositories({
+      provider: 'github',
+      query: 'OpenHands',
+      limit: 30,
+      pageId: '1',
+    });
+
+    expect(result.items[0].full_name).toBe('OpenHands/software-agent-sdk');
+    expect(result.next_page_id).toBe('2');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/git/repositories/search?provider=github&query=OpenHands&limit=30&page_id=1',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-Session-API-Key': 'secret',
+        }),
+      })
+    );
   });
 });

@@ -22,7 +22,7 @@ conversations, long-running bash, slow webhooks, websocket back-pressure, etc.
 
 ### Running stress tests
 
-The suite is **excluded from default collection** via `addopts = -m 'not stress'`
+The suite is **excluded from default collection** via `addopts = -m 'not stress and not acp_live and not docker_live'`
 in `pyproject.toml`. Override the filter with `-m stress`:
 
 ```bash
@@ -105,6 +105,17 @@ up a real FastAPI server with a patched LLM and exercise the full HTTP / WebSock
 stack end-to-end.  Add or extend a test there whenever the change is localised
 enough that a single new test function (or a few assertions added to an existing
 test) captures the expected behaviour.
+
+
+## Verifying API changes against a real server
+
+To prove an API change the way a consumer sees it (a real server process, real
+sockets, restarts and a real model), use the
+[`verify-agent-server`](../.agents/skills/verify-agent-server/SKILL.md) skill:
+`control-agent-server map owners --changed origin/main...HEAD` names the
+affected feature families, and `control-agent-server map run --file Fnn --fresh`
+replays a family's recipes. A new or changed route needs an owner in the
+feature map (`control-agent-server map coverage`).
 
 
 ## Concurrency / async safety

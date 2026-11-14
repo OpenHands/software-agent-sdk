@@ -1,21 +1,26 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Final
 
 from litellm.exceptions import (
     APIConnectionError,
+    APIError,
     AuthenticationError,
     BadRequestError,
+    BudgetExceededError,
     ContentPolicyViolationError,
     ContextWindowExceededError,
     InternalServerError,
     OpenAIError,
     PermissionDeniedError,
 )
+from openai import APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError
 
 from .types import (
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
+    LLMRateLimitError,
 )
 
 
@@ -70,7 +75,7 @@ PROMPT_CACHE_TOO_SMALL_PATTERNS: Final[list[str]] = [
 # Deterministic "you have exhausted your allowance" outcomes. Unlike a transient
 # 429, these will NOT recover by retrying until the limit resets or is raised,
 # so retrying only burns backoff time. Callers (e.g. the LLM retry loop) use
-# this to skip retries and fail over to a fallback model immediately.
+# this to skip retries; budget denials also stop model fallback.
 QUOTA_EXHAUSTION_PATTERNS: Final[list[str]] = [
     "usage_limit_reached",
     "insufficient_quota",
@@ -136,17 +141,47 @@ def is_prompt_cache_too_small(exception: Exception) -> bool:
     return any(p in s for p in PROMPT_CACHE_TOO_SMALL_PATTERNS)
 
 
-def is_quota_exhaustion_error(exception: BaseException) -> bool:
-    """Return True if the error indicates a hard quota/usage-limit exhaustion.
+def _has_rate_limit_code(exception: BaseException, codes: Collection[str]) -> bool:
+    if not isinstance(exception, (OpenAIRateLimitError, LLMRateLimitError)):
+        return False
+    # LiteLLM can replace the outer code/body while preserving the provider
+    # exception as context; SDK mapping preserves LiteLLM as the explicit cause.
+    current: BaseException | None = exception
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OpenAIAPIError) and (
+            current.code in codes or current.type in codes
+        ):
+            return True
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return False
 
-    Covers deterministic allowance outcomes (OpenAI ``usage_limit_reached``,
-    ``insufficient_quota``, etc.) that will not recover on retry until the
-    limit resets or is raised. Retrying these only wastes backoff time, so
-    callers use this to skip retries and fail over to a fallback model
-    immediately.
-    """
+
+def is_budget_exceeded_error(exception: BaseException) -> bool:
+    """Recognize explicit budget denials before or after SDK error mapping."""
+    if isinstance(exception, BudgetExceededError):
+        return True
+    if not isinstance(exception, (OpenAIRateLimitError, LLMRateLimitError)):
+        return False
+    message = str(exception).lower()
+    return (
+        _has_rate_limit_code(exception, ("budget_exceeded",))
+        or "budget_exceeded" in message
+        or "budget has been exceeded" in message
+    )
+
+
+def is_quota_exhaustion_error(exception: BaseException) -> bool:
+    """Identify exhausted allowances that require a reset or limit increase."""
     s = str(exception).lower()
-    return any(p in s for p in QUOTA_EXHAUSTION_PATTERNS)
+    return (
+        is_budget_exceeded_error(exception)
+        or _has_rate_limit_code(exception, QUOTA_EXHAUSTION_PATTERNS)
+        or any(p in s for p in QUOTA_EXHAUSTION_PATTERNS)
+    )
 
 
 def looks_like_auth_error(exception: Exception) -> bool:
@@ -173,3 +208,10 @@ def is_content_policy_violation(exception: Exception) -> bool:
         return False
     s = str(exception).lower()
     return any(p in s for p in CONTENT_POLICY_PATTERNS)
+
+
+def is_transient_http_error(exception: BaseException) -> bool:
+    """Match provider HTTP failures eligible for retry and model fallback."""
+    return isinstance(exception, APIError) and (
+        exception.status_code in (408, 409, 429) or 500 <= exception.status_code < 600
+    )
