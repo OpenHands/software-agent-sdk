@@ -95,7 +95,7 @@ uploaded to the GitHub release.
 
 | Stage | Runtime (typical) | Runners |
 |---|---|---|
-| Binary builds (5-way matrix, parallel) | ~10–15 min on Linux, ~12–18 min on macOS | `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel`, `macos-14`, `windows-2022` |
+| Binary builds (5-way matrix, parallel) | ~10–15 min on Linux, ~12–18 min on macOS | `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel`, `macos-15`, `windows-2022` |
 | `publish-binaries` (download + checksum + upload) | ~1–2 min | `ubuntu-24.04` |
 | `docker-smoke-test` (6-way matrix, parallel) | Up to 45 min (mostly polling for the docker images) | `ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 |
 

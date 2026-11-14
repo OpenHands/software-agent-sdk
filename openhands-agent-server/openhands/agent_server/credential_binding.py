@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
@@ -21,6 +23,14 @@ from openhands.sdk.credential import (
     CredentialSyncError,
     HttpVersionedCredentialBinding,
     ResolvedCredential,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    NotSupported,
+    Unprocessable,
+    UpstreamFailed,
 )
 
 
@@ -105,8 +115,10 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
 
 
 @router.post("/prepare-for-sandbox-pause", include_in_schema=False)
-async def prepare_for_sandbox_pause(request: Request) -> Response:
-    await request.app.state.conversation_service.prepare_for_sandbox_pause()
+async def prepare_for_sandbox_pause(
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    await conversation_service.prepare_for_sandbox_pause()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -118,52 +130,36 @@ async def activate_credential_binding(
     conversation_id: UUID,
     secret_name: str,
     activation: CredentialBindingActivation,
-    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
     if not supports_file_credential_binding(secret_name):
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        raise NotFound()
     binding = HttpVersionedCredentialBinding(
         activation.url,
         activation.headers,
     )
     try:
         await _probe_binding(binding)
-        await request.app.state.conversation_service.activate_credential_binding(
+        await conversation_service.activate_credential_binding(
             conversation_id,
             secret_name,
             binding,
         )
     except CredentialBindingActivationTooLate as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Credential binding activation arrived after ACP initialization",
+        raise Conflict(
+            "Credential binding activation arrived after ACP initialization"
         ) from exc
     except CredentialConflict as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Credential binding source changed",
-        ) from exc
+        raise Conflict("Credential binding source changed") from exc
     except CredentialAuthorizationRejected as exc:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Credential binding authorization was rejected",
-        ) from exc
+        raise Forbidden("Credential binding authorization was rejected") from exc
     except CredentialBindingUnsupported as exc:
-        raise HTTPException(
-            status.HTTP_501_NOT_IMPLEMENTED,
-            "Credential binding source is unsupported",
-        ) from exc
+        raise NotSupported("Credential binding source is unsupported") from exc
     except (
         CredentialInvalidResponse,
         CredentialNeedsReauthentication,
     ) as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Credential binding source is invalid",
-        ) from exc
+        raise Unprocessable("Credential binding source is invalid") from exc
     except CredentialBindingError as exc:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            "Credential binding source is unavailable",
-        ) from exc
+        raise UpstreamFailed("Credential binding source is unavailable") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

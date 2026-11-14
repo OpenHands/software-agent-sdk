@@ -46,7 +46,7 @@ from openhands.sdk.skills.utils import (
     update_skills_repository,
     validate_skill_name,
 )
-from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
+from openhands.sdk.utils import maybe_truncate
 from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
@@ -245,7 +245,7 @@ class Skill(BaseModel):
         description=(
             "A brief description of what the skill does and when to use it. "
             "Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated "
-            "with a notice pointing to the skill's source path."
+            "with a notice pointing to invoke_skill for the full skill."
         ),
     )
     license: str | None = Field(
@@ -291,10 +291,12 @@ class Skill(BaseModel):
         ),
     )
 
+    # Points at invoke_skill, never at the file: to_prompt() leaves out the
+    # skill's location on purpose so the agent loads it through the tool.
     _DESCRIPTION_TRUNCATE_NOTICE = (
         "<response clipped><NOTE>Due to the max output limit, only part of "
-        "the full description is shown. You can view the complete skill "
-        "content at {source}.</NOTE>"
+        'the full description is shown. Call invoke_skill(name="{name}") to '
+        "load the full skill.</NOTE>"
     )
 
     @field_validator("allowed_tools", mode="before")
@@ -676,8 +678,8 @@ class Skill(BaseModel):
         """Truncate description to MAX_DESCRIPTION_LENGTH via maybe_truncate.
 
         Uses a model_validator (not field_validator) so the truncation notice
-        can reference self.source, telling the agent where to find the full
-        skill content.
+        can name the skill, pointing the agent to ``invoke_skill`` for the full
+        content. It never names the file (#6644).
         """
         if (
             self.description is not None
@@ -689,9 +691,7 @@ class Skill(BaseModel):
                 len(self.description),
                 self.MAX_DESCRIPTION_LENGTH,
             )
-            notice = DEFAULT_TRUNCATE_NOTICE
-            if self.source:
-                notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(source=self.source)
+            notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(name=self.name)
             self.description = maybe_truncate(
                 self.description,
                 truncate_after=self.MAX_DESCRIPTION_LENGTH,

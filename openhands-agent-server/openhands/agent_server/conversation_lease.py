@@ -11,6 +11,7 @@ from typing import NotRequired, TypedDict
 from filelock import FileLock
 
 from openhands.sdk import get_logger
+from openhands.sdk.errors import Conflict
 
 
 logger = get_logger(__name__)
@@ -84,7 +85,10 @@ class ConversationLeaseHeldError(RuntimeError):
         )
 
 
-class ConversationOwnershipLostError(RuntimeError):
+class ConversationOwnershipLostError(Conflict, RuntimeError):
+    """Another server instance took over this conversation's lease, so the
+    guarded write was refused: a conflict, not a server fault."""
+
     def __init__(
         self,
         *,
@@ -95,7 +99,11 @@ class ConversationOwnershipLostError(RuntimeError):
         self.conversation_dir = conversation_dir
         self.owner_instance_id = owner_instance_id
         self.generation = generation
-        super().__init__("conversation ownership was lost before the write completed")
+        super().__init__(
+            "Conversation is owned by another agent server instance; "
+            "the write was refused",
+            message="conversation ownership was lost before the write completed",
+        )
 
 
 class ConversationLease:

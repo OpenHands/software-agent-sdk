@@ -1182,8 +1182,8 @@ class RemoteConversation(BaseConversation):
         self._callbacks.append(state_update_callback)
 
         # Add callback to handle LLM completion logs
-        # Register callback if any LLM has log_completions enabled
-        if any(llm.log_completions for llm in agent.get_all_llms()):
+        # Register callback if any LLM has log_completions_to_file enabled
+        if any(llm.log_completions_to_file for llm in agent.get_all_llms()):
             llm_log_callback = self._create_llm_completion_log_callback()
             self._callbacks.append(llm_log_callback)
 
@@ -1343,9 +1343,9 @@ class RemoteConversation(BaseConversation):
                     target_llm = llm
                     break
 
-            if not target_llm or not target_llm.log_completions:
+            if not target_llm or not target_llm.log_completions_to_file:
                 logger.debug(
-                    f"No LLM with log_completions enabled found "
+                    f"No LLM with log_completions_to_file enabled found "
                     f"for usage_id={event.usage_id}"
                 )
                 return
@@ -1693,6 +1693,7 @@ class RemoteConversation(BaseConversation):
             f"{CONVERSATIONS_PATH}/{self._id}/confirmation_policy",
             json=payload,
         )
+        self._state.refresh_from_server()
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the remote conversation."""
@@ -1730,6 +1731,7 @@ class RemoteConversation(BaseConversation):
             "POST",
             f"{CONVERSATIONS_PATH}/{self._id}/interrupt",
         )
+        self._state.refresh_from_server()
 
     def load_plugin(self, plugin_ref: str) -> None:
         _send_request(

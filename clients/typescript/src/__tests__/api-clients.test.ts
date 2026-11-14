@@ -5,6 +5,7 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
   RemoteWorkspace,
@@ -1785,6 +1786,27 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.switchAcpEffort('low');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'low' }) })
+    );
+  });
+
   it('RemoteConversation.switchAcpModel POSTs the model to the switch_acp_model endpoint', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
@@ -2100,6 +2122,25 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient.switchAcpEffort posts the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await new ConversationClient({ host: 'http://example.com' }).switchAcpEffort(
+      'conversation-1',
+      'high'
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'high' }) })
+    );
+  });
+
   it('ConversationClient.switchAcpModel posts the model', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
@@ -2282,6 +2323,78 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'GET' })
       );
     }
+  });
+
+  it('SettingsClient lists and switches experimental features', async () => {
+    const feature = {
+      key: 'qa_feature',
+      label: 'QA feature',
+      description: 'A feature for tests.',
+      enabled: true,
+    };
+    const responses = [[{ ...feature, enabled: false }], feature];
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([
+      { ...feature, enabled: false },
+    ]);
+    await expect(client.updateExperimentalFeature('qa_feature', true)).resolves.toEqual(feature);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/experimental',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/experimental/qa_feature',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
+    );
+  });
+
+  it('ConversationClient.react sends only the fields it is given', async () => {
+    const saved = {
+      id: 'r1',
+      kind: 'ReactionEvent',
+      source: 'user',
+      timestamp: '2026-11-07T00:00:00Z',
+      target_event_id: 'm1',
+      emoji: 'heart',
+      removed: false,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.react('conv-1', 'heart', { targetEventId: 'm1', removed: true });
+    await client.react('conv-1', '+1');
+
+    expect(isReactionEvent(event)).toBe(true);
+    expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/reactions'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      emoji: 'heart',
+      target_event_id: 'm1',
+      removed: true,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
   });
 
   it('SettingsClient fetches and updates settings and secrets', async () => {

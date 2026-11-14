@@ -173,8 +173,8 @@ Preconditions:
   rewritten by the 5xx handler, so assert on the status and on `exception`,
   which carries `server is in deferred-init state 'dormant'; call POST
   /api/init first`. The workspace file route is mounted on its own `/api`
-  router (cookie auth), which carries the same gate since #5700, so it no
-  longer reaches the missing conversation service.
+  router (cookie auth), which carries the same gate, so it never reaches
+  the missing conversation service.
 - **Dormant sockets (`F03.dormant-gates-sockets`).** Every WebSocket is refused at the handshake while dormant.
   ```sh
   F03_ZERO=00000000-0000-0000-0000-0000000000f3
@@ -557,11 +557,9 @@ Preconditions:
   client as an HTTP 403 handshake rejection (`ws listen --expect-reject 403`),
   not as a 1013 close frame. An unknown socket path is also a 403, so pair
   the dormant check with the same socket opening after init.
-- The gate precedes every auth check since #5700 (`F03.gate-before-auth`), so
+- The gate precedes every auth check (`F03.gate-before-auth`) and covers the
+  workspace static-file routes, the sockets, `/v1` and `/app-backends`, so
   while dormant a 503 says nothing about the key; prove a key only after init.
-  Before #5700 the workspace static-file routes, the sockets, `/v1` and
-  `/app-backends` were outside the gate (#5661, #5700 closed them); a baseline
-  checkout older than those PRs answers those recipes differently.
 - The bootstrap `X-Init-API-Key` is the dormant `secret_key`, which defaults to
   the first session key when `OH_SECRET_KEY` is unset and is **open to anyone**
   when neither is set (`F03.init-open-without-secret`). `control-agent-server

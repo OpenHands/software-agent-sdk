@@ -827,15 +827,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # Drive the traversal from self
         yield from _walk(self)
 
-    def _close_tool_executor(self, tool: ToolDefinition) -> None:
-        try:
-            executable_tool = tool.as_executable()
-            executable_tool.executor.close()
-        except NotImplementedError:
-            return
-        except Exception as exc:
-            logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
-
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
         """Register tools materialized at runtime (e.g. MCP tools).
 

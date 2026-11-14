@@ -34,10 +34,12 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    ValidationError,
     field_serializer,
     field_validator,
 )
 
+from openhands.sdk.errors import Invalid, LockTimeout, Unprocessable
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret, serialize_secret
 
@@ -65,16 +67,17 @@ class ProviderConnectionLimitExceeded(Exception):
     """Raised when creating a connection would exceed the configured limit."""
 
 
-class ProviderConnectionNotFound(ValueError):
+class ProviderConnectionNotFound(Unprocessable):
     """A referenced provider connection id does not exist.
 
     Raised by :meth:`LLMProfileStore.load` when a profile points at a connection
     that has been deleted and the profile has no usable inline key to fall back
     on.
 
-    Subclasses :class:`ValueError` so every ``load()`` caller degrades sensibly
-    even without a dedicated ``except``. The profile-activation and settings
-    endpoints (via ``store_errors``) map it to 422, and the OpenAI-compatible
+    An :class:`~openhands.sdk.errors.Unprocessable` (so also a
+    :class:`ValueError`) so every ``load()`` caller degrades sensibly even
+    without a dedicated ``except``. The agent server answers it with 422 from
+    the domain error table, and the OpenAI-compatible
     gateway's ``except ValueError`` turns it into a 400 instead of an opaque
     500. The agent-profile launch path already funnels load failures through
     its resolver's ``ValueError`` handling; that path can't actually hit a
@@ -171,8 +174,12 @@ class ProviderConnectionStore:
             logger.error(
                 f"[Provider Connections] Failed to acquire lock within {timeout}s"
             )
-            raise TimeoutError(
-                f"Provider connection store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Profile store is busy. Please retry.",
+                message=(
+                    "Provider connection store lock acquisition timed out after "
+                    f"{timeout}s"
+                ),
             )
 
     def _read(self, *, cipher: Cipher | None) -> PersistedProviderConnections:
@@ -187,20 +194,23 @@ class ProviderConnectionStore:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
-            raise ValueError(f"Provider connections file is unreadable: {e}") from e
+            raise Invalid(f"Provider connections file is unreadable: {e}") from e
         if not isinstance(raw, dict):
-            raise ValueError("Provider connections file must contain a JSON object")
+            raise Invalid("Provider connections file must contain a JSON object")
         version = raw.get("schema_version", PROVIDER_CONNECTIONS_SCHEMA_VERSION)
         if not isinstance(version, int):
-            raise ValueError("schema_version must be an integer")
+            raise Invalid("schema_version must be an integer")
         if version > PROVIDER_CONNECTIONS_SCHEMA_VERSION:
-            raise ValueError(
+            raise Invalid(
                 f"schema_version {version} is newer than supported "
                 f"{PROVIDER_CONNECTIONS_SCHEMA_VERSION}"
             )
         raw["schema_version"] = PROVIDER_CONNECTIONS_SCHEMA_VERSION
         context = {"cipher": cipher} if cipher else None
-        return PersistedProviderConnections.model_validate(raw, context=context)
+        try:
+            return PersistedProviderConnections.model_validate(raw, context=context)
+        except ValidationError as e:
+            raise Invalid(str(e)) from e
 
     def _write(
         self, persisted: PersistedProviderConnections, *, cipher: Cipher | None
@@ -241,13 +251,11 @@ class ProviderConnectionStore:
         self, connection: ProviderConnection, *, cipher: Cipher | None = None
     ) -> ProviderConnection:
         if not CONNECTION_ID_REGEX.match(connection.id):
-            raise ValueError(f"Invalid provider connection id: {connection.id!r}")
+            raise Invalid(f"Invalid provider connection id: {connection.id!r}")
         with self._acquire_lock():
             persisted = self._read(cipher=cipher)
             if any(c.id == connection.id for c in persisted.connections):
-                raise ValueError(
-                    f"Provider connection {connection.id!r} already exists"
-                )
+                raise Invalid(f"Provider connection {connection.id!r} already exists")
             if len(persisted.connections) >= MAX_PROVIDER_CONNECTIONS:
                 raise ProviderConnectionLimitExceeded(
                     f"Provider connection limit reached ({MAX_PROVIDER_CONNECTIONS})."

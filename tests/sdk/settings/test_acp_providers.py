@@ -390,6 +390,14 @@ class TestBuildSessionModelMeta:
             "claudeCode": {"options": {"model": "opus[1m]", "effort": "high"}}
         }
 
+    def test_explicit_effort_wins_over_suffix(self):
+        assert build_session_model_meta("claude-agent-acp", "opus[1m]/high", "low") == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "low"}}
+        }
+        assert build_session_model_meta("claude-agent-acp", None, "max") == {
+            "claudeCode": {"options": {"effort": "max"}}
+        }
+
     @pytest.mark.parametrize(
         ("agent_name", "model"),
         [

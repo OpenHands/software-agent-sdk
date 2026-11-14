@@ -433,7 +433,7 @@ Preconditions:
   `running` is false, so the body is exactly `{"url": null}` on both routes,
   as a keyless server answers (`F16.vscode-url-no-key`) and as a server that
   receives the very same key through `POST /api/init` answers
-  (`F16.vscode-url-after-init`). `get_vscode_service()` seeds the token from
+  (`F16.vscode-url-after-init`). `create_vscode_service()` seeds the token from
   `session_api_keys[0]` before `start()` runs, but `get_vscode_url` returns a
   URL only while the server is running, so no dead "open VS Code" link (and no
   session key) is handed out for a server that is not there.

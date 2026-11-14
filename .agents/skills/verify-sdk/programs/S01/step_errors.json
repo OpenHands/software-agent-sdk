@@ -1,0 +1,8 @@
+[
+  {"tool": "no_such_tool", "args": {"x": 1}},
+  {"tool": "terminal", "args": {"bogus": 1}},
+  {"tool": "task_tracker", "args": {"command": "plan", "task_list": "[{\"title\": \"repaired\", \"status\": \"todo\"}]"}},
+  {"error": "LLMContentPolicyViolationError", "message": "Output blocked by content filtering policy"},
+  {"text": ""},
+  {"finish": "survived every error"}
+]

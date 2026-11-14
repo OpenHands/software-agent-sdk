@@ -11,9 +11,10 @@ focused on HTTP concerns. It exposes:
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Path
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.errors import error_for_status, error_responses
 from openhands.agent_server.plugins_service import (
     MarketplacePluginInfo,
     PluginSkillSummary,
@@ -29,6 +30,14 @@ from openhands.agent_server.plugins_service import (
     service_plugin_contents,
     service_uninstall_plugin,
     service_update_plugin,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    Unprocessable,
+    UpstreamFailed,
+    UpstreamTimeout,
 )
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.plugin import InstalledPluginInfo, Plugin, PluginFetchError
@@ -278,11 +287,13 @@ def get_plugins(request: PluginsRequest) -> PluginsResponse:
 @plugins_router.post(
     "/fetch",
     response_model=FetchPluginResponse,
-    responses={
-        422: {"description": "Invalid plugin source, ref, path, or plugin"},
-        502: {"description": "Plugin source unavailable"},
-        504: {"description": "Plugin fetch timed out"},
-    },
+    responses=error_responses(
+        {
+            Unprocessable: "Invalid plugin source, ref, path, or plugin",
+            UpstreamFailed: "Plugin source unavailable",
+            UpstreamTimeout: "Plugin fetch timed out",
+        }
+    ),
 )
 def fetch_plugin_endpoint(request: FetchPluginRequest) -> FetchPluginResponse:
     """Fetch and pin a plugin source without installing or enabling it."""
@@ -295,9 +306,8 @@ def fetch_plugin_endpoint(request: FetchPluginRequest) -> FetchPluginResponse:
             timeout=request.timeout,
         )
     except PluginSourceError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail={"code": exc.code, "message": exc.message},
+        raise error_for_status(
+            exc.status_code, {"code": exc.code, "message": exc.message}
         ) from exc
 
     return FetchPluginResponse(
@@ -314,11 +324,13 @@ def fetch_plugin_endpoint(request: FetchPluginRequest) -> FetchPluginResponse:
 @plugins_router.post(
     "/install",
     response_model=InstalledPluginResponse,
-    responses={
-        400: {"description": "Failed to fetch plugin source"},
-        409: {"description": "Plugin already installed (use force=true)"},
-        422: {"description": "Invalid plugin (bad name, etc.)"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Failed to fetch plugin source",
+            Conflict: "Plugin already installed (use force=true)",
+            Unprocessable: "Invalid plugin (bad name, etc.)",
+        }
+    ),
 )
 def install_plugin_endpoint(request: InstallPluginRequest) -> InstalledPluginResponse:
     """Install a plugin from a git URL, GitHub shorthand, or local path."""
@@ -331,20 +343,11 @@ def install_plugin_endpoint(request: InstallPluginRequest) -> InstalledPluginRes
         )
         return _installed_response(info)
     except FileExistsError:
-        raise HTTPException(
-            status_code=409,
-            detail="Plugin already installed. Use force=true to overwrite.",
-        )
+        raise Conflict("Plugin already installed. Use force=true to overwrite.")
     except (PluginFetchError, ExtensionFetchError):
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to fetch plugin source. Check that the source is valid.",
-        )
+        raise Invalid("Failed to fetch plugin source. Check that the source is valid.")
     except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid plugin. Ensure it has a valid kebab-case name.",
-        )
+        raise Unprocessable("Invalid plugin. Ensure it has a valid kebab-case name.")
 
 
 @plugins_router.get("/installed", response_model=InstalledPluginsListResponse)
@@ -359,7 +362,7 @@ def list_installed_plugins_endpoint() -> InstalledPluginsListResponse:
 @plugins_router.get(
     "/installed/{plugin_name}",
     response_model=InstalledPluginResponse,
-    responses={404: {"description": "Plugin not installed"}},
+    responses=error_responses({NotFound: "Plugin not installed"}),
 )
 def get_installed_plugin_endpoint(
     plugin_name: PluginNamePath,
@@ -367,17 +370,14 @@ def get_installed_plugin_endpoint(
     """Get information about a specific installed plugin."""
     info = service_get_installed_plugin(name=plugin_name)
     if info is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_name}' is not installed",
-        )
+        raise NotFound(f"Plugin '{plugin_name}' is not installed")
     return _installed_response(info)
 
 
 @plugins_router.patch(
     "/installed/{plugin_name}",
     response_model=UpdatePluginStateResponse,
-    responses={404: {"description": "Plugin not installed"}},
+    responses=error_responses({NotFound: "Plugin not installed"}),
 )
 def set_plugin_enabled_endpoint(
     plugin_name: PluginNamePath, request: UpdatePluginStateRequest
@@ -385,35 +385,31 @@ def set_plugin_enabled_endpoint(
     """Enable or disable an installed plugin."""
     fn = service_enable_plugin if request.enabled else service_disable_plugin
     if not fn(name=plugin_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_name}' is not installed",
-        )
+        raise NotFound(f"Plugin '{plugin_name}' is not installed")
     return UpdatePluginStateResponse(name=plugin_name, enabled=request.enabled)
 
 
 @plugins_router.delete(
     "/installed/{plugin_name}",
     response_model=UninstallPluginResponse,
-    responses={404: {"description": "Plugin not installed"}},
+    responses=error_responses({NotFound: "Plugin not installed"}),
 )
 def uninstall_plugin_endpoint(plugin_name: PluginNamePath) -> UninstallPluginResponse:
     """Uninstall a plugin by name."""
     if not service_uninstall_plugin(name=plugin_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_name}' is not installed",
-        )
+        raise NotFound(f"Plugin '{plugin_name}' is not installed")
     return UninstallPluginResponse(message=f"Plugin '{plugin_name}' uninstalled")
 
 
 @plugins_router.post(
     "/installed/{plugin_name}/refresh",
     response_model=UpdatePluginResponse,
-    responses={
-        400: {"description": "Failed to fetch the plugin's recorded source"},
-        404: {"description": "Plugin not installed"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Failed to fetch the plugin's recorded source",
+            NotFound: "Plugin not installed",
+        }
+    ),
 )
 def refresh_plugin_endpoint(plugin_name: PluginNamePath) -> UpdatePluginResponse:
     """Refresh an installed plugin to the latest version from its source.
@@ -423,26 +419,17 @@ def refresh_plugin_endpoint(plugin_name: PluginNamePath) -> UpdatePluginResponse
     try:
         info = service_update_plugin(name=plugin_name)
     except (PluginFetchError, ExtensionFetchError):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Failed to fetch the source of plugin '{plugin_name}'. "
-                "The installed copy was kept."
-            ),
+        raise Invalid(
+            f"Failed to fetch the source of plugin '{plugin_name}'. "
+            "The installed copy was kept."
         )
     except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"The source of plugin '{plugin_name}' no longer holds a valid "
-                "plugin. The installed copy was kept."
-            ),
+        raise Unprocessable(
+            f"The source of plugin '{plugin_name}' no longer holds a valid "
+            "plugin. The installed copy was kept."
         )
     if info is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_name}' is not installed",
-        )
+        raise NotFound(f"Plugin '{plugin_name}' is not installed")
     return UpdatePluginResponse(
         message=f"Plugin '{plugin_name}' updated",
         plugin=_installed_response(info),
