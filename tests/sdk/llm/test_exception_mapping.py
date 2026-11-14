@@ -6,6 +6,7 @@ from litellm.exceptions import (
     ContentPolicyViolationError,
     InternalServerError,
     PermissionDeniedError,
+    RateLimitError,
 )
 
 from openhands.sdk import LLM
@@ -15,6 +16,8 @@ from openhands.sdk.llm.exceptions import (
     LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
+    LLMRateLimitError,
+    SupportsRetryMetadata,
     map_provider_exception,
 )
 
@@ -121,6 +124,42 @@ def test_passthrough_unknown_exception():
     e = MyCustom("random")
     mapped = map_provider_exception(e)
     assert mapped is e
+
+
+def test_map_provider_exception_propagates_retry_metadata():
+    """map_provider_exception propagates retry metadata from provider error."""
+
+    class ProviderRateLimitWithMetadata(RateLimitError):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.retry_attempt = 3
+            self.max_retries = 5
+
+    source = ProviderRateLimitWithMetadata(
+        "rate limit error",
+        MODEL,
+        PROVIDER,
+    )
+    mapped = map_provider_exception(source)
+    assert mapped is not source
+    assert isinstance(mapped, LLMRateLimitError)
+    assert isinstance(mapped, SupportsRetryMetadata)
+    assert mapped.retry_attempt == 3
+    assert mapped.max_retries == 5
+
+
+def test_map_provider_exception_propagates_dynamically_attached_metadata():
+    """Real LiteLLM RateLimitError with attached retry_attempt propagates metadata."""
+    source = RateLimitError("rate limit error", MODEL, PROVIDER)
+    # Simulate RetryMixin attaching retry_attempt during a retry attempt
+    source.retry_attempt = 2  # type: ignore[attr-defined]
+    source.max_retries = 4
+
+    mapped = map_provider_exception(source)
+    assert mapped is not source
+    assert isinstance(mapped, LLMRateLimitError)
+    assert mapped.retry_attempt == 2
+    assert mapped.max_retries == 4
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

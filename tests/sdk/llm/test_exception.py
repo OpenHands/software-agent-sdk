@@ -141,3 +141,37 @@ def test_operation_cancelled_error_custom():
     custom_message = "Custom operation cancelled message"
     error = OperationCancelled(custom_message)
     assert str(error) == custom_message
+
+
+def test_sdk_exception_types_declare_retry_metadata():
+    """SDK exception types declare retry_attempt and max_retries explicitly."""
+    from openhands.sdk.llm.exceptions import LLMError, SupportsRetryMetadata
+
+    err = LLMError("base error")
+    assert err.retry_attempt is None
+    assert err.max_retries is None
+    assert isinstance(err, SupportsRetryMetadata)
+
+    err_with_meta = LLMError("with meta", retry_attempt=2, max_retries=5)
+    assert err_with_meta.retry_attempt == 2
+    assert err_with_meta.max_retries == 5
+    assert str(err_with_meta) == "with meta"
+
+
+def test_sdk_exception_subclasses_inherit_retry_metadata():
+    """LLMError subclasses inherit retry metadata without redeclaring it."""
+    from openhands.sdk.llm.exceptions import (
+        LLMContextWindowTooSmallError,
+        LLMRateLimitError,
+        LLMServiceUnavailableError,
+        SupportsRetryMetadata,
+    )
+
+    for exc in (
+        LLMRateLimitError(),
+        LLMServiceUnavailableError("unavailable"),
+        LLMContextWindowTooSmallError(context_window=4096),
+    ):
+        assert isinstance(exc, SupportsRetryMetadata)
+        assert exc.retry_attempt is None
+        assert exc.max_retries is None
