@@ -1,6 +1,9 @@
 import json
 import os
+import signal
 import socket
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import cast
@@ -304,3 +307,86 @@ def test_claim_self_pid_match_is_not_treated_as_dead(tmp_path: Path) -> None:
     )
     with pytest.raises(ConversationLeaseHeldError):
         secondary.claim()
+
+
+linux_proc_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="needs /proc/<pid>/stat"
+)
+
+
+def _forge_owner(conversation_dir: Path, **fields: object) -> None:
+    payload = dict(_read_lease_payload(conversation_dir))
+    payload.update(fields)
+    (conversation_dir / LEASE_FILE_NAME).write_text(json.dumps(payload))
+
+
+@linux_proc_only
+def test_claim_records_owner_process_start_time(tmp_path: Path) -> None:
+    conversation_dir = tmp_path / "conversation"
+    ConversationLease(conversation_dir=conversation_dir, owner_instance_id="a").claim()
+
+    started_at = _read_lease_payload(conversation_dir).get("owner_started_at")
+    stat = Path(f"/proc/{os.getpid()}/stat").read_text()
+    assert started_at == stat[stat.rfind(")") + 2 :].split()[19]
+
+
+@linux_proc_only
+def test_claim_takes_over_when_restarted_server_reuses_owner_pid(
+    tmp_path: Path,
+) -> None:
+    """An agent-server restarted in the same container often gets the same PID.
+
+    The PID is alive (it is us), but the process that wrote the lease is gone.
+    """
+    conversation_dir = tmp_path / "conversation"
+    previous = ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="previous",
+        ttl_seconds=3600.0,
+    )
+    previous_claim = previous.claim()
+    _forge_owner(conversation_dir, owner_started_at="1")
+
+    restarted = ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="restarted",
+    )
+    claim = restarted.claim()
+
+    assert claim.takeover is True
+    assert claim.generation == previous_claim.generation + 1
+    assert _read_lease_payload(conversation_dir)["owner_instance_id"] == "restarted"
+
+
+@linux_proc_only
+def test_claim_takes_over_from_killed_but_unreaped_owner(tmp_path: Path) -> None:
+    """``os.kill(pid, 0)`` succeeds for a zombie, so check the process state."""
+    conversation_dir = tmp_path / "conversation"
+    ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="crashed",
+        ttl_seconds=3600.0,
+    ).claim()
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        stat = Path(f"/proc/{child.pid}/stat").read_text()
+        _forge_owner(
+            conversation_dir,
+            owner_pid=child.pid,
+            owner_started_at=stat[stat.rfind(")") + 2 :].split()[19],
+        )
+        os.kill(child.pid, signal.SIGKILL)
+        deadline = time.time() + 5
+        while Path(f"/proc/{child.pid}/stat").read_text().split(") ")[1][0] != "Z":
+            assert time.time() < deadline
+            time.sleep(0.01)
+
+        claim = ConversationLease(
+            conversation_dir=conversation_dir,
+            owner_instance_id="restarted",
+        ).claim()
+        assert claim.takeover is True
+    finally:
+        child.kill()
+        child.wait()
