@@ -360,13 +360,12 @@ export class StuckDetector {
   }
 
   /**
-   * Compare two action events for equality (ignoring IDs and timestamps).
+   * Compare tool invocations, ignoring IDs, timestamps, and narrative thought.
    */
   private actionsEqual(a: ActionEvent, b: ActionEvent): boolean {
     return (
       a.source === b.source &&
       a.tool_name === b.tool_name &&
-      a.thought === b.thought &&
       JSON.stringify(a.action) === JSON.stringify(b.action)
     );
   }
