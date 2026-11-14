@@ -70,6 +70,28 @@ def test_router_rejects_unknown_manual_key():
         router.with_manual_route("missing")
 
 
+def test_router_with_route_returns_copy_with_added_route():
+    router = _router()
+    added_llm = TestLLM.from_messages([], usage_id="third")
+
+    updated = router.with_route("third", added_llm)
+
+    assert "third" not in router.llms_for_routing
+    assert updated.llms_for_routing["third"] is added_llm
+    assert [route.key for route in updated.status().routes] == [
+        "first",
+        "second",
+        "third",
+    ]
+
+
+def test_router_with_route_rejects_duplicate_key():
+    router = _router()
+
+    with pytest.raises(ValueError, match="already exists"):
+        router.with_route("first", TestLLM.from_messages([], usage_id="other"))
+
+
 def test_router_async_generate_delegates_to_manual_key():
     router = _router().with_manual_route("second")
 

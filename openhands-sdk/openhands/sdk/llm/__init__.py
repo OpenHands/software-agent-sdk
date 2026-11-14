@@ -52,6 +52,7 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfileStore,
 )
 from openhands.sdk.llm.router import (
+    ConfigurableRouter,
     ModelRouteInfo,
     ModelRouterSelection,
     ModelRouterStatus,
@@ -110,6 +111,7 @@ __all__ = [
     "MetaProfileClass",
     "MetaProfileLimitExceeded",
     "MetaProfileStore",
+    "ConfigurableRouter",
     "ModelRouteInfo",
     "ModelRouterSelection",
     "ModelRouterStatus",

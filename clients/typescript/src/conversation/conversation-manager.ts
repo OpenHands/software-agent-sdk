@@ -33,6 +33,7 @@ import {
 } from '../models/conversation';
 import {
   AgentBase,
+  LLM,
   ConversationExecutionStatus,
   ConversationID,
   ModelRouterSelection,
@@ -388,6 +389,22 @@ export class ConversationManager {
   async getModelRouter(conversationId: ConversationID): Promise<ModelRouterStatus> {
     const response = await this.client.get<ModelRouterStatus>(
       `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Add an LLM route to the conversation's model router.
+   */
+  async addModelRouterRoute(
+    conversationId: ConversationID,
+    routeKey: string,
+    llm: LLM,
+    baseRouteKey = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { route_key: routeKey, llm, base_route_key: baseRouteKey }
     );
     return response.data;
   }

@@ -349,6 +349,21 @@ export class RemoteConversation implements IConversation {
   }
 
   /**
+   * Add an LLM route to this conversation's model router.
+   */
+  async addModelRouterRoute(
+    routeKey: string,
+    llm: LLM,
+    baseRouteKey = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router/routes`,
+      { route_key: routeKey, llm, base_route_key: baseRouteKey }
+    );
+    return response.data;
+  }
+
+  /**
    * Update route selection for this RouterLLM-backed conversation.
    */
   async updateModelRouter(selection: ModelRouterSelection): Promise<ModelRouterStatus> {

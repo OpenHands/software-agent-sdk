@@ -6,7 +6,7 @@ from enum import Enum, StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SerializeAsAny, field_validator, model_validator
 
 from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -26,6 +26,7 @@ from openhands.sdk.event.base import Event
 from openhands.sdk.event.reaction import ReactionEmoji
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
+from openhands.sdk.llm import LLM, RouterLLM
 from openhands.sdk.llm.message import (  # re-export
     ImageContent as ImageContent,
     TextContent as TextContent,
@@ -491,6 +492,31 @@ class FileUploadResult(Success):
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
+
+
+class AddModelRouterRouteRequest(BaseModel):
+    """Payload to add an LLM route to a running conversation."""
+
+    route_key: str = Field(description="Route key to add to the model router.")
+    llm: SerializeAsAny[LLM] = Field(description="LLM to install at route_key.")
+    base_route_key: str = Field(
+        default="default",
+        description=(
+            "Route key assigned to the conversation's current LLM when it must be "
+            "wrapped in a model router."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_router_llm(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        llm = d.get("llm")
+        if isinstance(llm, dict) and "llms_for_routing" in llm:
+            d["llm"] = RouterLLM.model_validate_router(llm)
+        return d
 
 
 class UpdateSecretsRequest(BaseModel):

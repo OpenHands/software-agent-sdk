@@ -56,9 +56,12 @@ POST /api/conversations/{id}/switch_profile
 PATCH /api/conversations/{id}/model_router
 { "selection": { "mode": "manual", "manual_route_key": "secondary" } }
 
+POST  /api/conversations/{id}/model_router/routes
+{ "route_key": "reviewer", "llm": { ... } }
+
 PATCH /api/conversations/{id}/model_router
 { "selection": { "mode": "auto" } }</pre>
-      <p>The conversation still points at the router. Callers update a small selection model; <code>last_route_key</code> remains an observational field for the most recent route decision.</p>
+      <p>The conversation still points at the router. Callers can add routes at runtime, then update a small selection model; <code>last_route_key</code> remains an observational field for the most recent route decision.</p>
     </div>
   </div>
 

@@ -58,7 +58,13 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import (
+    LLM,
+    Message,
+    ModelRouterSelection,
+    ModelRouterStatus,
+    TextContent,
+)
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import (
     OPERATION_METADATA_KEY,
@@ -1738,6 +1744,53 @@ class RemoteConversation(BaseConversation):
             f"{CONVERSATIONS_PATH}/{self._id}/load_plugin",
             json={"plugin_ref": plugin_ref},
         )
+
+    def get_model_router(self) -> ModelRouterStatus:
+        resp = _send_request(
+            self._client,
+            "GET",
+            f"{CONVERSATIONS_PATH}/{self._id}/model_router",
+        )
+        return ModelRouterStatus.model_validate(resp.json())
+
+    def add_model_router_route(
+        self,
+        route_key: str,
+        llm: LLM,
+        *,
+        base_route_key: str = "default",
+    ) -> ModelRouterStatus:
+        payload = {
+            "route_key": route_key,
+            "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+            "base_route_key": base_route_key,
+        }
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"{CONVERSATIONS_PATH}/{self._id}/model_router/routes",
+            json=payload,
+        )
+        return ModelRouterStatus.model_validate(resp.json())
+
+    def update_model_router_selection(
+        self, selection: ModelRouterSelection
+    ) -> ModelRouterStatus:
+        resp = _send_request(
+            self._client,
+            "PATCH",
+            f"{CONVERSATIONS_PATH}/{self._id}/model_router",
+            json={"selection": selection.model_dump(mode="json")},
+        )
+        return ModelRouterStatus.model_validate(resp.json())
+
+    def switch_routed_llm(self, llm_key: str) -> ModelRouterStatus:
+        return self.update_model_router_selection(
+            ModelRouterSelection(mode="manual", manual_route_key=llm_key)
+        )
+
+    def resume_auto_llm_routing(self) -> ModelRouterStatus:
+        return self.update_model_router_selection(ModelRouterSelection(mode="auto"))
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
