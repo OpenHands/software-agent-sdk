@@ -15,7 +15,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
-from pydantic import ValidationError
+from pydantic import PrivateAttr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -38,6 +38,9 @@ MCPOAuthFactory = Callable[
     [str, MCPServer, MCPOAuthAuthCredential, AsyncKeyValue | None],
     OAuth | None,
 ]
+
+# Called for every HTTP response the streamable-HTTP transport receives.
+ResponseObserver = Callable[[httpx2.Response], None]
 
 # Backward-compatible callback that reports only newly added tools.
 ToolsChangedCallback = Callable[[Sequence[MCPToolDefinition]], None]
@@ -161,6 +164,48 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
     return factory
 
 
+def _observing_client_factory(observer: ResponseObserver):
+    async def observe(response: httpx2.Response) -> None:
+        observer(response)
+
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
+        **_: object,
+    ) -> httpx2.AsyncClient:
+        client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        client.event_hooks = {"request": [], "response": [observe]}
+        return client
+
+    return factory
+
+
+class _ObservingRemoteMCPServer(RemoteMCPServer):
+    """A remote server whose transport reports HTTP responses to an observer."""
+
+    _response_observer: ResponseObserver | None = PrivateAttr(default=None)
+
+    @classmethod
+    def from_server(
+        cls, server: RemoteMCPServer, observer: ResponseObserver
+    ) -> "_ObservingRemoteMCPServer":
+        instance = cls.model_validate(server.model_dump())
+        instance._response_observer = observer
+        return instance
+
+    def to_transport(self):  # type: ignore[override]
+        transport = super().to_transport()
+        if (
+            isinstance(transport, StreamableHttpTransport)
+            and self._response_observer is not None
+        ):
+            transport.httpx_client_factory = _observing_client_factory(
+                self._response_observer
+            )
+        return transport
+
+
 def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
     default_port = {"http": 80, "https": 443}.get(url.scheme)
     return url.scheme, url.host, url.port or default_port
@@ -172,6 +217,7 @@ def _prepare_mcp_config(
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
     mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
+    response_observer: ResponseObserver | None = None,
 ) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata.
 
@@ -201,6 +247,15 @@ def _prepare_mcp_config(
             prepared.mcpServers[server_name] = _PackageRemoteMCPServer.model_validate(
                 server.model_dump()
             )
+
+    if response_observer is not None:
+        for server_name, server in prepared.mcpServers.items():
+            if isinstance(server, RemoteMCPServer) and not isinstance(
+                server, _PackageRemoteMCPServer
+            ):
+                prepared.mcpServers[server_name] = (
+                    _ObservingRemoteMCPServer.from_server(server, response_observer)
+                )
 
     for server_name, server_spec in mcp_config.items():
         auth = server_spec.auth
@@ -401,6 +456,7 @@ def create_mcp_tools(
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
     mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
+    response_observer: ResponseObserver | None = None,
 ) -> MCPClient:
     """Create MCP tools from OpenHands-native MCP server settings.
 
@@ -433,6 +489,7 @@ def create_mcp_tools(
         mcp_oauth_token_storage=mcp_oauth_token_storage,
         mcp_oauth_factory=mcp_oauth_factory,
         mcp_oauth_class=mcp_oauth_class,
+        response_observer=response_observer,
     )
     handler = _ToolListChangedHandler(
         client=None,  # type: ignore[arg-type]
