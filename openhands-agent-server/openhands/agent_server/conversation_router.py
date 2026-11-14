@@ -32,6 +32,7 @@ from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
+    AddModelRouterRouteRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -83,6 +84,7 @@ from openhands.sdk.marketplace.registry import (
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
+from openhands.sdk.utils.cipher import Cipher
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -669,6 +671,21 @@ def _model_router_status(llm: LLM) -> ModelRouterStatus:
     return llm.status()
 
 
+def _prepare_model_router_route_llm(llm: LLM, cipher: Cipher | None) -> LLM:
+    if isinstance(llm, RouterLLM):
+        return llm.model_copy(
+            update={
+                "llms_for_routing": {
+                    key: _prepare_model_router_route_llm(route_llm, cipher)
+                    for key, route_llm in llm.llms_for_routing.items()
+                }
+            }
+        )
+    if cipher is not None:
+        llm = decrypt_incoming_llm_secrets(llm, cipher)
+    return get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+
+
 @conversation_router.get(
     "/{conversation_id}/model_router",
     response_model=ModelRouterStatus,
@@ -682,6 +699,39 @@ async def get_conversation_model_router(
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise NotFound()
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.post(
+    "/{conversation_id}/model_router/routes",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: "Conversation cannot add this model router route",
+            NotFound: "Conversation not found",
+        }
+    ),
+)
+async def add_conversation_model_router_route(
+    request: Request,
+    conversation_id: UUID,
+    route_request: AddModelRouterRouteRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Add an LLM route to a conversation's model router."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    cipher = get_cipher(request)
+    llm = _prepare_model_router_route_llm(route_request.llm, cipher)
+    try:
+        await event_service.add_model_router_route(
+            route_request.route_key,
+            llm,
+            base_route_key=route_request.base_route_key,
+        )
+    except ValueError as e:
+        raise Invalid(str(e))
     return _model_router_status(event_service.get_conversation().agent.llm)
 
 

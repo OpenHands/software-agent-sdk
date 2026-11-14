@@ -3076,6 +3076,85 @@ def test_update_conversation_model_router_auto_selection(
         client.app.dependency_overrides.clear()
 
 
+def test_add_conversation_model_router_route(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(
+        llm=_server_test_router().with_route("reviewer", LLM(model="reviewer-model")),
+        tools=[],
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={
+                "route_key": "reviewer",
+                "llm": {"model": "reviewer-model", "usage_id": "reviewer"},
+            },
+        )
+
+        assert response.status_code == 200
+        mock_event_service.add_model_router_route.assert_awaited_once()
+        route_key, llm = mock_event_service.add_model_router_route.call_args.args
+        assert route_key == "reviewer"
+        assert llm.model == "reviewer-model"
+        assert response.json()["routes"][-1] == {
+            "key": "reviewer",
+            "model": "reviewer-model",
+            "label": "reviewer",
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"route_key": "reviewer", "llm": {"model": "reviewer-model"}},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_model_router_route.side_effect = ValueError(
+        "Model router route already exists: reviewer"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"route_key": "reviewer", "llm": {"model": "reviewer-model"}},
+        )
+
+        assert response.status_code == 400
+        assert "already exists" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def _provider_connection(connection_id: str, *, api_key: str, base_url: str | None):
     from openhands.sdk.llm.provider_connection_store import ProviderConnection
 

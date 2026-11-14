@@ -19,7 +19,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.llm.router import MultimodalRouter
+from openhands.sdk.llm.router import ConfigurableRouter, MultimodalRouter
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
@@ -973,3 +973,56 @@ def test_switch_routed_llm_rejects_non_router(tmp_path):
 
     with pytest.raises(ValueError, match="not a RouterLLM"):
         conv.switch_routed_llm("anything")
+
+
+def test_add_model_router_route_wraps_plain_llm(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "default"), tools=[]),
+        workspace=tmp_path,
+    )
+
+    status = conv.add_model_router_route(
+        "reviewer", LLM(model="reviewer-model", usage_id="default")
+    )
+
+    assert isinstance(conv.agent.llm, ConfigurableRouter)
+    assert status.enabled is True
+    assert status.selection is not None
+    assert status.selection.mode == "auto"
+    assert [route.key for route in status.routes] == ["default", "reviewer"]
+    assert conv.agent.llm.default_route_key == "default"
+    assert conv.agent.llm.llms_for_routing["reviewer"].usage_id == "reviewer"
+    assert (
+        conv.llm_registry.get("reviewer") is conv.agent.llm.llms_for_routing["reviewer"]
+    )
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_add_model_router_route_extends_existing_router(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]), workspace=tmp_path
+    )
+
+    status = conv.add_model_router_route(
+        "reviewer", _make_llm("reviewer-model", "reviewer")
+    )
+    conv.switch_routed_llm("reviewer")
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert {route.key for route in status.routes} == {
+        "primary",
+        "secondary",
+        "reviewer",
+    }
+    assert conv.agent.llm.selection.mode == "manual"
+    assert conv.agent.llm.selection.manual_route_key == "reviewer"
+    assert conv.agent.llm.llms_for_routing["reviewer"].model == "reviewer-model"
+
+
+def test_add_model_router_route_rejects_duplicate_key(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]), workspace=tmp_path
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        conv.add_model_router_route("primary", _make_llm("other-model", "other"))

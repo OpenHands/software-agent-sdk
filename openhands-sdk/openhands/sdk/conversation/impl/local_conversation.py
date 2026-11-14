@@ -64,8 +64,10 @@ from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_call
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    ConfigurableRouter,
     Message,
     ModelRouterSelection,
+    ModelRouterStatus,
     RouterLLM,
     TextContent,
     content_to_str,
@@ -1929,6 +1931,14 @@ class LocalConversation(BaseConversation):
                 "conversations; use switch_acp_model instead."
             )
 
+    def _register_agent_llms(self, agent: AgentBase) -> None:
+        registered = set(self.llm_registry.list_usage_ids())
+        for llm in agent.get_all_llms():
+            if llm.usage_id in registered:
+                continue
+            self.llm_registry.add(llm)
+            registered.add(llm.usage_id)
+
     def _replace_agent_llm(self, new_llm: LLM) -> None:
         # Tool-triggered switches may run on a worker while the run loop holds
         # the state lock awaiting that tool; re-acquiring would deadlock (#3485).
@@ -1941,8 +1951,33 @@ class LocalConversation(BaseConversation):
                 new_llm,
             )
             self.agent = self.agent.model_copy(update=update)
+            self._register_agent_llms(self.agent)
             self._state.agent = self.agent
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+
+    def add_model_router_route(
+        self,
+        route_key: str,
+        llm: LLM,
+        *,
+        base_route_key: str = "default",
+    ) -> ModelRouterStatus:
+        self._reject_llm_switch_on_acp()
+        if llm.usage_id == "default" and route_key != "default":
+            llm = llm.model_copy(update={"usage_id": route_key})
+        llm = create_subscription_llm_from_config(llm) if type(llm) is LLM else llm
+
+        current_llm = self.agent.llm
+        if isinstance(current_llm, RouterLLM):
+            updated_llm = current_llm.with_route(route_key, llm)
+        else:
+            router = ConfigurableRouter(
+                llms_for_routing={base_route_key: current_llm},
+                default_route_key=base_route_key,
+            )
+            updated_llm = router.with_route(route_key, llm)
+        self._replace_agent_llm(updated_llm)
+        return updated_llm.status()
 
     def update_model_router_selection(self, selection: ModelRouterSelection) -> None:
         """Update route selection for a RouterLLM-backed conversation."""

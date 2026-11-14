@@ -590,11 +590,26 @@ describe('Auxiliary API clients', () => {
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
       )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto', manual_route_key: null },
+            last_route_key: null,
+            routes: [
+              { key: 'primary', model: 'primary-model', label: 'primary' },
+              { key: 'reviewer', model: 'reviewer-model', label: 'reviewer' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
 
     const client = new ConversationClient({ host: 'http://example.com' });
     const status = await client.getModelRouter('c1');
+    await client.addModelRouterRoute('c1', 'reviewer', { model: 'reviewer-model' });
     await client.switchModelRouter('c1', 'secondary');
     await client.resumeAutoModelRouting('c1');
 
@@ -606,6 +621,18 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
+      'http://example.com/api/conversations/c1/model_router/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          route_key: 'reviewer',
+          llm: { model: 'reviewer-model' },
+          base_route_key: 'default',
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
       'http://example.com/api/conversations/c1/model_router',
       expect.objectContaining({
         method: 'PATCH',
@@ -615,7 +642,7 @@ describe('Auxiliary API clients', () => {
       })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      3,
+      4,
       'http://example.com/api/conversations/c1/model_router',
       expect.objectContaining({
         method: 'PATCH',
@@ -1854,6 +1881,20 @@ describe('Auxiliary API clients', () => {
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
       )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto' },
+            last_route_key: null,
+            routes: [
+              { key: 'primary', model: 'primary-model', label: 'primary' },
+              { key: 'reviewer', model: 'reviewer-model', label: 'reviewer' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
 
@@ -1864,6 +1905,7 @@ describe('Auxiliary API clients', () => {
     });
 
     const status = await conversation.getModelRouter();
+    await conversation.addModelRouterRoute('reviewer', { model: 'reviewer-model' });
     await conversation.switchModelRouter('secondary');
     await conversation.resumeAutoModelRouting();
 
@@ -1875,6 +1917,18 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
+      'http://example.com/api/conversations/conv-123/model_router/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          route_key: 'reviewer',
+          llm: { model: 'reviewer-model' },
+          base_route_key: 'default',
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
       'http://example.com/api/conversations/conv-123/model_router',
       expect.objectContaining({
         method: 'PATCH',
@@ -1884,7 +1938,7 @@ describe('Auxiliary API clients', () => {
       })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      3,
+      4,
       'http://example.com/api/conversations/conv-123/model_router',
       expect.objectContaining({
         method: 'PATCH',
