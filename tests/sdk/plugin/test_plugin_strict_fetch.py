@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from itertools import permutations
 from pathlib import Path
 
 import pytest
@@ -210,3 +211,34 @@ def test_strict_fetch_does_not_cache_git_remote_credentials(tmp_path: Path):
         for path in pinned_root.rglob("*")
         if path.is_file()
     )
+
+
+def test_fetch_error_masks_overlapping_secret_values_in_any_order(tmp_path: Path):
+    """A failed fetch must not leak any fragment of an overlapping secret.
+
+    The ref is echoed by git, so this drives the real fetch path rather than the
+    internal formatter: whichever order the referenced secret names are resolved
+    in, the returned error must contain neither value.
+    """
+    repo, _sha1, _sha2 = _make_plugin_repo(tmp_path)
+    secrets_by_name = {"AAA": "abc", "BBB": "abc123"}
+
+    for ordering in permutations(secrets_by_name):
+        with pytest.raises(PluginSourceError) as exc_info:
+            fetch_plugin_strict(
+                source=f"file://{repo}",
+                ref="${AAA}-${BBB}",
+                repo_path="plugins/demo",
+                secrets={name: secrets_by_name[name] for name in ordering},
+                cache_dir=tmp_path / "cache",
+                allow_local=True,
+                use_cache=False,
+            )
+
+        message = exc_info.value.message
+        assert exc_info.value.code == "ref_not_found"
+        # Both placeholders are fully masked and nothing trails them; a leak
+        # shows up as a fragment such as "123" after the second mask.
+        assert message.endswith("****-****")
+        for value in secrets_by_name.values():
+            assert value not in message
