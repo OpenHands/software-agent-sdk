@@ -76,9 +76,21 @@ def git_ignored_dirs(repo: Path) -> list[Path]:
 def _holds_checkout(path: Path) -> bool:
     """An ignored dir with a clone in it is someone's work, not build output.
 
-    Bounded to three levels so a large node_modules is not walked.
+    A vendored checkout can sit at any depth — ``vendor/<host>/<owner>/<repo>``
+    is common — so the whole ignored dir is searched. Symlinked directories are
+    not followed, so a checkout reachable only through a link is treated as
+    build output, matching how this module prunes elsewhere.
     """
-    return any(
-        next(path.glob(pattern), None) is not None
-        for pattern in (".git", "*/.git", "*/*/.git")
-    )
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name == ".git":
+                return True
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(Path(entry.path))
+    return False
