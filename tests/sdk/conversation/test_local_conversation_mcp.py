@@ -149,8 +149,10 @@ def test_add_mcp_servers_rejects_sse_transport(tmp_path: Path) -> None:
     conversation.close()
 
 
-def test_add_mcp_servers_rejects_running_conversation(tmp_path: Path) -> None:
-    provider = RecordingMCPToolProvider()
+def test_add_mcp_servers_accepts_running_conversation(tmp_path: Path) -> None:
+    client = EmptyMCPClient()
+    client.tools = [_mcp_tool(client, "fetch")]
+    provider = RecordingMCPToolProvider(client)
     conversation = LocalConversation(
         agent=Agent(
             llm=LLM(model="test-model", api_key=SecretStr("test-key")),
@@ -164,11 +166,12 @@ def test_add_mcp_servers_rejects_running_conversation(tmp_path: Path) -> None:
     conversation._ensure_agent_ready()
     conversation.state.transition(ConversationExecutionStatus.RUNNING, "test")
 
-    with pytest.raises(RuntimeError, match="while the conversation runs"):
-        conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+    conversation.add_mcp_servers({"docs": MCPServer(command="true")})
 
-    assert provider.calls == []
-    assert conversation.agent.mcp_config == {}
+    assert [set(call) for call in provider.calls] == [{"docs"}]
+    assert conversation.state.execution_status == ConversationExecutionStatus.RUNNING
+    assert "docs" in conversation.agent.mcp_config
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
     conversation.close()
 
 

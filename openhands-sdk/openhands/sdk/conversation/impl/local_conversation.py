@@ -1729,8 +1729,6 @@ class LocalConversation(BaseConversation):
                 )
 
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
-                raise RuntimeError("Cannot add MCP servers while the conversation runs")
             duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
             if duplicates:
                 raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
@@ -1751,9 +1749,6 @@ class LocalConversation(BaseConversation):
                 raise
 
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
-                self._close_runtime_tools(runtime_tools)
-                raise RuntimeError("Cannot add MCP servers while the conversation runs")
             duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
             if duplicates:
                 self._close_runtime_tools(runtime_tools)
