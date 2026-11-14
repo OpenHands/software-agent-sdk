@@ -207,7 +207,11 @@ to another service; require real scored events before recording a pass.
   transitive `Requires:` prerequisites in family order.
 - **Create or extend the map**: follow [references/mapping.md](references/mapping.md).
   `control-agent-server map coverage` measures which routes no family owns or
-  drives.
+  drives, and [references/scenarios.md](references/scenarios.md) lists the
+  situations to ask of every sub-feature beyond its happy path (something
+  stored before, two features at once, a user's data, a failure halfway, a
+  server that is not this checkout), and how to tell a bug the map wrote
+  down as the contract.
 - **Re-prove the map**: every family's recipes are fenced `sh` blocks whose
   commands assert their own expectations, so
   `control-agent-server map run --file Fnn --fresh --record` replays a family
@@ -240,7 +244,9 @@ to another service; require real scored events before recording a pass.
   issues, and report it separately: Agent Server, SDK and the TypeScript client
   here (`OpenHands/agent-sdk`), Agent Canvas UI in `OpenHands/OpenHands`,
   scheduling and dispatch in `OpenHands/automation`. Never rewrite an expected
-  result to bless broken behavior.
+  result to bless broken behavior, and read the map's own Gotchas the same
+  way: an oddity written down there is a bug until a PR, doc or issue says
+  it is intended ([scenarios.md](references/scenarios.md) §1).
 - **Blocked**: name the missing prerequisite (key, account, Docker, binary, OS)
   and the route you attempted. Unreachable is never a pass.
   `control-agent-server capabilities` says what this machine can drive and

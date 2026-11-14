@@ -32,6 +32,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.search-filters`: `source`, `body` (case-insensitive, message text only) and fully-qualified `kind` filters narrow search results and combine.
 - `F06.search-kind-short`: `kind=MessageEvent`, the short name the API docs and the TypeScript client use, filters by the wire `kind`.
 - `F06.search-time-window`: `timestamp__gte` is inclusive, `timestamp__lt` exclusive, and a value with a UTC offset is converted to server time.
+- `F06.timestamp-offset`: on a server whose host is not in UTC, every event timestamp names its zone (`Z` or an offset), so a client in another zone reads the same instant as the conversation's `created_at`.
 - `F06.count`: count returns a bare integer equal to the number of search results for the same filters.
 - `F06.get-one`: `GET .../events/{event_id}` returns the event that search lists under that id, and the same event is on disk.
 - `F06.unknown-event`: an unknown event id returns 404 from get-one and `null` in its slot from batch-get.
@@ -224,6 +225,30 @@ Preconditions:
   `>=` keeps the first message itself, `<` keeps only the system prompt, the
   same instant written as `+02:00` selects the same events, and an empty
   window counts 0.
+- **Event timestamps name their zone (`F06.timestamp-offset`), known bug #6525.**
+  A second server whose host is in New York, the way a user's laptop or a
+  regional VM is; the family's own server runs with `TZ=UTC`, where a naive
+  timestamp happens to read right.
+  ```sh
+  NY=$(control-agent-server launch --new --name f06-tz --env TZ=America/New_York --print-run)
+  trap 'control-agent-server stop --run "$NY" >/dev/null' EXIT
+  control-agent-server llm preset deepseek --run "$NY" --no-validate
+  NCID=$(control-agent-server conversation start --run "$NY" --no-autotitle --tools none --print-id)
+  control-agent-server api POST "/api/conversations/$NCID/events" --run "$NY" \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F06_TZ hello"}],"run":false}' --expect 200
+  control-agent-server api GET "/api/conversations/$NCID" --run "$NY" --check created_at matches '(Z|[+-][0-9]{2}:[0-9]{2})$'
+  control-agent-server api GET "/api/conversations/$NCID/events/search" --run "$NY" --check items len-eq 3 \
+    --check items.1.timestamp matches '(Z|[+-][0-9]{2}:[0-9]{2})$' --save F06.timestamp-offset/search  # bug: status eq 200 && checks.1.actual matches '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+$'
+  control-agent-server stop --run "$NY"
+  ```
+  The conversation's `created_at` is UTC with `Z`
+  (`2026-11-12T00:39:04.073724Z`), while the message sent in the same second
+  is stamped `2026-11-11T19:39:04.490239`: New York wall time with no zone.
+  Agent Canvas and the TypeScript client parse that with `new Date(...)` as
+  the browser's local time, so a browser in UTC shows a message sent now as
+  five hours old (OpenHands/OpenHands#19543 is the same report seen from the
+  app). Filters are unaffected (`F06.search-time-window`): naive bounds are
+  read as server time. Fix PR #6523 is open.
 - **Count (`F06.count`).** Same filters as search, a bare JSON integer.
   ```sh
   control-agent-server api GET "/api/conversations/$CID/events/count" --expect 200 --check . eq 5 --save F06.count/all

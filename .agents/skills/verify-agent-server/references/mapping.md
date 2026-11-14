@@ -243,7 +243,14 @@ Then exactly four H2 sections, in this order:
 4. `## Gotchas`: traps that waste or invalidate a run: async transitions that
    need a wait, fields that only appear after the agent runs, behavior that
    depends on config, platform or installed binaries, and known open issues
-   (link them; they are repro candidates, not exemptions).
+   (link them; they are repro candidates, not exemptions). A Gotcha that
+   describes behavior a user would call wrong is not a trap to work around:
+   it is a bug to file, or a decision to cite.
+5. **Situations.** Once a sub-feature's happy path passes, walk
+   [scenarios.md](scenarios.md): something stored before the change, two
+   features on at once, a user's data, a failure halfway, a server that is
+   not this checkout. Add a bullet for each question that has an answer on
+   this surface, and drive it live like any other.
 
 Treat commands as literal: quote JSON with single quotes, keep names unique to
 the run (prefix fixtures with `qa-` or `QA_`), and restore shared state after

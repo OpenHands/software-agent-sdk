@@ -89,8 +89,17 @@ example or source path that is gone is drift: find where it moved
 read-only reader per family file (parallel if delegation is available). Each
 reads current source for that family and returns: summary, source entry
 points, likely drift with citations (or none), new public behavior missing
-from the map, rows whose `Unit:` link no longer tests what the row says, and
-one recipe. Readers never edit files and never run model-backed recipes.
+from the map, rows whose `Unit:` link no longer tests what the row says,
+the [scenarios.md](scenarios.md) questions its family has no bullet for, the
+family's Gotchas that describe behavior a user would call wrong without an
+issue or decision linked, and one recipe. Readers never edit files and never
+run model-backed recipes.
+
+Then list every open `bug` issue in this repository, whatever its age, that
+names a mapped feature and that no row links yet. Reproduce each and give it
+its note, as the daily pass does for new issues: an issue filed before a
+baseline existed, or while a pass was not running, otherwise never reaches
+the map.
 
 Re-check stale claims whenever tests or examples were added: grep the map for
 `untested`, `blocked` and `no test`, and turn a row's link into a real one

@@ -120,6 +120,11 @@ evidence matters; `git status` should show nothing a recipe created.
   (`sdk-map owners` with no arguments), and nothing else: families nothing
   in the range touched wait for the weekly pass, and a pass with no new
   commits on `main` stops early.
+- **Write or extend recipes**: follow [references/recipes.md](references/recipes.md),
+  then walk [references/scenarios.md](references/scenarios.md): the
+  situations a happy path never shows (a model that is not the scripted one,
+  a user's files, two features at once, a failure halfway, an installed
+  wheel instead of this checkout).
 - **Maintain the map (periodic or weekly)**: follow
   [references/maintenance.md](references/maintenance.md): a frozen
   BASE/TARGET, a PR-intent ledger, a source wave, a full replay with a model
@@ -136,6 +141,8 @@ evidence matters; `git status` should show nothing a recipe created.
   issues, and file it in this repository; mark the bullet's expected result
   with `Known failure (reproduced <date>, #<issue>)`. Never rewrite an expected
   result to bless broken behavior, and never fix product code inside a pass.
+  Read the map's own Gotchas the same way: an oddity written down there is a
+  bug until a PR, doc or issue says it is intended.
 - **Blocked**: name the missing prerequisite (key, Docker, Chromium, account,
   interactive login) and the command attempted.
 

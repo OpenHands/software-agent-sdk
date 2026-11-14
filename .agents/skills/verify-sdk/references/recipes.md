@@ -57,6 +57,17 @@ log reloads), never the model's wording. Give a feature both when a real
 model changes what can happen (tool-call shapes, streaming, provider
 errors), and only a scripted one when the model cannot matter.
 
+## Beyond the happy path
+
+A recipe that passes proves its scenario, not the sub-feature. Once it
+passes, walk [scenarios.md](scenarios.md): what other models send, a user's
+files and secrets, two features on at once, a failure halfway, an installed
+wheel. Script what a different model would send rather than only what the
+happy path needs, and take inputs from the product's own documentation (a
+tool's description, a docstring's example) before inventing a fixture. A
+Gotcha that describes behavior a user would call wrong is a bug to file, or
+a decision to cite, not a trap to work around.
+
 ## Conventions
 
 - One scenario per bullet; every sub-feature ID appears in at least one

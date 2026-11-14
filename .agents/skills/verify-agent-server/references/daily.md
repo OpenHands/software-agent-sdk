@@ -73,7 +73,11 @@ nothing in `BASE..TARGET` touched is not driven: it waits for the weekly pass.
    (`map run --file Fnn --fresh --record`), and every changed behavior on each
    entry point the family lists (REST, WebSocket, SDK, TypeScript client).
    Widen shared models (`openhands-sdk` events, settings, LLM config) to every
-   family that serializes them rather than sampling one. Resolve each merged
+   family that serializes them rather than sampling one. Ask the
+   [scenarios.md](scenarios.md) questions of each changed behavior, not only
+   whether it does what its PR says: most bugs others reported were in what
+   the PR did not think about (the settings a user already had, the other
+   runtime, the error path). Resolve each merged
    commit in `BASE..TARGET` to its PR and keep intent (`documented`,
    `undocumented`, `contradictory`) separate from runtime results, as
    maintenance.md §3 describes. The delta pass has a second half: every bullet
@@ -83,7 +87,9 @@ nothing in `BASE..TARGET` touched is not driven: it waits for the weekly pass.
    touching a family's `Source:` paths shows up only this way. So is every
    open `bug` issue opened since `BASE` that names a mapped route or feature:
    it is reproduced and gets its note, so bugs filed outside a pass reach the
-   map. Model-backed recipes run only inside the LLM budget; without a key
+   map. Count "opened since `BASE`" as opened or labeled `bug` since the
+   previous pass ran; when no pass ran for days, or `BASE` was set by a
+   first mapping, take every open `bug` issue no bullet links yet. Model-backed recipes run only inside the LLM budget; without a key
    they are `blocked` with the missing prerequisite.
 
 ## Reading the result

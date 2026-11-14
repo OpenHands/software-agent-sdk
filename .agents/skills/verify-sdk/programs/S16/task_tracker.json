@@ -9,8 +9,8 @@
   {"tool": "task_tracker", "args": {"command": "view"}},
   {"tool": "task_tracker", "args": {"command": "plan", "task_list": [
     {"title": "Read the spec", "notes": "docs/spec.md", "status": "done"},
-    {"title": "Write the parser", "notes": "", "status": "done"},
-    {"title": "Add tests", "notes": "cover the edge cases", "status": "in_progress"}
+    {"title": "Write the parser", "notes": "", "status": "completed"},
+    {"title": "Add tests", "notes": "cover the edge cases", "status": "In Progress"}
   ]}},
   {"tool": "task_tracker", "args": {"command": "plan", "task_list": [
     {"title": "Bad status", "status": "finished"}
