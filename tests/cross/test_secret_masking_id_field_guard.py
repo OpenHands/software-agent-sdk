@@ -1,7 +1,8 @@
-"""Every id field on an Event or Observation must opt out of secret masking.
+"""Every id and timestamp field on an Event or Observation must skip masking.
 
 Type a new id field as ``EventID``, ``ToolCallID`` or ``UnmaskedID`` from
-``openhands.sdk.event.types``.
+``openhands.sdk.event.types``. A subclass that redeclares ``timestamp`` must
+keep the ``SkipSecretMasking`` marker that ``Event.timestamp`` carries.
 """
 
 import importlib
@@ -35,8 +36,8 @@ def _registry() -> SecretRegistry:
     return registry
 
 
-def _is_id_name(name: str) -> bool:
-    return name == "id" or name.endswith(("_id", "_ids"))
+def _is_guarded_name(name: str) -> bool:
+    return name in ("id", "timestamp") or name.endswith(("_id", "_ids"))
 
 
 def _can_hold_str(annotation: object) -> bool:
@@ -44,12 +45,12 @@ def _can_hold_str(annotation: object) -> bool:
     return annotation is str or any(_can_hold_str(a) for a in get_args(annotation))
 
 
-def _unmarked_id_fields(cls: type[BaseModel]) -> list[str]:
-    """Return the id fields of ``cls`` that secret masking would rewrite."""
+def _unmarked_fields(cls: type[BaseModel]) -> list[str]:
+    """Return the id and timestamp fields of ``cls`` that masking would rewrite."""
     return [
         f"{cls.__qualname__}.{name}"
         for name, field in cls.model_fields.items()
-        if _is_id_name(name)
+        if _is_guarded_name(name)
         and _can_hold_str(field.annotation)
         and not field_has_marker(field, SkipSecretMasking)
     ]
@@ -77,30 +78,33 @@ def _all_subclasses(*bases: type[BaseModel]) -> set[type[BaseModel]]:
     return {cls for base in bases for cls in (base, *walk(base))}
 
 
-def test_every_event_and_observation_id_field_skips_masking():
+def test_every_event_and_observation_id_and_timestamp_field_skips_masking():
     offenders = sorted(
         name
         for cls in _all_subclasses(Event, Observation)
         if cls.__module__.startswith("openhands.")
-        for name in _unmarked_id_fields(cls)
+        for name in _unmarked_fields(cls)
         if name not in _ALLOWLIST
     )
 
     assert not offenders, (
-        "These id fields are secret-masked, so a secret inside the id rewrites "
-        "it. Type them as EventID, ToolCallID or UnmaskedID: "
-        f"{offenders}"
+        "These id or timestamp fields are secret-masked, so a secret inside the "
+        "value rewrites it. Type ids as EventID, ToolCallID or UnmaskedID, and "
+        f"keep SkipSecretMasking on a redeclared timestamp: {offenders}"
     )
 
 
-def test_guard_flags_an_unmarked_id_field():
+def test_guard_flags_unmarked_id_and_timestamp_fields():
     class _NewEvent(Event):
+        timestamp: str = ""
         foo_id: str
         bar_ids: list[str] | None = None
 
-    assert _unmarked_id_fields(_NewEvent) == [
-        "test_guard_flags_an_unmarked_id_field.<locals>._NewEvent.foo_id",
-        "test_guard_flags_an_unmarked_id_field.<locals>._NewEvent.bar_ids",
+    prefix = "test_guard_flags_unmarked_id_and_timestamp_fields.<locals>._NewEvent"
+    assert _unmarked_fields(_NewEvent) == [
+        f"{prefix}.timestamp",
+        f"{prefix}.foo_id",
+        f"{prefix}.bar_ids",
     ]
 
 
