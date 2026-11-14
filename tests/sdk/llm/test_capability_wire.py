@@ -8,6 +8,7 @@ import pytest
 
 from openhands.sdk import LLM
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
+from openhands.sdk.llm.exceptions import LLMBadRequestError
 
 
 IMAGE = (
@@ -146,11 +147,15 @@ async def test_native_deepseek_adapter_must_deliver_or_reject_images(
     endpoint, use_async, role
 ):
     base, requests = endpoint
+    retries = []
     llm = LLM(
         model="deepseek/deepseek-v4.1-flash",
         base_url=base,
         api_key="local-test",
-        num_retries=0,
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_listener=lambda attempt, _total, _error: retries.append(attempt),
         reasoning_effort=None,
     )
     try:
@@ -159,7 +164,11 @@ async def test_native_deepseek_adapter_must_deliver_or_reject_images(
         else:
             llm.completion(messages(role))
     except Exception as error:
+        # Resending cannot restore the images, so this is the caller's error to
+        # fix, not a provider outage to retry.
+        assert isinstance(error, LLMBadRequestError)
         assert "discarded image content" in str(error)
+        assert not retries
         assert not requests
     else:
         assert len(requests) == 1
