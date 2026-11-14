@@ -1444,8 +1444,8 @@ class _OpenHandsACPBridge:
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
         self.on_activity: Any = None  # Callable[[], None] | None
-        # Secret masker — set per turn by ACPAgent to
-        # ``state.secret_registry.mask_secrets_in_output``. Applied to streamed
+        # Secret masker — bound once by ACPAgent when it starts the ACP server;
+        # it masks with the state's current secret registry. Applied to streamed
         # text chunks and tool-call raw_input/raw_output/content before they
         # reach ``on_token`` / ``on_event`` so a subprocess that echoes an
         # injected credential never lands in the (persisted, network-relayed)
@@ -3166,14 +3166,19 @@ class ACPAgent(AgentBase):
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
         self._client = client
-        # Bind the secret masker for the conversation's lifetime. It's derived
-        # from state.secret_registry (stable for the conversation) and touches
-        # only that registry, so it has none of the cross-thread/state-lock
+
+        # Bind the secret masker for the conversation's lifetime. It touches
+        # only state.secret_registry, so it has none of the cross-thread/state-lock
         # hazards that make on_event/on_token strictly per-turn. Binding it here
         # (rather than per-turn in _reset_client_for_turn) keeps it available for
         # session updates AND for ask_agent() forks, which run on the shared
         # client and may fire while no step()/astep() turn is active.
-        client.mask = state.secret_registry.mask_secrets_in_output
+        # The registry is looked up on every call: the state's registry object
+        # is replaced when secrets change.
+        def _mask_with_current_registry(text: str) -> str:
+            return state.secret_registry.mask_secrets_in_output(text)
+
+        client.mask = _mask_with_current_registry
         self._bind_file_credential_masking()
 
         # Build the subprocess environment. Precedence, highest first:

@@ -35,7 +35,7 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.analyzer-set-clear`: `POST .../security_analyzer` sets `PatternSecurityAnalyzer` or `LLMSecurityAnalyzer` and clears it with `null`; GET, `base_state.json` and the socket reflect each change.
 - `F08.analyzer-errors`: a missing `security_analyzer` field and an unknown kind are 422; an unknown conversation is 404; no key is 401; the stored analyzer is unchanged.
 - `F08.confirm-risky`: under `ConfirmRisky` with `PatternSecurityAnalyzer`, a low-risk command runs unasked and `rm -rf` waits for confirmation; once the analyzer is cleared, an unrated command waits too.
-- `F08.secrets-update`: `POST .../secrets` accepts plain strings, `{"value": ...}` and `StaticSecret` objects (200); once the state is saved, GET lists the names with masked values and `base_state.json` holds them encrypted, never in plaintext.
+- `F08.secrets-update`: `POST .../secrets` accepts plain strings, `{"value": ...}` and `StaticSecret` objects (200); GET lists the names with masked values and `base_state.json` holds them encrypted, never in plaintext.
 - `F08.secrets-visible`: a secret posted at runtime is listed by GET right away, without waiting for another state change.
 - `F08.secrets-errors`: a missing or non-object `secrets`, an unknown secret kind and a `LookupSecret` without `url` are 422; an unknown conversation is 404; no key is 401; nothing is stored.
 - `F08.secrets-bad-value`: a number, `null` or a boolean as a secret value is refused with 422, not a 500.
@@ -45,7 +45,7 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.secrets-lookup-self`: a runtime `LookupSecret` whose URL is the server's own `/api/settings/secrets/<name>` (hostless, made absolute from `OH_INTERNAL_SERVER_URL`, or absolute on the run's address) is answered in process from the secrets store with no HTTP request and no session key; a name the store lacks falls through to HTTP (401 without a key) and the command gets no value.
 - `F08.secrets-profile-scope`: for a conversation launched from an Agent Profile with `secret_refs`, names outside the list are silently dropped (200).
 - `F08.secrets-no-cipher`: on a server with no cipher (no `OH_SECRET_KEY`, no session key) a runtime secret reaches commands while the conversation lives, is persisted only as the redaction placeholder (the server warns at startup), and is empty after a restart although GET still lists the name.
-- `F08.secrets-restart`: a runtime secret that reached `base_state.json` is still injected into commands after a server restart.
+- `F08.secrets-restart`: a runtime secret is still injected into commands after a server restart.
 - `F08.secrets-unsaved-restart`: a runtime secret survives a restart even when nothing else changed in the conversation after it was posted.
 
 ## How to get to it (agent POV)
@@ -404,8 +404,8 @@ KID=$(control-agent-server api POST /api/conversations \
   With the analyzer cleared, the next `echo` is unrated (`UNKNOWN`) and
   `confirm_unknown` makes it wait; accepting it lets the agent finish.
 - **Update secrets (`F08.secrets-update`).** The three accepted value forms,
-  on the idle conversation `$KID`. A tags PATCH forces a state save first
-  (see the next bullet for why).
+  on the idle conversation `$KID`. A tags PATCH also saves the state; GET
+  does not depend on it (`F08.secrets-visible`).
   ```sh
   control-agent-server api POST "/api/conversations/$KID/secrets" \
     --json '{"secrets": {"QA_F08_PLAIN": "qa-f08-plain-value", "QA_F08_DICT": {"value": "qa-f08-dict-value"}, "QA_F08_STATIC": {"kind": "StaticSecret", "value": "qa-f08-static-value", "description": "qa static"}}}' \
@@ -428,7 +428,7 @@ KID=$(control-agent-server api POST /api/conversations \
   `base_state.json` holds cipher text: neither the plaintext nor the
   `**********` placeholder a server without a cipher writes
   (`F08.secrets-no-cipher`).
-- **Runtime secret visible to GET (`F08.secrets-visible`), known bug.** The
+- **Runtime secret visible to GET (`F08.secrets-visible`).** The
   positive control first: a secret followed by a tags PATCH (which saves the
   state) is listed by GET. Then one more secret is posted and the
   conversation is read right away.
@@ -438,15 +438,12 @@ KID=$(control-agent-server api POST /api/conversations \
   control-agent-server api GET "/api/conversations/$KID" --check secret_registry.secret_sources.QA_F08_VISIBLE_SAVED.kind eq StaticSecret
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_FRESH": "qa-f08-fresh-value"}}' --expect 200
   control-agent-server api GET "/api/conversations/$KID" --check secret_registry.secret_sources.QA_F08_FRESH.kind eq StaticSecret \
-    --save F08.secrets-visible/get  # bug: status eq 200 && checks.0.actual eq null && response.body.secret_registry.secret_sources.QA_F08_VISIBLE_SAVED.kind eq StaticSecret
+    --save F08.secrets-visible/get
   ```
-  Expected: GET lists `QA_F08_FRESH` as it lists the saved one. Today it does not:
-  `LocalConversation.update_secrets` mutates
-  `state.secret_registry.secret_sources` in place, the state only autosaves
-  on attribute assignment, and GET reads the `base_state.json` snapshot. The
-  name appears after the next state change (a PATCH, a message, a policy
-  change); until then the live registry has it but no reader can see it, and
-  a restart loses it (`F08.secrets-unsaved-restart`).
+  GET lists `QA_F08_FRESH` as it lists the saved one: the state only
+  autosaves on attribute assignment, so `LocalConversation.update_secrets`
+  assigns an updated copy of the registry, and `base_state.json` (which GET
+  reads) holds the name before the POST returns.
 - **Secret errors (`F08.secrets-errors`).** Bad bodies, an unknown id, no key.
   ```sh
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{}' --expect 422 --check detail.0.loc contains secrets \
@@ -669,7 +666,7 @@ KID=$(control-agent-server api POST /api/conversations \
   ```
   After the restart the server is healthy and `QA_F08_TOKEN` (saved
   encrypted with the run's `OH_SECRET_KEY`) is injected again.
-- **Unsaved secret restart (`F08.secrets-unsaved-restart`), known bug.** One
+- **Unsaved secret restart (`F08.secrets-unsaved-restart`).** One
   secret is saved by a PATCH (the positive control), a second is posted with
   nothing after it, then the server restarts.
   ```sh
@@ -682,13 +679,12 @@ KID=$(control-agent-server api POST /api/conversations \
   control-agent-server api PATCH "/api/conversations/$UNS" --json '{"tags": {"qa": "f08-after-restart"}}' --expect 200
   control-agent-server api GET "/api/conversations/$UNS" --check secret_registry.secret_sources.QA_F08_SAVED.kind eq StaticSecret
   control-agent-server api GET "/api/conversations/$UNS" --check secret_registry.secret_sources.QA_F08_UNSAVED.kind eq StaticSecret \
-    --save F08.secrets-unsaved-restart/get  # bug: status eq 200 && checks.0.actual eq null && response.body.secret_registry.secret_sources.QA_F08_SAVED.kind eq StaticSecret
+    --save F08.secrets-unsaved-restart/get
   ```
-  Expected: both names after the restart. Today `QA_F08_SAVED` is there and
-  `QA_F08_UNSAVED` is gone: the POST never reached `base_state.json` (see
-  `F08.secrets-visible`) and runtime secrets are not written to `meta.json`,
-  so a restart, an idle eviction (default 20 minutes) or a sandbox pause
-  right after `POST .../secrets` silently drops it.
+  Both names are there after the restart: the POST wrote `base_state.json`
+  before returning (see `F08.secrets-visible`), so a restart, an idle
+  eviction (default 20 minutes) or a sandbox pause right after
+  `POST .../secrets` keeps it.
 
 ## Gotchas
 
@@ -733,10 +729,12 @@ KID=$(control-agent-server api POST /api/conversations \
   (case-insensitive substring match); masking applies to every registered
   secret's last resolved value, wherever it appears in terminal output.
 - Runtime secret changes made through `POST .../secrets` live only in
-  `base_state.json` and are never written to `meta.json`, so a runtime secret
-  survives a reload (restart, idle eviction, sandbox pause) only once a state
-  save has written it to `base_state.json`; one that never got there is
-  dropped. See `F08.secrets-restart` and `F08.secrets-unsaved-restart`.
+  `base_state.json` (written before the POST returns) and are never written
+  to `meta.json`. A runtime secret with a new name therefore survives a
+  reload (restart, idle eviction, sandbox pause); see `F08.secrets-restart`
+  and `F08.secrets-unsaved-restart`. A new value for a name the conversation
+  was created with does not: the load re-applies the creation-time copy that
+  `meta.json` keeps.
 - Unknown conversations answer 404 `{"detail": "Not Found"}` on the
   conversation routes and 404 `Conversation not found: <id>` on
   `respond_to_confirmation` (an events route).

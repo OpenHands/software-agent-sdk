@@ -1,17 +1,23 @@
 """Tests for Conversation constructor with secrets parameter."""
 
+import json
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
-from openhands.sdk.secret import SecretSource
+from openhands.sdk.secret import LookupSecret, SecretSource
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.workspace import RemoteWorkspace
 
 from .conftest import create_mock_http_client
@@ -345,3 +351,175 @@ def test_secrets_parameter_type_validation():
     with tempfile.TemporaryDirectory() as tmpdir:
         conv = Conversation(agent=agent, workspace=tmpdir, secrets=None)
         assert isinstance(conv, LocalConversation)
+
+
+def _persisted_secret_names(persistence_dir: str) -> set[str]:
+    """Secret names stored in base_state.json on disk, without a later save."""
+    [base_state] = Path(persistence_dir).rglob(BASE_STATE)
+    data = json.loads(base_state.read_text())
+    return set(data["secret_registry"]["secret_sources"])
+
+
+def test_update_secrets_saves_base_state_before_returning():
+    """Start-time and runtime secrets reach base_state.json right away (#4810)."""
+    agent = create_test_agent()
+    cipher = Cipher("test-secret-key")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            secrets={"START_TOKEN": "start-value"},
+            cipher=cipher,
+            visualizer=None,
+        )
+        assert _persisted_secret_names(tmpdir) == {"START_TOKEN"}
+
+        conv.update_secrets({"RUNTIME_TOKEN": "runtime-value"})
+        assert _persisted_secret_names(tmpdir) == {"START_TOKEN", "RUNTIME_TOKEN"}
+
+        conv.update_secrets({"START_TOKEN": "overridden"})
+        conv_id = conv.id
+        conv.close()
+
+        resumed = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+            cipher=cipher,
+            visualizer=None,
+        )
+        registry = resumed.state.secret_registry
+        assert registry.get_secrets_as_env_vars("$START_TOKEN $RUNTIME_TOKEN") == {
+            "START_TOKEN": "overridden",
+            "RUNTIME_TOKEN": "runtime-value",
+        }
+        resumed.close()
+
+
+def test_update_secrets_keeps_masking_shared_with_a_registry_held_from_before():
+    """A step's stream masker and the ACP credential lifecycle keep the registry
+    they started with: a value either side learns after an update is masked by
+    the other."""
+    agent = create_test_agent()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(agent=agent, workspace=tmpdir, visualizer=None)
+        held = conv.state.secret_registry
+        held_stream_mask = held.compile_stream_mask
+
+        conv.update_secrets({"RUNTIME_TOKEN": "runtime-value"})
+        current = conv.state.secret_registry
+
+        current.get_secrets_as_env_vars("echo $RUNTIME_TOKEN")
+        masker = held_stream_mask()
+        assert masker.feed("leak: runtime-value") + masker.flush() == (
+            "leak: <secret-hidden>"
+        )
+
+        held.track_exported_values({"ROTATED_FILE": "rotated-file-value"})
+        assert current.mask_secrets_in_output("leak: rotated-file-value") == (
+            "leak: <secret-hidden>"
+        )
+        conv.close()
+
+
+def test_load_under_a_key_that_cannot_decrypt_leaves_the_saved_state_alone():
+    """A conversation opened with the wrong key shows no credentials, and it
+    must not save that: once the right key is back, the agent's key and its
+    context secret are too."""
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("agent-key"), usage_id="agent"),
+        tools=[],
+        agent_context=AgentContext(secrets={"CTX_TOKEN": "ctx-value"}),
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        def reopen(key: str, conversation_id=None, agent=None) -> LocalConversation:
+            return LocalConversation(
+                agent=agent,
+                workspace=tmpdir,
+                persistence_dir=tmpdir,
+                conversation_id=conversation_id,
+                cipher=Cipher(key),
+                visualizer=None,
+            )
+
+        created = reopen("right-key", agent=agent)
+        conversation_id = created.id
+        created.close()
+
+        reopen("another-key", conversation_id).close()
+
+        restored = reopen("right-key", conversation_id)
+        api_key = restored.agent.llm.api_key
+        assert isinstance(api_key, SecretStr)
+        assert api_key.get_secret_value() == "agent-key"
+        registry = restored.state.secret_registry
+        assert registry.get_secrets_as_env_vars("$CTX_TOKEN") == {
+            "CTX_TOKEN": "ctx-value"
+        }
+        restored.close()
+
+
+def test_callers_own_context_secret_is_registered_whatever_it_looks_like():
+    """Only a persisted agent can carry values that failed to decrypt. A secret
+    on the agent the caller passes is taken as given, also one that happens
+    to start like cipher text."""
+    token = FERNET_TOKEN_PREFIX + "-a-token-the-user-supplied"
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("agent-key"), usage_id="agent"),
+        tools=[],
+        agent_context=AgentContext(secrets={"TOKEN": token}),
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conversation = LocalConversation(agent=agent, workspace=tmpdir, visualizer=None)
+        registry = conversation.state.secret_registry
+        assert registry.get_secrets_as_env_vars("$TOKEN") == {"TOKEN": token}
+        conversation.close()
+
+
+@pytest.mark.parametrize(
+    "cipher", [Cipher("test-secret-key"), None], ids=["cipher", "no-cipher"]
+)
+def test_secrets_state_update_event_never_carries_a_secret_value(cipher):
+    """A secrets change is announced as one state update with names and masked
+    values: in the event, in its printed form and in the saved event file."""
+    agent = create_test_agent()
+    secrets = {
+        "TOKEN": "plain-secret-value",
+        "LOOKUP": LookupSecret(
+            url="http://127.0.0.1:9/secret",
+            headers={"Authorization": "Bearer header-secret-value"},
+        ),
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            cipher=cipher,
+            visualizer=None,
+        )
+        # The agent-server publishes state changes as conversation events.
+        conv.state.set_on_state_change(conv._on_event)
+        conv.update_secrets(secrets)
+        conv.update_secrets(secrets)
+
+        updates = [
+            event
+            for event in conv.state.events
+            if isinstance(event, ConversationStateUpdateEvent)
+            and event.key == "secret_registry"
+        ]
+        assert len(updates) == 1
+        event_json = updates[0].model_dump_json()
+        assert "TOKEN" in event_json
+        assert FERNET_TOKEN_PREFIX not in event_json
+        saved = "".join(p.read_text() for p in Path(tmpdir).rglob("*.json"))
+        for text in (event_json, str(updates[0]), saved):
+            assert "plain-secret-value" not in text
+            assert "header-secret-value" not in text
+        conv.close()
