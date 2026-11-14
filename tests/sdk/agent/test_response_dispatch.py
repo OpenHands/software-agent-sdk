@@ -539,3 +539,57 @@ def test_thinking_blocks_mask_registered_secret():
     assert "supersecret" not in tb.thinking
     assert tb.signature is None
     assert "supersecret" not in msg_event.llm_message.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "secrets",
+    [
+        pytest.param(None, id="no-secret-registered"),
+        pytest.param({"TOKEN": "supersecret"}, id="secret-not-in-thinking"),
+    ],
+)
+def test_thinking_block_untouched_by_masking_keeps_signature(secrets):
+    """A thinking block whose text holds no secret is stored as the provider sent it.
+
+    The signature is what lets the block be replayed on the next request, so
+    it may only be dropped when masking rewrote the signed text.
+    """
+    block = ThinkingBlock(thinking="The user greets me.", signature="sig-1")
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="hello")],
+        thinking_blocks=[block],
+    )
+    events, _ = _run_single_step(_make_llm_response(msg), secrets=secrets)
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    assert list(msg_event.llm_message.thinking_blocks) == [block]
+
+
+def test_only_the_thinking_block_holding_a_secret_loses_its_signature():
+    """Masking is decided per block; redacted blocks are never rewritten."""
+    clean = ThinkingBlock(thinking="Plan the request.", signature="sig-clean")
+    redacted = RedactedThinkingBlock(data="encrypted")
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="done")],
+        thinking_blocks=[
+            clean,
+            ThinkingBlock(thinking="Send supersecret.", signature="sig-leaky"),
+            redacted,
+        ],
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    assert list(msg_event.llm_message.thinking_blocks) == [
+        clean,
+        ThinkingBlock(thinking="Send <secret-hidden>.", signature=None),
+        redacted,
+    ]

@@ -360,17 +360,19 @@ class ResponseDispatchMixin:
         ``responses_reasoning_item`` is left alone: it is a signed provider
         payload, and rewriting it invalidates the signature replayed on the
         next request. ``thinking_blocks`` are masked because they are persisted
-        and rendered; the signature is nulled so the provider does not reject
-        a mismatched replay.
+        and rendered. A block whose text masking changed loses its signature,
+        so the provider does not reject a mismatched replay; an unchanged block
+        keeps it and is replayed as the provider signed it.
         """
         mask = conversation.state.secret_registry.mask_secrets_in_output
         reasoning = message.reasoning_content
-        masked_thinking_blocks = [
-            tb.model_copy(update={"thinking": mask(tb.thinking), "signature": None})
-            if isinstance(tb, ThinkingBlock)
-            else tb
-            for tb in message.thinking_blocks
-        ]
+        masked_thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
+        for tb in message.thinking_blocks:
+            if isinstance(tb, ThinkingBlock):
+                masked = mask(tb.thinking)
+                if masked != tb.thinking:
+                    tb = tb.model_copy(update={"thinking": masked, "signature": None})
+            masked_thinking_blocks.append(tb)
         return message.model_copy(
             update={
                 "content": [
