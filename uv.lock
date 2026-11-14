@@ -2800,7 +2800,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "openhands-tools", editable = "openhands-tools" },
-    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.83.2,<8" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.86.0,<8" },
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "sqlalchemy", specifier = ">=2.1.6" },
     { name = "uvicorn", specifier = ">=0.54.0" },
@@ -3314,7 +3314,7 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "7.83.2"
+version = "7.86.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -3322,9 +3322,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/ff/624911cc957979184ae60b875fe4cd2cc8b516693488f67d18e302e3b5d4/posthog-7.83.2.tar.gz", hash = "sha256:b46876df182e7769c2cd44f5a506aa738c503dcc9b784b15e097e4494aa0f18c", size = 900192, upload-time = "2026-11-04T20:20:44.293Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/8f/d85870b795a650b5fc5872f4985e4ce4025ed872f2c0371127f770e38aaa/posthog-7.86.0.tar.gz", hash = "sha256:fae11f4f2ebf92a8025d4de0547cc0c4098489b3a219ed538db5e58465813f5c", size = 910529, upload-time = "2026-11-06T23:37:37.769Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/5c/e1de235be05bb7b86e172fdbb5d289daef86ffef51fe136f8d18902e1f4f/posthog-7.83.2-py3-none-any.whl", hash = "sha256:51ee175bf2858e5da08b4c56d80a894f150ae188def53a73f898e88d52af2d2a", size = 1042897, upload-time = "2026-11-04T20:20:42.068Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/6a/ed726f13bed86cee22e7b8eecfe54ab44b1942581bec5a6062d19c14ae84/posthog-7.86.0-py3-none-any.whl", hash = "sha256:616ff58e56891c89869e1cde77c410fd6ed3cfb1a95938844409b7b2a3c8bceb", size = 1054176, upload-time = "2026-11-06T23:37:35.812Z" },
 ]
 
 [[package]]
