@@ -275,7 +275,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   N_A_MSG=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --field .)
   AF=$(control-agent-server api POST "/api/conversations/$A/fork" --json '{"title": "QA F10 memory fork"}' --expect 201 --field id)
   control-agent-server conversation send "$AF" --text 'What is the project codename I told you? Answer with the codename only.' --wait --until finished,error --timeout 180
-  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug: matching ge 1
+  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains Authentication --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug: matching ge 1
   control-agent-server api GET "/api/conversations/$AF" --quiet --check execution_status eq finished --save F10.fork-run-memory/status
   control-agent-server api GET "/api/conversations/$AF/agent_final_response" --check response matches '(?i)pelican' --save F10.fork-run-memory/final
   control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --check . eq "$N_A_MSG"
@@ -286,9 +286,13 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   fact only the source was told, not wording; `agent_final_response` reads a
   reply given as a message or through `finish`), and `A` gains no message
   from the fork's run. Today the fork's run ends in `error` within seconds
-  with a `ConversationErrorEvent` `LLMAuthenticationError` ("Your LLM API key
-  appears to be invalid or has expired."), because the fork lost the model
-  key (`F10.fork-keeps-credentials`); the marked check fails on that event.
+  with a `ConversationErrorEvent` for the provider's authentication failure,
+  because the fork lost the model key (`F10.fork-keeps-credentials`); the
+  marked check fails on that event. DeepSeek answers the keyless request
+  with `Authentication Fails (governor)` (`"type":"authentication_error"`),
+  which the SDK classifies as `LLMBadRequestError` rather than
+  `LLMAuthenticationError` (the classification is `F20.validate-bad-key-type`),
+  so the check matches `Authentication`, which both forms carry.
   Any other failure (a provider outage, a wrong answer) fails a later,
   unmarked check and reports `fail`, not `xfail`. Any fork of a conversation
   whose model needs a key cannot run.

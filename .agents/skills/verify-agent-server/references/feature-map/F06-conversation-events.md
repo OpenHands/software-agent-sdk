@@ -52,9 +52,11 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.ws-replay-since`: `resend_mode=since` with `after_timestamp` replays exactly the events at or after that timestamp; without `after_timestamp` it replays nothing.
 - `F06.ws-bad-frame`: an invalid inbound frame returns a `ServerErrorEvent` (`ValidationError`, `AssertionError`, `JSONDecodeError` for text that is not JSON), appends nothing and leaves the socket open; a redundant auth frame is ignored.
 - `F06.ws-send`: a user message frame sent on the socket is persisted and runs the agent to `finished`, streaming the run on the same socket.
-- `F06.restart-persist`: event ids, order and count survive a server restart, the socket replays the same log, and new messages append after it.
+- `F06.restart-persist`: a socket open during a server restart is closed with 1012; event ids, order and count survive the restart, the socket replays the same log, and new messages append after it.
 - `F06.send-run-limit`: with every run slot taken, `POST .../events` with `run: true` returns 429 `Message saved...` and the message is persisted; a socket send gets a `ConversationRunLimitExceeded` `ServerErrorEvent`.
 - `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run.
+
+- `F06.send-during-tool-call`: `POST .../events` to a conversation whose agent is inside a long tool call saves the message and answers at once, before the tool call ends.
 
 ## How to get to it (agent POV)
 
@@ -597,7 +599,11 @@ Preconditions:
   ```sh
   BEFORE=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
   COUNT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  control-agent-server ws start "/sockets/events/$CID" --name f06-restart --duration 120
+  control-agent-server ws read f06-restart --kinds ConversationStateUpdateEvent --contains '"key": "full_state"' \
+    --expect-open --wait 10
   control-agent-server restart
+  control-agent-server ws stop f06-restart --expect-close 1012 --save F06.restart-persist/socket
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$COUNT" --save F06.restart-persist/count
   AFTER=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
   test "$BEFORE" = "$AFTER"
@@ -610,8 +616,12 @@ Preconditions:
     --check items.1.llm_message.content.0.text eq QA_F06_AFTER_RESTART
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . gt "$COUNT"
   ```
-  The first read after the restart rehydrates the conversation; ids, order
-  and count are unchanged, the socket replays the same log, and the new
+  A socket open across the restart is closed with 1012 (service restart, a
+  code clients reconnect after) and an empty reason: uvicorn closes every
+  upgraded socket that way when it starts shutting down, before the app's
+  lifespan shutdown would send its own 1012 `Server shutting down`. The
+  first read after the restart
+  rehydrates the conversation; ids, order and count are unchanged, the socket replays the same log, and the new
   message lands after it.
 - **Run capacity full (`F06.send-run-limit`).** It restarts the run with one
   run slot and holds that slot with a scripted provider that hangs (a real
@@ -702,6 +712,38 @@ Preconditions:
   stored or replayed: clients use the final durable message after reconnect,
   and keep transient tokens out of their event-log cache.
 
+- **A message during a tool call (`F06.send-during-tool-call`), known bug #6729.**
+  Last bullet. A scripted model asks for `terminal` `sleep 20` on every
+  call (a real model cannot be held inside a tool call on demand); once its
+  `ActionEvent` is logged and no observation is, a message is appended with
+  `run: false`. The run slot is free: `HOLD` was interrupted and the
+  streamed conversation finished.
+
+  Needs: `tmux`
+  ```sh
+  TOOL_STUB=$(control-agent-server fixture llm-stub --name qa-f06-tool --step 'tool:terminal:{"command":"sleep 20"}' --print-path)
+  TOOL_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$TOOL_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  TC=$(control-agent-server conversation start --body-json "{\"agent\": $TOOL_AGENT}" --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$TC/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_TOOL"}],"run":true}' --expect 200
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ActionEvent --check . eq 1 --until-ok 30
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api POST "/api/conversations/$TC/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_DURING_TOOL"}],"run":false}' --expect 200 --expect-max-ms 3000 --timeout 60 \
+    --save F06.send-during-tool-call/post  # bug: status eq 200 && elapsed_ms ge 15000
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query body=QA_F06_DURING_TOOL --check . eq 1
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api POST "/api/conversations/$TC/interrupt" --expect 200
+  control-agent-server conversation wait "$TC" --until paused --timeout 60
+  ```
+  Expected: the POST answers within 3 s and the message is in the log
+  while the command still runs (no observation yet); the agent sees it at
+  its next step. Today the POST waits for the state lock, which the run
+  loop holds for the whole tool call, so it answers 200 only when
+  `sleep 20` ends, about 20 s later (#6729; the same lock makes `/pause`
+  wait, F05). The message is then saved. A user's correction to a busy
+  agent waits as long as the running command.
+
 ## Gotchas
 
 - `kind` filters take either the bare class name events carry in `kind`
@@ -753,7 +795,8 @@ Preconditions:
   fatal.
 - Deleting a conversation closes its open sockets with 4004
   (`F06.ws-delete-close`), and a new connection gets 4004 too; shutting the
-  server down closes them with 1012. A sandbox pause leaves them attached
+  server down closes them with 1012 and an empty reason, sent by uvicorn
+  before the app's own shutdown close (`F06.restart-persist`). A sandbox pause leaves them attached
   (`F12.sandbox-pause-websocket`). A peer that stopped reading delays the
   DELETE by at most 5 s.
 - `StreamingDeltaEvent` frames reach this socket only when the agent's LLM
