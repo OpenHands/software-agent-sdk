@@ -12,14 +12,19 @@ remain unaffected.
 
 import asyncio
 import tempfile
+from unittest.mock import patch
 
 import pytest
+from litellm.exceptions import AuthenticationError
+from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
 from openhands.sdk.testing import TestLLM
 
@@ -116,3 +121,60 @@ def test_auth_error_arun_emits_friendly_detail():
         )
         assert _FRIENDLY_SUBSTRING in auth_error_event.detail
         assert _RAW_LITELLM_ERROR not in auth_error_event.detail
+
+
+# ---------------------------------------------------------------------------
+# Transient LiteLLM proxy token-cache miss (OpenHands/OpenHands#18951)
+# ---------------------------------------------------------------------------
+
+
+def test_transient_proxy_token_miss_recovers_without_error_event():
+    """A first-attempt proxy cache-miss 401 is retried; no fatal event persists."""
+    proxy_miss = AuthenticationError(
+        message=(
+            "Litellm_proxyException - Authentication Error, Invalid proxy server "
+            "token passed. Unable to find token in cache or "
+            "`LiteLLM_VerificationTokenTable`"
+        ),
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    ok = ModelResponse(
+        id="ok",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content="pong", role="assistant"),
+            )
+        ],
+        created=0,
+        model="gpt-4o",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+    )
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("sk-test"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch(
+            "openhands.sdk.llm.llm.litellm_completion", side_effect=[proxy_miss, ok]
+        ) as mock_completion,
+    ):
+        conv = Conversation(
+            agent=Agent(llm=llm, tools=[]), persistence_dir=tmpdir, workspace=tmpdir
+        )
+        conv.send_message(Message(role="user", content=[TextContent(text="ping")]))
+        conv.run()
+
+        assert mock_completion.call_count == 2
+        assert not [
+            e for e in conv.state.events if isinstance(e, ConversationErrorEvent)
+        ]
+        assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
