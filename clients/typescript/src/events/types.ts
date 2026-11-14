@@ -192,11 +192,33 @@ export interface ReactionEvent extends BaseEvent {
 }
 
 /**
+ * The person's answer to the agent's `ask_user` question, picked on its card.
+ *
+ * The question is the agent's `ask_user` ActionEvent (`ask_id`). It is pending
+ * while neither this event nor a message of the person's came after it; a
+ * chat reply answers it too. The agent reads the user message saved right
+ * after this event, not the event. Needs the `ask_user` feature.
+ */
+export interface AskUserAnswerEvent extends BaseEvent {
+  kind: 'AskUserAnswerEvent';
+  source: 'user';
+  /** The `ask_user` ActionEvent answered */
+  ask_id: EventID;
+  /** The option picked, counted from 0 */
+  option_index?: number | null;
+  /** The picked option's label, as it was shown */
+  option_label?: string | null;
+  /** The person's own words, when they added any */
+  text?: string | null;
+}
+
+/**
  * Union type of all conversation events
  */
 export type ConversationEvent =
   | AgentServerEvent
   | ReactionEvent
+  | AskUserAnswerEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
   | StuckDetectionEvent
@@ -215,6 +237,13 @@ export function isMessageEvent(event: BaseEvent): event is MessageEvent {
  */
 export function isReactionEvent(event: BaseEvent): event is ReactionEvent {
   return event.kind === 'ReactionEvent';
+}
+
+/**
+ * Type guard to check if an event is an AskUserAnswerEvent
+ */
+export function isAskUserAnswerEvent(event: BaseEvent): event is AskUserAnswerEvent {
+  return event.kind === 'AskUserAnswerEvent';
 }
 
 /**

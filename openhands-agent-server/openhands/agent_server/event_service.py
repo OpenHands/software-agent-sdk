@@ -79,6 +79,7 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
+from openhands.sdk.event.ask_user import AskUserAnswerEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
@@ -2164,6 +2165,27 @@ class EventService:
             None,
             partial(conversation.react, emoji, target_event_id, removed=removed),
         )
+
+    async def answer_ask(
+        self,
+        ask_id: str,
+        option_index: int | None = None,
+        text: str | None = None,
+    ) -> AskUserAnswerEvent:
+        """Record the person's answer to a pending ``ask_user`` question and run.
+
+        Raises:
+            ValueError: The question is not pending, or the answer is invalid.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        answer, message = await loop.run_in_executor(
+            None,
+            partial(self._conversation.answer_ask, ask_id, option_index, text),
+        )
+        await self.send_message(message, run=True)
+        return answer
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""

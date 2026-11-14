@@ -53,6 +53,11 @@ from openhands.sdk.event import (
     ReactionEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.ask_user import (
+    AskUserAnswerEvent,
+    answer_message_text,
+    find_pending_ask,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.event.reaction import (
@@ -2281,6 +2286,56 @@ class LocalConversation(BaseConversation):
                 event = cast(ReactionEvent, self._state._stamp_parent_id(event))
                 self._on_event(event)
         return event
+
+    def answer_ask(
+        self,
+        ask_id: EventID,
+        option_index: int | None = None,
+        text: str | None = None,
+    ) -> tuple[AskUserAnswerEvent, Message]:
+        """Record the person's answer to the agent's pending ``ask_user`` question.
+
+        Saves an :class:`AskUserAnswerEvent`, which closes the question, and
+        returns it with the message that carries the answer to the agent. The
+        caller sends that message (``send_message``) and runs the agent.
+        Writing in the chat instead needs none of this: any message of the
+        person's closes the question.
+
+        Raises:
+            ValueError: ``ask_id`` is not the pending question, the option does
+                not exist, or the answer has neither an option nor text.
+        """
+        with self._state:
+            pending = find_pending_ask(self._state.active_branch())
+            if pending is None or pending.ask_id != ask_id:
+                raise ValueError("That question is not waiting for an answer.")
+            if option_index is not None and not (
+                0 <= option_index < len(pending.option_labels)
+            ):
+                raise ValueError(
+                    f"The question has {len(pending.option_labels)} options; "
+                    f"there is no option {option_index}."
+                )
+            words = (text or "").strip() or None
+            event = AskUserAnswerEvent(
+                ask_id=ask_id,
+                option_index=option_index,
+                option_label=(
+                    None
+                    if option_index is None
+                    else pending.option_labels[option_index]
+                ),
+                text=words,
+            )
+            event = cast(AskUserAnswerEvent, self._state._stamp_parent_id(event))
+            self._on_event(event)
+        message = Message(
+            role="user",
+            content=[
+                TextContent(text=answer_message_text(pending, option_index, words))
+            ],
+        )
+        return event, message
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""

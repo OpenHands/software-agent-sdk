@@ -33,7 +33,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RuntimeArchivedError,
 )
-from openhands.agent_server.event_router import require_reactions_enabled
+from openhands.agent_server.event_router import require_feature_enabled
 from openhands.agent_server.launch import (
     forward_to_runtime,
     launch_error,
@@ -464,10 +464,18 @@ async def proxy_conversation(
     }:
         raise NotSupported("This operation is unavailable in Docker runtime mode")
     registry = get_registry(conversation_registry)
+    # The runtime's server has no settings of its own to check: the user's
+    # switches live here and are followed at once.
     if tail == "reactions" and request.method == "POST":
-        # The runtime's server has no settings of its own to check: the
-        # user's switch lives here and follows the switch at once.
-        await require_reactions_enabled(registry.stores.settings)
+        await require_feature_enabled(
+            registry.stores.settings,
+            "conversation_reactions",
+            "Conversation reactions are turned off",
+        )
+    if tail == "ask_user/answer" and request.method == "POST":
+        await require_feature_enabled(
+            registry.stores.settings, "ask_user", "Decision cards are turned off"
+        )
     container = await _container(registry, conversation_id)
     upstream_path = _upstream_path(
         request,
