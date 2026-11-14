@@ -3,11 +3,13 @@
 from collections.abc import Sequence
 from typing import ClassVar
 
+import pytest
+
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import AgentErrorEvent, MessageEvent
+from openhands.sdk.event import ActionEvent, AgentErrorEvent, MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
@@ -197,3 +199,44 @@ def test_run_does_not_renudge_action_error_while_streak_is_frozen():
     assert isinstance(empty_corrective_nudge, TextContent)
     assert "always_error_tool" in action_error_nudge.text
     assert "did not include a function call" in empty_corrective_nudge.text
+
+
+@pytest.mark.parametrize("repeat_arguments", [False, True])
+def test_validation_failures_compare_tool_arguments(repeat_arguments):
+    scripted_messages: list[Message | Exception] = [
+        *[
+            Message(
+                role="assistant",
+                content=[],
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"invalid_{i}",
+                        name="always_error_tool",
+                        arguments=f'{{"command": {0 if repeat_arguments else i}}}',
+                        origin="completion",
+                    )
+                ],
+            )
+            for i in range(4)
+        ],
+        Message(role="assistant", content=[TextContent(text="Stopping now.")]),
+    ]
+    conversation = _make_conversation(scripted_messages)
+    conversation.send_message("Create /tmp/foo.py")
+    conversation.run()
+
+    expected_status = (
+        ConversationExecutionStatus.STUCK
+        if repeat_arguments
+        else ConversationExecutionStatus.FINISHED
+    )
+    assert conversation.state.execution_status == expected_status
+    actions = [e for e in conversation.state.events if isinstance(e, ActionEvent)]
+    assert len(actions) == 4
+    assert all(e.action is None for e in actions)
+    nudges = [
+        e
+        for e in conversation.state.events
+        if isinstance(e, MessageEvent) and e.source == "environment"
+    ]
+    assert len(nudges) == (1 if repeat_arguments else 0)
