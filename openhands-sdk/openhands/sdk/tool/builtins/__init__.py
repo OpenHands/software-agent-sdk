@@ -24,6 +24,12 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillObservation,
     InvokeSkillTool,
 )
+from openhands.sdk.tool.builtins.prune_tool_result import (
+    PruneToolResultAction,
+    PruneToolResultExecutor,
+    PruneToolResultObservation,
+    PruneToolResultTool,
+)
 from openhands.sdk.tool.builtins.switch_llm import (
     SwitchLLMAction,
     SwitchLLMExecutor,
@@ -63,6 +69,7 @@ BUILT_IN_TOOL_CLASSES = {
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
+    PruneToolResultTool.__name__: PruneToolResultTool,
     ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
 
@@ -95,6 +102,10 @@ __all__ = [
     "InvokeSkillAction",
     "InvokeSkillObservation",
     "InvokeSkillExecutor",
+    "PruneToolResultTool",
+    "PruneToolResultAction",
+    "PruneToolResultObservation",
+    "PruneToolResultExecutor",
     "SwitchLLMTool",
     "SwitchLLMAction",
     "SwitchLLMObservation",
