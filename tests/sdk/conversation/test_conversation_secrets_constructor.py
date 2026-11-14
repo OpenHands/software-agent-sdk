@@ -398,6 +398,32 @@ def test_update_secrets_saves_base_state_before_returning():
         resumed.close()
 
 
+def test_update_secrets_keeps_masking_shared_with_a_registry_held_from_before():
+    """A step's stream masker and the ACP credential lifecycle keep the registry
+    they started with: a value either side learns after an update is masked by
+    the other."""
+    agent = create_test_agent()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(agent=agent, workspace=tmpdir, visualizer=None)
+        held = conv.state.secret_registry
+        held_stream_mask = held.compile_stream_mask
+
+        conv.update_secrets({"RUNTIME_TOKEN": "runtime-value"})
+        current = conv.state.secret_registry
+
+        current.get_secrets_as_env_vars("echo $RUNTIME_TOKEN")
+        masker = held_stream_mask()
+        assert masker.feed("leak: runtime-value") + masker.flush() == (
+            "leak: <secret-hidden>"
+        )
+
+        held.track_exported_values({"ROTATED_FILE": "rotated-file-value"})
+        assert current.mask_secrets_in_output("leak: rotated-file-value") == (
+            "leak: <secret-hidden>"
+        )
+        conv.close()
+
+
 def test_load_under_a_key_that_cannot_decrypt_leaves_the_saved_state_alone():
     """A conversation opened with the wrong key shows no credentials, and it
     must not save that: once the right key is back, the agent's key and its
