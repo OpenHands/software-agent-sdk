@@ -89,7 +89,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check task_statuses len-eq 2 --check parent_masked eq true --check secret_leaked eq false \
     --check create_probe eq set --check resume_probe eq set
   ```
-  Expected: the secret resolves in the sub-agent's shell, on create and on resume, as it does in the parent's. Known failure (reproduced 2026-11-12, [#6724](https://github.com/OpenHands/software-agent-sdk/issues/6724)): the parent prints `probe=set`, but both sub-agent runs print `probe=` (`create_probe` and `resume_probe` are `unset`): `TaskManager` builds the sub-conversation's `LocalConversation` without the parent's secret sources, so its registry is empty.
+  Expected: the secret resolves in the sub-agent's shell, on create and on resume, as it does in the parent's (`create_probe` and `resume_probe` are `set`), and the parent's output stays masked.
 - **Delegate trace metadata (`S11.task-observability`), blocked.** `is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, the parent span link and the `delegate` tag go only to the observability backend; proving them needs a Laminar/OpenTelemetry collector to read spans from.
 - **Registry, Markdown definitions and factories (`S11.register-programmatic`, `S11.register-if-absent`, `S11.markdown-schema`, `S11.file-discovery`, `S11.file-precedence`, `S11.plugin-agents`, `S11.definition-factory`, `S11.definition-model`).** The program lays out agent files in the workspace (`.agents/agents/`, `.openhands/agents/`, a `README.md`, a nested dir), the user's home (`~/.agents/agents/`) and `$OH_PERSISTENCE_DIR/agents/`, saves an LLM profile, and goes through `openhands.sdk.subagent`.
   ```sh
