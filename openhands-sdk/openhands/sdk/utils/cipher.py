@@ -27,6 +27,10 @@ from pydantic import SecretStr
 FERNET_TOKEN_PREFIX: Final[str] = "gAAAAA"
 
 
+class SecretDecryptionError(ValueError):
+    """Raised when a persisted secret that is required to run cannot be decrypted."""
+
+
 class Cipher:
     """
     Simple encryption utility for preventing accidental secret disclosure.
