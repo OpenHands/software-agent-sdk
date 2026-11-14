@@ -701,6 +701,7 @@ elif mode == "structured-output":
 
     rejected = {}
     for name, schema in (("reserved_name", Reserved), ("field_collision", Collides)):
+        probe = None
         try:
             bad = Agent(
                 llm=make_llm([{"finish": "x"}]),
@@ -712,9 +713,11 @@ elif mode == "structured-output":
             probe.send_message("x")
             probe.run()
             rejected[name] = False
-            probe.close()
         except Exception as exc:
             rejected[name] = type(exc).__name__
+        finally:
+            if probe is not None:
+                probe.close()
     out["rejected"] = rejected
 
 elif mode == "context-overflow":

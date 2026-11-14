@@ -144,7 +144,8 @@ control-agent-server stop                       # stops only this run; evidence 
 - **State control** reaches states a happy path never shows, without mocks:
   `restart` (same state after a restart: persistence, restore, reconnection),
   `restart --hard` (SIGKILL: crash recovery), `restart --rotate-key` (stale
-  session key), `launch --share-conversations-from RUN` (a second instance on
+  session key), `restart --checkout PATH` (another version of the server on
+  the same state: an upgrade or a downgrade), `launch --share-conversations-from RUN` (a second instance on
   the same conversations: leases and takeover), `restart --env K=V` or
   `--config-json` (config changes such as `max_concurrent_runs` or idle TTL),
   `launch --deferred-init`, `launch --no-auth`, `conversation start --no-run`,

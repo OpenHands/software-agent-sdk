@@ -143,7 +143,7 @@ Preconditions:
   control-sdk exec --model-env --expect-output "Example Complete!" --expect-output "EXAMPLE_COST" -- python examples/01_standalone_sdk/51_agent_hooks/main.py
   ```
   Demo 1 prints `[hook] PreToolUse DENY  -> agent-hook:security-reviewer` for the `awk '{print}' /etc/passwd` call; demo 2 prints `Stop` lines from `agent-hook:quality-reviewer` and a `REPORT.md` preview.
-  Before #6659, demo 2 asked for a `REPORT.md` "describing this repository" in an empty temporary workspace, and DeepSeek Flash went looking for a repository elsewhere on the machine until the 10-iteration cap raised `RuntimeError`. Now demo 2 seeds the workspace with a small project to describe; three runs with DeepSeek Flash on 2026-11-09 completed.
+  Demo 2 seeds its temporary workspace with a small project and asks for a `REPORT.md` describing it.
 - **Prompt hooks with a real model, example 57 (`S10.prompt-hook`).** Live; the script asserts both verdicts, so a model that disagrees makes it exit non-zero.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

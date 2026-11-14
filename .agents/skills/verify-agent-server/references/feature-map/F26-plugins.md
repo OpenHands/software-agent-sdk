@@ -43,7 +43,7 @@ Routes: `POST /api/plugins`, `POST /api/plugins/fetch`, `POST /api/plugins/insta
 - `F26.uninstall`: uninstall removes the directory and the record; the single view, the list and the ambient catalog no longer show it, and a second uninstall is 404.
 - `F26.conversation-ambient`: a new conversation loads an enabled installed plugin on its first message: its `UserPromptSubmit` hook runs (a `HookExecutionEvent`, also on the events socket), its command skill activates, and its skills show in the conversation.
 - `F26.conversation-disabled`: a conversation started after the plugin was disabled loads neither its hook nor its skills, while the user-directory plugins still load.
-- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely, its command as well as its hook.
+- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely: its command, skills and hook, and the MCP server its `.mcp.json` added.
 - `F26.restart-persist`: installed plugins, their records and their enabled flags survive a restart.
 - `F26.marketplace-local`: against a local stand-in for the extensions repository, `GET /api/plugins/marketplace` lists only `./plugins/` entries (local contents for local entries, attach coordinates for git entries) with a fresh `installed` flag; a repository without a manifest gives an empty catalog that is not cached.
 - `F26.marketplace-cache`: a non-empty catalog is served from a per-process cache (a new upstream entry appears only after a restart; the 5-minute TTL itself is not waited out), while `installed` stays fresh.
@@ -664,7 +664,7 @@ Preconditions:
   first `full_state` frame embeds hook configuration); the same reads with
   the plugin enabled match in `F26.conversation-ambient`. The plugin stays
   disabled.
-- **Resume after disabling (`F26.conversation-resume-disabled`), known bug.**
+- **Resume after disabling (`F26.conversation-resume-disabled`).**
   Install and enable the plugin (`force`, so the bullet also runs alone with
   `map run --only`), let a conversation load it with a plain prompt, disable
   the plugin, restart the server, and send the command, for the first time,
@@ -672,9 +672,18 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/plugins/install --json '{"source": "'"$PL"'", "force": true}' --expect 200
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": true}' --expect 200
+  PMC=$(control-agent-server fixture plugin --name qa-f26-mcpplug --print-path)
+  MCPR=$(control-agent-server fixture mcp-server --name qa-f26-mcp | jq -c .mcp_server)
+  printf '{"mcpServers": {"qa-f26-mcp": %s}}\n' "$MCPR" > "$PMC/.mcp.json"
+  control-agent-server api POST /api/plugins/install --json '{"source": "'"$PMC"'", "force": true}' --expect 200 --check enabled eq true
   CIDR=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with the single word: ok' --wait --timeout 240 --print-id)
   control-agent-server conversation events "$CIDR" --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-count 1
+  control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 --check agent.mcp_config.qa-f26-mcp.command exists \
+    --check agent.agent_context.skills contains '"name": "qa-f26-mcpplug-skill"' --quiet --save F26.conversation-resume-disabled/before
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers contains qa-f26-mcp \
+    --check ambient_plugin_skills contains qa-f26-inst:qa-hello
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": false}' --expect 200
+  control-agent-server api PATCH /api/plugins/installed/qa-f26-mcpplug --json '{"enabled": false}' --expect 200
   control-agent-server restart
   control-agent-server ws start "/sockets/events/$CIDR" --name qa-f26-resume --duration 300
   control-agent-server conversation send "$CIDR" --text '/qa-f26-inst:qa-hello' --wait --timeout 240
@@ -682,21 +691,37 @@ Preconditions:
   control-agent-server ws read qa-f26-resume --kinds MessageEvent --contains '"text": "/qa-f26-inst:qa-hello"' --expect-min 1 --wait 30
   control-agent-server ws read qa-f26-resume --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-none
   control-agent-server ws stop qa-f26-resume --kinds MessageEvent --contains '"activated_skills": ["qa-f26-inst:qa-hello"]' --expect-none \
-    --save F26.conversation-resume-disabled/frames  # bug: matching ge 1
+    --save F26.conversation-resume-disabled/frames
   control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 \
-    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation  # bug: status eq 200 && response.body.agent.agent_context.skills contains qa-f26-inst
+    --check agent.agent_context.skills not-contains qa-f26-inst --check agent.agent_context.skills not-contains qa-f26-mcpplug \
+    --check agent.mcp_config.qa-f26-mcp missing --save F26.conversation-resume-disabled/conversation
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers len-eq 0 \
+    --check ambient_plugin_skills not-contains qa-f26-inst
+  control-agent-server api DELETE /api/plugins/installed/qa-f26-mcpplug --expect 200
   ```
   The conversation loaded the plugin before it was disabled (its hook ran
   for the prompt). Ambient plugins are not pinned to a conversation; on
   resume they are "re-discovered from disk / current enabled state"
-  (`LocalConversation._ensure_plugins_loaded`), so the resumed turn should
-  behave like `F26.conversation-disabled`. It does run the user hook and not
-  the disabled plugin's hook, but the disabled plugin's command still
-  activates (`activated_skills: ["qa-f26-inst:qa-hello"]` on the user
-  message, the first marked check), and the agent context still lists its
-  skills (the second): they were merged into the agent and persisted in
-  `base_state.json`, so only its hooks follow the current state (by the same
-  path, read from source and not driven here, its MCP servers stay too). The command is sent here for the
+  (`LocalConversation._ensure_plugins_loaded`), so the resumed turn
+  behaves like `F26.conversation-disabled`: the user hook runs, the disabled
+  plugin's hook does not, its command does not activate (no
+  `activated_skills: ["qa-f26-inst:qa-hello"]` on the user message), and the
+  agent context lists none of its skills. Ambient contributions are merged
+  into the agent persisted in `base_state.json`, so the conversation records
+  their skill and MCP server names and drops them after successful discovery.
+  A failed scan preserves the previous contributions and ownership record.
+  A second plugin, `qa-f26-mcpplug`, adds the stdio MCP server `qa-f26-mcp`
+  through its `.mcp.json`: before the restart the conversation's
+  `agent.mcp_config` has it and `base_state.json` records it in
+  `ambient_plugin_mcp_servers` (with the skills in `ambient_plugin_skills`;
+  neither field is in the REST view); after the plugin is disabled and the
+  conversation resumes, `agent.mcp_config` no longer has it and both records
+  hold only what is still enabled. The drop happens when the conversation
+  loads its plugins on the first resumed message, which is why the recipe
+  sends one before it reads the agent. That plugin is uninstalled at the end.
+  Read from source and not driven here: explicit replacement agents start with no inherited ownership, and legacy
+  conversations without a record retain unidentifiable contributions rather
+  than deleting caller content by name. The command is sent here for the
   first time because a keyword skill activates once per conversation
   (`activated_knowledge_skills`). The plugin stays disabled.
 - **Persistence across a restart (`F26.restart-persist`).** Disable
@@ -903,8 +928,8 @@ Preconditions:
   name counts, whatever its source.
 - Ambient plugins load once per conversation, at its first message or run.
   Disabling or uninstalling a plugin does not unload it from a conversation
-  that is already running; after a restart its hooks are gone but its skills
-  and commands stay (`F26.conversation-resume-disabled`).
+  that is already running; after a restart it is gone, hooks, skills,
+  commands and MCP servers alike (`F26.conversation-resume-disabled`).
 - `GET /api/conversations/{id}` trims `agent.agent_context.skills` unless
   `include_skills=true`, so a plain `GET` shows no plugin skills.
 - `POST /api/plugins` needs a JSON body; without one it is 422 (the

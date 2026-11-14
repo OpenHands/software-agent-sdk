@@ -180,7 +180,7 @@ Preconditions:
     --check async.tool_step.messages.0 eq "the values are <secret-hidden> and <secret-hidden>" \
     --check async.tool_step.seconds lt 10
   ```
-  Expected: both cases are masked in well under a second. Before #6642 the tool case made the lookup inside the tool, while `arun()` held the state lock, so the server's `update_secrets` call waited on that lock and the value stayed unmasked after httpx's 30 s timeout; `astep` now resolves lookups with the lock released before running tools, as it does before masking an agent message.
+  Expected: both cases are masked in well under a second. `astep` resolves lookups with the state lock released before running tools, as it does before masking an agent message, so a server's `update_secrets` call never waits on that lock.
 - **A real model labels its own actions (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`).** Live. The model is asked to run `ls` and then `rm -rf scratch`; `ConfirmRisky()` stops, and the program rejects until the agent finishes. A model that declines to propose the deletion at all (DeepSeek Flash did on 2026-11-03: it only listed and read `scratch/`) leaves the confirmation path unexercised, and the program exits 3.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

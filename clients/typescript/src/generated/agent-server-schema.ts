@@ -12229,7 +12229,7 @@ export type SkillInput = {
   /**
    * Description
    *
-   * A brief description of what the skill does and when to use it. Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated with a notice pointing to the skill's source path.
+   * A brief description of what the skill does and when to use it. Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated with a notice pointing to invoke_skill for the full skill.
    */
   description?: string | null;
   /**
@@ -12349,7 +12349,7 @@ export type SkillOutput = {
   /**
    * Description
    *
-   * A brief description of what the skill does and when to use it. Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated with a notice pointing to the skill's source path.
+   * A brief description of what the skill does and when to use it. Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated with a notice pointing to invoke_skill for the full skill.
    */
   description?: string | null;
   /**
@@ -20301,7 +20301,7 @@ export type SkillInputWritable = {
   /**
    * Description
    *
-   * A brief description of what the skill does and when to use it. Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated with a notice pointing to the skill's source path.
+   * A brief description of what the skill does and when to use it. Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated with a notice pointing to invoke_skill for the full skill.
    */
   description?: string | null;
   /**
