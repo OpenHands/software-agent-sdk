@@ -3500,12 +3500,18 @@ class ACPAgent(AgentBase):
                         working_dir,
                     )
                 except ACPRequestError as e:
+                    # ``data`` is folded into the message: clients that only
+                    # show ``str(exc)`` would otherwise lose the real cause.
+                    # Providers often echo the id, which must not leak.
+                    provider_error = _acp_error_detail(e).replace(
+                        prior_session_id, _fingerprint_session_id(prior_session_id)
+                    )
                     raise ACPRequestError(
                         e.code,
-                        "Could not resume the existing ACP session. "
-                        "No new session was started. Resolve the provider error "
-                        "and retry, or explicitly start a new conversation. " + str(e),
-                        e.data,
+                        "Could not resume the existing ACP session, so the agent "
+                        "would not see the earlier conversation. No new session "
+                        "was started. Fix the provider error and try again, or "
+                        "start a new conversation. Provider error: " + provider_error,
                     ) from e
 
             # Track whether ``acp_model`` was actually pushed to the server so

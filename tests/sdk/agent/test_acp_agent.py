@@ -6654,7 +6654,7 @@ class TestACPSessionIdPersistence:
         state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
         conn = self._make_conn(
             new_session_id="replacement-sess",
-            load_exc=ACPRequestError(code, "provider failure"),
+            load_exc=ACPRequestError(code, "provider failure for stale-sess"),
         )
 
         with (
@@ -6668,6 +6668,7 @@ class TestACPSessionIdPersistence:
         conn.load_session.assert_awaited_once()
         conn.new_session.assert_not_awaited()
         assert exc.value.code == code
+        assert "stale-sess" not in str(exc.value)
         assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.execution_status == ConversationExecutionStatus.ERROR
 
@@ -7210,9 +7211,11 @@ class TestACPSessionIdPersistence:
 
         agent._executor = AsyncExecutor()
         events = []
-        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+        with self._transport_patches(conn), pytest.raises(ACPRequestError) as exc:
             agent.init_state(state, on_event=events.append)
 
+        # Clients that only render str(exc) still see the provider's cause.
+        assert "busy" in str(exc.value)
         assert state.agent_state == before
         assert state.execution_status == ConversationExecutionStatus.ERROR
         errors = [e for e in events if isinstance(e, ConversationErrorEvent)]

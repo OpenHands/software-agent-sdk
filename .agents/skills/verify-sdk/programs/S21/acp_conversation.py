@@ -420,7 +420,8 @@ elif mode == "resume":
     ]
     third.agent.close()
     third.close()
-    # An id the server has forgotten: falls back to a new session.
+    # An id the server has forgotten: the run fails instead of silently
+    # replacing the session with a context-free one.
     news_before = len(journal("session_new"))
     forgotten = Conversation(
         agent=ACPAgent(acp_command=FAKE, acp_resume_session_id="sess-forgotten"),
@@ -435,10 +436,10 @@ elif mode == "resume":
     ]
     result["forgotten_new_sessions"] = len(journal("session_new")) - news_before
     result["forgotten_status"] = forgotten.state.execution_status.value
-    result["forgotten_warning"] = any(
-        "load_session" in w and "fresh session" in w for w in warnings_seen
-    )
-    result["session_id_in_warnings"] = any("sess-forgotten" in w for w in warnings_seen)
+    result["forgotten_errors"] = errors_of(forgotten)
+    result["session_id_in_warnings"] = any(
+        "sess-forgotten" in w for w in warnings_seen
+    ) or any("sess-forgotten" in e["detail"] for e in errors_of(forgotten))
     forgotten.agent.close()
     forgotten.close()
 
