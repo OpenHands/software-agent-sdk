@@ -232,7 +232,7 @@ async def test_warm_npx_cache_passes_every_pinned_package(tmp_path):
     agent = _make_agent()
     process = MagicMock()
     process.returncode = 0
-    process.wait = AsyncMock(return_value=0)
+    process.communicate = AsyncMock(return_value=(b"", b""))
 
     with patch(
         "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
@@ -262,7 +262,7 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
     agent = _make_agent()
     process = MagicMock()
     process.returncode = 0
-    process.wait = AsyncMock(return_value=0)
+    process.communicate = AsyncMock(return_value=(b"", b""))
     env = {"npm_config_cache": str(tmp_path / "npm-cache")}
 
     with patch(
@@ -287,11 +287,91 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
         env=env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
 
 
-def test_npx_cache_warm_failure_continues_with_normal_startup(tmp_path, caplog):
+async def test_warm_npx_cache_retries_without_prefer_offline_on_failure(
+    tmp_path, caplog
+):
+    agent = _make_agent()
+    offline_proc = MagicMock()
+    offline_proc.returncode = 1
+    offline_proc.communicate = AsyncMock(
+        return_value=(
+            b"",
+            b"npm error code ETARGET\n"
+            b"npm error notarget No matching version found for "
+            b"@agentclientprotocol/claude-agent-acp@0.99.1.\n",
+        )
+    )
+    online_proc = MagicMock()
+    online_proc.returncode = 0
+    online_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    cache_dir = str(tmp_path / "npm-cache")
+    env = {"npm_config_cache": cache_dir}
+
+    with caplog.at_level("WARNING"):
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=[offline_proc, online_proc]),
+        ) as create_process:
+            await agent._warm_npx_cache(
+                ["@agentclientprotocol/claude-agent-acp@0.99.1"],
+                "claude-code",
+                env,
+                str(tmp_path),
+            )
+
+    assert create_process.await_count == 2
+    first_args = create_process.await_args_list[0].args
+    second_args = create_process.await_args_list[1].args
+    assert "--prefer-offline" in first_args
+    assert "--prefer-offline" not in second_args
+    assert "@agentclientprotocol/claude-agent-acp@0.99.1" in caplog.text
+    assert cache_dir in caplog.text
+    assert "ETARGET" in caplog.text
+
+
+async def test_warm_npx_cache_fails_after_retry_preserving_npm_stderr(tmp_path):
+    agent = _make_agent()
+    err_bytes = (
+        b"npm error code ETARGET\n"
+        b"npm error notarget No matching version found for "
+        b"@agentclientprotocol/claude-agent-acp@0.99.1.\n"
+    )
+    offline_proc = MagicMock()
+    offline_proc.returncode = 1
+    offline_proc.communicate = AsyncMock(return_value=(b"", err_bytes))
+    online_proc = MagicMock()
+    online_proc.returncode = 1
+    online_proc.communicate = AsyncMock(return_value=(b"", err_bytes))
+
+    cache_dir = str(tmp_path / "npm-cache")
+    env = {"npm_config_cache": cache_dir}
+
+    with patch(
+        "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+        new=AsyncMock(side_effect=[offline_proc, online_proc]),
+    ) as create_process:
+        with pytest.raises(RuntimeError) as exc_info:
+            await agent._warm_npx_cache(
+                ["@agentclientprotocol/claude-agent-acp@0.99.1"],
+                "claude-code",
+                env,
+                str(tmp_path),
+            )
+
+    assert create_process.await_count == 2
+    msg = str(exc_info.value)
+    assert "@agentclientprotocol/claude-agent-acp@0.99.1" in msg
+    assert cache_dir in msg
+    assert "ETARGET" in msg
+    assert "exit code 1" in msg
+
+
+def test_npx_cache_warm_failure_raises_install_error(tmp_path, caplog):
     agent = ACPAgent(
         acp_command=[
             "npx",
@@ -309,23 +389,32 @@ def test_npx_cache_warm_failure_continues_with_normal_startup(tmp_path, caplog):
     conn = TestACPSessionIdPersistence._make_conn()
 
     try:
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("ERROR"):
             with patch.object(
                 ACPAgent,
                 "_warm_npx_cache",
-                new=AsyncMock(side_effect=RuntimeError("registry unavailable")),
+                new=AsyncMock(
+                    side_effect=RuntimeError(
+                        "ACP provider package install failed for codex "
+                        "(packages=['@agentclientprotocol/codex-acp@1.10.0']): ETARGET"
+                    )
+                ),
             ):
-                TestACPSessionIdPersistence._patched_start_acp_server(
-                    agent, state, conn=conn
-                )
+                with pytest.raises(
+                    RuntimeError,
+                    match=r"@agentclientprotocol/codex-acp@1\.10\.0",
+                ):
+                    TestACPSessionIdPersistence._patched_start_acp_server(
+                        agent, state, conn=conn
+                    )
     finally:
         agent._unregister_atexit_cleanup()
-        assert agent._executor is not None
-        agent._executor.close()
-        agent._executor = None
+        if agent._executor is not None:
+            agent._executor.close()
+            agent._executor = None
 
-    assert "continuing with normal startup" in caplog.text
-    conn.initialize.assert_awaited_once()
+    assert "@agentclientprotocol/codex-acp@1.10.0" in caplog.text
+    conn.initialize.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

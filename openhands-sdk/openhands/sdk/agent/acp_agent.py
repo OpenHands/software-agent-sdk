@@ -2788,37 +2788,45 @@ class ACPAgent(AgentBase):
         cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         return Path(os.path.abspath(cache_dir))
 
-    async def _warm_npx_cache(
+    @staticmethod
+    def _format_npx_stderr_tail(
+        stderr: bytes, max_lines: int = 8, max_chars: int = 500
+    ) -> str:
+        text = stderr.decode("utf-8", errors="replace").strip()
+        if not text:
+            return ""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        tail = "\n".join(lines[-max_lines:])
+        if len(tail) > max_chars:
+            tail = tail[-max_chars:]
+        return tail
+
+    async def _run_npx_cache_warm_once(
         self,
-        packages: Sequence[str],
+        package_args: Sequence[str],
         provider_key: str,
         env: dict[str, str],
         cwd: str,
-    ) -> None:
-        logger.info(
-            "Warming ACP provider npx cache: provider=%s, packages=%s; "
-            "first use may download the provider before session startup",
-            provider_key,
-            list(packages),
-        )
-        package_args = [arg for package in packages for arg in ("--package", package)]
+        *,
+        prefer_offline: bool,
+    ) -> tuple[int, str]:
+        cmd = ["npx", "--yes"]
+        if prefer_offline:
+            cmd.append("--prefer-offline")
+        cmd.extend(package_args)
+        cmd.extend(["--", "node", "-e", ""])
         process = await asyncio.create_subprocess_exec(
-            "npx",
-            "--yes",
-            "--prefer-offline",
-            *package_args,
-            "--",
-            "node",
-            "-e",
-            "",
+            *cmd,
             cwd=cwd,
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
         try:
-            await asyncio.wait_for(process.wait(), timeout=_ACP_NPX_CACHE_WARM_TIMEOUT)
+            result = await asyncio.wait_for(
+                process.communicate(), timeout=_ACP_NPX_CACHE_WARM_TIMEOUT
+            )
         except TimeoutError as exc:
             process.kill()
             await process.wait()
@@ -2826,11 +2834,71 @@ class ACPAgent(AgentBase):
                 "ACP provider cache warm timed out after "
                 f"{_ACP_NPX_CACHE_WARM_TIMEOUT:.0f}s for {provider_key}"
             ) from exc
-        if process.returncode:
-            raise RuntimeError(
-                f"ACP provider cache warm failed for {provider_key} "
-                f"(exit code {process.returncode})"
-            )
+        stderr_bytes = (
+            result[1]
+            if isinstance(result, tuple)
+            and len(result) >= 2
+            and isinstance(result[1], (bytes, bytearray))
+            else b""
+        )
+        return (
+            process.returncode or 0,
+            self._format_npx_stderr_tail(bytes(stderr_bytes)),
+        )
+
+    async def _warm_npx_cache(
+        self,
+        packages: Sequence[str],
+        provider_key: str,
+        env: dict[str, str],
+        cwd: str,
+    ) -> None:
+        packages_list = list(packages)
+        cache_dir = env.get("npm_config_cache", "<default>")
+        logger.info(
+            "Warming ACP provider npx cache: provider=%s, packages=%s, cache=%s; "
+            "first use may download the provider before session startup",
+            provider_key,
+            packages_list,
+            cache_dir,
+        )
+        package_args = [arg for package in packages for arg in ("--package", package)]
+        returncode, stderr_tail = await self._run_npx_cache_warm_once(
+            package_args,
+            provider_key,
+            env,
+            cwd,
+            prefer_offline=True,
+        )
+        if not returncode:
+            return
+
+        logger.warning(
+            "ACP provider npx offline cache warm failed: provider=%s, packages=%s, "
+            "cache=%s, exit_code=%s%s; retrying without --prefer-offline",
+            provider_key,
+            packages_list,
+            cache_dir,
+            returncode,
+            f", stderr={stderr_tail!r}" if stderr_tail else "",
+        )
+        returncode, retry_stderr_tail = await self._run_npx_cache_warm_once(
+            package_args,
+            provider_key,
+            env,
+            cwd,
+            prefer_offline=False,
+        )
+        if not returncode:
+            return
+
+        effective_stderr = retry_stderr_tail or stderr_tail
+        detail = f"; npm stderr: {effective_stderr}" if effective_stderr else ""
+        raise RuntimeError(
+            f"ACP provider package install failed for {provider_key} "
+            f"(packages={packages_list}, npm_config_cache={cache_dir}, "
+            f"exit code {returncode}){detail}"
+        )
 
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]
@@ -3229,15 +3297,18 @@ class ACPAgent(AgentBase):
             try:
                 self._executor.run_async(
                     self._warm_npx_cache(packages, provider.key, env, working_dir),
-                    timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
+                    timeout=_ACP_NPX_CACHE_WARM_TIMEOUT * 2 + 5,
                 )
             except Exception as error:
-                logger.warning(
-                    "ACP provider npx cache warm failed: provider=%s; "
-                    "continuing with normal startup: %s",
+                logger.error(
+                    "ACP provider npx package install failed: provider=%s, "
+                    "packages=%s, cache=%s: %s",
                     provider.key,
+                    packages,
+                    env["npm_config_cache"],
                     error,
                 )
+                raise
 
         # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).
