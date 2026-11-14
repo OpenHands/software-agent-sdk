@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from tenacity import (
     RetryCallState,
@@ -25,6 +25,12 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
+
+
+@runtime_checkable
+class _HasStatusCode(Protocol):
+    @property
+    def status_code(self) -> object: ...
 
 
 def transient_error_condition(
@@ -128,6 +134,30 @@ class RetryMixin:
             else retry_exceptions
         )
 
+        stop = stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
+
+        def diagnosed_retry(retry_state: RetryCallState) -> bool:
+            eligible = retry_condition(retry_state)
+            exc = (
+                retry_state.outcome.exception()
+                if retry_state.outcome is not None
+                else None
+            )
+            if exc is not None:
+                status = exc.status_code if isinstance(exc, _HasStatusCode) else None
+                logger.warning(
+                    "LLM request failed: exception_type=%s.%s status_code=%s "
+                    "attempt=%d max_attempts=%d retry_eligible=%s will_retry=%s",
+                    type(exc).__module__,
+                    type(exc).__qualname__,
+                    status if isinstance(status, int) else None,
+                    retry_state.attempt_number,
+                    num_retries,
+                    eligible,
+                    eligible and not stop(retry_state),
+                )
+            return eligible
+
         exponential_wait = wait_exponential(
             multiplier=retry_multiplier, min=retry_min_wait, max=retry_max_wait
         )
@@ -138,11 +168,9 @@ class RetryMixin:
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=(
-                stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
-            ),
+            stop=stop,
             reraise=True,
-            retry=retry_condition,
+            retry=diagnosed_retry,
             wait=wait,
         )
         return retry_decorator
@@ -182,9 +210,3 @@ class RetryMixin:
         setattr(cast(Any, exc), "retry_attempt", retry_state.attempt_number)
         if max_attempts is not None:
             setattr(cast(Any, exc), "max_retries", max_attempts)
-
-        logger.error(
-            "%s. Attempt #%d | You can customize retry values in the configuration.",
-            exc,
-            retry_state.attempt_number,
-        )
