@@ -353,7 +353,12 @@ async def _wait_for_reused_conversation_completion(
         state = await event_service.get_state()
         last_status = state.execution_status
         enough_new_events = len(state.events) > min_event_count
-        if last_status == ConversationExecutionStatus.RUNNING:
+        run_task = event_service._run_task
+        # A run that was just scheduled has not replaced the status the
+        # previous run left behind (paused, error) yet.
+        if last_status == ConversationExecutionStatus.RUNNING or (
+            run_task is not None and not run_task.done()
+        ):
             observed_run = True
         elif (last_status.is_terminal() or last_status in _STOPPED_RUN_STATUSES) and (
             observed_run or enough_new_events
