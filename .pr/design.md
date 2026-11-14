@@ -54,7 +54,7 @@ Verified live: `create_app()` with flag off → `search-content` routes: **NONE*
 ### Zero impact when disabled
 
 1. No route, no schema entry → `check_agent_server_openapi_quality.py` sees the same default schema as upstream `main`
-2. No SQLite file opened unless the first search call happens
+2. No SQLite file while the feature is disabled; when enabled, the index builds at server startup (one full backfill, then per-conversation `dir_mtime` incremental sync), not on first search
 3. Index lives beside the conversation store (`conversations_path.parent / "search-index.db"`); deletion of a conversation prunes its rows on next sync
 
 ## Frontend (Canvas)
