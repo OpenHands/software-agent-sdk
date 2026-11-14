@@ -4,9 +4,9 @@ How the stack #6762 → #6763 → #6764 was verified. This is a temporary PR
 artifact (see `AGENTS.md`, "PR-specific artifacts"); the next release PR
 removes it.
 
-- Base: `main` at `91e8b5b6`, merged into all three branches.
-- Code under test: part 1 `bfa0862b`, part 2 `cd8f1482`, part 3 `ae2e835c`. The commit
-  after `ae2e835c` adds this record and changes nothing else.
+- Base: `main` at `3c66af1d`, merged into all three branches.
+- Code under test: part 1 `ad341922`, part 2 `115395d6`, part 3 `cac2960d`. The commit
+  after `cac2960d` adds this record and changes nothing else.
 - Every live attempt launches its own agent-server
   (`control-agent-server map run --fresh`); "restart" is a real process
   restart on the same state directory. Runs were wrapped in
@@ -16,9 +16,11 @@ removes it.
   scripted `llm-stub` and need no key.
 - `xfail`: the bullet failed with exactly the failure its known-bug marker
   documents. `xpass`: that failure did not reproduce.
-- The `main` baselines of the whole families were run once, before the last
-  three small fixes to the stack; `main` did not change in between. Every
-  run on the stack is on the commits named above.
+- Sections 1, 2 and 4 are one run on the commits named above. Section 3 (the
+  UI) was run one merge of `main` earlier, on part 3 at `ae2e835c` against
+  `main` at `91e8b5b6`; between `ae2e835c` and `cac2960d` the source of the four
+  packages is unchanged (`git diff` is empty), only dependency pins and the
+  feature maps moved.
 
 ## 1. The bug on `main` and the fix, on live servers
 
@@ -27,7 +29,7 @@ removes it.
 Replayed with `main`'s map (which still has the markers), against a server
 from `main` and then from part 1 (`--checkout`).
 
-| Bullet | `main`, 2 attempts | this branch, 2 attempts |
+| Bullet | `main` | this branch |
 |---|---|---|
 | `F04.create-secrets-get` | xfail, xfail | xpass, xpass |
 | `F08.secrets-visible` | xfail, xfail | xpass, xpass |
@@ -38,12 +40,10 @@ SDK map, `S04.secrets-update` and `S04.secrets-constructor`: fail on `main`
 
 ### Part 2 (#6763): a fork keeps the state
 
-| Bullet | `main`, 2 attempts | this branch, 2 attempts |
+| Bullet | `main` | this branch |
 |---|---|---|
 | `F10.fork-keeps-credentials` | xfail, xfail | xpass, xpass |
-| `F10.fork-run-memory` | fail, fail | xpass, xpass |
-
-`F10.fork-run-memory` reports `fail` on `main` and not `xfail`: the fork's run still ends in `error` because the fork lost the model key, but the provider's rejection ("Authentication Fails") is recorded as `LLMBadRequestError` this time, not as the `LLMAuthenticationError` the map's marker names, so the runner does not count it as the documented failure. On this branch the fork runs to `finished` and recalls the codename.
+| `F10.fork-run-memory` | xfail, xfail | xpass, xpass |
 
 SDK map, `S04.fork-keeps-state`: fails 16 checks on `main`, passes on part 2.
 
@@ -52,7 +52,7 @@ SDK map, `S04.fork-keeps-state`: fails 16 checks on `main`, passes on part 2.
 Replayed with a copy of `main`'s map in which these recipes carry a
 known-bug marker, against a server from `main` and then from part 3.
 
-| Bullet | `main`, 2 attempts | this branch, 2 attempts |
+| Bullet | `main` | this branch |
 |---|---|---|
 | `F08.state-on-disk` | xfail, xfail | xpass, xpass |
 | `F08.policy-restart` | xfail, xfail | xpass, xpass |
@@ -65,38 +65,38 @@ known-bug marker, against a server from `main` and then from part 3.
 
 ## 2. Whole families on part 3's code, and the same families on `main`
 
-| Family | this branch | `main` (`91e8b5b6`), its own map |
+| Family | this branch | `main` (`3c66af1d`), its own map |
 |---|---|---|
 | `F08` confirmation, security, secrets | 34 of 34 pass | 22 of 24 pass, 2 xfail |
-| `F10` fork, navigate, condense, ask | 25 of 27 pass; 2 fail that also fail on `main` (`F10.ask-agent`, `F10.ask-agent-running`) | 22 of 26 pass, 3 fail, 1 xfail |
-| `F04` conversation lifecycle | 33 of 37 pass; 1 xfail that `main` has too (`F04.create-initial-message-run-false`); 3 fail that also fail on `main` (`F04.delete`, `F04.delete-unknown-id`, `F04.restart-persist`) | 32 of 37 pass, 3 fail, 2 xfail |
+| `F10` fork, navigate, condense, ask | 25 of 27 pass; 2 fail that also fail on `main` (`F10.ask-agent`, `F10.ask-agent-running`) | 22 of 26 pass, 2 fail, 2 xfail |
+| `F04` conversation lifecycle | 36 of 37 pass; 1 xfail that `main` has too (`F04.create-initial-message-run-false`) | 35 of 37 pass, 2 xfail |
 | `F12` runtime and credentials | 29 of 32 pass; 1 xfail that `main` has too (`F12.sandbox-pause-websocket`); `F12.docker-runtime` blocked (needs a Docker daemon); `F12.docker-startup-timeout` blocked (needs a Docker daemon) | 29 of 32 pass, 1 xfail, 2 blocked |
-| `F31` persistence and limits | 22 of 24 pass; 1 xfail that `main` has too (`F31.takeover-keeps-metadata`); `F31.storage-retention` blocked (labelled blocked in the map) | 22 of 24 pass, 1 xfail, 1 blocked |
+| `F31` persistence and limits | 22 of 24 pass; 1 xfail that `main` has too (`F31.takeover-keeps-metadata`); `F31.storage-retention` blocked (needs a Docker daemon) | 22 of 24 pass, 1 xfail, 1 blocked |
 | `F33` Python `RemoteConversation`: run, fork, confirmation, secrets | 5 of 5 pass | 5 of 5 pass |
 | `F34` TypeScript client: create, run, fork/navigate/ask, confirm | 4 of 5 pass; 1 fail that also fails on `main` (`F34.conversation-branching`) | 4 of 5 pass, 1 fail |
-| `S04` local conversation (SDK map) | 25 of 27 pass; 1 fail that also fails on `main` (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map | 24 of 26 pass, 1 fail, 1 blocked |
-| `S13` security and confirmation (SDK map) | 8 of 9 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map | 7 of 9 pass, 2 blocked |
+| `S04` local conversation (SDK map) | 26 of 27 pass; `S04.factory` labelled blocked in the map | 25 of 26 pass, 1 blocked |
+| `S13` security and confirmation (SDK map) | 7 of 9 pass; the live-model bullet (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`) fail in this run, blocked on `main`: see the note below; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map | 7 of 9 pass, 2 blocked |
 
-Every bullet that does not pass on part 3 does not pass on `main` either.
-The failures the two share are recipes in `main`'s map that lag `main` itself: `F04.delete` waits for a `PauseEvent` on a socket that is now closed with "Conversation deleted" (`F04.delete-unknown-id` and `F04.restart-persist` reuse its conversation), and after a side question the event count is one higher than `F10.ask-agent`, `F10.ask-agent-running` and `F34.conversation-branching` expect. I left those recipes alone; they are not about this change.
+Every bullet that does not pass on part 3 does not pass on `main` either
+(compared bullet by bullet). `main` has five more that do not pass: the bullets its map marks as known bugs, which this stack fixes (`F04.create-secrets-get`, `F08.secrets-visible`, `F08.secrets-unsaved-restart`, `F10.fork-keeps-credentials`, `F10.fork-run-memory`). The three failures the two share are recipes about a side question: after `ask_agent` the event count is one higher than `F10.ask-agent`, `F10.ask-agent-running` and `F34.conversation-branching` expect, on `main` as here. I left those recipes alone; they are not about this change.
 
 SDK maps on parts 1 and 2:
 
 | Family | Result |
 |---|---|
-| `S04` local conversation (SDK map) | 24 of 26 pass; 1 fail that also fails on `main` (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
+| `S04` local conversation (SDK map) | 25 of 26 pass; `S04.factory` labelled blocked in the map |
 | `S13` security and confirmation (SDK map) | 8 of 9 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
 
 | Family | Result |
 |---|---|
-| `S04` local conversation (SDK map) | 25 of 27 pass; 1 fail that also fails on `main` (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
+| `S04` local conversation (SDK map) | 26 of 27 pass; `S04.factory` labelled blocked in the map |
 | `S13` security and confirmation (SDK map) | 8 of 9 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
 
-The one `S04` failure is the event-log recovery bullet; it fails the same way on `main` and does not touch this change.
+The `S13` bullet that did not pass is the live-model one (`S13.llm-analyzer`): it needs DeepSeek to rate `rm -rf scratch` as `HIGH`, and the model often says `MEDIUM`. Repeated alone four times on each side, it passed once, failed twice and was blocked once on this stack's top branch, and exactly the same on `main`. The stack does not touch how a model rates a command.
 
 ## 3. Through the Agent Canvas UI
 
-The full OpenHands UI (Agent Canvas, built from the `OpenHands/OpenHands` repository) was run with that repository's `verify-openhands` skill (`control-openhands launch --sdk-path <checkout>`), once on `main`'s SDK and agent-server (`91e8b5b6`) and once on this branch's (`ae2e835c`), with a real model (DeepSeek flash). The Canvas has no control that changes confirmation mode on an existing conversation, and it only ever sends lookup secrets, so two steps were made through the REST API: that switch, and the replacement of the secret's value. Everything else was typed and clicked in the UI, and each stack was restarted for real.
+The full OpenHands UI (Agent Canvas, built from the `OpenHands/OpenHands` repository) was run with that repository's `verify-openhands` skill (`control-openhands launch --sdk-path <checkout>`), once on `main`'s SDK and agent-server (`91e8b5b6`) and once on this branch's (`ae2e835c`), with a real model (DeepSeek flash). That is one merge of `main` before this branch's current code commit; the source of the four packages is the same in both (`git diff ae2e835c..cac2960d` is empty for them). The Canvas has no control that changes confirmation mode on an existing conversation, and it only ever sends lookup secrets, so two steps were made through the REST API: that switch, and the replacement of the secret's value. Everything else was typed and clicked in the UI, and each stack was restarted for real.
 
 | Scenario, observed in the UI | `main` | this branch |
 |---|---|---|
@@ -113,7 +113,7 @@ On `main` the revert is also written back: once the conversation is loaded after
 
 ## 4. Checks CI runs only for PRs into `main`, run on part 3
 
-- The exported OpenAPI document (`export_agent_server_openapi.py`) is byte-identical to `main`'s at `91e8b5b6`.
+- The exported OpenAPI document (`export_agent_server_openapi.py`) is byte-identical to `main`'s.
 - REST API breakage check (`check_agent_server_rest_api_breakage.py`, with oasdiff 1.19.1): passes. What it lists against the 1.62.0 release are `main`'s own additive changes (the reaction events of #6609); with an identical OpenAPI document, this branch adds nothing to them.
 - Persisted settings compatibility (`check_persisted_settings_compat.py`): passes, the payloads of the 1.62.0 release included.
 - SDK API breakage check (`check_sdk_api_breakage.py`): no breaking changes in the three packages.
