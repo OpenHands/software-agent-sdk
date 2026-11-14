@@ -174,6 +174,54 @@ def test_delegate_executor_missing_task():
     )
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+        ConversationExecutionStatus.PAUSED,
+    ],
+)
+def test_delegate_reports_nonfinished_status_with_partial_response(status):
+    executor, parent = create_test_executor_and_parent()
+    sub = create_mock_conversation()
+    sub.state.execution_status = status
+    sub.state.events = []
+    executor._sub_agents["worker"] = sub
+
+    with patch(
+        "openhands.tools.delegate.impl.get_agent_final_response",
+        return_value="partial result",
+    ):
+        observation = executor(
+            DelegateAction(command="delegate", tasks={"worker": "work"}), parent
+        )
+
+    assert observation.is_error
+    assert status.value in observation.text
+    assert "partial result" in observation.text
+
+
+def test_delegate_mixed_results_reports_error_and_preserves_success():
+    executor, parent = create_test_executor_and_parent()
+    successful = create_mock_conversation()
+    failed = create_mock_conversation()
+    failed.run.side_effect = RuntimeError("run failed")
+    executor._sub_agents.update({"ok": successful, "failed": failed})
+
+    with patch(
+        "openhands.tools.delegate.impl.get_agent_final_response", return_value="done"
+    ):
+        observation = executor(
+            DelegateAction(command="delegate", tasks={"ok": "a", "failed": "b"}),
+            parent,
+        )
+
+    assert observation.is_error
+    assert "Agent ok: done" in observation.text
+    assert "run failed" in observation.text
+
+
 def test_delegation_manager_init():
     """Test DelegateExecutor initialization."""
     mock_conv = create_mock_conversation()
