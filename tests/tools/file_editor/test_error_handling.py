@@ -196,3 +196,24 @@ def test_view_subdirectory_permission_error_skips_inaccessible_dir():
             result = editor.view(path)
         assert not result.is_error
         assert "visible.txt" in result.text
+
+
+def test_str_replace_no_op_old_str_equals_new_str(tmp_path):
+    """Direct str_replace with old_str == new_str is a reported no-op, not a success.
+
+    The tool wrapper already rejects this via EditorToolParameterInvalidError; the raw
+    FileEditor method used to rewrite the file with identical content, add an undo
+    history entry, and reply "has been edited", so agents repeated the call.
+    """
+    from openhands.tools.file_editor.exceptions import ToolError
+
+    p = tmp_path / "a.py"
+    p.write_text("x = 1\ny = 2\n")
+    editor = FileEditor(workspace_root=str(tmp_path))
+    before = p.read_text()
+
+    with pytest.raises(ToolError) as exc_info:
+        editor.str_replace(p, "y = 2", "y = 2")
+
+    assert "must be different" in str(exc_info.value)
+    assert p.read_text() == before
