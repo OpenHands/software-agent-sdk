@@ -23,7 +23,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 model = os.getenv("LLM_MODEL")
 assert model is not None, (
     "LLM_MODEL environment variable is not set. Use an Anthropic model, "
-    "for example anthropic/claude-sonnet-4-5-20250929."
+    "for example anthropic/claude-sonnet-4-6."
 )
 base_url = os.getenv("LLM_BASE_URL")
 

@@ -24,7 +24,7 @@ checks that do not need model judgment.
 
 ```bash
 export LLM_API_KEY="your-key"
-export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"  # optional
+export LLM_MODEL="anthropic/claude-sonnet-5-5"  # optional
 export LLM_BASE_URL="https://your-endpoint"              # optional
 
 python main.py
