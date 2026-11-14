@@ -48,6 +48,7 @@ from openhands.agent_server.conversation_lease import _is_pid_alive
 from openhands.agent_server.conversation_router import (
     conversation_catalog_router,
     conversation_router,
+    conversation_search_router,
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.credential_binding import (
@@ -84,6 +85,7 @@ from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
 )
+from openhands.agent_server.search_service import ContentSearchService
 from openhands.agent_server.server_context import (
     build_server_context,
     install_server_context,
@@ -448,6 +450,18 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 ),
             )
 
+            content_search_service = getattr(api.state, "content_search_service", None)
+            if content_search_service is not None:
+                try:
+                    content_search_service.sync()
+                    stats = content_search_service.stats()
+                    logger.info(
+                        "Content search index ready: %s conversations, %s messages",
+                        stats["conversations"],
+                        stats["messages"],
+                    )
+                except Exception:
+                    logger.exception("Content search index initial sync failed")
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
@@ -657,6 +671,12 @@ def _add_api_routes(app: FastAPI) -> None:
     # Collection routes must precede runtime catch-alls such as
     # ``/conversations/{conversation_id}``.
     api_router.include_router(conversation_catalog_router)
+    # Static collection routes must precede the ``/{conversation_id}``
+    # catch-alls added by the registry and ``conversation_router`` below,
+    # and the search router only exists when the service does (hosted
+    # deployments get no route, schema entry, or 404 fingerprint).
+    if hasattr(app.state, "content_search_service"):
+        api_router.include_router(conversation_search_router)
     conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
     api_router.include_router(credential_binding_router)
@@ -965,6 +985,12 @@ def create_app(config: Config | None = None) -> FastAPI:
         secrets_store=lambda: server_context_of(app).stores.secrets
     )
     app.state.app_backend_session_store = AppBackendSessionStore()
+    # Content search indexes local conversation files. Opt-in flag plus
+    # local deployment kind: hosted deployments never construct the service,
+    # so the router below is never mounted and the feature leaves no
+    # route, schema entry, or 404 fingerprint.
+    if config.content_search_enabled and config.telemetry.deployment_kind == "local":
+        app.state.content_search_service = ContentSearchService(config)
 
     _add_api_routes(app)
     _setup_static_files(app, config)
