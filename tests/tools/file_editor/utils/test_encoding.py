@@ -655,3 +655,39 @@ def test_mixed_encoding_workflow():
             os.unlink(path2)
         except FileNotFoundError:
             pass
+
+
+def test_short_cp1251_file_is_read_and_rewritten_as_cp1251(tmp_path):
+    path = tmp_path / "cp1251.txt"
+    original = "Привет TOKEN мир"
+    path.write_bytes(original.encode("cp1251"))
+    editor = FileEditor()
+
+    assert "Привет" in editor(command="view", path=str(path)).text
+
+    editor(command="str_replace", path=str(path), old_str="TOKEN", new_str="X")
+
+    assert path.read_bytes() == "Привет X мир".encode("cp1251")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "café naïve résumé — “quoted” €5",
+        "Größe über Mädchen",
+        "Señor",
+    ],
+)
+def test_cp1252_text_still_recovers_as_cp1252(encoding_manager, tmp_path, text):
+    path = tmp_path / "cp1252.txt"
+    path.write_bytes(text.encode("cp1252"))
+
+    assert encoding_manager.get_encoding(path) == "cp1252"
+    assert path.read_text(encoding="cp1252") == text
+
+
+def test_file_with_control_bytes_has_no_text_encoding(encoding_manager, tmp_path):
+    path = tmp_path / "binary.dat"
+    path.write_bytes(b"\xcf\xf0\x00\x01\x02\xe8\xe2")
+
+    assert encoding_manager.resolve_text_encoding(path) is None
