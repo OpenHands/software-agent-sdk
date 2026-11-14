@@ -327,7 +327,9 @@ def test_pre_registered_clients_only_follow_a_configured_web_url(
         job=job, mcp_url="https://mcp.example.com/mcp", client_id=client_id
     )
 
-    redirect_uris = [str(uri) for uri in oauth.context.client_metadata.redirect_uris]
+    redirect_uris = [
+        str(uri) for uri in oauth.context.client_metadata.redirect_uris or []
+    ]
     assert len(redirect_uris) == 1
     assert redirect_uris[0].startswith(expected)
     if client_id is not None:
