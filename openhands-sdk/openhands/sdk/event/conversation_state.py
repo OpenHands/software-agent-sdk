@@ -88,7 +88,6 @@ class ConversationStateUpdateEvent(Event):
 
         Args:
             state: The ConversationState to serialize
-            conversation_id: The conversation ID for the event
 
         Returns:
             A ConversationStateUpdateEvent with serialized state data
