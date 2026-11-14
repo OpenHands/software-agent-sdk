@@ -65,6 +65,16 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
 PROJECTS = ExperimentalFeatureDefinition(
     key="projects",
     label="Projects",
@@ -93,6 +103,7 @@ new conversations while Projects is off rather than added while it is on."""
 
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
+    CONVERSATION_MENTIONS,
     PROJECTS,
 ]
 
@@ -121,10 +132,14 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
     if is_enabled(features, CONVERSATION_REACTIONS.key):
         # Tool names as registered by openhands.tools.reaction.
-        return [Tool(name="react"), Tool(name="unreact")]
-    return []
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    return tools
 
 
 def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[str]:

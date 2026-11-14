@@ -12,7 +12,6 @@ from openhands.sdk.conversation.request import (
     StartChildConversationRequest,
     StartChildConversationResponse,
 )
-from openhands.sdk.conversation.types import conversation_mention
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.child_conversation.definition import (
@@ -143,8 +142,7 @@ class StartChildConversationExecutor(
 
         summary = (
             f"Started child conversation {result.conversation_id} "
-            f"(status: {result.status}). To point the user at it, write "
-            f"{conversation_mention(result.title, result.conversation_id)}.\n"
+            f"(status: {result.status}).\n"
             f"{json.dumps(result.model_dump(mode='json'), indent=2)}"
         )
         return StartChildConversationObservation.from_text(
