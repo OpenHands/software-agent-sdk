@@ -1916,6 +1916,29 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+def test_ask_agent_usage_is_in_conversation_info_at_once(server_env, patched_llm):
+    """GET /api/conversations/{id} counts a side question's usage as soon as
+    ask_agent returns, with no run or other state change after it.
+    """
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        conv.ask_agent("How's the progress?")
+
+        with httpx.Client(base_url=server_env["host"]) as client:
+            response = client.get(f"/api/conversations/{conv.id}")
+        response.raise_for_status()
+        usage_to_metrics = response.json()["stats"]["usage_to_metrics"]
+        assert "ask-agent-llm" in usage_to_metrics
+        token_usage = usage_to_metrics["ask-agent-llm"]["accumulated_token_usage"]
+        assert token_usage["prompt_tokens"] == 7  # one patched_llm call
+    finally:
+        conv.close()
+
+
 def test_events_not_lost_during_client_disconnection(
     server_env, monkeypatch: pytest.MonkeyPatch
 ):
