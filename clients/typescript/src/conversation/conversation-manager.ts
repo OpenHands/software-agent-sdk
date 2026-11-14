@@ -393,6 +393,22 @@ export class ConversationManager {
   }
 
   /**
+   * Add a saved LLM profile as a route to the conversation's model router.
+   */
+  async addModelRouterRoute(
+    conversationId: ConversationID,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  /**
    * Update route selection for a RouterLLM-backed conversation.
    */
   async updateModelRouter(

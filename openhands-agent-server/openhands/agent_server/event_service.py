@@ -2212,6 +2212,28 @@ class EventService:
                     self._run_task = None
             await self._publish_state_update()
 
+    async def add_model_router_route(
+        self,
+        profile_name: str,
+        *,
+        route_name: str | None = None,
+        base_route_name: str = "default",
+    ) -> None:
+        """Add a saved LLM profile as a conversation model-router route."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            partial(
+                self._conversation.add_model_router_route,
+                profile_name,
+                route_name=route_name,
+                base_route_name=base_route_name,
+            ),
+        )
+        await self._publish_state_update()
+
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""
         if not self._conversation:

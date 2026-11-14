@@ -35,6 +35,7 @@ from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
+    AddModelRouterRouteRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -680,12 +681,47 @@ async def get_conversation_model_router(
     return _model_router_status(event_service.get_conversation().agent.llm)
 
 
+@conversation_router.post(
+    "/{conversation_id}/model_router/routes",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: "Conversation cannot add this model router route",
+            NotFound: "Conversation or profile not found",
+        }
+    ),
+)
+async def add_conversation_model_router_route(
+    conversation_id: UUID,
+    route_request: AddModelRouterRouteRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Add a saved LLM profile as a conversation model-router route."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    route_name = route_request.route_name or route_request.profile_name
+    try:
+        await event_service.add_model_router_route(
+            route_request.profile_name,
+            route_name=route_name,
+            base_route_name=route_request.base_route_name,
+        )
+    except FileNotFoundError:
+        raise NotFound(f"Profile '{route_request.profile_name}' not found")
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
 @conversation_router.patch(
     "/{conversation_id}/model_router",
     response_model=ModelRouterStatus,
     responses=error_responses(
         {
-            Invalid: "Conversation is not backed by a model router or key is invalid",
+            Invalid: (
+                "Conversation is not backed by a model router or route name is invalid"
+            ),
             NotFound: "Conversation not found",
         }
     ),

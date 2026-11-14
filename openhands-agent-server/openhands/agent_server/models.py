@@ -493,6 +493,25 @@ class EventPage(OpenHandsModel):
     next_page_id: str | None = None
 
 
+class AddModelRouterRouteRequest(BaseModel):
+    """Payload to add a saved LLM profile as a model-router route."""
+
+    profile_name: str = Field(description="Saved LLM profile to install as a route.")
+    route_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional route name to add to the model router. Defaults to profile_name."
+        ),
+    )
+    base_route_name: str = Field(
+        default="default",
+        description=(
+            "Route name assigned to the conversation's current LLM when it must be "
+            "wrapped in a model router."
+        ),
+    )
+
+
 class UpdateSecretsRequest(BaseModel):
     """Payload to update secrets in a conversation."""
 

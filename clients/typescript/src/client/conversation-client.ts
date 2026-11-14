@@ -454,6 +454,19 @@ export class ConversationClient {
     return response.data;
   }
 
+  async addModelRouterRoute(
+    conversationId: string,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
   async updateModelRouter(
     conversationId: string,
     selection: ModelRouterSelection
