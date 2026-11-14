@@ -21,6 +21,20 @@ def test_command_hook_valid():
     assert h.command == "echo hi"
 
 
+def test_plugin_root_survives_serialization():
+    config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                hooks=[HookDefinition(command="echo hi", plugin_root="/tmp/plugin")]
+            )
+        ]
+    )
+
+    restored = HookConfig.model_validate_json(config.model_dump_json())
+
+    assert restored.pre_tool_use[0].hooks[0].plugin_root == "/tmp/plugin"
+
+
 def test_prompt_hook_valid():
     hook = HookDefinition(type=HookType.PROMPT, prompt="Block destructive commands")
     assert hook.type == HookType.PROMPT

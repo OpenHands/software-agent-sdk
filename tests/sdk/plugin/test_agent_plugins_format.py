@@ -525,6 +525,7 @@ class TestClientExtension:
 
         hooks = fmt.load_hooks(tmp_path)
         assert hooks is not None and len(hooks.pre_tool_use) == 1
+        assert hooks.pre_tool_use[0].hooks[0].plugin_root == str(tmp_path.resolve())
         assert [a.name for a in fmt.load_agents(tmp_path)] == ["helper"]
         assert [c.name for c in fmt.load_commands(tmp_path)] == ["now"]
 

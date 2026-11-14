@@ -50,6 +50,10 @@ class Plugin(BaseModel):
     ├── .mcp.json                # External tool configuration (optional)
     └── README.md                # Plugin documentation
     ```
+
+    Command hooks from a plugin receive ``PLUGIN_ROOT`` pointing to this
+    directory. Use it to invoke bundled scripts, for example:
+    ``python3 "${PLUGIN_ROOT}/scripts/check.py"``.
     """
 
     manifest: PluginManifest = Field(description="Plugin manifest from plugin.json")
