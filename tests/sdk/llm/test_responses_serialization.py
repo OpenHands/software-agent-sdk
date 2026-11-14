@@ -152,8 +152,26 @@ def test_tool_to_responses_emits_function_call_output_with_verbatim_call_id():
         content=[TextContent(text="result1"), TextContent(text="result2")],
     )
     out = m.to_responses_dict(vision_enabled=False)
-    assert all(item["type"] == "function_call_output" for item in out)
-    assert all(item["call_id"] == "call_xyz789" for item in out)
+    assert len(out) == 1
+    assert out[0]["type"] == "function_call_output"
+    assert out[0]["call_id"] == "call_xyz789"
+    assert out[0]["output"] == "result1\n\nresult2"
+
+
+def test_tool_to_responses_single_text_part_preserved():
+    m = Message(
+        role="tool",
+        tool_call_id="call_abc123",
+        name="foo",
+        content=[TextContent(text="single_result")],
+    )
+    out = m.to_responses_dict(vision_enabled=False)
+    assert len(out) == 1
+    assert out[0] == {
+        "type": "function_call_output",
+        "call_id": "call_abc123",
+        "output": "single_result",
+    }
 
 
 def test_tool_to_responses_truncates_output_over_limit():
