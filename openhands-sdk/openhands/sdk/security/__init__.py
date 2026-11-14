@@ -5,6 +5,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmRisky,
     NeverConfirm,
 )
+from openhands.sdk.security.bartholomew import BartholomewASTAnalyzer
 from openhands.sdk.security.defense_in_depth import (
     PatternSecurityAnalyzer,
     PolicyRailSecurityAnalyzer,
@@ -39,6 +40,7 @@ __all__ = [
     "mcp_tools_from_config",
     "safety_experiences_for_mcp_config",
     "GraySwanAnalyzer",
+    "BartholomewASTAnalyzer",
     "PatternSecurityAnalyzer",
     "PolicyRailSecurityAnalyzer",
     "EnsembleSecurityAnalyzer",
