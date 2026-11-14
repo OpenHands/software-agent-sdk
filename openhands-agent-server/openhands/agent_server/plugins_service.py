@@ -41,6 +41,7 @@ from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
     PUBLIC_SKILLS_REF,
     PUBLIC_SKILLS_REPO,
+    public_catalog_enabled,
 )
 from openhands.sdk.skills.utils import (
     get_skills_cache_dir,
@@ -293,6 +294,9 @@ def service_get_plugins_marketplace_catalog(
         List of MarketplacePluginInfo with plugin details and install status.
     """
     global _plugin_catalog_cache
+
+    if not public_catalog_enabled():
+        return []
 
     now = monotonic()
     if (

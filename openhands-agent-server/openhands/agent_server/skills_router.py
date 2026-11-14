@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.catalog import PublicCatalogResponse
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.errors import error_responses
@@ -37,7 +38,11 @@ from openhands.sdk.skills import (
     SkillInfo,
     SkillValidationError,
 )
-from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.skills.skill import (
+    DEFAULT_MARKETPLACE_PATH,
+    public_catalog_enabled,
+    public_skills_enabled,
+)
 from openhands.sdk.skills.utils import SKILL_NAME_PATTERN
 
 
@@ -113,6 +118,13 @@ class SkillsRequest(BaseModel):
             "Marketplace registrations for plugin-based skill loading. Registrations "
             "with auto_load=True or a list of plugin names add their skills to the "
             "public skills."
+        ),
+    )
+    load_registered_marketplaces: bool | None = Field(
+        default=None,
+        description=(
+            "Load auto_load registered marketplaces independently of load_public. "
+            "Null keeps the legacy behavior of following load_public."
         ),
     )
 
@@ -259,7 +271,7 @@ class UpdateSkillResponse(BaseModel):
     skill: InstalledSkillResponse
 
 
-class MarketplaceCatalogResponse(BaseModel):
+class MarketplaceCatalogResponse(PublicCatalogResponse):
     """Response containing the marketplace catalog."""
 
     skills: list[MarketplaceSkillInfo]
@@ -327,6 +339,7 @@ def get_skills(
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
         registered_marketplaces=registered_marketplaces,
+        load_registered_marketplaces=request.load_registered_marketplaces,
     )
 
     skills_info = [skill.to_skill_info() for skill in result.skills]
@@ -364,6 +377,11 @@ def sync_skills() -> SyncResponse:
     Returns:
         SyncResponse indicating success or failure.
     """
+    if not (public_skills_enabled() or public_catalog_enabled()):
+        return SyncResponse(
+            status="error",
+            message="Public extensions are disabled by instance policy",
+        )
     success, message = sync_public_skills()
     return SyncResponse(
         status="success" if success else "error",
@@ -578,4 +596,7 @@ def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     Returns:
         MarketplaceCatalogResponse containing list of available skills.
     """
-    return MarketplaceCatalogResponse(skills=service_get_marketplace_catalog())
+    return MarketplaceCatalogResponse(
+        skills=service_get_marketplace_catalog(),
+        disabled=not public_catalog_enabled(),
+    )
