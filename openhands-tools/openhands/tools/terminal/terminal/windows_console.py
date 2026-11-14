@@ -21,6 +21,9 @@ Everything here degrades gracefully: on failure the functions return
 ``False``/empty and the caller falls back to coarser behaviour.
 """
 
+# Win32-only ctypes/subprocess attributes are missing from the non-Windows stubs.
+# pyright: reportAttributeAccessIssue=false
+
 from __future__ import annotations
 
 import base64
