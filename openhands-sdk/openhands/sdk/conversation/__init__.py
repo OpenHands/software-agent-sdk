@@ -21,6 +21,8 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTags,
     ConversationTokenCallbackType,
+    WebSocketClient,
+    WebSocketClientFactory,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -49,4 +51,6 @@ __all__ = [
     "EventsListBase",
     "get_agent_final_response",
     "WebSocketConnectionError",
+    "WebSocketClient",
+    "WebSocketClientFactory",
 ]

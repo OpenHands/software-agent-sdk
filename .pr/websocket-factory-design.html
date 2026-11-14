@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custom Remote Event Transports</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;color:#182333;max-width:960px;margin:48px auto;padding:0 24px;background:#fafbfc}
+h1,h2{line-height:1.2}h2{margin-top:36px}code,pre{font-family:ui-monospace,monospace;background:#edf1f5;border-radius:4px}code{padding:2px 5px}pre{padding:16px;overflow:auto}table{border-collapse:collapse;width:100%;background:white}th,td{text-align:left;border:1px solid #d7dfe7;padding:10px;vertical-align:top}th{background:#edf1f5}a{color:#145eb0}.note{border-left:4px solid #b57816;padding:12px 16px;background:#fff6df}
+</style>
+<h1>Custom Remote Event Transports</h1>
+<p>Issue <a href="https://github.com/OpenHands/software-agent-sdk/issues/4708">#4708</a>;
+prior work <a href="https://github.com/OpenHands/software-agent-sdk/pull/4135">#4135 by p1c2u</a>, closed for inactivity.
+This implementation addresses the recorded return-type and public-entry-point findings on current main.</p>
+<h2>Problem and Boundary</h2>
+<p>A remote conversation constructs the concrete WebSocket callback client internally. A controller using a Unix socket cannot select its own event transport without replacing module globals. The factory belongs to the Python client, not to the server request or persisted settings.</p>
+<table>
+<tr><th>Before</th><th>After</th></tr>
+<tr><td><code>Conversation(..., websocket_client_factory=...)</code> raises <code>TypeError</code>.</td><td>The public factory forwards the optional transport factory to the remote conversation. Local workspaces reject a supplied factory explicitly.</td></tr>
+<tr><td>The earlier proposal returned the concrete <code>WebSocketCallbackClient</code>.</td><td><code>WebSocketClientFactory</code> returns a structural <code>WebSocketClient</code>. A transport exposes a writable <code>callback</code> attribute and implements <code>start</code>, <code>stop</code>, and <code>wait_until_ready</code>.</td></tr>
+<tr><td>Default transport is selected at connection initialization.</td><td>This remains late-bound when the factory is <code>None</code>; existing default-client patching continues to work.</td></tr>
+</table>
+<h2>Public Construction Paths</h2>
+<pre>Conversation(..., workspace=remote_workspace, websocket_client_factory=factory)
+RemoteConversation(..., websocket_client_factory=factory)
+RemoteConversation.create(workspace, request, websocket_client_factory=factory)
+RemoteConversation.attach(workspace, id, websocket_client_factory=factory)</pre>
+<p><code>fork()</code> retains the parent's factory but constructs a new client for the child. Each client has its own lifecycle. A new controller must provide its factory again when attaching.</p>
+<h2>Ownership and Compatibility</h2>
+<p>The factory returns an unstarted client. The SDK owns startup, subscription readiness, initial reconciliation, failure cleanup, and shutdown after handoff. The transport owns authentication, decoding, reconnection, and its background workers; it invokes the supplied reconciliation callback after resubscribing and before forwarding replacement-connection events.</p>
+<p>No REST or WebSocket wire schema, persisted model, dependency, package version, or default transport implementation changes. HTTP continues through the workspace client. The repository's public API comparison against the base reports zero breakages.</p>
+<h2>Validation</h2>
+<table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>Conversation regressions, including nine new custom-client cases</td><td>882 passed. Includes default transport behavior, all construction paths, fork isolation, startup cancellation/failure cleanup, and rejection on local workspaces.</td></tr>
+<tr><td>Typed downstream implementation</td><td>A standalone Unix-socket client that does not subclass the built-in client passes Pyright against the exported factory protocol.</td></tr>
+<tr><td>Real Agent Server over a Unix socket</td><td>Authenticated REST and events; public creation, create, attach, fork; four independent client objects; server-restart reconnection; invalid-auth startup cleanup; workers and server process exited.</td></tr>
+<tr><td>Same runtime program on base 5966c78</td><td>Fails at the public factory with an unexpected <code>websocket_client_factory</code> keyword.</td></tr>
+</table>
+<pre>uv run pytest tests/sdk/conversation -n 4 --timeout=60 -q
+uv run python .pr/verify_websocket_factory.py</pre>
+<p class="note">Live verification used macOS arm64 and Python 3.12.14. The Unix-socket script requires POSIX support. It did not run inside a network-disabled container and made no model-provider requests. The extension is an event-client seam, not a new built-in Unix-socket transport.</p>
+</html>
