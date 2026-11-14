@@ -157,6 +157,26 @@ def register_tool(
         _TOOL_CLASSES[name] = tool_class
 
 
+def unregister_tool(name: str) -> bool:
+    """Remove ``name`` from the registry.
+
+    Use it for tools registered for a single conversation, so the process-wide
+    registry does not keep them (and the executors they hold) afterwards.
+    A sealed tool catalog keeps the entries it was sealed with.
+
+    Returns:
+        ``True`` if ``name`` was registered, ``False`` otherwise.
+    """
+    from openhands.sdk.tool.client_tool import _forget_client_tool_name
+
+    with _LOCK:
+        _USABILITY_REG.pop(name, None)
+        _TOOL_CLASSES.pop(name, None)
+        registered = _REG.pop(name, None) is not None
+    _forget_client_tool_name(name)
+    return registered
+
+
 def resolve_tool(
     tool_spec: Tool, conv_state: "ConversationState"
 ) -> Sequence[ToolDefinition]:
