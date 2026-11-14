@@ -223,16 +223,16 @@ class ConversationWorktreeOptions(BaseModel):
         return self
 
 
-class ConversationConfig(BaseModel):
-    """Shared conversation configuration — everything except the agent.
+class StoredConversationConfig(BaseModel):
+    """What the agent-server keeps about a conversation in its own record.
 
-    This is the common base for :class:`StartConversationRequest` (which adds the
-    ``agent``/``agent_settings``/``agent_profile_id`` family) and the
-    agent-server's ``StoredConversation`` (which does NOT persist the agent —
-    the agent's single source of truth is ``ConversationState`` /
-    ``base_state.json``). Keeping the agent off this base is what makes the
-    duplication structurally impossible rather than something a reviewer has to
-    remember to exclude.
+    The base of :class:`ConversationConfig`, and through it of
+    :class:`StartConversationRequest`, and the base of the agent-server's
+    ``StoredConversation`` (``meta.json``). It leaves out everything the
+    conversation state (``ConversationState`` / ``base_state.json``) owns once
+    the conversation exists: the agent, the budget, the confirmation policy,
+    the security analyzer and the secrets. A record built on this base cannot
+    hold a second copy of them.
     """
 
     workspace: LocalWorkspace = Field(
@@ -266,15 +266,6 @@ class ConversationConfig(BaseModel):
             "parent must already exist and share this conversation's workspace."
         ),
     )
-    confirmation_policy: ConfirmationPolicyBase = Field(
-        default=NeverConfirm(),
-        description="Controls when the conversation will prompt the user before "
-        "continuing. Defaults to never.",
-    )
-    security_analyzer: SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-    )
     initial_message: SendMessageRequest | None = Field(
         default=None, description="Initial message to pass to the LLM"
     )
@@ -288,23 +279,6 @@ class ConversationConfig(BaseModel):
         default=True,
         description="If true, the conversation will use stuck detection to "
         "prevent infinite loops.",
-    )
-    secrets: dict[str, SecretSource] = Field(
-        default_factory=dict,
-        description="Secrets available in the conversation",
-    )
-    secrets_encrypted: bool = Field(
-        default=False,
-        description=(
-            "If true, indicates that secret values in the agent configuration "
-            "are cipher-encrypted and should be decrypted by the server before "
-            "use. This enables secure round-tripping of settings through "
-            "untrusted clients (e.g., frontend) that received encrypted values "
-            "via the X-Expose-Secrets header. "
-            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
-            "to receive cipher-encrypted secrets, then passes them in the agent "
-            "config with secrets_encrypted=True so the server can decrypt them."
-        ),
     )
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,
@@ -431,6 +405,44 @@ class ConversationConfig(BaseModel):
             "message and {max_length} to place the title length limit. If the "
             "conversation placeholder is omitted, the message is appended "
             "automatically. Empty or unset values use the default prompt."
+        ),
+    )
+
+
+class ConversationConfig(StoredConversationConfig):
+    """Start-time conversation configuration, everything except the agent.
+
+    Adds the values a start request hands to the conversation state:
+    ``confirmation_policy``, ``security_analyzer`` and ``secrets``. After
+    creation they belong to that state and are changed through the
+    conversation, so nothing that is persisted next to it should extend this
+    class; see :class:`StoredConversationConfig`.
+    """
+
+    confirmation_policy: ConfirmationPolicyBase = Field(
+        default=NeverConfirm(),
+        description="Controls when the conversation will prompt the user before "
+        "continuing. Defaults to never.",
+    )
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None,
+        description="Optional security analyzer to evaluate action risks.",
+    )
+    secrets: dict[str, SecretSource] = Field(
+        default_factory=dict,
+        description="Secrets available in the conversation",
+    )
+    secrets_encrypted: bool = Field(
+        default=False,
+        description=(
+            "If true, indicates that secret values in the agent configuration "
+            "are cipher-encrypted and should be decrypted by the server before "
+            "use. This enables secure round-tripping of settings through "
+            "untrusted clients (e.g., frontend) that received encrypted values "
+            "via the X-Expose-Secrets header. "
+            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
+            "to receive cipher-encrypted secrets, then passes them in the agent "
+            "config with secrets_encrypted=True so the server can decrypt them."
         ),
     )
 

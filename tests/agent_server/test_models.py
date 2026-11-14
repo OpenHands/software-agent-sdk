@@ -5,7 +5,11 @@ from typing import Any
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.agent_server.models import (
+    ConversationConfig,
+    StoredConversation,
+    UpdateSecretsRequest,
+)
 from openhands.sdk.secret import LookupSecret, StaticSecret
 
 
@@ -116,3 +120,25 @@ def test_update_secrets_request_invalid_input():
     # Non-dict input should be preserved (will fail validation later)
     with pytest.raises(ValidationError):
         UpdateSecretsRequest(secrets="not-a-dict")  # type: ignore[arg-type]
+
+
+_START_ONLY_FIELDS = {
+    "confirmation_policy",
+    "security_analyzer",
+    "secrets",
+    "secrets_encrypted",
+}
+
+
+def test_stored_conversation_has_no_field_for_what_the_conversation_state_owns():
+    """``meta.json`` cannot hold a second copy of what ``base_state.json`` owns."""
+    owned_by_state = _START_ONLY_FIELDS | {"agent", "max_budget_per_run"}
+
+    assert owned_by_state.isdisjoint(StoredConversation.model_fields)
+
+
+def test_conversation_config_keeps_the_fields_released_servers_read():
+    """Agent-servers up to 1.62.0 build their record on ``ConversationConfig``
+    and read these fields from it, and they do not pin the SDK version they run
+    on."""
+    assert _START_ONLY_FIELDS <= set(ConversationConfig.model_fields)

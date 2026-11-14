@@ -18,6 +18,7 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
     StartChildConversationRequest as StartChildConversationRequest,
     StartChildConversationResponse as StartChildConversationResponse,
     StartConversationRequest as StartConversationRequest,
+    StoredConversationConfig as StoredConversationConfig,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -103,16 +104,15 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(ConversationConfig):
+class StoredConversation(StoredConversationConfig):
     """Stored details about a conversation.
 
-    Extends :class:`ConversationConfig` (the agent-less shared config) with
-    server-assigned fields. It deliberately does NOT carry the ``agent``: the
-    single source of truth for the agent / runtime state is
-    ``ConversationState`` persisted to ``base_state.json``. Because
-    ``StoredConversation`` is not a ``StartConversationRequest``, the agent
-    cannot silently re-appear in ``meta.json``. The same holds for the
-    conversation budget (``max_budget_per_run``).
+    Extends :class:`StoredConversationConfig` with server-assigned fields. It
+    deliberately does NOT carry the ``agent``, ``confirmation_policy``,
+    ``security_analyzer``, ``secrets`` or the conversation budget
+    (``max_budget_per_run``): their single source of truth after creation is
+    ``ConversationState`` persisted to ``base_state.json``, and its base class
+    has no field for any of them, so none can re-appear in ``meta.json``.
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)

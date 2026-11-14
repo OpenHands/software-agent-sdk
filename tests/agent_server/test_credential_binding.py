@@ -1,4 +1,5 @@
 import json
+import shutil
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -412,7 +413,8 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
         assert event_service is not None
-        assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
+        state = await event_service.get_state()
+        assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
         assert "CODEX_AUTH_JSON" in event_service.credential_bindings
         assert not event_service.stored.required_runtime_credential_bindings
 
@@ -446,7 +448,8 @@ async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
         event_service = await service.get_event_service(conversation_id)
         assert event_service is not None
         assert event_service.credential_bindings == {}
-        assert "CODEX_AUTH_JSON" in event_service.stored.secrets
+        state = await event_service.get_state()
+        assert "CODEX_AUTH_JSON" in state.secret_registry.secret_sources
 
         # Pending binding consumed when the unloaded conversation loads again.
         await service.prepare_for_sandbox_pause()
@@ -460,7 +463,8 @@ async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
 
         meta = json.loads(meta_file.read_text())
         assert meta["required_runtime_credential_bindings"] == []
-        assert "CODEX_AUTH_JSON" in meta["secrets"]
+        base_state = json.loads((meta_file.parent / "base_state.json").read_text())
+        assert "CODEX_AUTH_JSON" in base_state["secret_registry"]["secret_sources"]
         assert await service.get_event_service(conversation_id) is not None
 
 
@@ -594,10 +598,8 @@ async def test_one_off_credential_survives_cold_restart_without_binding(
         event_service = await restarted.get_event_service(info.id)
         assert event_service is not None
         assert not event_service.credential_bindings
-        assert (
-            event_service.stored.secrets["CODEX_AUTH_JSON"].get_value()
-            == "one-off-credential"
-        )
+        sources = (await event_service.get_state()).secret_registry.secret_sources
+        assert sources["CODEX_AUTH_JSON"].get_value() == "one-off-credential"
 
 
 @pytest.mark.asyncio
@@ -633,8 +635,6 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
         assert event_service is not None
         state = await event_service.get_state()
 
-        assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
-        assert "KEEP" in event_service.stored.secrets
         # The agent is no longer stored on meta.json; it lives on the live
         # conversation / base_state.json. Assert the scrub there.
         assert event_service._conversation is not None
@@ -650,7 +650,6 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
         conversation_dir = tmp_path / "conversations" / info.id.hex
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
-        assert "CODEX_AUTH_JSON" not in meta["secrets"]
         # meta.json no longer carries the agent at all.
         assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
@@ -732,7 +731,6 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
 
         state = await event_service.get_state()
         assert event_service.credential_bindings["CODEX_AUTH_JSON"] is binding
-        assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
         assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
         # The agent is on the live conversation / base_state.json, not meta.json.
         assert event_service._conversation is not None
@@ -743,7 +741,6 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
         conversation_dir = tmp_path / "conversations" / info.id.hex
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
-        assert "CODEX_AUTH_JSON" not in meta["secrets"]
         assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
         assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]
@@ -986,54 +983,96 @@ async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
         assert resumed is not None
         state = await resumed.get_state()
         assert "CODEX_AUTH_JSON" not in resumed.credential_bindings
-        assert "CODEX_AUTH_JSON" in resumed.stored.secrets
         assert "CODEX_AUTH_JSON" in state.secret_registry.secret_sources
 
 
 @pytest.mark.asyncio
-async def test_failed_resume_does_not_retain_plaintext_fallback(
-    tmp_path,
-    monkeypatch,
-) -> None:
+@pytest.mark.parametrize("loaded", [True, False], ids=["live", "cold"])
+async def test_resume_decrypts_an_encrypted_fallback(tmp_path, loaded) -> None:
+    """A request that marks its secrets as encrypted has them decrypted on a
+    resume, as on a create."""
+    cipher = Cipher("resume-fallback-key")
     request = StartConversationRequest(
         agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
         workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
     )
 
     async with ConversationService(
-        conversations_dir=tmp_path / "conversations"
+        conversations_dir=tmp_path / "conversations", cipher=cipher
     ) as service:
         info, _ = await service.start_conversation(request)
-        assert service._event_services is not None
-        event_service = service._event_services.pop(info.id)
-        await event_service.close()
+        if not loaded:
+            assert service._event_services is not None
+            await service._event_services.pop(info.id).close()
 
-        async def fail_load(conversation_id, **kwargs):
-            assert conversation_id == info.id
-            raise RuntimeError("resume failed")
-
-        monkeypatch.setattr(
-            service,
-            "_get_or_load_event_service_locked",
-            fail_load,
+        resume = request.model_copy(
+            update={
+                "conversation_id": info.id,
+                "secrets": {
+                    "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("fallback-copy"))
+                },
+            }
         )
-        with pytest.raises(RuntimeError, match="resume failed"):
-            await service.start_conversation(
-                request.model_copy(
-                    update={
-                        "conversation_id": info.id,
-                        "secrets": {
-                            "CODEX_AUTH_JSON": StaticSecret(
-                                value=SecretStr("temporary-fallback")
-                            )
-                        },
-                    }
-                )
+        await service.start_conversation(
+            StartConversationRequest.model_validate(
+                resume.model_dump(mode="json", context={"cipher": cipher})
+                | {"secrets_encrypted": True}
             )
+        )
 
-        record = service._conversation_records[info.id]
-        assert "CODEX_AUTH_JSON" not in record.stored.secrets
-        assert "temporary-fallback" not in record.stored.model_dump_json()
+        resumed = await service.get_event_service(info.id)
+        assert resumed is not None
+        sources = (await resumed.get_state()).secret_registry.secret_sources
+        assert sources["CODEX_AUTH_JSON"].get_value() == "fallback-copy"
+
+
+@pytest.mark.asyncio
+async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
+    tmp_path,
+) -> None:
+    """An older server could leave a start-time secret only in meta.json. The
+    credential scrub rewrites that file during a load, so the secret is moved
+    to base_state.json first and a load that fails afterwards keeps it."""
+    stores = _server_stores(tmp_path / "settings")
+    stores.secrets.set_secret("CODEX_AUTH_JSON", "canonical")
+    cipher = Cipher("legacy-meta-key")
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=workspace_dir),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    meta_file = conversations_dir / info.id.hex / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+    }
+    meta_file.write_text(json.dumps(meta))
+    shutil.rmtree(workspace_dir)
+    workspace_dir.write_text("not a directory")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
+    ) as service:
+        with pytest.raises(OSError):
+            await service.get_event_service(info.id)
+        assert "secrets" not in json.loads(meta_file.read_text())
+        base_state = json.loads((meta_file.parent / "base_state.json").read_text())
+        assert "ONLY_IN_META" in base_state["secret_registry"]["secret_sources"]
+        workspace_dir.unlink()
+
+        restored = await service.get_event_service(info.id)
+        assert restored is not None
+        secrets = (await restored.get_state()).secret_registry.secret_sources
+        assert secrets["ONLY_IN_META"].get_value() == "legacy-value"
 
 
 @pytest.mark.asyncio
@@ -1156,11 +1195,8 @@ async def test_resume_removes_legacy_persisted_credential(tmp_path) -> None:
         )
 
         assert not started
-        record = service._conversation_records[info.id]
-        assert "CODEX_AUTH_JSON" not in record.stored.secrets
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
-        assert "CODEX_AUTH_JSON" not in meta["secrets"]
         # meta.json no longer carries the agent; the agent (and its scrubbed
         # agent_context) lives solely in base_state.json.
         assert "agent" not in meta
@@ -1201,3 +1237,84 @@ async def test_failed_canonical_preflight_preserves_legacy_auth_file(tmp_path) -
             )
 
         assert legacy_auth_file.read_text(encoding="utf-8") == "only-legacy-copy"
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_a_bound_credential_out_of_the_registry(tmp_path) -> None:
+    """A start secret named like a bound credential never reaches the
+    conversation: the binding is its only source."""
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret("CODEX_AUTH_JSON", "canonical")
+    service = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        ),
+        conversations_dir=tmp_path / "conversations",
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        secrets={
+            "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("request-copy")),
+            "KEEP": StaticSecret(value=SecretStr("keep-value")),
+        },
+        credential_bindings={
+            "CODEX_AUTH_JSON": LocalVersionedCredentialBinding(store, "CODEX_AUTH_JSON")
+        },
+    )
+    await service.start()
+    try:
+        sources = (await service.get_state()).secret_registry.secret_sources
+        assert set(sources) == {"KEEP"}
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_takes_legacy_meta_secrets_but_not_a_bound_credential(
+    tmp_path,
+) -> None:
+    """An older server's meta.json can hold the Codex credential next to other
+    start-time secrets. With a managed credential bound, the first resume takes
+    over the others and keeps that one out of base_state.json."""
+    stores = _server_stores(tmp_path / "settings")
+    cipher = Cipher("legacy-binding-key")
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    conversation_dir = conversations_dir / info.id.hex
+    meta_file = conversation_dir / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        name: StaticSecret(value=SecretStr(value)).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+        for name, value in {
+            "CODEX_AUTH_JSON": "legacy-copy",
+            "KEEP": "keep-value",
+        }.items()
+    }
+    meta_file.write_text(json.dumps(meta))
+    stores.secrets.set_secret(
+        "CODEX_AUTH_JSON",
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"refresh_token": "r"}}),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, stores=stores, cipher=cipher
+    ) as service:
+        resumed = await service.get_event_service(info.id)
+        assert resumed is not None
+        assert "CODEX_AUTH_JSON" in resumed.credential_bindings
+        sources = (await resumed.get_state()).secret_registry.secret_sources
+        assert sources["KEEP"].get_value() == "keep-value"
+        assert "CODEX_AUTH_JSON" not in sources
+
+    base_state = json.loads((conversation_dir / "base_state.json").read_text())
+    assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]
+    assert "secrets" not in json.loads(meta_file.read_text())

@@ -69,10 +69,10 @@ from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
-from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
-from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -111,7 +111,6 @@ def sample_stored_conversation():
     return StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir="workspace/project"),
-        confirmation_policy=NeverConfirm(),
         initial_message=None,
         metrics=None,
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
@@ -2320,23 +2319,14 @@ class TestEventServiceSaveMeta:
     async def test_trajectory_zip_built_during_save_meta_has_no_partial_meta_json(
         self, sample_stored_conversation, tmp_path, monkeypatch
     ):
-        """A trajectory zip built mid-save holds a complete, redacted meta.json.
-
-        Partial JSON does not parse, so the zip cannot redact it, and the
-        encrypted secrets in it would be archived as they are.
-        """
-        sample_stored_conversation.secrets = {
-            "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_zip_during_save"))
-        }
+        """A trajectory zip built mid-save holds a complete meta.json, never a
+        half-written one."""
         service = EventService(
             stored=sample_stored_conversation,
             conversations_dir=tmp_path,
-            cipher=Cipher("trajectory-zip-during-save-meta"),
         )
         service.conversation_dir.mkdir()
         await service.save_meta()
-        meta_file = service.conversation_dir / "meta.json"
-        assert FERNET_TOKEN_PREFIX in meta_file.read_text()
         archive_path = tmp_path / "trajectory.zip"
         _pause_text_writes_halfway(
             monkeypatch,
@@ -2347,14 +2337,8 @@ class TestEventServiceSaveMeta:
         await service.save_meta()
 
         with zipfile.ZipFile(archive_path) as archive:
-            members = {name: archive.read(name) for name in archive.namelist()}
-        assert not [
-            name
-            for name, data in members.items()
-            if FERNET_TOKEN_PREFIX.encode() in data
-        ]
-        meta = json.loads(members[f"{service.stored.id.hex}/meta.json"])
-        assert meta["secrets"]["GITHUB_TOKEN"]["value"] == REDACTED_SECRET_VALUE
+            meta = json.loads(archive.read(f"{service.stored.id.hex}/meta.json"))
+        assert StoredConversation.model_validate(meta).id == service.stored.id
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_persists_via_conversation(self, tmp_path):
@@ -2370,7 +2354,6 @@ class TestEventServiceSaveMeta:
         stored = StoredConversation(
             id=uuid4(),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            confirmation_policy=NeverConfirm(),
             initial_message=None,
             metrics=None,
         )
@@ -2415,7 +2398,6 @@ class TestEventServiceSaveMeta:
         stored = StoredConversation(
             id=uuid4(),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            confirmation_policy=NeverConfirm(),
             initial_message=None,
             metrics=None,
         )
@@ -3567,7 +3549,6 @@ class TestStatsCallbackNoDeadlock:
         stored = StoredConversation(
             id=uuid4(),
             workspace=LocalWorkspace(working_dir="workspace/project"),
-            confirmation_policy=NeverConfirm(),
             initial_message=None,
             metrics=None,
             created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
@@ -3962,7 +3943,6 @@ def _make_stored(tmp_path: Path) -> StoredConversation:
     return StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
-        confirmation_policy=NeverConfirm(),
         initial_message=None,
         metrics=None,
     )
@@ -4018,6 +3998,73 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_new_conversation_keeps_its_start_settings_in_base_state_only(tmp_path):
+    """The start policy, analyzer and secrets seed the conversation state;
+    meta.json gets none of them (#4810)."""
+    stored = _make_stored(tmp_path / "workspace")
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+        agent=_sample_agent(),
+        initial_confirmation_policy=AlwaysConfirm(),
+        initial_security_analyzer=LLMSecurityAnalyzer(),
+        secrets={"TOKEN": StaticSecret(value=SecretStr("start-value"))},
+        cipher=Cipher("event-service-key"),
+    )
+    await service.start()
+    try:
+        state = await service.get_state()
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+        token = state.secret_registry.secret_sources["TOKEN"]
+        assert token.get_value() == "start-value"
+        await service.save_meta()
+    finally:
+        await service.close()
+
+    conversation_dir = tmp_path / "conversations" / stored.id.hex
+    meta = json.loads((conversation_dir / "meta.json").read_text())
+    assert not {"confirmation_policy", "security_analyzer", "secrets"} & meta.keys()
+    base_state = json.loads((conversation_dir / "base_state.json").read_text())
+    assert base_state["confirmation_policy"]["kind"] == "AlwaysConfirm"
+    assert base_state["security_analyzer"]["kind"] == "LLMSecurityAnalyzer"
+    assert "TOKEN" in base_state["secret_registry"]["secret_sources"]
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_the_saved_policy_and_analyzer_over_the_start_fields(
+    tmp_path,
+):
+    """A resume takes the policy and the analyzer from base_state.json, whatever
+    the EventService was constructed with."""
+    stored = _make_stored(tmp_path / "workspace")
+    conversations_dir = tmp_path / "conversations"
+    first = EventService(
+        stored=stored,
+        conversations_dir=conversations_dir,
+        agent=_sample_agent(),
+        initial_confirmation_policy=AlwaysConfirm(),
+    )
+    await first.start()
+    await first.set_security_analyzer(LLMSecurityAnalyzer())
+    await first.close()
+
+    resumed = EventService(
+        stored=stored,
+        conversations_dir=conversations_dir,
+        initial_confirmation_policy=NeverConfirm(),
+        initial_security_analyzer=None,
+    )
+    await resumed.start()
+    try:
+        state = await resumed.get_state()
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+    finally:
+        await resumed.close()
 
 
 @pytest.mark.asyncio

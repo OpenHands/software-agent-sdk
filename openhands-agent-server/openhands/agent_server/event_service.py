@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import traceback
 from collections.abc import Mapping
@@ -8,10 +9,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_lease import (
@@ -88,10 +89,14 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
-from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.security.confirmation_policy import (
+    ConfirmationPolicyBase,
+    NeverConfirm,
+)
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -221,6 +226,29 @@ def _without_agent_context_secret(
     )
 
 
+class _LegacyMetaSecrets(BaseModel):
+    """The ``secrets`` key older servers wrote to meta.json. Each entry is
+    read on its own, so one that cannot be parsed does not cost the others."""
+
+    secrets: dict[str, Any] = Field(default_factory=dict)
+
+
+_SECRET_SOURCE: TypeAdapter[SecretSource] = TypeAdapter(SecretSource)
+
+
+def _has_undecryptable_token(cipher: Cipher | None, data: Any) -> bool:
+    """Whether parsed JSON ``data`` holds a Fernet token ``cipher`` cannot decrypt."""
+    if isinstance(data, str):
+        return data.startswith(FERNET_TOKEN_PREFIX) and (
+            cipher is None or cipher.try_decrypt_str(data) is None
+        )
+    if isinstance(data, dict):
+        return any(_has_undecryptable_token(cipher, v) for v in data.values())
+    if isinstance(data, list):
+        return any(_has_undecryptable_token(cipher, v) for v in data)
+    return False
+
+
 @dataclass
 class EventService:
     """
@@ -230,13 +258,21 @@ class EventService:
 
     stored: StoredConversation
     conversations_dir: Path
-    # Agent for a NEW conversation. meta.json (``stored``) no longer carries the
-    # agent — base_state.json is its single source of truth — so the creating
-    # caller passes it here. On resume this is ``None`` and the agent is loaded
-    # from base_state.json.
+    # What a NEW conversation starts with. base_state.json owns these from
+    # then on: a resume keeps the saved agent, policy and analyzer and ignores
+    # the values here. A budget given on a resume replaces the saved one.
     agent: AgentBase | None = None
-    # Budget for a new conversation; base_state.json owns it from then on.
+    initial_confirmation_policy: ConfirmationPolicyBase = field(
+        default_factory=NeverConfirm, kw_only=True
+    )
+    initial_security_analyzer: SecurityAnalyzerBase | None = field(
+        default=None, kw_only=True
+    )
     initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
+    # Added to the registry on every start, new or resumed, except for names
+    # with a credential binding: a resume gets a credential its caller just
+    # supplied this way.
+    secrets: dict[str, SecretSource] = field(default_factory=dict, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -312,6 +348,59 @@ class EventService:
             },
         )
 
+    def _read_legacy_meta_secrets(self) -> dict[str, SecretSource]:
+        """Start-time secrets an older server left in meta.json.
+
+        Older servers kept them there and could leave them out of
+        base_state.json. ``start`` takes over the names base_state.json lacks;
+        the next write of meta.json drops the key.
+        """
+        try:
+            entries = _LegacyMetaSecrets.model_validate_json(
+                (self.conversation_dir / "meta.json").read_text()
+            ).secrets
+        except (OSError, ValidationError):
+            return {}
+        if not entries:
+            return {}
+        try:
+            base_state = json.loads((self.conversation_dir / BASE_STATE).read_text())
+        except FileNotFoundError:
+            base_state = None
+        except (OSError, ValueError):
+            return {}
+        # Taking a secret over saves the state. On a load that cannot decrypt
+        # what is stored, that save writes those values as missing, and the
+        # right key no longer brings them back.
+        if _has_undecryptable_token(self.cipher, [entries, base_state]):
+            logger.warning(
+                "This server cannot decrypt what is stored for conversation "
+                "%s; the secrets an older server left in its meta.json are "
+                "not taken over, and the next write of meta.json drops them",
+                self.stored.id,
+            )
+            return {}
+        legacy: dict[str, SecretSource] = {}
+        for name, entry in entries.items():
+            try:
+                source = _SECRET_SOURCE.validate_python(
+                    entry, context={"cipher": self.cipher}
+                )
+            except ValidationError:
+                logger.warning(
+                    "Could not read the secret %s an older server left in "
+                    "meta.json of conversation %s; it is not taken over",
+                    name,
+                    self.stored.id,
+                )
+                continue
+            # An older server without a key stored the value redacted: there
+            # is nothing to take over.
+            if isinstance(source, StaticSecret) and source.value is None:
+                continue
+            legacy[name] = source
+        return legacy
+
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
         """Persist ``stored`` (default: the current metadata) to ``meta.json``.
 
@@ -331,18 +420,11 @@ class EventService:
             )
         self.stored = new_stored
 
-    def _without_stored_secret(self, secret_name: str) -> StoredConversation:
-        # meta.json (StoredConversation) no longer carries the agent, so there is
-        # no agent_context secret to scrub here — only the stored secrets map.
-        # The agent's own secret scrub happens on base_state.json (see
-        # _scrub_persisted_credentials).
-        secrets = dict(self.stored.secrets)
-        secrets.pop(secret_name, None)
-        return self.stored.model_copy(update={"secrets": secrets})
-
     async def _scrub_persisted_credentials(
         self,
         credential_bindings: Mapping[str, VersionedCredentialBinding] | None = None,
+        *,
+        legacy_secrets: Mapping[str, SecretSource] | None = None,
     ) -> None:
         bindings = (
             self.credential_bindings
@@ -379,9 +461,6 @@ class EventService:
                 raise CredentialNeedsReauthentication(
                     "ChatGPT authentication is invalid. Please sign in again."
                 )
-        for secret_name in bindings:
-            self.stored = self._without_stored_secret(secret_name)
-
         if (
             not base_state_file.exists()
             and not meta_file.exists()
@@ -396,6 +475,10 @@ class EventService:
                     context=context,
                 )
                 sources = dict(state.secret_registry.secret_sources)
+                # The meta.json rewrite below drops the secrets an older
+                # server kept there, so the names this file lacks move here.
+                for secret_name, source in (legacy_secrets or {}).items():
+                    sources.setdefault(secret_name, source)
                 for secret_name in bindings:
                     sources.pop(secret_name, None)
                     state.agent = _without_agent_context_secret(
@@ -462,7 +545,6 @@ class EventService:
             )
             state.agent = agent
             conversation.agent = agent
-            self.stored = self._without_stored_secret(secret_name)
         await self._scrub_persisted_credentials()
 
     async def apply_resume_secrets(
@@ -481,25 +563,13 @@ class EventService:
             return
 
         def _update() -> None:
-            state = conversation._state
-            with state:
-                registry = state.secret_registry.model_copy(
-                    update={
-                        "secret_sources": dict(state.secret_registry.secret_sources)
-                    }
-                )
-                registry.update_secrets(secrets)
-                state.secret_registry = registry
+            with conversation._state:
+                conversation.update_secrets(secrets)
                 agent = conversation.agent
                 if isinstance(agent, ACPAgent):
                     agent.restart_for_updated_credentials(secrets)
 
         await asyncio.to_thread(_update)
-        await self.save_meta(
-            self.stored.model_copy(
-                update={"secrets": {**self.stored.secrets, **secrets}}
-            )
-        )
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -1275,7 +1345,6 @@ class EventService:
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
-        # self.stored contains an Agent configuration we can instantiate
         self.conversation_dir.mkdir(parents=True, exist_ok=True)
         # lease_ttl_seconds=0 disables leasing for single-instance deployments
         # where shared-storage stale leases would otherwise block pod restarts.
@@ -1287,7 +1356,9 @@ class EventService:
             )
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
-        await self._scrub_persisted_credentials()
+        # Before the scrub below, which can rewrite meta.json.
+        legacy_secrets = await asyncio.to_thread(self._read_legacy_meta_secrets)
+        await self._scrub_persisted_credentials(legacy_secrets=legacy_secrets)
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
@@ -1398,7 +1469,11 @@ class EventService:
             max_budget_per_run=self.initial_max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
-            secrets=self.stored.secrets,
+            secrets={
+                name: source
+                for name, source in self.secrets.items()
+                if name not in self.credential_bindings
+            },
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
@@ -1410,8 +1485,22 @@ class EventService:
             mcp_tool_provider=self.mcp_tool_provider,
         )
 
-        conversation.set_confirmation_policy(self.stored.confirmation_policy)
-        conversation.set_security_analyzer(self.stored.security_analyzer)
+        # base_state.json wins: only the names it lacks are taken from the
+        # copy an older server left in meta.json.
+        known = conversation.state.secret_registry.secret_sources
+        missing = {
+            name: source
+            for name, source in legacy_secrets.items()
+            if name not in known and name not in self.credential_bindings
+        }
+        if missing:
+            conversation.update_secrets(missing)
+        # Only a caller that creates a conversation passes its agent. The
+        # presence of base_state.json cannot tell a new conversation from a
+        # resumed one: a create that failed halfway leaves the file behind.
+        if self.agent is not None:
+            conversation.set_confirmation_policy(self.initial_confirmation_policy)
+            conversation.set_security_analyzer(self.initial_security_analyzer)
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
@@ -2550,8 +2639,24 @@ class EventService:
         """True if a non-internal subscriber (e.g. a websocket) is attached."""
         return bool(self._pub_sub.subscriber_ids() - self._internal_subscriber_ids)
 
+    def _holds_secrets_a_reload_would_lose(self) -> bool:
+        """Without a cipher base_state.json has no secret values, so the loaded
+        conversation is the only place that has its secrets and the keys
+        inside its security analyzer."""
+        conversation = self._conversation
+        if self.cipher is not None or conversation is None:
+            return False
+        state = conversation.state
+        return any(
+            part is not None
+            and part.model_dump(mode="json")
+            != part.model_dump(mode="json", context={"expose_secrets": True})
+            for part in (state.secret_registry, state.security_analyzer)
+        )
+
     def is_idle_evictable(self) -> bool:
-        """Safe to evict only with no in-flight work and no external subscriber."""
+        """Safe to evict only with no in-flight work, no external subscriber
+        and no secret that a reload would lose."""
         run_active = self._run_task is not None and not self._run_task.done()
         goal_active = (
             self._goal_loop_task is not None and not self._goal_loop_task.done()
@@ -2563,6 +2668,7 @@ class EventService:
             or self._rerun_requested
             or self._acp_internal_rerun_requested
             or self.has_external_subscribers()
+            or self._holds_secrets_a_reload_would_lose()
         ):
             return False
         return True

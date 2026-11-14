@@ -1,5 +1,6 @@
 """Tests for parent/child conversation relationships."""
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_router import conversation_router
@@ -31,12 +33,16 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
+from openhands.sdk.secret import StaticSecret
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -294,7 +300,9 @@ def _event_service_factory(services: dict[UUID, Any]):
             agent=agent,
             workspace=stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
-            confirmation_policy=stored.confirmation_policy,
+            confirmation_policy=kwargs["initial_confirmation_policy"],
+            security_analyzer=kwargs["initial_security_analyzer"],
+            secret_registry=SecretRegistry(secret_sources=kwargs["secrets"]),
         )
         services[stored.id] = event_service
         return event_service
@@ -313,13 +321,16 @@ class _ChildLaunch:
 
 
 async def _launch_child(
-    tmp_path: Path, workspace_dir: Path, request: StartChildConversationRequest
+    tmp_path: Path,
+    workspace_dir: Path,
+    request: StartChildConversationRequest,
+    **parent_overrides: Any,
 ) -> _ChildLaunch:
     """Start a parent in *workspace_dir*, then launch a child from it."""
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
     parent_request = _start_request(workspace_dir).model_copy(
-        update={"tags": {"source": "test"}}
+        update={"tags": {"source": "test"}, **parent_overrides}
     )
     with patch(
         "openhands.agent_server.conversation_service.EventService",
@@ -393,6 +404,102 @@ async def test_start_child_conversation_inherits_parent_configuration(
     assert child_stored.tags == {"source": "test"}
     assert child_stored.title == "Docs"
     assert launch.result.title == "Docs"
+
+
+@pytest.mark.asyncio
+async def test_start_child_conversation_inherits_parent_state_config(
+    tmp_path, workspace_dir
+):
+    """Policy, analyzer and secrets live in base_state.json, not meta.json."""
+    request = StartChildConversationRequest(task="Write the docs")
+
+    launch = await _launch_child(
+        tmp_path,
+        workspace_dir,
+        request,
+        confirmation_policy=AlwaysConfirm(),
+        security_analyzer=LLMSecurityAnalyzer(),
+        secrets={"TOKEN": StaticSecret(value=SecretStr("shh"))},
+    )
+
+    assert launch.result is not None
+    parent_state = await launch.services[launch.parent_id].get_state()
+    child_state = await launch.services[launch.result.conversation_id].get_state()
+    assert isinstance(child_state.confirmation_policy, AlwaysConfirm)
+    assert isinstance(child_state.security_analyzer, LLMSecurityAnalyzer)
+    assert child_state.security_analyzer is not parent_state.security_analyzer
+    token = child_state.secret_registry.secret_sources["TOKEN"]
+    assert token.get_value() == "shh"
+    assert token is not parent_state.secret_registry.secret_sources["TOKEN"]
+
+
+def _launch_child_like_the_tool(
+    service: ConversationService,
+    parent_id: UUID,
+    loop: asyncio.AbstractEventLoop,
+) -> StartChildConversationResponse | None:
+    """Block a thread on a launch the event loop has to answer.
+
+    The ``start_child_conversation`` tool does this with a synchronous HTTP
+    request to this server's ``/children`` route.
+    """
+    future = asyncio.run_coroutine_threadsafe(
+        service.start_child_conversation(
+            parent_id, StartChildConversationRequest(task="Write the docs")
+        ),
+        loop,
+    )
+    try:
+        return future.result(timeout=5)
+    except BaseException:
+        future.cancel()
+        raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step_runs_on", ["event_loop", "worker_thread"])
+async def test_start_child_conversation_does_not_wait_for_parent_state_lock(
+    tmp_path, workspace_dir, step_runs_on
+):
+    """A parent starts a child from inside its own step.
+
+    The step holds the parent's state lock until the tool call returns, and
+    the tool call returns only when the server has answered the launch.
+    ``arun()`` holds the lock on the event-loop thread while it awaits the
+    tool; ``run()`` holds it on a worker thread.
+    """
+    services: dict[UUID, Any] = {}
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=tmp_path / "conversation-worktrees",
+        ) as service:
+            parent_info, _ = await service.start_conversation(
+                _start_request(workspace_dir)
+            )
+            parent_state = await services[parent_info.id].get_state()
+            loop = asyncio.get_running_loop()
+
+            if step_runs_on == "event_loop":
+                with parent_state:
+                    result = await loop.run_in_executor(
+                        None, _launch_child_like_the_tool, service, parent_info.id, loop
+                    )
+            else:
+
+                def step() -> StartChildConversationResponse | None:
+                    with parent_state:
+                        return _launch_child_like_the_tool(
+                            service, parent_info.id, loop
+                        )
+
+                result = await loop.run_in_executor(None, step)
+
+    assert result is not None
+    assert result.parent_conversation_id == parent_info.id
 
 
 @pytest.mark.asyncio

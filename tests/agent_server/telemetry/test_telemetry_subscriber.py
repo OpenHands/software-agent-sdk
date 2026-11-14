@@ -6,13 +6,20 @@ import uuid
 
 import pytest
 
+import openhands.agent_server.telemetry.service as telemetry_service
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.telemetry import models as m
-from openhands.agent_server.telemetry.factory import DiagnosticEventFactory
+from openhands.agent_server.telemetry.factory import (
+    DiagnosticEventFactory,
+    build_runtime_properties,
+)
 from openhands.agent_server.telemetry.subscriber import (
     ConversationTelemetryContext,
     TelemetrySubscriber,
 )
+from openhands.sdk import LLM, Agent
 from openhands.sdk.event import (
     AgentErrorEvent,
     ConversationStateUpdateEvent,
@@ -20,6 +27,8 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.workspace import LocalWorkspace
 
 
 class CollectingSink:
@@ -632,34 +641,16 @@ async def test_interrupted_fallback_reports_usage_seen_before_close(factory):
     assert payload["cost_bucket"] == "0p1-1"
 
 
-def test_confirmation_policy_is_read_from_the_field_that_exists():
-    """Regression: the field is confirmation_policy, not confirmation_mode.
-
-    Reading a non-existent ``confirmation_mode`` via getattr silently reported
-    False for every conversation, and a bool would have collapsed ConfirmRisky
-    into NeverConfirm anyway.
-    """
-    import uuid as _uuid
-
+def test_telemetry_context_reports_the_policy_kind_and_no_workspace_path():
+    """The context names the policy's kind (a bool would collapse ConfirmRisky
+    into another policy) and carries nothing that identifies the workspace."""
     from openhands.agent_server.conversation_service import _build_telemetry_context
     from openhands.agent_server.models import StoredConversation
-    from openhands.agent_server.telemetry.factory import (
-        DiagnosticEventFactory,
-        build_runtime_properties,
-    )
-    from openhands.sdk.agent import Agent
-    from openhands.sdk.llm import LLM
-    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
-    from openhands.sdk.workspace import LocalWorkspace
-
-    assert "confirmation_mode" not in StoredConversation.model_fields
-    assert "confirmation_policy" in StoredConversation.model_fields
 
     agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
     stored = StoredConversation(
-        id=_uuid.uuid4(),
+        id=uuid.uuid4(),
         workspace=LocalWorkspace(working_dir="/Users/alice/secret-project"),
-        confirmation_policy=AlwaysConfirm(),
         user_id="canvas-user-42",
     )
     ctx = _build_telemetry_context(
@@ -669,6 +660,7 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
             salt="s",
         ),
         agent=agent,
+        confirmation_policy=AlwaysConfirm(),
     )
 
     from dataclasses import asdict
@@ -736,3 +728,38 @@ async def test_event_count_ignores_streaming_deltas(factory):
         await pub_sub(StreamingDeltaEvent(content="tok"))
 
     assert sub._event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_created_reports_the_conversations_policy(
+    tmp_path, monkeypatch
+):
+    """The policy in ``conversation_created`` is the one the conversation
+    runs under."""
+    sink = CollectingSink()
+    monkeypatch.setattr(telemetry_service, "_telemetry_sink", sink)
+    monkeypatch.setattr(
+        telemetry_service,
+        "_event_factory",
+        DiagnosticEventFactory(runtime=build_runtime_properties(deferred_init=False)),
+    )
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=AlwaysConfirm(),
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        await service.start_conversation(request)
+
+    [created] = [
+        event.properties
+        for event in sink.events
+        if event.event_name == m.EventName.CONVERSATION_CREATED
+    ]
+    assert isinstance(created, m.ConversationStartedProperties)
+    assert created.confirmation_policy == "alwaysconfirm"
