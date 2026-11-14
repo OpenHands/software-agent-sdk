@@ -205,8 +205,9 @@ async def events_socket(
             description=(
                 "Required when resend_mode='since'. Events with timestamp >= this "
                 "value will be sent. Accepts ISO 8601 format. Timezone-aware "
-                "datetimes are converted to server local time; naive datetimes "
-                "assumed in server timezone."
+                "datetimes are honored as the instant they denote; naive datetimes "
+                "are assumed in server timezone. Event timestamps carry an "
+                "explicit UTC offset (legacy naive ones are server local time)."
             )
         ),
     ] = None,
@@ -232,10 +233,11 @@ async def events_socket(
             - 'since': Resend events after 'after_timestamp' (requires after_timestamp)
             - None: Don't resend, just subscribe to new events
         after_timestamp: Required when resend_mode='since'. Events with
-            timestamp >= this value will be sent. Timestamps are interpreted in
-            server local time. Timezone-aware datetimes are converted to server
-            timezone. Enables efficient bi-directional loading where REST fetches
-            historical events and WebSocket handles events after a specific point.
+            timestamp >= this value will be sent. Naive values are interpreted
+            in server local time; timezone-aware values are honored as the
+            instant they denote. Enables efficient bi-directional loading where
+            REST fetches historical events and WebSocket handles events after a
+            specific point.
         resend_all: DEPRECATED. Use resend_mode='all' instead. Kept for
             backward compatibility - if True and resend_mode is None, behaves
             as resend_mode='all'.

@@ -55,6 +55,7 @@ from openhands.sdk.agent.stream_context import (
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.utils.datetime import timestamp_instant
 
 
 session_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
@@ -282,7 +283,8 @@ class _SessionSubscriber(Subscriber[Event]):
         for event in buffered[:pos]:
             idx = self._index_of(event)
             is_newer = (
-                event.timestamp > buffered[pos].timestamp
+                timestamp_instant(event.timestamp)
+                > timestamp_instant(buffered[pos].timestamp)
                 if idx is None
                 else idx >= limit
             )

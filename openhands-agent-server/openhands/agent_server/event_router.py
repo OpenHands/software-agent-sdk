@@ -70,11 +70,11 @@ _GATEWAY_RUN_TIMEOUT_SECONDS = 120.0
 
 def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
     """
-    Normalize datetime to server timezone for consistent comparison with events.
+    Normalize a filter bound to a naive datetime in server local time.
 
-    Event timestamps are stored as naive datetimes in server local time.
-    This function ensures filter datetimes are also naive in server local time
-    so they can be compared correctly.
+    New event timestamps carry an explicit UTC offset; legacy ones are naive
+    server-local strings. The event service compares both as instants, so a
+    naive bound keeps its documented meaning (server local time) either way.
 
     If the datetime has timezone info, convert to server native timezone and
     strip the tzinfo to make it naive.

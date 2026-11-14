@@ -6,7 +6,6 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -127,6 +126,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.datetime import utc_now
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -529,9 +529,7 @@ class LocalConversation(BaseConversation):
             for reaction in pending:
                 # Restamped: the log's order is also its timestamp order.
                 self._on_event(
-                    reaction.model_copy(
-                        update={"timestamp": datetime.now().isoformat()}
-                    )
+                    reaction.model_copy(update={"timestamp": utc_now().isoformat()})
                 )
 
         callback_list = list(callbacks) if callbacks else []
