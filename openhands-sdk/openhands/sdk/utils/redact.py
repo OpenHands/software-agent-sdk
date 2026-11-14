@@ -281,8 +281,11 @@ def sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+_SENSITIVE_KEY_ALTERNATIVES = "|".join(
+    re.escape(pattern) for pattern in sorted(SECRET_KEY_PATTERNS)
+)
 _SENSITIVE_ENTRY_RE = re.compile(
-    r"(?P<head>(?P<kq>\\?[\"'])[\w-]*(?:key|secret|token|password|authorization)"
+    rf"(?P<head>(?P<kq>\\?[\"'])[\w-]*(?:{_SENSITIVE_KEY_ALTERNATIVES})"
     r"[\w-]*(?P=kq)\s*:\s*)(?P<q>\\?[\"'])(?P<value>.*?)(?P=q)",
     re.IGNORECASE | re.DOTALL,
 )
@@ -297,8 +300,8 @@ def redact_text_secrets(text: str) -> str:
 
     Redacts:
     - ``api_key='...'`` patterns
-    - Dict, JSON and header entries whose keys contain KEY, SECRET, TOKEN,
-      PASSWORD or AUTHORIZATION, in either quote style and any case
+    - Dict, JSON and header entries whose keys contain any pattern from
+      ``SECRET_KEY_PATTERNS``, in either quote style and any case
     - URL query params matching common secret names
 
     Args:
