@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -18,16 +19,16 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
+from starlette.responses import FileResponse
+from starlette.types import Message
 
-from openhands.agent_server import (
-    bash_service as bash_mod,
-    conversation_service as cs_mod,
-    file_router as file_router_module,
-)
+from openhands.agent_server import file_router as file_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.file_router import ARCHIVE_MANIFEST_NAME, _upload_file
+from openhands.agent_server.server_context import server_context_of
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from tests.agent_server.conftest import client_context, update_test_context
 
 
 @pytest.fixture
@@ -380,12 +381,13 @@ def test_upload_file_with_special_characters_in_path(client, tmp_path):
 def _use_conversations_path(client, conversations_path: Path) -> None:
     """Point the app's request-time config at ``conversations_path``.
 
-    Trajectory downloads resolve the conversations directory from
-    ``request.app.state.config`` — the same config ``POST /api/init``
+    Trajectory downloads resolve the conversations directory from the
+    config of the server context — the same config ``POST /api/init``
     replaces on a deferred-init server.
     """
-    client.app.state.config = Config(
-        session_api_keys=[], conversations_path=conversations_path
+    update_test_context(
+        client.app,
+        config=Config(session_api_keys=[], conversations_path=conversations_path),
     )
 
 
@@ -748,10 +750,10 @@ def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
 def test_download_trajectory_resolves_dir_from_request_config(
     client, monkeypatch, tmp_path
 ):
-    """The served directory comes from ``request.app.state.config``.
+    """The served directory comes from the server context's config.
 
-    ``POST /api/init`` on a deferred-init server only replaces that config;
-    the launch-time config lookup must not decide where the route looks.
+    ``POST /api/init`` on a deferred-init server replaces that context; the
+    config the app was created with must not decide where the route looks.
     """
     request_path = tmp_path / "request-conversations"
     conversation_id = uuid4()
@@ -760,10 +762,6 @@ def test_download_trajectory_resolves_dir_from_request_config(
     (conversation_dir / "meta.json").write_text("{}")
     (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
 
-    monkeypatch.setattr(
-        "openhands.agent_server.config.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=tmp_path / "elsewhere"),
-    )
     _use_conversations_path(client, request_path)
 
     response = client.get(f"/api/file/download-trajectory/{conversation_id}")
@@ -777,12 +775,10 @@ def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_p
     """Both trajectory routes work after ``/api/init`` moves storage.
 
     Regression test for a deferred-init (warm-pool) server: ``/api/init``
-    installs the per-user ``conversations_path`` on ``app.state.config``, so
+    installs the per-user ``conversations_path`` in the server context, so
     both the flat and the conversation-scoped download route must serve the
     conversation from that directory instead of the launch-time default.
     """
-    cs_mod._conversation_service = None
-    bash_mod._bash_event_service = None
     boot_conversations = tmp_path / "boot-conversations"
     user_conversations = tmp_path / "user" / "conversations"
     app = create_app(
@@ -793,75 +789,311 @@ def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_p
         )
     )
     headers = {"X-Session-API-Key": "init-key"}
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/init",
-                json={
-                    "session_api_keys": ["init-key"],
-                    "conversations_path": str(user_conversations),
-                    "bash_events_dir": str(tmp_path / "user" / "bash_events"),
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/init",
+            json={
+                "session_api_keys": ["init-key"],
+                "conversations_path": str(user_conversations),
+                "bash_events_dir": str(tmp_path / "user" / "bash_events"),
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        response = client.post(
+            "/api/conversations",
+            headers=headers,
+            json={
+                "workspace": {"working_dir": str(tmp_path / "workspace")},
+                "agent": {
+                    "kind": "Agent",
+                    "llm": {"model": "openai/test", "usage_id": "test"},
                 },
-            )
-            assert response.status_code == 200, response.text
+            },
+        )
+        assert response.status_code == 201, response.text
+        conversation_id = UUID(response.json()["id"])
+        assert (user_conversations / conversation_id.hex).is_dir()
+        assert not (boot_conversations / conversation_id.hex).exists()
 
-            response = client.post(
-                "/api/conversations",
-                headers=headers,
-                json={
-                    "workspace": {"working_dir": str(tmp_path / "workspace")},
-                    "agent": {
-                        "kind": "Agent",
-                        "llm": {"model": "openai/test", "usage_id": "test"},
-                    },
-                },
-            )
-            assert response.status_code == 201, response.text
-            conversation_id = UUID(response.json()["id"])
-            assert (user_conversations / conversation_id.hex).is_dir()
-            assert not (boot_conversations / conversation_id.hex).exists()
+        flat = client.get(
+            f"/api/file/download-trajectory/{conversation_id}", headers=headers
+        )
+        scoped = client.get(
+            f"/api/conversations/{conversation_id}/file/download-trajectory/"
+            f"{conversation_id}",
+            headers=headers,
+        )
 
-            flat = client.get(
-                f"/api/file/download-trajectory/{conversation_id}", headers=headers
-            )
-            scoped = client.get(
-                f"/api/conversations/{conversation_id}/file/download-trajectory/"
-                f"{conversation_id}",
-                headers=headers,
-            )
+        assert flat.status_code == 200, flat.text
+        assert scoped.status_code == 200, scoped.text
 
-            assert flat.status_code == 200, flat.text
-            assert scoped.status_code == 200, scoped.text
+        root = conversation_id.hex
+        with zipfile.ZipFile(io.BytesIO(flat.content)) as archive:
+            flat_names = set(archive.namelist())
+        with zipfile.ZipFile(io.BytesIO(scoped.content)) as archive:
+            scoped_names = set(archive.namelist())
+        assert flat_names == scoped_names
+        assert f"{root}/meta.json" in flat_names
+        assert f"{root}/base_state.json" in flat_names
 
-            root = conversation_id.hex
-            with zipfile.ZipFile(io.BytesIO(flat.content)) as archive:
-                flat_names = set(archive.namelist())
-            with zipfile.ZipFile(io.BytesIO(scoped.content)) as archive:
-                scoped_names = set(archive.namelist())
-            assert flat_names == scoped_names
-            assert f"{root}/meta.json" in flat_names
-            assert f"{root}/base_state.json" in flat_names
-
-            # No conversation directory under the resolved config → 404 on
-            # both routes. Rebinding the config stands in for a conversation
-            # whose storage moved away from the initialized path.
-            app.state.config = app.state.config.model_copy(
+        # No conversation directory under the resolved config → 404 on
+        # both routes. Rebinding the config stands in for a conversation
+        # whose storage moved away from the initialized path.
+        update_test_context(
+            app,
+            config=server_context_of(app).config.model_copy(
                 update={"conversations_path": tmp_path / "elsewhere"}
-            )
-            for url in (
-                f"/api/file/download-trajectory/{conversation_id}",
-                f"/api/conversations/{conversation_id}/file/download-trajectory/"
-                f"{conversation_id}",
-            ):
-                missing = client.get(url, headers=headers)
-                assert missing.status_code == 404, missing.text
-                assert missing.json()["detail"] == "Conversation not found"
+            ),
+        )
+        for url in (
+            f"/api/file/download-trajectory/{conversation_id}",
+            f"/api/conversations/{conversation_id}/file/download-trajectory/"
+            f"{conversation_id}",
+        ):
+            missing = client.get(url, headers=headers)
+            assert missing.status_code == 404, missing.text
+            assert missing.json()["detail"] == "Conversation not found"
 
-            # Repeated downloads leave no zip residue behind.
-            assert list(user_conversations.glob("*.zip")) == []
+        # Repeated downloads leave no zip residue behind.
+        assert list(user_conversations.glob("*.zip")) == []
+
+
+async def _stream_trajectory(
+    response: FileResponse, error: BaseException | None = None
+) -> bytes:
+    chunks: list[bytes] = []
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b""}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.body":
+            if error is not None:
+                raise error
+            chunks.append(message["body"])
+
+    await response(
+        {"type": "http", "method": "GET", "headers": [], "path": "/"},
+        receive,
+        send,
+    )
+    return b"".join(chunks)
+
+
+async def test_download_trajectory_repeat_survives_previous_cleanup(
+    client, monkeypatch, tmp_path
+):
+    """A download's cleanup must not delete the zip a later download built.
+
+    On a keep-alive connection uvicorn starts the next request once the first
+    body is sent, before the first response's background cleanup runs.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    conversations_path = conversation_dir.parent
+
+    first = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    second = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    await _stream_trajectory(first)
+
+    with zipfile.ZipFile(second.path) as archive:
+        assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    await _stream_trajectory(second)
+    assert list(conversations_path.glob("*.zip")) == []
+
+
+async def test_download_trajectory_concurrent_downloads_use_own_files(
+    client, monkeypatch, tmp_path
+):
+    """Concurrent downloads each get their own complete zip, all cleaned up."""
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    conversations_path = conversation_dir.parent
+
+    responses = await asyncio.gather(
+        *(
+            file_router_module.download_trajectory(
+                conversation_id, client_context(client).config
+            )
+            for _ in range(6)
+        )
+    )
+
+    assert len({response.path for response in responses}) == 6
+    for response in responses:
+        assert response.headers["content-disposition"] == (
+            f'attachment; filename="{conversation_id.hex}.zip"'
+        )
+        with zipfile.ZipFile(response.path) as archive:
+            assert archive.testzip() is None
+            assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    for response in responses:
+        await _stream_trajectory(response)
+    assert list(conversations_path.glob("*.zip")) == []
+
+
+async def test_download_trajectory_removes_temp_zip_when_zipping_fails(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+
+    def fail(source_dir, output_path):
+        output_path.write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", fail)
+
+    with pytest.raises(OSError, match="disk full"):
+        await file_router_module.download_trajectory(
+            conversation_id, client_context(client).config
+        )
+    assert list(conversation_dir.parent.glob("*.zip")) == []
+
+
+async def test_download_trajectory_cancellation_joins_zip_worker(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    release = threading.Event()
+    create_zip = file_router_module._create_zip_from_directory
+
+    def blocked_zip(source, destination):
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(timeout=10)
+            create_zip(source, destination)
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", blocked_zip)
+    task = asyncio.create_task(
+        file_router_module.download_trajectory(
+            conversation_id, client_context(client).config
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        assert list(conversation_dir.parent.glob("*.zip")) == []
     finally:
-        cs_mod._conversation_service = None
-        bash_mod._bash_event_service = None
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("send failed"), asyncio.CancelledError()]
+)
+async def test_download_trajectory_cleans_up_after_stream_failure(
+    client, tmp_path, error
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    response = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    with pytest.raises(type(error)):
+        await _stream_trajectory(response, error)
+    assert list(conversation_dir.parent.glob("*.zip")) == []
+
+
+async def test_download_trajectory_limits_concurrent_zip_builds(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, _ = _trajectory_dir(client, tmp_path)
+    create_zip = file_router_module._create_zip_from_directory
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def tracked_zip(source, destination):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        create_zip(source, destination)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", tracked_zip)
+
+    responses = await asyncio.gather(
+        *(
+            file_router_module.download_trajectory(
+                conversation_id, client_context(client).config
+            )
+            for _ in range(6)
+        )
+    )
+
+    for response in responses:
+        await _stream_trajectory(response)
+    assert 1 <= peak <= 2
+
+
+async def test_download_trajectory_removes_only_stale_orphaned_temp_zips(
+    client, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    two_hours_ago = time.time() - 2 * 60 * 60
+    # An unstreamed response leaves its temp zip, as a killed server would.
+    stale = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    recent = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+    os.utime(stale.path, (two_hours_ago, two_hours_ago))
+    unrelated = conversation_dir.parent / ".backup.zip"
+    unrelated.touch()
+    os.utime(unrelated, (two_hours_ago, two_hours_ago))
+
+    await _stream_trajectory(
+        await file_router_module.download_trajectory(
+            conversation_id, client_context(client).config
+        )
+    )
+
+    assert not Path(stale.path).exists()
+    assert Path(recent.path).exists()
+    assert unrelated.exists()
+
+
+async def test_download_trajectory_survives_failure_removing_stale_temp_zip(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    two_hours_ago = time.time() - 2 * 60 * 60
+    stale = conversation_dir.parent / f".{conversation_id.hex}-orphan.zip"
+    stale.touch()
+    os.utime(stale, (two_hours_ago, two_hours_ago))
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self == stale:
+            raise PermissionError("in use")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    response = await file_router_module.download_trajectory(
+        conversation_id, client_context(client).config
+    )
+
+    with zipfile.ZipFile(response.path) as archive:
+        assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    assert stale.exists()
+    await _stream_trajectory(response)
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):
@@ -1467,11 +1699,30 @@ def test_tar_gz_response_includes_repo_metadata_headers(client, tmp_path):
     assert "x-archive-base-commit" not in resp.headers
 
 
-def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "https://user:ghp_secrettoken@github.com/example/repo.git",
-    )
+@pytest.mark.parametrize(
+    ("remote_url", "expected_remote"),
+    [
+        pytest.param(
+            "https://user:ghp_secrettoken@github.com/example/repo.git",
+            "https://****@github.com/example/repo.git",
+            id="plain",
+        ),
+        pytest.param(
+            "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
+            "HTTPS://****@github.com/example/repo.git",
+            id="mixed_case",
+        ),
+        pytest.param(
+            "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
+            "https://****@github.com/example/repo.git\nextra",
+            id="multiline",
+        ),
+    ],
+)
+def test_archive_redacts_remote_credentials_in_header(
+    client, tmp_path, remote_url, expected_remote
+):
+    _repo_with_remote(tmp_path / "repo", remote_url)
 
     resp = client.get(
         "/api/file/archive",
@@ -1481,24 +1732,7 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert resp.status_code == 200, resp.text
     remote = resp.headers["x-archive-repo-remote"]
     assert "ghp_secrettoken" not in remote
-    assert remote == quote("https://****@github.com/example/repo.git", safe="")
-
-
-def test_archive_redacts_mixed_case_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
-    )
-
-    resp = client.get(
-        "/api/file/archive",
-        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
-    )
-
-    assert resp.status_code == 200, resp.text
-    remote = resp.headers["x-archive-repo-remote"]
-    assert "ghp_secrettoken" not in remote
-    assert remote == quote("HTTPS://****@github.com/example/repo.git", safe="")
+    assert remote == quote(expected_remote, safe="")
 
 
 def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
@@ -1532,23 +1766,6 @@ def test_archive_literal_percent_is_encoded(client, tmp_path):
 
     assert resp.status_code == 200, resp.text
     assert "%252F" in resp.headers["x-archive-repo-remote"]
-
-
-def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
-    )
-
-    resp = client.get(
-        "/api/file/archive",
-        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
-    )
-
-    assert resp.status_code == 200, resp.text
-    remote = resp.headers["x-archive-repo-remote"]
-    assert "ghp_secrettoken" not in remote
-    assert remote == quote("https://****@github.com/example/repo.git\nextra", safe="")
 
 
 def test_archive_detached_head_reports_detached_branch(client, tmp_path):
@@ -2244,3 +2461,20 @@ def test_git_delta_dir_only_exclude_keeps_same_named_file(client, tmp_path):
     assert "diff --git a/build b/build" in patch  # the file is kept
     assert "authored marker" in patch
     assert "sub/build/out.o" not in patch  # the directory is excluded
+
+
+def test_archive_non_latin1_base_ref_is_percent_encoded(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["branch", "功能"], repo)
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "base_ref": "功能"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-base-ref"] == quote("功能", safe="")
+    assert [p.name for p in tmp_path.iterdir()] == ["repo"]

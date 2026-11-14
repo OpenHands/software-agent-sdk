@@ -234,7 +234,8 @@ If any is missing, skipped, stale, ambiguous, or failing, COMMENT with the exact
 missing validation and defer approval to a maintainer.
 
 Package version changes belong in dedicated release PRs. Do not approve an
-unrelated PR that changes a distributable package version.
+unrelated PR that changes a distributable package version. A release PR also
+deletes the root `.pr/` directory; that deletion is expected.
 
 ### Dependency updates
 
@@ -280,7 +281,7 @@ Do not comment on:
 - clear code merely to request a comment or docstring;
 - extra tests unless a concrete behavior or regression is unverified;
 - good behavior that needs no change; or
-- `.pr/` artifacts, which the repository cleanup workflow owns.
+- `.pr/` artifacts, which the next release PR removes.
 
 Do not assume that test-only, documentation, configuration, CI, or dependency
 PRs are safe by category. Apply the relevant checkpoint, then approve promptly

@@ -626,7 +626,7 @@ Preconditions:
   temporary file is left next to it, and the restored file lists everything
   again. The log has one `Cannot access workspaces file: [Errno 21] Is a
   directory` ERROR line per call and no traceback: the 500 is a deliberate
-  `HTTPException`, which the server logs without a stack.
+  `OperationFailed` domain error, which the server logs without a stack.
 - **No-op writes on read-only storage (`F17.noop-write-readonly`).**
   Make the persistence directory immutable (`chattr +i`, standing in for a
   read-only mount: the server owns the directory and re-applies mode `0700`
@@ -683,9 +683,11 @@ Preconditions:
 
 ## Gotchas
 
-- The workspaces store is a process-wide singleton created on the first
-  request (`get_workspaces_store`), so the file location is fixed for the
-  life of the process: changing `OH_PERSISTENCE_DIR` needs a restart.
+- The workspaces store belongs to the server context
+  (`ServerStores.workspaces`) and its location is resolved when that context
+  is built, so it is fixed for the life of the process: changing
+  `OH_PERSISTENCE_DIR` needs a restart (a deferred-init server resolves it
+  again at `POST /api/init`).
   Without it, the location follows `conversations_path`, which for the
   default relative `workspace/conversations` is `./workspace/.openhands`
   under the server's working directory. The contents are not cached: every

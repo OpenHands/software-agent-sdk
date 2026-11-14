@@ -381,8 +381,7 @@ class Config(BaseModel):
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
-            "The externally reachable agent-server URL, including any path prefix. "
-            "It is used for root-path routing and OAuth MCP callback redirects."
+            "The URL where this agent server instance is available externally"
         ),
     )
     app_backend_public_url: str | None = Field(
@@ -473,7 +472,8 @@ class Config(BaseModel):
             "container runtimes, where that host configuration is absent): also "
             "inject the user/org/public/marketplace skills the server "
             "discovers. Project/repository skills are never injected either way "
-            "— the CLI reads AGENTS.md itself (#4019). Set explicitly per "
+            "— the CLI reads AGENTS.md itself (#4019). Skills a client supplies "
+            "at launch are kept in both modes. Set explicitly per "
             "deployment; the agent-server image sets 'openhands_managed'."
         ),
     )
@@ -590,9 +590,6 @@ class Config(BaseModel):
         return cipher
 
 
-_default_config: Config | None = None
-
-
 def _read_config_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -641,12 +638,3 @@ def load_config(config_path: Path | None = None) -> Config:
     if not data:
         return Config()
     return Config.model_validate(data)
-
-
-def get_default_config() -> Config:
-    """Get the default local server config shared across the server"""
-    global _default_config
-    if _default_config is None:
-        _default_config = load_config()
-        assert _default_config is not None
-    return _default_config
