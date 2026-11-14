@@ -51,3 +51,13 @@ def test_terminating_error_completes_and_next_command_runs(session, failing_comm
     after = session.execute(TerminalAction(command="Write-Output still-usable"))
     assert "still-usable" in after.text
     assert after.metadata.exit_code == 0
+
+
+def test_parse_error_completes_and_next_command_runs(session):
+    failed = session.execute(TerminalAction(command="Write-Output (1 +* 2)"))
+    assert "still running" not in (failed.metadata.suffix or "")
+    assert "value expression" in failed.text
+
+    after = session.execute(TerminalAction(command="Write-Output still-usable"))
+    assert "still-usable" in after.text
+    assert after.metadata.exit_code == 0
