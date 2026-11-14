@@ -194,7 +194,6 @@ class WindowsTerminal(TerminalInterface):
 
         proc = self.process
         if proc is not None:
-            self._terminate_child_processes()
             try:
                 proc.terminate()
                 proc.wait(timeout=_PROCESS_TERMINATE_TIMEOUT_SECONDS)
