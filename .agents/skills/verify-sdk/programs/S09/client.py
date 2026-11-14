@@ -9,11 +9,16 @@ Usage: client.py MODE
   oauth       an expired stored token is refreshed against the token
               endpoint the server advertises (and against <origin>/token
               when it advertises none); a valid token is sent as is.
+  negotiation what the client negotiates with each kind of server (stdio,
+              streamable HTTP, streamable HTTP without `server/discover`,
+              SSE), and what follows: the server's session id across calls,
+              and a tools/list_changed sent while or after answering.
   timeout     a server that starts too slowly, and an unreachable URL.
   recovery    a transient HTTP 503 on a call, then the next calls; a
               closed client.
-  restart     the session is lost for good: the HTTP server restarts, the
-              stdio server exits; the next calls should reconnect.
+  restart     the server goes away: an HTTP server restarts (one that
+              answers `server/discover`, one that only does the handshake),
+              the stdio server exits; the next calls should reach the server.
   config      MCPServer validation, secret handling, config shapes, tool
               schemas, argument validation and tool serialization.
 """
@@ -124,6 +129,57 @@ try:
             out["single_server_names_unprefixed"] = "echo" in {
                 t.name for t in client.tools
             }
+
+    elif mode == "negotiation":
+        http_port, old_port, sse_port = free_port(), free_port(), free_port()
+        start("http", http_port)
+        start("http", old_port, "--handshake-only")
+        start("sse", sse_port)
+        servers = {
+            "stdio": stdio(),
+            "http": MCPServer(url=f"http://127.0.0.1:{http_port}/mcp"),
+            "http_handshake_only": MCPServer(url=f"http://127.0.0.1:{old_port}/mcp"),
+            "sse": MCPServer(url=f"http://127.0.0.1:{sse_port}/sse"),
+        }
+        for label, server in servers.items():
+            reported: list[str] = []
+            with create_mcp_tools(
+                {label: server},
+                timeout=30,
+                on_tools_changed=lambda tools: reported.extend(t.name for t in tools),
+            ) as client:
+
+                def names() -> list[str]:
+                    return [t.name for t in client.tools]
+
+                def wait_for(name: str, present: bool, seconds: float = 3.0) -> bool:
+                    deadline = time.time() + seconds
+                    while time.time() < deadline and (name in names()) != present:
+                        time.sleep(0.1)
+                    return name in names()
+
+                sessions = [
+                    json.loads(payload(call(client, "session")[0])) for _ in range(3)
+                ]
+                counts = [payload(call(client, "counter")[0]) for _ in range(2)]
+                row = {
+                    "mode": client.mode,
+                    "has_initialize_result": client.initialize_result is not None,
+                    "session_ids": len({s["session_id"] for s in sessions}),
+                    "calls_in_session": [s["calls_in_session"] for s in sessions],
+                    "process_counter": [c.split()[0] for c in counts],
+                    "same_process": len({c.split()[1] for c in counts}) == 1,
+                }
+                call(client, "register_extra")
+                row["in_request_notification_adds_tool"] = wait_for("extra", True)
+                call(client, "remove_extra")
+                row["in_request_notification_removes_tool"] = not wait_for(
+                    "extra", False
+                )
+                call(client, "register_late")
+                row["late_notification_adds_tool"] = wait_for("late", True)
+                row["reported_new_tools"] = list(reported)
+            out[label] = row
 
     elif mode == "auth":
         port = free_port()
@@ -278,6 +334,17 @@ try:
             start("http", port)
             out["http_after_restart"] = call(client, "counter")
             out["http_after_restart_again"] = call(client, "counter")
+        port = free_port()
+        proc = start("http", port, "--handshake-only")
+        with create_mcp_tools(
+            {"web": MCPServer(url=f"http://127.0.0.1:{port}/mcp")}, timeout=30
+        ) as client:
+            out["handshake_before"] = call(client, "counter")
+            proc.kill()
+            proc.wait()
+            start("http", port, "--handshake-only")
+            out["handshake_after_restart"] = call(client, "counter")
+            out["handshake_after_restart_again"] = call(client, "counter")
         with create_mcp_tools({"local": stdio()}, timeout=30) as client:
             out["stdio_before"] = call(client, "counter")
             out["stdio_die"] = call(client, "die")

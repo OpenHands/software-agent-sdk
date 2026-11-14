@@ -428,7 +428,9 @@ elif mode == "async":
     conversation.close()
 
 elif mode == "image-non-vision":
-    llm = make_llm([])  # any LLM call would raise: the script is empty
+    # The one scripted reply is for the follow-up turn; the image turn must
+    # not consume it.
+    llm = make_llm([{"text": "hi"}])
     conversation = conversation_for(
         Agent(llm=llm, tools=[Tool(name=TerminalTool.name)])
     )
@@ -452,6 +454,18 @@ elif mode == "image-non-vision":
         "status": conversation.state.execution_status.value,
         "llm_calls": llm._call_count,
         "agent_reply": replies[0][:300] if replies else None,
+    }
+    # A later text-only turn: the image is now in an older message.
+    conversation.send_message("Never mind, just say hi.")
+    conversation.run()
+    out["followup"] = {
+        "status": conversation.state.execution_status.value,
+        "llm_calls": llm._call_count,
+        "agent_messages": sum(
+            1
+            for e in conversation.state.events
+            if isinstance(e, MessageEvent) and e.source == "agent"
+        ),
     }
     conversation.close()
 
