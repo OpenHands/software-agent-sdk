@@ -87,6 +87,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
@@ -2211,6 +2212,14 @@ class EventService:
                 if self._run_task is not None and self._run_task.done():
                     self._run_task = None
             await self._publish_state_update()
+
+    async def add_mcp_servers(self, servers: dict[str, MCPServer]) -> None:
+        """Add modern MCP servers to the conversation."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.add_mcp_servers, servers)
+        await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""

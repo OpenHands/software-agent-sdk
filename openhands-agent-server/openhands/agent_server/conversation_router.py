@@ -35,6 +35,7 @@ from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
+    AddMCPServersRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -521,6 +522,33 @@ async def resume_goal_in_conversation(
             raise Conflict("Conversation run or goal loop already running.")
         raise Invalid(message)
 
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/mcp",
+    responses=error_responses(
+        {NotFound: "Item not found", Invalid: "Invalid MCP server update"}
+    ),
+)
+async def add_conversation_mcp_servers(
+    conversation_id: UUID,
+    request: AddMCPServersRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> Success:
+    """Add modern MCP servers to one conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    mcp_servers = {
+        name: server.with_decrypted_secrets(cipher=cipher)
+        for name, server in request.mcp_servers.items()
+    }
+    try:
+        await event_service.add_mcp_servers(mcp_servers)
+    except ValueError as exc:
+        raise Invalid(str(exc)) from exc
     return Success()
 
 
