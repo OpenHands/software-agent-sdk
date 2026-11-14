@@ -4,9 +4,9 @@ How the stack #6762 → #6763 → #6764 was verified. This is a temporary PR
 artifact (see `AGENTS.md`, "PR-specific artifacts"); the next release PR
 removes it.
 
-- Base: `main` at `56d559f6`.
-- Code under test: part 1 `c0fa0cd4`, part 2 `f584d5db`, part 3 `4b4d01c7`. The commit
-  that adds this file changes nothing else.
+- Base: `main` at `91e8b5b6`, merged into all three branches.
+- Code under test: part 1 `bfa0862b`, part 2 `cd8f1482`, part 3 `ae2e835c`. The commit
+  after `ae2e835c` adds this record and changes nothing else.
 - Every live attempt launches its own agent-server
   (`control-agent-server map run --fresh`); "restart" is a real process
   restart on the same state directory. Runs were wrapped in
@@ -16,6 +16,9 @@ removes it.
   scripted `llm-stub` and need no key.
 - `xfail`: the bullet failed with exactly the failure its known-bug marker
   documents. `xpass`: that failure did not reproduce.
+- The `main` baselines of the whole families were run once, before the last
+  three small fixes to the stack; `main` did not change in between. Every
+  run on the stack is on the commits named above.
 
 ## 1. The bug on `main` and the fix, on live servers
 
@@ -38,9 +41,11 @@ SDK map, `S04.secrets-update` and `S04.secrets-constructor`: fail on `main`
 | Bullet | `main`, 2 attempts | this branch, 2 attempts |
 |---|---|---|
 | `F10.fork-keeps-credentials` | xfail, xfail | xpass, xpass |
-| `F10.fork-run-memory` | xfail, xfail | xpass, xpass |
+| `F10.fork-run-memory` | fail, fail | xpass, xpass |
 
-SDK map, `S04.fork-keeps-state`: fails 15 checks on `main`, passes on part 2.
+`F10.fork-run-memory` reports `fail` on `main` and not `xfail`: the fork's run still ends in `error` because the fork lost the model key, but the provider's rejection ("Authentication Fails") is recorded as `LLMBadRequestError` this time, not as the `LLMAuthenticationError` the map's marker names, so the runner does not count it as the documented failure. On this branch the fork runs to `finished` and recalls the codename.
+
+SDK map, `S04.fork-keeps-state`: fails 16 checks on `main`, passes on part 2.
 
 ### Part 3 (#6764): `meta.json` no longer holds a second copy
 
@@ -58,59 +63,62 @@ known-bug marker, against a server from `main` and then from part 3.
 | `F08.child-inherits-current` | xfail, xfail | xpass, xpass |
 | `F08.reload-after-pause` | xfail, xfail | xpass, xpass |
 
-## 2. Whole families on part 3's code
+## 2. Whole families on part 3's code, and the same families on `main`
 
-| Family | Result |
-|---|---|
-| `F08` confirmation, security, secrets | 34 of 34 pass |
-| `F10` fork, navigate, condense, ask | 27 of 27 pass |
-| `F04` conversation lifecycle | 36 pass; 1 xfail that `main` has too (`F04.create-initial-message-run-false`) |
-| `F12` runtime and credentials | 29 pass; 1 xfail that `main` has too (`F12.sandbox-pause-websocket`); `F12.docker-runtime` blocked (needs a Docker daemon); `F12.docker-startup-timeout` blocked (needs a Docker daemon) |
-| `F31` persistence and limits | 22 pass; 1 xfail that `main` has too (`F31.takeover-keeps-metadata`); `F31.storage-retention` blocked (labelled blocked in the map) |
-| `F33` Python `RemoteConversation`: run, fork, confirmation, secrets | 5 of 5 pass |
-| `F34` TypeScript client: create, run, fork/navigate/ask, confirm | 5 of 5 pass |
-| `S04` local conversation (SDK map) | 25 pass; 1 fail that `main` has too (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
-| `S13` security and confirmation (SDK map) | 7 pass; `S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject` blocked this time: the model did not propose the risky command the bullet needs; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
+| Family | this branch | `main` (`91e8b5b6`), its own map |
+|---|---|---|
+| `F08` confirmation, security, secrets | 34 of 34 pass | 22 of 24 pass, 2 xfail |
+| `F10` fork, navigate, condense, ask | 25 of 27 pass; 2 fail that also fail on `main` (`F10.ask-agent`, `F10.ask-agent-running`) | 22 of 26 pass, 3 fail, 1 xfail |
+| `F04` conversation lifecycle | 33 of 37 pass; 1 xfail that `main` has too (`F04.create-initial-message-run-false`); 3 fail that also fail on `main` (`F04.delete`, `F04.delete-unknown-id`, `F04.restart-persist`) | 32 of 37 pass, 3 fail, 2 xfail |
+| `F12` runtime and credentials | 29 of 32 pass; 1 xfail that `main` has too (`F12.sandbox-pause-websocket`); `F12.docker-runtime` blocked (needs a Docker daemon); `F12.docker-startup-timeout` blocked (needs a Docker daemon) | 29 of 32 pass, 1 xfail, 2 blocked |
+| `F31` persistence and limits | 22 of 24 pass; 1 xfail that `main` has too (`F31.takeover-keeps-metadata`); `F31.storage-retention` blocked (labelled blocked in the map) | 22 of 24 pass, 1 xfail, 1 blocked |
+| `F33` Python `RemoteConversation`: run, fork, confirmation, secrets | 5 of 5 pass | 5 of 5 pass |
+| `F34` TypeScript client: create, run, fork/navigate/ask, confirm | 4 of 5 pass; 1 fail that also fails on `main` (`F34.conversation-branching`) | 4 of 5 pass, 1 fail |
+| `S04` local conversation (SDK map) | 25 of 27 pass; 1 fail that also fails on `main` (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map | 24 of 26 pass, 1 fail, 1 blocked |
+| `S13` security and confirmation (SDK map) | 8 of 9 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map | 7 of 9 pass, 2 blocked |
+
+Every bullet that does not pass on part 3 does not pass on `main` either.
+The failures the two share are recipes in `main`'s map that lag `main` itself: `F04.delete` waits for a `PauseEvent` on a socket that is now closed with "Conversation deleted" (`F04.delete-unknown-id` and `F04.restart-persist` reuse its conversation), and after a side question the event count is one higher than `F10.ask-agent`, `F10.ask-agent-running` and `F34.conversation-branching` expect. I left those recipes alone; they are not about this change.
 
 SDK maps on parts 1 and 2:
 
 | Family | Result |
 |---|---|
-| `S04` local conversation (SDK map) | 24 pass; 1 fail that `main` has too (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
-| `S13` security and confirmation (SDK map) | 8 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
+| `S04` local conversation (SDK map) | 24 of 26 pass; 1 fail that also fails on `main` (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
+| `S13` security and confirmation (SDK map) | 8 of 9 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
 
 | Family | Result |
 |---|---|
-| `S04` local conversation (SDK map) | 25 pass; 1 fail that `main` has too (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
-| `S13` security and confirmation (SDK map) | 7 pass; `S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject` blocked this time: the model did not propose the risky command the bullet needs; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
+| `S04` local conversation (SDK map) | 25 of 27 pass; 1 fail that also fails on `main` (`S04.persist-events`, `S05.event-log-recovery`); `S04.factory` labelled blocked in the map |
+| `S13` security and confirmation (SDK map) | 8 of 9 pass; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map |
 
-The `S04.persist-events` / `S05.event-log-recovery` bullet fails the same way on `main`. The model-backed `S13.llm-analyzer` bullet needs DeepSeek to propose a risky command and to rate it `HIGH`; when the model does not, the bullet reports `blocked` or `fail`, on `main` as well (repeated alone it failed 1 time in 3 on `main` and 2 in 3 on the stack). Neither touches this change.
+The one `S04` failure is the event-log recovery bullet; it fails the same way on `main` and does not touch this change.
 
 ## 3. Through the Agent Canvas UI
 
-The full OpenHands UI (Agent Canvas, built from the `OpenHands/OpenHands` repository) was run with that repository's `verify-openhands` skill (`control-openhands launch --sdk-path <checkout>`), once on `main`'s SDK and agent-server and once on this branch's, with a real model (DeepSeek flash). The Canvas has no control that changes confirmation mode on an existing conversation, and it only ever sends lookup secrets, so two steps were made through the REST API: that switch, and the replacement of the secret's value. Everything else was typed and clicked in the UI, and each stack was restarted for real.
+The full OpenHands UI (Agent Canvas, built from the `OpenHands/OpenHands` repository) was run with that repository's `verify-openhands` skill (`control-openhands launch --sdk-path <checkout>`), once on `main`'s SDK and agent-server (`91e8b5b6`) and once on this branch's (`ae2e835c`), with a real model (DeepSeek flash). The Canvas has no control that changes confirmation mode on an existing conversation, and it only ever sends lookup secrets, so two steps were made through the REST API: that switch, and the replacement of the secret's value. Everything else was typed and clicked in the UI, and each stack was restarted for real.
 
 | Scenario, observed in the UI | `main` | this branch |
 |---|---|---|
-| Conversation switched to `AlwaysConfirm`, then a backend restart, then a new command | ran without asking, in 2 of 2 attempts | waited for approval, in 2 of 2 attempts; Continue ran it, Cancel rejected it |
+| Conversation switched to `AlwaysConfirm`, then a backend restart, then a new command | ran without asking, in 2 of 2 attempts | waited for approval, in 2 of 2 attempts; Continue ran it, Cancel rejected the next one |
 | Secret replaced at runtime (18 bytes → 25), then a restart; length read by the agent | 18: the old value is back | 25 |
 | New conversation started in confirmation mode: reject, approve, restart, next command | waits (creation-time value) | waits |
-| `meta.json` read back at every step | had `confirmation_policy`, `security_analyzer`, `secrets` in 25 of 25 read-backs | had none of them in 21 of 21 |
+| `meta.json` read back at every step | had `confirmation_policy`, `security_analyzer`, `secrets` in 29 of 29 read-backs | had none of them in 31 of 31 |
 
 ![policy after a restart](ui-policy-after-restart.png)
 
 ![replaced secret after a restart](ui-secret-after-restart.png)
 
-On `main` the revert is also written back: loading the conversation after the restart overwrote `base_state.json` with the creation-time policy. No secret value appears in the page (text and DOM), in the API events or in the conversation's state directory, and the screenshots show only the lengths.
+On `main` the revert is also written back: once the conversation is loaded after the restart, `base_state.json` holds the creation-time policy again. While the Add-secret form is being filled, the typed value is in that masked field; otherwise no secret value appears in the page (text and DOM), in the API events or in the conversation's state directory, on either side, and the screenshots show only lengths. An independent pass recounted every number in this table from the saved read-backs and step logs.
 
 ## 4. Checks CI runs only for PRs into `main`, run on part 3
 
-- The exported OpenAPI document (`export_agent_server_openapi.py`) is byte-identical to `main`'s.
-- REST API breakage check (`check_agent_server_rest_api_breakage.py`, with oasdiff 1.19.1): no breaking changes.
+- The exported OpenAPI document (`export_agent_server_openapi.py`) is byte-identical to `main`'s at `91e8b5b6`.
+- REST API breakage check (`check_agent_server_rest_api_breakage.py`, with oasdiff 1.19.1): passes. What it lists against the 1.62.0 release are `main`'s own additive changes (the reaction events of #6609); with an identical OpenAPI document, this branch adds nothing to them.
 - Persisted settings compatibility (`check_persisted_settings_compat.py`): passes, the payloads of the 1.62.0 release included.
 - SDK API breakage check (`check_sdk_api_breakage.py`): no breaking changes in the three packages.
 - `make test-server-schema`: passes.
-- `main`'s agent-server code (the released 1.62.0) starts a conversation on this branch's SDK.
+- The agent-server code of the 1.62.0 release (tag `v1.62.0`) starts a conversation on this branch's SDK.
 
 ## 5. Reproduce
 
