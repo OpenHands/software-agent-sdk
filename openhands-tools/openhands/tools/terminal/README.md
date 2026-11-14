@@ -63,6 +63,13 @@ Raw secret values passed through `env` become session-scoped environment
 variables. Use the SDK secret registry when you need command-scoped secret
 injection behavior.
 
+A registry secret is exported when the command names it. Git provider tokens
+are also exported when the command runs `git`, `gh` or `glab`: a
+`GITHUB_TOKEN` (or `GH_TOKEN`) secret authenticates HTTPS git operations
+against `github.com`, and a `GITLAB_TOKEN` secret against `gitlab.com`, through
+a credential helper set with `GIT_CONFIG_COUNT`. No git config file is written,
+and credential helpers the user already configured are consulted first.
+
 Terminal processes run below the agent server's CPU priority so CPU-heavy
 commands cannot starve it: `taskpolicy -c utility` on macOS, `nice -n 10` on
 Linux and Below Normal priority on Windows. Set
