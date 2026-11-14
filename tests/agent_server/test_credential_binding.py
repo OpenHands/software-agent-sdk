@@ -1064,6 +1064,9 @@ async def test_secrets_from_an_older_meta_json_survive_a_failed_first_load(
     ) as service:
         with pytest.raises(OSError):
             await service.get_event_service(info.id)
+        assert "secrets" not in json.loads(meta_file.read_text())
+        base_state = json.loads((meta_file.parent / "base_state.json").read_text())
+        assert "ONLY_IN_META" in base_state["secret_registry"]["secret_sources"]
         workspace_dir.unlink()
 
         restored = await service.get_event_service(info.id)

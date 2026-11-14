@@ -26,7 +26,7 @@ from openhands.sdk.conversation.request import (
     StartChildConversationRequest,
     StartConversationRequest,
 )
-from openhands.sdk.secret import StaticSecret
+from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.security.confirmation_policy import (
     AlwaysConfirm,
     ConfirmRisky,
@@ -286,8 +286,9 @@ async def test_child_inherits_what_its_parent_has_now(tmp_path):
 @pytest.mark.asyncio
 async def test_unreadable_legacy_meta_secret_costs_only_itself(tmp_path):
     """One legacy secret this server cannot parse (a secret kind it does not
-    know) is left behind. The conversation loads, and the other legacy
-    secrets in the same file are still taken over."""
+    know) is left behind, and so is one an older server without a key stored
+    without its value. The conversation loads, and the other legacy secrets in
+    the same file are still taken over."""
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -302,6 +303,7 @@ async def test_unreadable_legacy_meta_secret_costs_only_itself(tmp_path):
     meta = json.loads(meta_file.read_text())
     meta["secrets"] = {
         "GONE": {"kind": "SecretKindFromARemovedPlugin"},
+        "REDACTED": StaticSecret(value=SecretStr("lost-value")).model_dump(mode="json"),
         "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
             mode="json", context={"cipher": cipher}
         ),
@@ -373,13 +375,27 @@ async def test_start_request_for_an_existing_id_does_not_reseed_its_state(tmp_pa
         await assert_unchanged(service)
 
 
+@pytest.mark.parametrize(
+    ("legacy_secret", "load_cipher"),
+    [
+        (StaticSecret(value=SecretStr("legacy-value")), Cipher("another-key")),
+        (LookupSecret(url="https://example.test/legacy"), Cipher("another-key")),
+        (StaticSecret(value=SecretStr("legacy-value")), None),
+    ],
+    ids=[
+        "static-secret-another-key",
+        "lookup-secret-another-key",
+        "static-secret-no-key",
+    ],
+)
 @pytest.mark.asyncio
 async def test_legacy_secrets_this_key_cannot_decrypt_do_not_cost_the_agent_its_key(
-    tmp_path,
+    tmp_path, legacy_secret, load_cipher
 ):
-    """A load under a key that cannot decrypt the files takes nothing over from
-    an older meta.json, so it does not save the state: with the right key back,
-    the agent's key and the saved secrets are too."""
+    """A load that cannot decrypt the files (another key, or none) takes
+    nothing over from an older meta.json, whatever kind of secret it holds, so
+    it does not save the state: with the right key back, the agent's key and
+    the saved secrets are too."""
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -403,16 +419,19 @@ async def test_legacy_secrets_this_key_cannot_decrypt_do_not_cost_the_agent_its_
     meta_file = conversations_dir / info.id.hex / "meta.json"
     meta = json.loads(meta_file.read_text())
     meta["secrets"] = {
-        "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
+        "ONLY_IN_META": legacy_secret.model_dump(
             mode="json", context={"cipher": cipher}
         )
     }
     meta_file.write_text(json.dumps(meta))
+    base_state_file = meta_file.parent / "base_state.json"
+    saved_state = base_state_file.read_text()
 
     async with ConversationService(
-        conversations_dir=conversations_dir, cipher=Cipher("another-key")
+        conversations_dir=conversations_dir, cipher=load_cipher
     ) as service:
         assert await service.get_event_service(info.id) is not None
+    assert base_state_file.read_text() == saved_state
 
     async with ConversationService(
         conversations_dir=conversations_dir, cipher=cipher
@@ -425,3 +444,38 @@ async def test_legacy_secrets_this_key_cannot_decrypt_do_not_cost_the_agent_its_
         assert api_key.get_secret_value() == "agent-key"
         secrets = state.secret_registry.secret_sources
         assert secrets["START_TOKEN"].get_value() == "start-value"
+
+
+@pytest.mark.asyncio
+async def test_server_without_a_key_does_not_take_legacy_cipher_text_for_a_value(
+    tmp_path,
+):
+    """Without a key, a value an older server encrypted in meta.json is still
+    cipher text. It is not taken over as the secret's value, also when
+    base_state.json holds nothing encrypted."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("restore-mutations-key")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(
+            _request(workspace_dir).model_copy(update={"secrets": {}})
+        )
+
+    meta_file = conversations_dir / info.id.hex / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["secrets"] = {
+        "ONLY_IN_META": StaticSecret(value=SecretStr("legacy-value")).model_dump(
+            mode="json", context={"cipher": cipher}
+        )
+    }
+    meta_file.write_text(json.dumps(meta))
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        restored = await service.get_event_service(info.id)
+        assert restored is not None
+        secrets = (await restored.get_state()).secret_registry.secret_sources
+        assert "ONLY_IN_META" not in secrets

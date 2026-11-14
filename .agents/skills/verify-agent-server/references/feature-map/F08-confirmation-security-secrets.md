@@ -1046,8 +1046,9 @@ KID=$(control-agent-server api POST /api/conversations \
   `F08.child-inherits-current`).
 - A server from before this layout kept start-time secrets in `meta.json`
   and could leave them out of `base_state.json`. The first load by a newer
-  server takes over the names `base_state.json` lacks and then drops the
-  key (`F08.upgrade-from-release`). Going back to such an older server is
+  server takes over the names `base_state.json` lacks, or none when it
+  cannot decrypt what the two files hold, and then drops the key
+  (`F08.upgrade-from-release`). Going back to such an older server is
   not symmetric: it re-applies its own defaults on load, so the policy
   becomes `NeverConfirm` and the analyzer is cleared.
 - Unknown conversations answer 404 `{"detail": "Not Found"}` on the

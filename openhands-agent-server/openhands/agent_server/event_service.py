@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import traceback
 from collections.abc import Mapping
@@ -95,7 +96,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -235,6 +236,19 @@ class _LegacyMetaSecrets(BaseModel):
 _SECRET_SOURCE: TypeAdapter[SecretSource] = TypeAdapter(SecretSource)
 
 
+def _has_undecryptable_token(cipher: Cipher | None, data: Any) -> bool:
+    """Whether parsed JSON ``data`` holds a Fernet token ``cipher`` cannot decrypt."""
+    if isinstance(data, str):
+        return data.startswith(FERNET_TOKEN_PREFIX) and (
+            cipher is None or cipher.try_decrypt_str(data) is None
+        )
+    if isinstance(data, dict):
+        return any(_has_undecryptable_token(cipher, v) for v in data.values())
+    if isinstance(data, list):
+        return any(_has_undecryptable_token(cipher, v) for v in data)
+    return False
+
+
 @dataclass
 class EventService:
     """
@@ -347,6 +361,25 @@ class EventService:
             ).secrets
         except (OSError, ValidationError):
             return {}
+        if not entries:
+            return {}
+        try:
+            base_state = json.loads((self.conversation_dir / BASE_STATE).read_text())
+        except FileNotFoundError:
+            base_state = None
+        except (OSError, ValueError):
+            return {}
+        # Taking a secret over saves the state. On a load that cannot decrypt
+        # what is stored, that save writes those values as missing, and the
+        # right key no longer brings them back.
+        if _has_undecryptable_token(self.cipher, [entries, base_state]):
+            logger.warning(
+                "This server cannot decrypt what is stored for conversation "
+                "%s; the secrets an older server left in its meta.json are "
+                "not taken over, and the next write of meta.json drops them",
+                self.stored.id,
+            )
+            return {}
         legacy: dict[str, SecretSource] = {}
         for name, entry in entries.items():
             try:
@@ -361,9 +394,8 @@ class EventService:
                     self.stored.id,
                 )
                 continue
-            # A value this server's key cannot decrypt reads as unset. Taking
-            # it over would save the state, and with it everything else this
-            # load could not decrypt.
+            # An older server without a key stored the value redacted: there
+            # is nothing to take over.
             if isinstance(source, StaticSecret) and source.value is None:
                 continue
             legacy[name] = source
