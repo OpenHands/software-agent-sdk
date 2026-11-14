@@ -20,28 +20,32 @@ def _image_count(value: Any) -> int:
     return 0
 
 
-def _check_delivery(expected: int, data: Any, body: Any) -> None:
+def _image_loss(expected: int, data: Any, body: Any) -> LLMBadRequestError | None:
     payload = body if body is not None else data
     if isinstance(payload, (str, bytes)):
         payload = json.loads(payload)
-    if _image_count(payload) < expected:
-        raise LLMBadRequestError(
-            "The installed LiteLLM adapter discarded image content before sending "
-            "the request. No request was sent. Use a compatible adapter or an "
-            "explicitly configured OpenAI-compatible transport; enabling vision "
-            "alone cannot fix adapter-level image loss."
-        )
+    if _image_count(payload) >= expected:
+        return None
+    return LLMBadRequestError(
+        "The installed LiteLLM adapter discarded image content before sending "
+        "the request. No request was sent. Use a compatible adapter or an "
+        "explicitly configured OpenAI-compatible transport; enabling vision "
+        "alone cannot fix adapter-level image loss."
+    )
 
 
 class _ImageDeliveryHTTPHandler(HTTPHandler):
     def __init__(self, expected: int, timeout: Any):
         super().__init__(timeout=timeout)
         self.expected = expected
+        self.rejection: LLMBadRequestError | None = None
 
     def post(self, *args: Any, **kwargs: Any):
         data = kwargs.get("data", args[1] if len(args) > 1 else None)
         body = kwargs.get("json", args[2] if len(args) > 2 else None)
-        _check_delivery(self.expected, data, body)
+        self.rejection = _image_loss(self.expected, data, body)
+        if self.rejection is not None:
+            raise self.rejection
         return super().post(*args, **kwargs)
 
 
@@ -49,11 +53,14 @@ class _AsyncImageDeliveryHTTPHandler(AsyncHTTPHandler):
     def __init__(self, expected: int, timeout: Any):
         super().__init__(timeout=timeout)
         self.expected = expected
+        self.rejection: LLMBadRequestError | None = None
 
     async def post(self, *args: Any, **kwargs: Any):
         data = kwargs.get("data", args[1] if len(args) > 1 else None)
         body = kwargs.get("json", args[2] if len(args) > 2 else None)
-        _check_delivery(self.expected, data, body)
+        self.rejection = _image_loss(self.expected, data, body)
+        if self.rejection is not None:
+            raise self.rejection
         return await super().post(*args, **kwargs)
 
 
@@ -81,6 +88,13 @@ def image_delivery_client(
     )
     try:
         yield {"client": client}
+    except Exception as error:
+        # LiteLLM reports anything raised inside its HTTP client as a provider
+        # 500, which the SDK would retry. Nothing was sent and resending cannot
+        # help, so surface the rejection itself.
+        if client.rejection is None or error is client.rejection:
+            raise
+        raise client.rejection from error
     finally:
         if not asynchronous:
             client.close()
