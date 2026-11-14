@@ -12,15 +12,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent.stream_context import StreamContext
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.llm import (
-    LLMResponse,
-    Message,
-    RedactedThinkingBlock,
-    TextContent,
-    ThinkingBlock,
-)
+from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
 
 
@@ -32,7 +25,12 @@ if TYPE_CHECKING:
     )
     from openhands.sdk.critic.base import CriticBase, CriticResult
     from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import MessageToolCall, ReasoningItemModel
+    from openhands.sdk.llm import (
+        MessageToolCall,
+        ReasoningItemModel,
+        RedactedThinkingBlock,
+        ThinkingBlock,
+    )
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 
 logger = get_logger(__name__)
@@ -268,7 +266,14 @@ class ResponseDispatchMixin:
         *,
         mask_secrets: bool = True,
     ) -> None:
-        """Handle LLM response with text content — finishes conversation."""
+        """Handle LLM response with text content but no tool call.
+
+        Content-only turns from the LLM (e.g. narration, intermediate
+        reasoning, task progress updates) must NOT terminate the agent
+        loop. Only an explicit terminal signal — a ``finish`` tool call —
+        should end execution. Sending a corrective nudge keeps the loop
+        alive and tells the model it must produce a tool call next.
+        """
         self._emit_message_event(
             message,
             llm_response,
@@ -278,10 +283,7 @@ class ResponseDispatchMixin:
             mask_secrets=mask_secrets,
         )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
-        logger.debug("LLM produced a message response - awaits user input")
-        state.transition(
-            ConversationExecutionStatus.FINISHED, "agent replied with a message"
-        )
+        self._send_corrective_nudge(on_event, content=True)
 
     def _handle_no_content_response(
         self,
@@ -357,20 +359,12 @@ class ResponseDispatchMixin:
     def _mask_secrets(message: Message, conversation: LocalConversation) -> Message:
         """Return ``message`` with registered secret values masked in its text.
 
-        ``responses_reasoning_item`` is left alone: it is a signed provider
-        payload, and rewriting it invalidates the signature replayed on the
-        next request. ``thinking_blocks`` are masked because they are persisted
-        and rendered; the signature is nulled so the provider does not reject
-        a mismatched replay.
+        ``thinking_blocks`` and ``responses_reasoning_item`` are left alone:
+        they are signed provider payloads, and rewriting them invalidates the
+        signature replayed on the next request.
         """
         mask = conversation.state.secret_registry.mask_secrets_in_output
         reasoning = message.reasoning_content
-        masked_thinking_blocks = [
-            tb.model_copy(update={"thinking": mask(tb.thinking), "signature": None})
-            if isinstance(tb, ThinkingBlock)
-            else tb
-            for tb in message.thinking_blocks
-        ]
         return message.model_copy(
             update={
                 "content": [
@@ -380,33 +374,46 @@ class ResponseDispatchMixin:
                     for part in message.content
                 ],
                 "reasoning_content": mask(reasoning) if reasoning else reasoning,
-                "thinking_blocks": masked_thinking_blocks,
             }
         )
 
-    def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
-        """Inject corrective feedback when no tool call and no content.
+    def _send_corrective_nudge(
+        self, on_event: ConversationCallbackType, *, content: bool = False
+    ) -> None:
+        """Inject corrective feedback when the LLM skips tool calls.
 
         The model still receives this as a user-role message, but the event
         source marks that it came from the framework rather than the human.
+
+        Args:
+            on_event: Event callback.
+            content: True when the LLM did emit text (but no tool call).
+                False for empty / reasoning-only responses.
         """
-        logger.warning(
-            "LLM response contained no tool call and no content"
-            " - sending corrective feedback"
-        )
+        if content:
+            logger.warning(
+                "LLM response contained text but no tool call"
+                " - sending corrective feedback"
+            )
+            nudge_text = (
+                "Your last response contained text but no function call. "
+                "If the task is complete, call the `finish` tool. "
+                "Otherwise, continue with the next tool call."
+            )
+        else:
+            logger.warning(
+                "LLM response contained no tool call and no content"
+                " - sending corrective feedback"
+            )
+            nudge_text = (
+                "Your last response did not include a function call or a "
+                "message. Please use a tool to proceed with the task."
+            )
         nudge = MessageEvent(
             source="environment",
             llm_message=Message(
                 role="user",
-                content=[
-                    TextContent(
-                        text=(
-                            "Your last response did not include a "
-                            "function call or a message. Please "
-                            "use a tool to proceed with the task."
-                        )
-                    )
-                ],
+                content=[TextContent(text=nudge_text)],
             ),
         )
         on_event(nudge)
