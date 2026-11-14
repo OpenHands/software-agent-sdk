@@ -1,0 +1,33 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/conversations/a9fad52f-5648-4393-8375-bdefd067db34/events",
+    "query": [],
+    "auth": "header",
+    "body": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Reply with the single word ok."
+        }
+      ],
+      "run": false
+    },
+    "files": []
+  },
+  "response": {
+    "status": 500,
+    "headers": {
+      "content-length": "145",
+      "content-type": "application/json"
+    },
+    "body": {
+      "detail": "Internal Server Error",
+      "exception": "\"ToolDefinition 'qa_f27_echo' is not registered\"",
+      "error_id": "7b8917c293bf4d01b98150f5504613e4"
+    },
+    "truncated": false
+  },
+  "elapsed_ms": 1892
+}

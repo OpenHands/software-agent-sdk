@@ -1,0 +1,32 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.60.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[11/11/26 09:07:26] WARNING  Duplicate tool name registered:     registry.py:154
+                             terminal                                           
+[11/11/26 09:07:26] WARNING  No persistence_dir provided; falling   state.py:562
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[11/11/26 09:07:26] INFO     Created new conversation               state.py:645
+                             ba3b224b-8d7a-45ee-b5bc-542953ecaf60               
+[11/11/26 09:07:27] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:149
+                             session=openhands-pool-None-0                      
+                             9d300b7-dc3b-4130-a4c9-6be00b                      
+                             e697a4, max_panes=4                                
+[11/11/26 09:07:27] INFO     TerminalExecutor initialized (pool      impl.py:145
+                             mode) working_dir:                                 
+                             /tmp/tmuxleak-ws-tgd6iof1, username:               
+                             None, max_panes: 4                                 
+run: raised ValueError: response_schema fields ['summary'] are reserved
+  traceback mentions set_response_schema: True
+  traceback mentions resolve_tool: True
+close: done
+  socket .openhands-socket-creation.lock: rc=1 no server running on /tmp/tl-VT0vZj/tmux-0/.openhands-socket-creation.lock
+  socket openhands-c2e33c357bec4c2181b8f9c95612d2ff: rc=0 openhands-pool-None-09d300b7-dc3b-4130-a4c9-6be00be697a4: 1 windows (created Wed Nov 11 09:07:26 2026)
+RESULT mode=reserved tmux_servers_alive_after_close=1 ['openhands-c2e33c357bec4c2181b8f9c95612d2ff']

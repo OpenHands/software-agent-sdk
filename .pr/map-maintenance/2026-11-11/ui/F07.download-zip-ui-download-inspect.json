@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "downloads": [
+    {
+      "ts": "2026-11-11T08:56:47.784Z",
+      "kind": "download",
+      "page": "http://127.0.0.1:18800/conversations/69779bf0-be6a-42f9-9e6b-4a368a05686a",
+      "appOrigin": true,
+      "path": "<scratch>/oh/2026-11-11T0853-78d182/private/downloads/1794387407781-conversation_69779bf0-be6a-42f9-9e6b-4a368a05686a.zip",
+      "inspect": {
+        "bytes": 115329,
+        "zip": {
+          "count": 38,
+          "names": [
+            "69779bf0be6a42f99e6b4a368a05686a/",
+            "69779bf0be6a42f99e6b4a368a05686a/.owner_lease.lock",
+            "69779bf0be6a42f99e6b4a368a05686a/base_state.json",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085559368651_BashCommand_5318a5cb44884ec4aa551ae20542c082",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085559380137_BashCommand_f1ebe10d7e274b578a854334723022b6",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085559400870_BashOutput_5318a5cb44884ec4aa551ae20542c082_6c2ae1823ef0482ab1f8c3675dee82e5",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085559412030_BashOutput_f1ebe10d7e274b578a854334723022b6_47306cd1b0a64a86a1c9e1b8ae7144dc",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085609494406_BashCommand_86622db49aa74581a1a55a171911e59f",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085609502651_BashOutput_86622db49aa74581a1a55a171911e59f_7fb53e09c7454ffdb61a93597c487113",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085619535253_BashCommand_62ce6b757eb445cc8a87153d49c75753",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085619564078_BashOutput_62ce6b757eb445cc8a87153d49c75753_d2933e8ff3b5442a8da1e0f14df4d4a5",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085629589432_BashCommand_902d732ec8f448c6869b048a46aa8645",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085629609603_BashOutput_902d732ec8f448c6869b048a46aa8645_18a2566fc97b4cbb863d47694a783ac2",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085639640965_BashCommand_7db940156e3d47f2b71a68c8640c26c2",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085639661772_BashOutput_7db940156e3d47f2b71a68c8640c26c2_72f68eebfdcf45d78865e11442221ad3",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085646089043_BashCommand_91687ef4c82b45ceb147ed48842b162c",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085646089911_BashCommand_689844e67d464b91a09856f78c18bed4",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085646143656_BashOutput_91687ef4c82b45ceb147ed48842b162c_4a1424cb44a5422e81555b96f99e3417",
+            "69779bf0be6a42f99e6b4a368a05686a/bash_events/20261111085646146494_BashOutput_689844e67d464b91a09856f78c18bed4_90e5bb8442134932a0dca4184ba63fe7",
+            "69779bf0be6a42f99e6b4a368a05686a/events/",
+            "69779bf0be6a42f99e6b4a368a05686a/events/.eventlog-len-13.marker",
+            "69779bf0be6a42f99e6b4a368a05686a/events/.eventlog.lock",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00000-5b939461-bf97-462a-881d-ebda44c66bb2.json",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00001-0f3bcc3a-8411-4156-805b-37df48c708f2.json",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00002-ffc0f510-d5f7-420a-8d70-e11476e9ab75.json",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00003-7a47a4b1-268f-4561-ad50-4eda750926b0.json",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00004-17af1a17-2013-4717-ae3f-b0204950112d.json",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00005-e336100b-46a0-4d96-b6ff-27a3a095b0f9.json",
+            "69779bf0be6a42f99e6b4a368a05686a/events/event-00006-71d329e2-613a-4468-bd0c-0aabccc60c38.json"
+          ]
+        }
+      }
+    }
+  ]
+}

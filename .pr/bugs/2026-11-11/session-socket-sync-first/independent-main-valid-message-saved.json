@@ -1,0 +1,24 @@
+{
+  "events": [
+    {
+      "id": "05c99a8b-1ef4-408d-b4bb-4fd7e4cbcbc0",
+      "timestamp": "2026-11-11T08:57:15.040389",
+      "source": "user",
+      "parent_id": "8a638099-bda7-411c-a39d-15cf436a8528",
+      "llm_message": {
+        "role": "user",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "QA_VALID_DURING_STEP_main2"
+          }
+        ],
+        "thinking_blocks": []
+      },
+      "activated_skills": [],
+      "extended_content": [],
+      "kind": "MessageEvent"
+    }
+  ]
+}
