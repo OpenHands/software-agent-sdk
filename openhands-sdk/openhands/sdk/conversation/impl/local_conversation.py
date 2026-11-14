@@ -267,6 +267,9 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    # The caller's hook_config, never merged with plugin hooks, so a fork can
+    # be given it without receiving the plugin hooks twice.
+    _explicit_hook_config: HookConfig | None
     _mcp_tool_provider: MCPToolProvider
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
@@ -395,6 +398,7 @@ class LocalConversation(BaseConversation):
         self._resolved_plugins = None
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
+        self._explicit_hook_config = hook_config
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
         self._mcp_config_from_parent = _mcp_config_from_parent
@@ -964,8 +968,9 @@ class LocalConversation(BaseConversation):
         Events are copied so the source remains immutable. The fork starts
         in ``execution_status='idle'``; calling ``run()`` resumes from the
         copied state — meaning the agent has full event memory of the source.
-        It also keeps the source's confirmation policy, its own copy of the
-        security analyzer and of the secrets, and the source's cipher.
+        It also keeps the source's confirmation policy, the ``hook_config`` the
+        source was created with, its own copy of the security analyzer and of
+        the secrets, and the source's cipher.
 
         Args:
             conversation_id: ID for the forked conversation (auto-generated
@@ -1033,6 +1038,7 @@ class LocalConversation(BaseConversation):
                 agent=fork_agent,
                 workspace=self.workspace,
                 plugins=self._plugin_specs,
+                hook_config=self._explicit_hook_config,
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,

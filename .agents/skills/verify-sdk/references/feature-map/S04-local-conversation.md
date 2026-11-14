@@ -30,7 +30,7 @@ Examples: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`, `
 - `S04.visualizer-custom`: a `ConversationVisualizerBase` subclass passed as `visualizer=` receives every event through `on_event`; each event type has its own `visualize` rendering. Unit: `tests/sdk/conversation/test_visualizer.py`. Example: `examples/01_standalone_sdk/26_custom_visualizer.py`. Real-LLM: none.
 - `S04.fork`: `fork()` deep-copies the conversation under a new id (or `conversation_id=`), starts IDLE, leaves the source untouched, resets metrics unless `reset_metrics=False`, accepts `agent=` and `tags=` (`title=` is deprecated and ignored locally since #4814; only `RemoteConversation` stores it), shares the workspace, and persists so the fork survives a reload. Unit: `tests/sdk/conversation/local/test_fork.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
 - `S04.fork-branch`: events carry parent ids forming a tree; `fork(from_event_id=...)` copies only that branch, and `navigate_to(event_id)` moves HEAD so the next event starts a sibling branch (`None` empties the active branch). Unit: `tests/sdk/conversation/local/test_conversation_tree.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
-- `S04.fork-keeps-state`: a fork carries the source's confirmation policy, its own copy of the security analyzer (credentials kept) and the conversation secrets, and is written with the source's cipher, so its `base_state.json` alone restores them. Unit: `tests/sdk/conversation/local/test_fork.py`. Example: none. Real-LLM: none.
+- `S04.fork-keeps-state`: a fork carries the source's confirmation policy, its own copy of the security analyzer (credentials kept) and the conversation secrets, and is written with the source's cipher, so its `base_state.json` alone restores them; it also runs the hooks in the `hook_config` the source was built with. Unit: `tests/sdk/conversation/local/test_fork.py`, `tests/sdk/conversation/local/test_fork_hook_blocks.py`. Example: none. Real-LLM: none.
 - `S04.goal-loop`: `run_goal(conversation, objective, judge_llm, max_iterations=N)` sends the objective, runs, asks the judge LLM for a verdict, re-prompts with the missing items, and returns a `GoalOutcome` with status `"complete"` or `"capped"`, the iteration count and the verdict. Unit: `tests/sdk/conversation/goal/`. Example: `examples/01_standalone_sdk/54_goal_completion_loop.py`. Real-LLM: none.
 - `S04.interactive-terminal`: with `Tool(name=TerminalTool.name, params={"no_change_timeout_seconds": 3})` the agent can start `python3`, feed it input and exit; an `LLMConvertibleEvent` callback collects the raw LLM messages. Unit: `tests/tools/terminal/test_terminal_session.py::test_python_interactive_input`, `::test_interactive_command`. Example: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`. Real-LLM: `tests/integration/tests/t07_interactive_commands.py`.
 - `S04.final-response`: `get_agent_final_response(conversation.state.events)` returns the text of whichever came last of the agent's `finish` call and its plain-text `MessageEvent`, else `""`. Unit: `tests/sdk/conversation/test_agent_final_response.py`. Example: none. Real-LLM: `tests/integration/tests/t08_image_file_viewing.py`.
@@ -225,7 +225,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check old_branch_in_active eq false --check active_ends_with eq "answer on a new branch" \
     --check unknown_event_error contains "Unknown event_id" --check active_after_none eq 0 --check log_after_none eq 7
   ```
-- **What a fork keeps (`S04.fork-keeps-state`).** A ciphered conversation gets `ConfirmRisky(MEDIUM)`, a `ToolShieldLLMSecurityAnalyzer` with its own model key and a runtime secret after construction, then is forked; the fork is changed and loaded again from disk.
+- **What a fork keeps (`S04.fork-keeps-state`).** A ciphered conversation built with a `UserPromptSubmit` hook that blocks every prompt gets `ConfirmRisky(MEDIUM)`, a `ToolShieldLLMSecurityAnalyzer` with its own model key and a runtime secret after construction, then is forked; the fork is sent a message, changed and loaded again from disk.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S04/fork_state \
@@ -235,11 +235,12 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check saved_policy.kind eq ConfirmRisky --check saved_analyzer eq ToolShieldLLMSecurityAnalyzer \
     --check saved_secret_names.0 eq RUNTIME_TOKEN --check saved_secret_names.1 eq START_TOKEN \
     --check saved_guard_key_is_placeholder eq false --check plaintext_on_disk eq false \
+    --check fork_prompt_block eq "blocked by the source hook" \
     --check source_policy_after_fork_change eq ConfirmRisky --check source_has_fork_only_secret eq false \
     --check reloaded_policy eq NeverConfirm --check reloaded_guard_key_kept eq true \
     --check reloaded_secrets.START_TOKEN eq start-secret-value-1 --check reloaded_secrets.FORK_ONLY eq fork-only-value-4
   ```
-  The fork has the policy with its threshold, an analyzer object of its own whose key still works, and both secrets; its `base_state.json` holds them encrypted (neither the plaintext nor the `**********` placeholder). Setting `NeverConfirm` and a new secret on the fork leaves the source as it was, and the fork loaded again from disk has the fork's values.
+  The fork has the policy with its threshold, an analyzer object of its own whose key still works, and both secrets; its `base_state.json` holds them encrypted (neither the plaintext nor the `**********` placeholder). The message sent to the fork is blocked with the source hook's reason. Setting `NeverConfirm` and a new secret on the fork leaves the source as it was, and the fork loaded again from disk has the fork's values.
 - **The goal loop (`S04.goal-loop`).** `run_goal` with a scripted judge: incomplete then complete (the follow-up names what was missing), and a capped run whose last verdict cannot be parsed.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
