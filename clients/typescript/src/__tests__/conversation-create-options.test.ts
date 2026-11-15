@@ -101,7 +101,13 @@ describe('conversation create options', () => {
   });
 
   const bindings: TerminalCredentialBinding[] = [
-    { consumer: 'git', adapter: 'git_helper', host: 'github.com', secret_ref: 'GITHUB_TOKEN', username: 'x-access-token' },
+    {
+      consumer: 'git',
+      adapter: 'git_helper',
+      host: 'github.com',
+      secret_ref: 'GITHUB_TOKEN',
+      username: 'x-access-token',
+    },
     { consumer: 'gh', env_var: 'GH_TOKEN', secret_ref: 'WORK_PAT' },
     { consumer: 'glab', env_var: 'GITLAB_TOKEN', secret_ref: 'WORK_GITLAB_PAT' },
     { consumer: 'custom-cli', env_var: 'API_KEY', secret_ref: 'CUSTOM_KEY' },
