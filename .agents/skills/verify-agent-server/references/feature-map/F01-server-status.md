@@ -294,5 +294,5 @@ Preconditions:
   leaks file paths and source lines in 5xx bodies, so it is never for
   production. Unhandled exceptions get the same `traceback` field next to
   their `error_id`; the map's unhandled 500s either need a conversation or
-  are known bugs, so this family drives the deliberate `HTTPException` 500,
+  are known bugs, so this family drives a deliberate `OperationFailed` 500,
   the cheapest stable 5xx.
