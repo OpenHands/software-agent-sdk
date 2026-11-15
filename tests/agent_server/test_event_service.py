@@ -4021,6 +4021,39 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
+    tmp_path: Path,
+) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored, agent=_sample_agent(), conversations_dir=tmp_path
+    )
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_check = EventService._ensure_workspace_is_git_repo
+
+    def recording_check(working_dir: Path) -> None:
+        threads.append(threading.get_ident())
+        real_check(working_dir)
+
+    with (
+        patch(
+            "openhands.agent_server.event_service.LocalConversation",
+            return_value=_make_mock_conv(),
+        ),
+        patch.object(
+            EventService,
+            "_ensure_workspace_is_git_repo",
+            staticmethod(recording_check),
+        ),
+    ):
+        await service.start()
+
+    assert len(threads) == 1
+    assert threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("condenser", "message"),
     [

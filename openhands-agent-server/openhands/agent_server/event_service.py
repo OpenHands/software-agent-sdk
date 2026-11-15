@@ -1295,7 +1295,7 @@ class EventService:
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
         working_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_workspace_is_git_repo(working_dir)
+        await asyncio.to_thread(self._ensure_workspace_is_git_repo, working_dir)
         # base_state.json is the single source of truth for the agent. On resume
         # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
         # persisted agent. On a new conversation the creating caller supplied the
