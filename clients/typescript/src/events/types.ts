@@ -192,10 +192,10 @@ export interface ReactionEvent extends BaseEvent {
 }
 
 /**
- * The person's answer to the agent's `ask_user` question, picked on its card.
+ * The user's answer to the agent's `ask_user` question, picked on its card.
  *
  * The question is the agent's `ask_user` ActionEvent (`ask_id`). It is pending
- * while neither this event nor a message of the person's came after it; a
+ * while neither this event nor a message of the user's came after it; a
  * chat reply answers it too. The agent reads the user message saved right
  * after this event, not the event. Needs the `ask_user` feature.
  */
@@ -208,7 +208,7 @@ export interface AskUserAnswerEvent extends BaseEvent {
   option_index?: number | null;
   /** The picked option's label, as it was shown */
   option_label?: string | null;
-  /** The person's own words, when they added any */
+  /** The user's own words, when they added any */
   text?: string | null;
 }
 

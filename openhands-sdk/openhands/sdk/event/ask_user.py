@@ -1,16 +1,16 @@
-"""The person's answers to the agent's ``ask_user`` questions.
+"""The user's answers to the agent's ``ask_user`` questions.
 
 The question itself needs no event of its own: it is the agent's ``ask_user``
 call (an :class:`ActionEvent` whose action holds the question and its
 options), and the call's result says it was shown. The call ends the agent's
 turn, so a question is never waiting inside a run.
 
-A question is *pending* while nothing from the person came after it: no
+A question is *pending* while nothing from the user came after it: no
 :class:`AskUserAnswerEvent` (a tap on one of its options) and no message of
 their own. Because that is read from the event log, a restart cannot lose a
 question or leave it half-answered.
 
-The person answers either way:
+The user answers either way:
 
 - by picking an option (and optionally adding words), which a client sends to
   ``POST /api/conversations/{id}/ask_user/answer``. That records an
@@ -20,7 +20,7 @@ The person answers either way:
   as answered in words.
 
 Messages from other conversations or a ``/goal`` loop carry a ``sender`` and
-do not close a question: only the person can answer it.
+do not close a question: only the user can answer it.
 """
 
 from collections.abc import Sequence
@@ -47,7 +47,7 @@ ANSWER_HEADER_PREFIX: Final[str] = "[Answer to your question"
 
 
 class AskUserAnswerEvent(Event):
-    """The person picked an option of a pending ``ask_user`` question.
+    """The user picked an option of a pending ``ask_user`` question.
 
     It is recorded just before the user message that carries the answer to
     the agent, so clients can show the question's card as answered. The LLM
@@ -63,7 +63,7 @@ class AskUserAnswerEvent(Event):
         default=None, description="The picked option's label, as it was shown."
     )
     text: str | None = Field(
-        default=None, description="The person's own words, when they added any."
+        default=None, description="The user's own words, when they added any."
     )
 
     @model_validator(mode="after")
@@ -81,7 +81,7 @@ class AskUserAnswerEvent(Event):
 
 @dataclass(frozen=True)
 class PendingAsk:
-    """A question the person has not answered yet."""
+    """A question the user has not answered yet."""
 
     ask_id: EventID
     question: str
@@ -89,11 +89,11 @@ class PendingAsk:
     recommended: int | None
 
 
-def is_from_person(event: Event) -> bool:
-    """Whether an event is the person's own message or answer.
+def is_from_user(event: Event) -> bool:
+    """Whether an event is the user's own message or answer.
 
     Messages relayed from another conversation or sent by a ``/goal`` loop
-    carry a ``sender``; the person's own messages have none.
+    carry a ``sender``; the user's own messages have none.
     """
     if isinstance(event, AskUserAnswerEvent):
         return True
@@ -126,14 +126,14 @@ def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
 
 
 def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
-    """The agent's latest ``ask_user`` question, unless the person answered it.
+    """The agent's latest ``ask_user`` question, unless the user answered it.
 
     Args:
         events: The conversation's events, oldest first (its active branch).
     """
     asked_action_id: EventID | None = None
     for event in reversed(events):
-        if is_from_person(event):
+        if is_from_user(event):
             return None
         if (
             isinstance(event, ObservationEvent)

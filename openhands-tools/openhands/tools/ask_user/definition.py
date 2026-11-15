@@ -1,4 +1,4 @@
-"""The ``ask_user`` tool: ask the person one question, with options."""
+"""The ``ask_user`` tool: ask the user one question, with options."""
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 class AskUserOption(BaseModel):
-    """One answer the person can pick."""
+    """One answer the user can pick."""
 
     label: str = Field(
         min_length=1,
@@ -33,12 +33,12 @@ class AskUserOption(BaseModel):
     consequence: str = Field(
         default="",
         max_length=240,
-        description="One sentence: what happens if the person picks it.",
+        description="One sentence: what happens if the user picks it.",
     )
 
 
 class AskUserAction(Action):
-    """Ask the person one question, with two to four options."""
+    """Ask the user one question, with two to four options."""
 
     question: str = Field(
         min_length=1,
@@ -83,7 +83,7 @@ class AskUserObservation(Observation):
 
 
 _DESCRIPTION = """\
-Ask the person one question, shown to them as a card with your options; they \
+Ask the user one question, shown to them as a card with your options; they \
 answer in one tap, or in their own words.
 
 Ask when the choice is theirs to make: it changes what they are trying to \
@@ -94,13 +94,13 @@ the likely reading, go on, and say which one you chose: do not ask.
 
 Write the question verb first, in about twelve words. Give two to four \
 options, each with one sentence on what happens if it is picked, and \
-recommend one when you have a view. The person can always answer in their \
+recommend one when you have a view. The user can always answer in their \
 own words instead, so no "Other" option is needed. Ask one question per call \
 and one call per turn; do not repeat the question in a message.
 
 Calling this ends your turn, as finishing does: do the work that does not \
 depend on the answer first, then ask. Do not wait or ask again. The answer \
-arrives as the person's next message, starting with \
+arrives as the user's next message, starting with \
 "[Answer to your question" when they picked on the card."""
 
 
@@ -113,13 +113,13 @@ class AskUserExecutor(ToolExecutor[AskUserAction, AskUserObservation]):
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> AskUserObservation:
         return AskUserObservation.from_text(
-            "The question is shown to the person. Your turn ends here; their "
+            "The question is shown to the user. Your turn ends here; their "
             "answer will arrive as their next message."
         )
 
 
 class AskUserTool(ToolDefinition[AskUserAction, AskUserObservation]):
-    """Tool that asks the person a question with options and ends the turn."""
+    """Tool that asks the user a question with options and ends the turn."""
 
     name: ClassVar[str] = ASK_USER_TOOL_NAME
     # Given by the ask_user feature, not picked in agent settings.
@@ -143,7 +143,7 @@ class AskUserTool(ToolDefinition[AskUserAction, AskUserObservation]):
                 observation_type=AskUserObservation,
                 executor=AskUserExecutor(),
                 annotations=ToolAnnotations(
-                    title="Ask the person",
+                    title="Ask the user",
                     readOnlyHint=True,
                     destructiveHint=False,
                     idempotentHint=False,

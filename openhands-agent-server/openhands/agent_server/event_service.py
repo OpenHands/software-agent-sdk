@@ -2172,7 +2172,7 @@ class EventService:
         option_index: int | None = None,
         text: str | None = None,
     ) -> AskUserAnswerEvent:
-        """Record the person's answer to a pending ``ask_user`` question and run.
+        """Record the user's answer to a pending ``ask_user`` question and run.
 
         Raises:
             ValueError: The question is not pending, or the answer is invalid.
