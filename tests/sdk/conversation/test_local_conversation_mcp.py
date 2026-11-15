@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -263,7 +264,12 @@ def _slow_fetch_server(delay: float) -> dict[str, Any]:
 
 
 def _mcp_conversation(
-    tmp_path: Path, servers: dict[str, Any], llm: LLM | None = None
+    tmp_path: Path,
+    servers: dict[str, Any],
+    llm: LLM | None = None,
+    *,
+    mcp_startup_budget: float | None = None,
+    mcp_tool_provider: MCPToolProvider | None = None,
 ) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
@@ -274,7 +280,72 @@ def _mcp_conversation(
         ),
         workspace=str(tmp_path),
         visualizer=None,
+        mcp_startup_budget=mcp_startup_budget,
+        mcp_tool_provider=mcp_tool_provider,
     )
+
+
+def _wait_until(condition: Any, timeout: float = 20) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def test_startup_budget_starts_the_agent_before_a_slow_mcp_server(
+    tmp_path: Path,
+) -> None:
+    # A model litellm knows locally, so agent init makes no model-info requests.
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+    conversation = _mcp_conversation(
+        tmp_path, {"slow": _slow_fetch_server(6)}, llm, mcp_startup_budget=0.5
+    )
+
+    started = time.monotonic()
+    conversation._ensure_agent_ready()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5
+    assert _mcp_tool_names(conversation) == set()
+    _wait_until(lambda: _mcp_tool_names(conversation))
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+
+class BlockedMCPToolProvider:
+    """Finishes starting only when the test releases it."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.client = EmptyMCPClient()
+        self.client.tools = [cast(MCPToolDefinition, "late-tool")]
+
+    def create_tools(self, mcp_config, timeout=30.0, **kwargs) -> MCPClient:
+        self.release.wait(10)
+        return cast(MCPClient, self.client)
+
+
+def test_late_mcp_tools_are_closed_when_the_conversation_closed_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = BlockedMCPToolProvider()
+    conversation = _mcp_conversation(
+        tmp_path,
+        {"blocked": {"command": "unused"}},
+        mcp_startup_budget=0.1,
+        mcp_tool_provider=cast(MCPToolProvider, provider),
+    )
+    closed: list[Any] = []
+    monkeypatch.setattr(
+        conversation, "_close_runtime_tools", lambda tools: closed.extend(tools)
+    )
+    conversation._ensure_agent_ready()
+
+    conversation.close()
+    provider.release.set()
+    _wait_until(lambda: closed)
+
+    assert closed == ["late-tool"]
+    assert _mcp_tool_names(conversation) == set()
 
 
 def _mcp_tool_names(conversation: LocalConversation) -> set[str]:

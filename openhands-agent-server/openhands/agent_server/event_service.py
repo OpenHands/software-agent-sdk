@@ -100,6 +100,9 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# How long a conversation start waits for MCP servers; slower servers' tools
+# join the agent once they are ready.
+MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 
 logger = get_logger(__name__)
@@ -1408,6 +1411,7 @@ class EventService:
             observability_span_name=self.stored.observability_span_name,
             observability_parent_span_context=self.stored.observability_parent_span_context,
             mcp_tool_provider=self.mcp_tool_provider,
+            mcp_startup_budget=MCP_STARTUP_BUDGET_SECONDS,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
