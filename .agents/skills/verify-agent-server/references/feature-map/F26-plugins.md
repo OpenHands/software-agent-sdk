@@ -43,7 +43,7 @@ Routes: `POST /api/plugins`, `POST /api/plugins/fetch`, `POST /api/plugins/insta
 - `F26.uninstall`: uninstall removes the directory and the record; the single view, the list and the ambient catalog no longer show it, and a second uninstall is 404.
 - `F26.conversation-ambient`: a new conversation loads an enabled installed plugin on its first message: its `UserPromptSubmit` hook runs (a `HookExecutionEvent`, also on the events socket), its command skill activates, and its skills show in the conversation.
 - `F26.conversation-disabled`: a conversation started after the plugin was disabled loads neither its hook nor its skills, while the user-directory plugins still load.
-- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely, its command as well as its hook.
+- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely: its command, skills and hook, and the MCP server its `.mcp.json` added.
 - `F26.restart-persist`: installed plugins, their records and their enabled flags survive a restart.
 - `F26.marketplace-local`: against a local stand-in for the extensions repository, `GET /api/plugins/marketplace` lists only `./plugins/` entries (local contents for local entries, attach coordinates for git entries) with a fresh `installed` flag; a repository without a manifest gives an empty catalog that is not cached.
 - `F26.marketplace-cache`: a non-empty catalog is served from a per-process cache (a new upstream entry appears only after a restart; the 5-minute TTL itself is not waited out), while `installed` stays fresh.
@@ -672,9 +672,18 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/plugins/install --json '{"source": "'"$PL"'", "force": true}' --expect 200
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": true}' --expect 200
+  PMC=$(control-agent-server fixture plugin --name qa-f26-mcpplug --print-path)
+  MCPR=$(control-agent-server fixture mcp-server --name qa-f26-mcp | jq -c .mcp_server)
+  printf '{"mcpServers": {"qa-f26-mcp": %s}}\n' "$MCPR" > "$PMC/.mcp.json"
+  control-agent-server api POST /api/plugins/install --json '{"source": "'"$PMC"'", "force": true}' --expect 200 --check enabled eq true
   CIDR=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with the single word: ok' --wait --timeout 240 --print-id)
   control-agent-server conversation events "$CIDR" --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-count 1
+  control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 --check agent.mcp_config.qa-f26-mcp.command exists \
+    --check agent.agent_context.skills contains '"name": "qa-f26-mcpplug-skill"' --quiet --save F26.conversation-resume-disabled/before
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers contains qa-f26-mcp \
+    --check ambient_plugin_skills contains qa-f26-inst:qa-hello
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": false}' --expect 200
+  control-agent-server api PATCH /api/plugins/installed/qa-f26-mcpplug --json '{"enabled": false}' --expect 200
   control-agent-server restart
   control-agent-server ws start "/sockets/events/$CIDR" --name qa-f26-resume --duration 300
   control-agent-server conversation send "$CIDR" --text '/qa-f26-inst:qa-hello' --wait --timeout 240
@@ -684,7 +693,11 @@ Preconditions:
   control-agent-server ws stop qa-f26-resume --kinds MessageEvent --contains '"activated_skills": ["qa-f26-inst:qa-hello"]' --expect-none \
     --save F26.conversation-resume-disabled/frames
   control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 \
-    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation
+    --check agent.agent_context.skills not-contains qa-f26-inst --check agent.agent_context.skills not-contains qa-f26-mcpplug \
+    --check agent.mcp_config.qa-f26-mcp missing --save F26.conversation-resume-disabled/conversation
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers len-eq 0 \
+    --check ambient_plugin_skills not-contains qa-f26-inst
+  control-agent-server api DELETE /api/plugins/installed/qa-f26-mcpplug --expect 200
   ```
   The conversation loaded the plugin before it was disabled (its hook ran
   for the prompt). Ambient plugins are not pinned to a conversation; on
@@ -697,8 +710,16 @@ Preconditions:
   into the agent persisted in `base_state.json`, so the conversation records
   their skill and MCP server names and drops them after successful discovery.
   A failed scan preserves the previous contributions and ownership record.
-  Read from source and not driven here: MCP servers follow the same path;
-  explicit replacement agents start with no inherited ownership, and legacy
+  A second plugin, `qa-f26-mcpplug`, adds the stdio MCP server `qa-f26-mcp`
+  through its `.mcp.json`: before the restart the conversation's
+  `agent.mcp_config` has it and `base_state.json` records it in
+  `ambient_plugin_mcp_servers` (with the skills in `ambient_plugin_skills`;
+  neither field is in the REST view); after the plugin is disabled and the
+  conversation resumes, `agent.mcp_config` no longer has it and both records
+  hold only what is still enabled. The drop happens when the conversation
+  loads its plugins on the first resumed message, which is why the recipe
+  sends one before it reads the agent. That plugin is uninstalled at the end.
+  Read from source and not driven here: explicit replacement agents start with no inherited ownership, and legacy
   conversations without a record retain unidentifiable contributions rather
   than deleting caller content by name. The command is sent here for the
   first time because a keyword skill activates once per conversation
