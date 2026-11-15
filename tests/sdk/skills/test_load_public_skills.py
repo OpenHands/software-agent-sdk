@@ -2,6 +2,8 @@
 
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -202,6 +204,40 @@ def test_load_public_skills_success(mock_repo_dir, tmp_path):
         # Check testing skill (no trigger - always active)
         testing_skill = next(s for s in skills if s.name == "testing")
         assert testing_skill.trigger is None
+
+
+def test_concurrent_loads_share_one_load(mock_repo_dir, tmp_path):
+    updates = 0
+
+    def slow_update_repo(repo_url, branch, cache_dir):
+        nonlocal updates
+        updates += 1
+        time.sleep(0.3)
+        return mock_repo_dir
+
+    results: list[set[str]] = []
+
+    def load() -> None:
+        results.append({skill.name for skill in load_public_skills()})
+
+    with (
+        patch(
+            "openhands.sdk.skills.skill.update_skills_repository",
+            side_effect=slow_update_repo,
+        ),
+        patch(
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        threads = [threading.Thread(target=load) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert updates == 1
+    assert results == [{"git", "docker", "testing"}] * 2
 
 
 def test_load_public_skills_repo_update_fails(tmp_path):
