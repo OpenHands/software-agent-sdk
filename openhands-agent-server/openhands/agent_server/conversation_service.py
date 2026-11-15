@@ -177,20 +177,21 @@ def _fetch_origin(repo_root: Path) -> None:
             repo_root,
             exc,
         )
+        return
+    _origin_fetched_at[repo_root] = time.monotonic()
 
 
 _DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS = 300
+# Not FETCH_HEAD's mtime: a fetch of any other remote or ref rewrites it.
+_origin_fetched_at: dict[Path, float] = {}
 
 
 def _fetched_recently(repo_root: Path) -> bool:
-    try:
-        fetch_head = run_git_command(
-            ["git", "rev-parse", "--git-path", "FETCH_HEAD"], repo_root
-        )
-        modified = (repo_root / fetch_head).stat().st_mtime
-    except (GitCommandError, OSError):
-        return False
-    return time.time() - modified < _DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS
+    fetched_at = _origin_fetched_at.get(repo_root)
+    return (
+        fetched_at is not None
+        and time.monotonic() - fetched_at < _DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS
+    )
 
 
 def _get_worktree_start_point(repo_root: Path) -> str:
