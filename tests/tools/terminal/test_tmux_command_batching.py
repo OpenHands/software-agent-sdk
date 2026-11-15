@@ -1,7 +1,14 @@
+import os
+import shlex
+import time
+
 import libtmux.common
 import pytest
 
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+
+
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
 
 
 def _initialize_counting_tmux_calls(tmp_path, monkeypatch) -> tuple[TmuxPanePool, int]:
@@ -39,7 +46,7 @@ def test_pool_startup_tmux_calls_do_not_grow_with_environment(
     assert calls - baseline <= extra_vars // 50
 
 
-def test_pool_session_environment_keeps_tricky_values(tmp_path):
+def test_pool_shells_see_tricky_values(tmp_path):
     values = {
         "A_SPACES": "two words",
         "B_INNER_SEMICOLON": "a;b",
@@ -51,12 +58,22 @@ def test_pool_session_environment_keeps_tricky_values(tmp_path):
     pool = TmuxPanePool(work_dir=str(tmp_path), username=None, max_panes=1, env=values)
     pool.initialize()
     assert pool._session is not None
+    dump = tmp_path / "env.txt"
+    partial = shlex.quote(str(dump) + ".partial")
     try:
-        session_env = pool._session.show_environment()
+        pool._session.new_window(
+            window_shell=f"env > {partial} && mv {partial} {shlex.quote(str(dump))}"
+        )
+        deadline = time.monotonic() + 10
+        while not dump.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        seen = dict(
+            line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line
+        )
     finally:
         pool.close()
 
     for name, value in values.items():
         if name != "E_TRAILING_SEMICOLON":
-            assert session_env[name] == value
-    assert "E_TRAILING_SEMICOLON" in session_env
+            assert seen[name] == value
+    assert "E_TRAILING_SEMICOLON" in seen
