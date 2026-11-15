@@ -168,12 +168,30 @@ REPORT_ROWS = [
         "Create → first agent event on a new socket (warm)",
     ),
     ("default", "create_s", True, "First create right after server start"),
+    (
+        "default",
+        "first_agent_event_s",
+        True,
+        "First agent event right after server start",
+    ),
     ("pause", "create_s", True, f"First create {PAUSE_S:g} s after server start"),
+    (
+        "pause",
+        "first_agent_event_s",
+        True,
+        f"First agent event {PAUSE_S:g} s after server start",
+    ),
     (
         "worktree",
         "create_s",
         False,
         f"Create in a new git worktree (warm, {FETCH_DELAY_S:g} s `git fetch`)",
+    ),
+    (
+        "worktree",
+        "first_agent_event_s",
+        False,
+        "New worktree create → first agent event",
     ),
     (
         "worktree",
@@ -186,6 +204,12 @@ REPORT_ROWS = [
         "create_s",
         False,
         f"Create with one stdio MCP server (warm, {MCP_STARTUP_DELAY_S:g} s startup)",
+    ),
+    (
+        "mcp",
+        "first_agent_event_s",
+        False,
+        "MCP create → first agent event",
     ),
     ("default", "max_alive_s", False, "Creates that stalled the server > 20 ms"),
 ]
@@ -507,7 +531,8 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
             "in the same job on the same runner, interleaved: "
             f"{meta['rounds']} server starts per side and scenario. Medians with "
             "95% bootstrap CIs. The LLM is a mock that answers instantly, so this "
-            "is agent-server overhead only.",
+            "measures agent-server overhead. First-event timings stop at WebSocket "
+            "receipt; they do not measure browser rendering.",
             "",
             "| | base | this PR | change | |",
             "|---|---|---|---|---|",
