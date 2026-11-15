@@ -40,7 +40,6 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_server_bash_event_service,
 )
-from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
     BashError,
     BashEventBase,
@@ -280,13 +279,6 @@ async def events_socket(
         )
         effective_mode = "all"
 
-    # Normalize timezone-aware datetimes to server timezone
-    normalized_after_timestamp = (
-        normalize_datetime_to_server_timezone(after_timestamp)
-        if after_timestamp
-        else None
-    )
-
     try:
         # Resend existing events based on mode
         if effective_mode == "all":
@@ -294,19 +286,18 @@ async def events_socket(
             async for event in page_iterator(event_service.search_events):
                 await subscriber.send_replayed(event)
         elif effective_mode == "since":
-            if not normalized_after_timestamp:
+            if not after_timestamp:
                 logger.warning(
                     f"resend_mode='since' requires after_timestamp, "
                     f"no events will be resent: {conversation_id}"
                 )
             else:
                 logger.info(
-                    f"Resending events since {normalized_after_timestamp}: "
-                    f"{conversation_id}"
+                    f"Resending events since {after_timestamp}: {conversation_id}"
                 )
                 async for event in page_iterator(
                     event_service.search_events,
-                    timestamp__gte=normalized_after_timestamp,
+                    timestamp__gte=after_timestamp,
                 ):
                     await subscriber.send_replayed(event)
         await subscriber.go_live()

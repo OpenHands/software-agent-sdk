@@ -241,33 +241,55 @@ def test_remote_events_list_maintains_timestamp_order(mock_client, conversation_
     assert events_list[2].id == "event-2"  # 10:00:02
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires time.tzset")
+@pytest.mark.parametrize("client_tz", ["UTC", "Asia/Tokyo"])
 def test_remote_events_list_orders_mixed_naive_and_utc_timestamps(
-    mock_client, conversation_id, monkeypatch
+    conversation_id, monkeypatch, client_tz
 ):
-    """A legacy naive (server-local) timestamp and a UTC one sort by instant."""
-    monkeypatch.setenv("TZ", "America/New_York")
+    monkeypatch.setenv("TZ", client_tz)
     time.tzset()
     try:
-        mock_client.request.return_value = create_mock_api_response([])
-        events_list = RemoteEventsList(mock_client, conversation_id)
-
-        def message(event_id: str, timestamp: str) -> MessageEvent:
-            return MessageEvent(
+        events = [
+            MessageEvent(
                 id=event_id,
                 timestamp=timestamp,
                 source="user",
-                llm_message=Message(role="user", content=[TextContent(text="x")]),
+                llm_message=Message(role="user"),
+            )
+            for event_id, timestamp in [
+                ("legacy-12:00", "2024-01-01T07:00:00"),
+                ("utc-12:30", "2024-01-01T12:30:00+00:00"),
+                ("legacy-12:45", "2024-01-01T07:45:00"),
+                ("utc-13:00", "2024-01-01T13:00:00+00:00"),
+                ("utc-13:15", "2024-01-01T13:15:00+00:00"),
+            ]
+        ]
+        requests = []
+
+        def serve(request):
+            requests.append(request)
+            # The New York server returns its authoritative log order.
+            items = events[: min(len(requests) + 1, 4)]
+            return httpx.Response(
+                200,
+                json={"items": [e.model_dump(mode="json") for e in items]},
             )
 
-        events_list.add_event(message("utc-12:30", "2024-01-01T12:30:00+00:00"))
-        events_list.add_event(message("legacy-12:45", "2024-01-01T07:45:00"))
-        events_list.add_event(message("legacy-12:00", "2024-01-01T07:00:00"))
-
-        assert [e.id for e in events_list] == [
-            "legacy-12:00",
-            "utc-12:30",
-            "legacy-12:45",
-        ]
+        with httpx.Client(
+            base_url="http://agent-server", transport=httpx.MockTransport(serve)
+        ) as client:
+            events_list = RemoteEventsList(client, conversation_id)
+            events_list.add_event(events[2])
+            assert [e.id for e in events_list] == [e.id for e in events[:3]]
+            assert events_list[2].timestamp == "2024-01-01T07:45:00"
+            events_list.add_event(events[3])
+            assert [e.id for e in events_list] == [e.id for e in events[:4]]
+            assert len(requests) == 3
+            events_list.add_event(events[4])
+            assert [e.id for e in events_list] == [e.id for e in events]
+            assert len(requests) == 3
+            assert events_list.reconcile() == 0
+            assert [e.id for e in events_list] == [e.id for e in events]
     finally:
         monkeypatch.undo()
         time.tzset()

@@ -72,9 +72,8 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
     """
     Normalize a filter bound to a naive datetime in server local time.
 
-    New event timestamps carry an explicit UTC offset; legacy ones are naive
-    server-local strings. The event service compares both as instants, so a
-    naive bound keeps its documented meaning (server local time) either way.
+    Event filters pass bounds directly to the event service instead: removing
+    the offset here can lose the instant during a daylight-saving transition.
 
     If the datetime has timezone info, convert to server native timezone and
     strip the tzinfo to make it naive.
@@ -136,18 +135,8 @@ async def search_conversation_events(
 ) -> JSONResponse:
     """Search / List local events"""
 
-    # Normalize timezone-aware datetimes to server timezone
-    normalized_gte = (
-        normalize_datetime_to_server_timezone(timestamp__gte)
-        if timestamp__gte
-        else None
-    )
-    normalized_lt = (
-        normalize_datetime_to_server_timezone(timestamp__lt) if timestamp__lt else None
-    )
-
     page = await event_service.search_events(
-        page_id, limit, kind, source, body, sort_order, normalized_gte, normalized_lt
+        page_id, limit, kind, source, body, sort_order, timestamp__gte, timestamp__lt
     )
     if isinstance(page, dict):
         items = cast(list[Any], page.get("items", []))
@@ -197,18 +186,8 @@ async def count_conversation_events(
     event_service: EventService = Depends(get_event_service),
 ) -> int:
     """Count local events matching the given filters"""
-    # Normalize timezone-aware datetimes to server timezone
-    normalized_gte = (
-        normalize_datetime_to_server_timezone(timestamp__gte)
-        if timestamp__gte
-        else None
-    )
-    normalized_lt = (
-        normalize_datetime_to_server_timezone(timestamp__lt) if timestamp__lt else None
-    )
-
     count = await event_service.count_events(
-        kind, source, body, normalized_gte, normalized_lt
+        kind, source, body, timestamp__gte, timestamp__lt
     )
 
     return count
