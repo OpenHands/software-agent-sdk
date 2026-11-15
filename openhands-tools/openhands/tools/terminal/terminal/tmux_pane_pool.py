@@ -34,6 +34,7 @@ from openhands.tools.terminal.terminal.process_priority import (
 from openhands.tools.terminal.terminal.tmux_terminal import (
     TmuxTerminal,
     _new_owned_session,
+    run_tmux_commands,
 )
 
 
@@ -135,9 +136,12 @@ class TmuxPanePool:
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
-        for k, v in env.items():
-            self._session.set_environment(k, v)
-        self._session.set_option("history-limit", str(HISTORY_LIMIT))
+        session_id = str(self._session.session_id)
+        run_tmux_commands(
+            self._server,
+            [["set-environment", "-t", session_id, k, v] for k, v in env.items()]
+            + [["set-option", "-t", session_id, "history-limit", str(HISTORY_LIMIT)]],
+        )
 
         # Keep a reference to the default window so we can kill it once
         # the first real pane window is created (tmux requires at least
