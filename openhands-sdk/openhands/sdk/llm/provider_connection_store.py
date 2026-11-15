@@ -18,22 +18,31 @@ use, so the connection file never holds a plaintext key when ``OH_SECRET_KEY``
 is configured.
 
 A connection's ``provider`` also decides routing when it names a provider the
-SDK recognizes (see :meth:`ProviderConnection.route_model`). For a profile
-linked to a connection, precedence is:
+SDK recognizes (see :meth:`ProviderConnection.route_model`). For a model, the
+route is chosen in this order:
 
-1. A recognized connection ``provider`` (currently ``openrouter``). The
-   profile's model is read as that provider's own model id and qualified for
-   LiteLLM (``thinkingmachines/inkling-small:free`` ->
-   ``openrouter/thinkingmachines/inkling-small:free``). An id that already
-   carries the prefix is kept. The connection's ``base_url`` may be a proxy;
-   the host is not consulted.
-2. Any other label (``custom``, ``anthropic``, or any free-text value saved
-   before this rule existed) leaves the model as stored, so routing follows
-   the model's own LiteLLM prefix and then the endpoint, exactly as before.
+1. A recognized connection ``provider``. The profile's model is read as that
+   provider's own id and qualified for LiteLLM; an id that already carries the
+   prefix is kept. The host of the connection's ``base_url`` is not consulted,
+   so a proxy works too.
 
-A model whose prefix names an SDK route that is not the connection's provider
-(for example ``openhands/...`` under an OpenRouter connection) is rejected with
-:class:`ProviderConnectionModelConflict` rather than routed elsewhere.
+   - ``openrouter``: ``thinkingmachines/inkling-small:free`` ->
+     ``openrouter/thinkingmachines/inkling-small:free``.
+   - OpenAI-compatible servers (``custom_openai``, ``openai_like``,
+     ``lm_studio``, ``hosted_vllm``, ``llamafile``): the id reaches the server
+     verbatim, even one like ``ollama/llama3`` whose first segment LiteLLM
+     would otherwise read as a provider.
+
+2. Any other label (``custom``, ``openai``, ``anthropic``, or any free-text
+   value saved before this rule existed) leaves the model as stored, so the
+   model's own LiteLLM prefix decides, as before.
+3. The endpoint: an ``openrouter.ai`` base URL routes through OpenRouter, and
+   with any other base URL an id LiteLLM cannot place is sent to it as an
+   OpenAI-compatible request (see :meth:`LLMProvider.from_model`).
+
+A model whose prefix names another SDK route (``openhands/``,
+``litellm_proxy/``, ``digitalocean/``) under a recognized connection is rejected
+with :class:`ProviderConnectionModelConflict` rather than routed elsewhere.
 """
 
 from __future__ import annotations
@@ -59,8 +68,10 @@ from pydantic import (
 
 from openhands.sdk.errors import Invalid, LockTimeout, Unprocessable
 from openhands.sdk.llm.utils.openhands_provider import (
+    CUSTOM_OPENAI_PROVIDER_PREFIX,
     DIGITALOCEAN_PROVIDER_PREFIX,
     LITELLM_PROXY_PREFIX,
+    OPENAI_COMPATIBLE_PROVIDER_PREFIXES,
     OPENHANDS_PROVIDER_PREFIX,
     OPENROUTER_PROVIDER_PREFIX,
 )
@@ -118,29 +129,43 @@ class ProviderConnectionModelConflict(Unprocessable):
     """
 
 
-# Prefixes that select an SDK or LiteLLM-proxy route rather than an OpenRouter
-# vendor namespace, so an OpenRouter connection cannot honour them.
-_NON_OPENROUTER_ROUTE_PREFIXES: Final[tuple[str, ...]] = (
+# Prefixes that select an SDK route of their own, so a connection that decides
+# routing cannot honour them.
+_SDK_ROUTE_PREFIXES: Final[tuple[str, ...]] = (
     OPENHANDS_PROVIDER_PREFIX,
     DIGITALOCEAN_PROVIDER_PREFIX,
     LITELLM_PROXY_PREFIX,
 )
 
 
-def _route_openrouter_model(model: str) -> str | None:
-    if model.startswith(OPENROUTER_PROVIDER_PREFIX):
-        return model
-    if model.startswith(_NON_OPENROUTER_ROUTE_PREFIXES):
-        return None
-    # OpenRouter ids are namespaced by upstream vendor (``anthropic/...``), so a
-    # vendor prefix here is part of the id, not a request to bypass OpenRouter.
-    return f"{OPENROUTER_PROVIDER_PREFIX}{model}"
+def _prefix_router(prefix: str) -> Callable[[str], str | None]:
+    """Route every model through ``prefix``; ``None`` marks a conflict.
+
+    For these providers a vendor-looking first segment is part of the model id:
+    OpenRouter namespaces ids by upstream vendor (``anthropic/...``), and an
+    OpenAI-compatible server serves whatever ids it lists (``ollama/llama3``).
+    """
+
+    def route(model: str) -> str | None:
+        if model.startswith(prefix):
+            return model
+        if model.startswith(_SDK_ROUTE_PREFIXES):
+            return None
+        return f"{prefix}{model}"
+
+    return route
 
 
-# Recognized connection providers -> model router. A router returns the
-# LiteLLM model id for the provider, or ``None`` when the model conflicts.
+# Recognized connection providers (LiteLLM provider names, as Canvas offers
+# them) -> model router.
 _MODEL_ROUTERS: Final[dict[str, Callable[[str], str | None]]] = {
-    "openrouter": _route_openrouter_model,
+    "openrouter": _prefix_router(OPENROUTER_PROVIDER_PREFIX),
+    **{
+        prefix.removesuffix("/"): _prefix_router(prefix)
+        for prefix in OPENAI_COMPATIBLE_PROVIDER_PREFIXES
+    },
+    # LiteLLM lists ``openai_like`` but has no chat route for it.
+    "openai_like": _prefix_router(CUSTOM_OPENAI_PROVIDER_PREFIX),
 }
 
 
@@ -216,8 +241,8 @@ class ProviderConnection(BaseModel):
             raise ProviderConnectionModelConflict(
                 f"Model {model!r} selects a different route than provider "
                 f"connection {self.id!r} (provider {self.provider!r}). Enter the "
-                f"model id as {self.provider} lists it, or link the profile to a "
-                "connection for that route."
+                "model id as the provider lists it, without that prefix, or link "
+                "the profile to a connection for that route."
             )
         return routed
 

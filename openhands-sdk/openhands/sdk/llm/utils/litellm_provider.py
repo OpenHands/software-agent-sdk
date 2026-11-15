@@ -33,25 +33,37 @@ class LLMProvider:
 
     @classmethod
     def from_model(cls, *, model: str, api_base: str | None) -> LLMProvider:
-        """Parse a model string using LiteLLM's provider inference logic."""
-        try:
-            get_llm_provider = cast(Any, litellm).get_llm_provider
-            parsed_model, provider_name, _dynamic_key, _resolved_api_base = (
-                get_llm_provider(
-                    model=model,
-                    custom_llm_provider=None,
-                    api_base=api_base,
-                    api_key=None,
+        """Parse a model string using LiteLLM's provider inference logic.
+
+        When ``api_base`` is set and LiteLLM cannot place the model (an LM
+        Studio id such as ``lmstudio-community/gemma``, a bare ``qwen``, a
+        router alias such as ``auto/coding``), the endpoint is treated as
+        OpenAI-compatible. LiteLLM strips only a recognized provider prefix, so
+        the id reaches the server unchanged.
+        """
+        get_llm_provider = cast(Any, litellm).get_llm_provider
+        parsed_model, provider_name = model, None
+        for custom_llm_provider in (None, "openai") if api_base else (None,):
+            try:
+                parsed_model, provider_name, _dynamic_key, _resolved_api_base = (
+                    get_llm_provider(
+                        model=model,
+                        custom_llm_provider=custom_llm_provider,
+                        api_base=api_base,
+                        api_key=None,
+                    )
                 )
-            )
-        except Exception as exc:
-            logger.debug(
-                "Failed to parse LiteLLM provider for model=%s: %s",
-                model,
-                exc,
-            )
-            parsed_model = model
-            provider_name = None
+            except Exception as exc:
+                logger.debug(
+                    "Failed to parse LiteLLM provider for model=%s "
+                    "(custom_llm_provider=%s): %s",
+                    model,
+                    custom_llm_provider,
+                    exc,
+                )
+                parsed_model, provider_name = model, None
+            if provider_name is not None:
+                break
 
         return cls(
             model=parsed_model,

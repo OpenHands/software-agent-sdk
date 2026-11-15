@@ -575,9 +575,9 @@ def test_openrouter_connection_rejects_conflicting_route(client):
         assert "sk-or-shared" not in detail
 
 
-def test_validate_draft_linked_to_openrouter_reaches_the_connection(client):
-    """Pre-flight validation dispatches through the same resolution as runtime:
-    an unprefixed OpenRouter id reaches the connection's endpoint as-is."""
+@pytest.fixture
+def chat_standin():
+    """A local OpenAI-compatible server recording (path, model) per request."""
     import json as json_module
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
@@ -623,26 +623,86 @@ def test_validate_draft_linked_to_openrouter_reaches_the_connection(client):
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        connection_id = _openrouter_connection(
-            client, f"http://127.0.0.1:{server.server_port}/api/v1"
-        )
-        response = client.post(
-            "/api/profiles/inkling/validate",
-            json={
-                "llm": {
-                    "model": "thinkingmachines/inkling-small:free",
-                    "provider_connection_id": connection_id,
-                }
-            },
-        )
+        yield f"http://127.0.0.1:{server.server_port}/api/v1", seen
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
 
+
+def test_validate_draft_linked_to_openrouter_reaches_the_connection(
+    client, chat_standin
+):
+    """Pre-flight validation dispatches through the same resolution as runtime:
+    an unprefixed OpenRouter id reaches the connection's endpoint as-is."""
+    base_url, seen = chat_standin
+    connection_id = _openrouter_connection(client, base_url)
+
+    response = client.post(
+        "/api/profiles/inkling/validate",
+        json={
+            "llm": {
+                "model": "thinkingmachines/inkling-small:free",
+                "provider_connection_id": connection_id,
+            }
+        },
+    )
+
     assert response.status_code == 200
     assert response.json() == {"valid": True, "error": None}
     assert seen == [("/api/v1/chat/completions", "thinkingmachines/inkling-small:free")]
+
+
+@pytest.mark.parametrize(
+    "llm",
+    [
+        # Advanced tab, inline base URL (OpenHands#17261, #4247).
+        {"model": "qwen", "api_key": "sk-local"},
+        {"model": "lmstudio-community/gemma-4-e4b-it-mlx", "api_key": "sk-local"},
+    ],
+)
+def test_validate_local_openai_compatible_model(client, chat_standin, llm):
+    base_url, seen = chat_standin
+
+    response = client.post(
+        "/api/profiles/local/validate",
+        json={"llm": {**llm, "base_url": base_url}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "error": None}
+    assert seen == [("/api/v1/chat/completions", llm["model"])]
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("custom", "ollama-local/qwen3-coder"),  # 9Router alias (OpenHands#17195)
+        ("custom_openai", "ollama/qwen3-coder-next"),
+    ],
+)
+def test_profile_linked_to_openai_compatible_connection_validates_and_activates(
+    client, chat_standin, provider, model
+):
+    base_url, seen = chat_standin
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Router",
+            "provider": provider,
+            "api_key": "sk-router",
+            "base_url": base_url,
+        },
+    ).json()["id"]
+    llm = {"model": model, "provider_connection_id": connection_id}
+
+    validated = client.post("/api/profiles/router/validate", json={"llm": llm})
+    client.post("/api/profiles/router", json={"llm": llm, "include_secrets": False})
+    activated = client.post("/api/profiles/router/activate")
+
+    assert validated.json() == {"valid": True, "error": None}
+    assert seen == [("/api/v1/chat/completions", model)]
+    assert activated.status_code == 200
 
 
 def test_provider_connection_rejects_extra_headers(client):

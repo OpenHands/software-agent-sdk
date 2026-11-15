@@ -1,9 +1,11 @@
-"""Routing contract for provider connections and OpenRouter endpoints (#6862).
+"""Routing contract for provider connections and custom endpoints (#6862).
 
-A recognized connection ``provider`` decides routing for a linked profile, and
-an ``openrouter.ai`` base URL routes OpenRouter-native ids through OpenRouter.
-The HTTP tests dispatch real SDK requests to a local OpenAI-compatible stand-in
-so the wire path and model id are checked without credentials.
+A recognized connection ``provider`` (OpenRouter or an OpenAI-compatible
+server) decides routing for a linked profile; an ``openrouter.ai`` base URL
+routes OpenRouter-native ids through OpenRouter; any other base URL serves an id
+LiteLLM cannot place as an OpenAI-compatible request (#4247). The HTTP tests
+dispatch real SDK requests to a local OpenAI-compatible stand-in so the wire
+path and model id are checked without credentials.
 """
 
 import json
@@ -18,7 +20,6 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMBadRequestError
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.options.common import is_openrouter
 from openhands.sdk.llm.provider_connection_store import (
@@ -88,6 +89,32 @@ def test_openrouter_label_is_case_and_space_insensitive(label):
 
 
 @pytest.mark.parametrize(
+    "label,prefix",
+    [
+        ("custom_openai", "custom_openai/"),
+        ("openai_like", "custom_openai/"),
+        ("lm_studio", "lm_studio/"),
+        ("hosted_vllm", "hosted_vllm/"),
+        ("llamafile", "llamafile/"),
+    ],
+)
+@pytest.mark.parametrize(
+    "model",
+    [
+        "ollama/qwen3-coder-next",
+        "openai/gpt-oss-20b",
+        "qwen",
+        "lmstudio-community/gemma-4",
+    ],
+)
+def test_openai_compatible_connection_keeps_the_server_id(label, prefix, model):
+    connection = _connection(provider=label)
+    routed = connection.route_model(model)
+    assert routed == f"{prefix}{model}"
+    assert connection.route_model(routed) == routed
+
+
+@pytest.mark.parametrize(
     "label", ["custom", "anthropic", "openai", "my legacy router", "openrouter-ish"]
 )
 def test_other_labels_keep_the_stored_model(label):
@@ -96,16 +123,17 @@ def test_other_labels_keep_the_stored_model(label):
         assert connection.route_model(model) == model
 
 
+@pytest.mark.parametrize("label", ["openrouter", "custom_openai"])
 @pytest.mark.parametrize(
     "model", ["openhands/claude-sonnet-5", "litellm_proxy/gpt-5", "digitalocean/llama"]
 )
-def test_openrouter_connection_rejects_other_sdk_routes(model):
+def test_recognized_connection_rejects_other_sdk_routes(label, model):
     with pytest.raises(ProviderConnectionModelConflict) as caught:
-        _connection().route_model(model)
+        _connection(provider=label).route_model(model)
     message = str(caught.value)
     assert model in message
     assert "conn-or" in message
-    assert "openrouter" in message
+    assert label in message
     assert API_KEY not in message
     assert issubclass(ProviderConnectionModelConflict, ValueError)
 
@@ -153,6 +181,11 @@ def test_is_openrouter_base_url(base_url, expected):
         (INKLING, "https://openrouter.ai.example.com/v1", INKLING),
         ("anthropic/claude-sonnet-4", None, "anthropic/claude-sonnet-4"),
         ("qwen/qwen3-coder", "http://localhost:11434/v1", "qwen/qwen3-coder"),
+        (
+            "custom_openai/x/y",
+            "https://openrouter.ai/api/v1",
+            "custom_openai/x/y",
+        ),
     ],
 )
 def test_litellm_call_kwargs_infers_openrouter_from_host(model, base_url, expected):
@@ -170,10 +203,52 @@ def test_inline_openrouter_base_url_routes_without_rewriting_config():
     assert llm._provider_info.model == INKLING
     assert is_openrouter(llm)
 
+    # A lookalike host is just another OpenAI-compatible endpoint.
     lookalike = LLM(model=INKLING, base_url="https://openrouter.ai.example.com/v1")
     assert lookalike._provider_info is not None
-    assert lookalike._provider_info.name is None
+    assert lookalike._provider_info.name == "openai"
+    assert lookalike._provider_info.model == INKLING
     assert not is_openrouter(lookalike)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "lmstudio-community/gemma-4-e4b-it-mlx",  # LM Studio (#4247)
+        "qwen",  # bare local model (OpenHands#17261)
+        "ollama-local/llama3",  # 9Router alias (OpenHands#17195)
+        "local/my-coder",  # LiteLLM proxy alias (OpenHands#14525)
+    ],
+)
+def test_unplaceable_id_with_base_url_is_openai_compatible(model):
+    llm = LLM(model=model, base_url="http://localhost:11434/v1")
+    assert llm.model == model
+    assert llm._provider_info is not None
+    assert llm._provider_info.name == "openai"
+    assert llm._provider_info.as_litellm_call_kwargs() == {
+        "model": model,
+        "custom_llm_provider": "openai",
+    }
+
+
+@pytest.mark.parametrize(
+    "model,provider,wire",
+    [
+        ("ollama/qwen3-coder-next", "ollama", "qwen3-coder-next"),
+        ("anthropic/claude-sonnet-4", "anthropic", "claude-sonnet-4"),
+        ("gpt-4o", "openai", "gpt-4o"),
+    ],
+)
+def test_recognized_ids_with_base_url_keep_litellm_inference(model, provider, wire):
+    llm = LLM(model=model, base_url="http://localhost:11434/v1")
+    assert llm._provider_info is not None
+    assert (llm._provider_info.name, llm._provider_info.model) == (provider, wire)
+
+
+def test_unplaceable_id_without_base_url_stays_unresolved():
+    llm = LLM(model="lmstudio-community/gemma-4-e4b-it-mlx")
+    assert llm._provider_info is not None
+    assert llm._provider_info.name is None
 
 
 # ── Profile resolution ──────────────────────────────────────────────────────
@@ -396,19 +471,60 @@ def test_linked_profile_dispatches_responses_api(tmp_path, openrouter_standin):
     assert requests[0]["authorization"] == f"Bearer {API_KEY}"
 
 
-def test_custom_label_keeps_failing_provider_inference(tmp_path, openrouter_standin):
-    """Legacy labels keep today's routing: the unqualified id still has no route.
+@pytest.mark.parametrize(
+    "label,model",
+    [
+        # A custom connection: an id LiteLLM cannot place (OpenHands#17195/#17261).
+        ("custom", "ollama-local/llama3"),
+        ("custom", "qwen"),
+        # An OpenAI-compatible connection keeps even a provider-looking id.
+        ("custom_openai", "ollama/qwen3-coder-next"),
+        ("lm_studio", "openai/gpt-oss-20b"),
+        ("hosted_vllm", "Qwen/Qwen3-Coder-30B"),
+    ],
+)
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.asyncio
+async def test_openai_compatible_connection_sends_the_id_verbatim(
+    tmp_path, openrouter_standin, label, model, use_async
+):
+    base_url, requests = openrouter_standin
+    profiles = _stores(tmp_path, provider=label, base_url=base_url)
+    _write_legacy_profile(profiles, "local", model)
 
-    This is the original #6862 failure, now confined to connections that do not
-    say they are OpenRouter.
-    """
+    llm = profiles.load("local").model_copy(update={"num_retries": 0})
+    response = await llm.agenerate(_PING) if use_async else llm.generate(_PING)
+
+    assert response.message.content == [TextContent(text="pong")]
+    assert len(requests) == 1
+    assert requests[0]["path"] == "/api/v1/chat/completions"
+    assert requests[0]["body"]["model"] == model
+    assert requests[0]["authorization"] == f"Bearer {API_KEY}"
+
+
+@pytest.mark.parametrize("model", ["lmstudio-community/gemma-4-e4b-it-mlx", "qwen"])
+def test_inline_custom_base_url_sends_the_id_verbatim(openrouter_standin, model):
+    """No connection: LM Studio and other local servers (#4247, OpenHands#17261)."""
+    base_url, requests = openrouter_standin
+    llm = LLM(model=model, base_url=base_url, api_key=API_KEY, num_retries=0)
+
+    response = llm.generate(_PING)
+
+    assert response.message.content == [TextContent(text="pong")]
+    assert [(r["path"], r["body"]["model"]) for r in requests] == [
+        ("/api/v1/chat/completions", model)
+    ]
+
+
+def test_custom_connection_keeps_recognized_provider_routes(
+    tmp_path, openrouter_standin
+):
+    """Without a recognized label, a LiteLLM provider prefix still decides."""
     base_url, requests = openrouter_standin
     profiles = _stores(tmp_path, provider="custom", base_url=base_url)
-    _write_legacy_profile(profiles, "custom", INKLING)
-
-    llm = profiles.load("custom").model_copy(update={"num_retries": 0})
-    with pytest.raises(LLMBadRequestError, match="LLM Provider NOT provided") as caught:
-        llm.generate(_PING)
-
-    assert requests == []
-    assert API_KEY not in str(caught.value)
+    llm = profiles.resolve_provider_connection(
+        LLM(model="ollama/qwen3-coder-next", provider_connection_id="conn-or")
+    )
+    assert llm.model == "ollama/qwen3-coder-next"
+    assert llm._provider_info is not None
+    assert llm._provider_info.name == "ollama"
