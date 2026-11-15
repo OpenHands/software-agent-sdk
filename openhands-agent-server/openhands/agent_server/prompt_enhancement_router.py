@@ -3,14 +3,14 @@
 import asyncio
 import os
 from enum import StrEnum
+from typing import Annotated
 
-from fastapi import APIRouter, Path, Request, status
+from fastapi import APIRouter, Depends, Path, status
 from fastapi.responses import JSONResponse
 from litellm import ResponsesAPIResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from openhands.agent_server._secrets_exposure import get_config
-from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.agent_server.dependencies import get_cipher, get_llm_profile_store
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
@@ -20,10 +20,10 @@ from openhands.sdk.llm.exceptions import (
     LLMTimeoutError,
 )
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
-from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN, LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.observability.laminar import should_enable_observability
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 prompt_enhancement_router = APIRouter(
@@ -118,7 +118,9 @@ def _error_response(
     return JSONResponse(status_code=status_code, content=body.model_dump(mode="json"))
 
 
-async def _load_profile(name: str, request: Request) -> LLM:
+async def _load_profile(
+    name: str, profile_store: LLMProfileStore, cipher: Cipher | None
+) -> LLM:
     if _prompt_payload_capture_enabled():
         raise _EnhancementFailure(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -126,12 +128,11 @@ async def _load_profile(name: str, request: Request) -> LLM:
             "Prompt enhancement requires LLM tracing and logging to be disabled.",
         )
 
-    config = get_config(request)
     try:
         llm = await asyncio.to_thread(
-            get_llm_profile_store().load, name, cipher=config.cipher, strict=True
+            profile_store.load, name, cipher=cipher, strict=True
         )
-        if config.cipher is None:
+        if cipher is None:
             for field in LLM_SECRET_FIELDS:
                 value = getattr(llm, field)
                 if isinstance(value, SecretStr) and value.get_secret_value().startswith(
@@ -193,7 +194,7 @@ def _quiet_llm(llm: LLM) -> LLM:
     """Bound generation and disable logging/retries for this one-off call."""
     quiet_llm = llm.model_copy(
         update={
-            "log_completions": False,
+            "log_completions_to_file": False,
             "num_retries": 0,
             "caching_prompt": False,
             "max_output_tokens": min(
@@ -225,7 +226,8 @@ _SYSTEM_PROMPT = (
     },
 )
 async def check_prompt_enhancement_availability(
-    request: Request,
+    profile_store: Annotated[LLMProfileStore, Depends(get_llm_profile_store)],
+    cipher: Annotated[Cipher | None, Depends(get_cipher)],
     name: str = Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ) -> PromptEnhancementAvailabilityResponse | JSONResponse:
     """Check whether this server can resolve the selected saved profile.
@@ -234,7 +236,7 @@ async def check_prompt_enhancement_availability(
     model provider, so it cannot guarantee provider availability or credentials.
     """
     try:
-        await _load_profile(name, request)
+        await _load_profile(name, profile_store, cipher)
     except _EnhancementFailure as failure:
         if failure.code == PromptEnhancementErrorCode.PROFILE_NOT_FOUND:
             return PromptEnhancementAvailabilityResponse(
@@ -258,7 +260,9 @@ async def check_prompt_enhancement_availability(
     },
 )
 async def enhance_prompt(
-    request: Request, body: PromptEnhancementRequest
+    body: PromptEnhancementRequest,
+    profile_store: Annotated[LLMProfileStore, Depends(get_llm_profile_store)],
+    cipher: Annotated[Cipher | None, Depends(get_cipher)],
 ) -> PromptEnhancementResponse | JSONResponse:
     """Improve a draft using one bounded, server-managed LLM call.
 
@@ -284,7 +288,9 @@ async def enhance_prompt(
     ]
     try:
         async with asyncio.timeout(PROMPT_ENHANCEMENT_TIMEOUT_SECONDS):
-            llm = _quiet_llm(await _load_profile(body.profile_name, request))
+            llm = _quiet_llm(
+                await _load_profile(body.profile_name, profile_store, cipher)
+            )
             if llm.uses_responses_api():
                 result = await llm.aresponses(
                     messages=messages,

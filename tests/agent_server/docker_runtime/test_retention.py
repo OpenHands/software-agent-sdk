@@ -15,6 +15,7 @@ from openhands.agent_server.docker_runtime.registry import (
 )
 from openhands.agent_server.errors import status_for
 from openhands.agent_server.models import ConversationRuntimeStatus
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.errors import DomainError
 
 
@@ -25,14 +26,13 @@ def registry(
     tmp_path, monkeypatch, days: float | None = 7
 ) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    return DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            workspace_path=tmp_path / "workspaces",
-            secret_key=SecretStr("outer-key"),
-            conversation_storage_retention_days=days,
-        )
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+        conversation_storage_retention_days=days,
     )
+    return DockerConversationRegistry(config, ServerStores.from_config(config))
 
 
 def provision(

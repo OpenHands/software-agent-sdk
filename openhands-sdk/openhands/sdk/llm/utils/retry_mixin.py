@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterable
-from typing import Any, cast
+from typing import Any, NoReturn, Protocol, cast, runtime_checkable
 
+from litellm.exceptions import Timeout as LiteLLMTimeout
 from tenacity import (
     RetryCallState,
     retry,
@@ -26,6 +27,19 @@ logger = get_logger(__name__)
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
 
+# A call whose attempts keep reaching the per-attempt timeout stops retrying
+# once it has used this many timeouts' worth of wall-clock time (#6249).
+TIMEOUT_RETRY_BUDGET_MULTIPLIER = 2
+
+# Error classification keys on this phrase to point users at their settings.
+TIMEOUT_EXHAUSTED_PHRASE = "did not return a complete response within the LLM timeout"
+
+
+@runtime_checkable
+class _HasStatusCode(Protocol):
+    @property
+    def status_code(self) -> object: ...
+
 
 def transient_error_condition(
     exception_types: tuple[type[BaseException], ...],
@@ -44,6 +58,45 @@ class _StopBeforeLongWait(stop_base):
     def __call__(self, retry_state: RetryCallState) -> bool:
         error = retry_state.outcome.exception() if retry_state.outcome else None
         return retry_after_seconds(error) > self.max_wait
+
+
+class _StopAfterTimeoutBudget(stop_base):
+    """Stop retrying timeouts once the call has used ``budget`` seconds."""
+
+    def __init__(self, budget: float):
+        self.budget = budget
+
+    def __call__(self, retry_state: RetryCallState) -> bool:
+        error = retry_state.outcome.exception() if retry_state.outcome else None
+        return (
+            isinstance(error, LiteLLMTimeout)
+            and retry_state.seconds_since_start is not None
+            and retry_state.seconds_since_start >= self.budget
+        )
+
+
+def _raise_with_timeout_summary(
+    timeout: float,
+) -> Callable[[RetryCallState], NoReturn]:
+    """Re-raise the final error; a timeout gets an actionable summary."""
+
+    def callback(retry_state: RetryCallState) -> NoReturn:
+        assert retry_state.outcome is not None
+        error = retry_state.outcome.exception()
+        assert error is not None
+        if isinstance(error, LiteLLMTimeout):
+            attempts = retry_state.attempt_number
+            elapsed = retry_state.seconds_since_start or 0.0
+            error.message = error.message.rstrip(". ") + (
+                f". The model {TIMEOUT_EXHAUSTED_PHRASE} of {timeout:g}s "
+                f"(gave up after {attempts} attempt{'s' if attempts != 1 else ''}, "
+                f"{elapsed:.0f}s in total). Try a faster model, a shorter "
+                "prompt (fewer tools or MCP servers), or a higher timeout in "
+                "the LLM settings."
+            )
+        raise error
+
+    return callback
 
 
 class RetryMixin:
@@ -110,6 +163,7 @@ class RetryMixin:
         retry_max_wait: int = 64,
         retry_multiplier: float = 2.0,
         retry_listener: RetryListener | None = None,
+        timeout: float | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """
         Create a LLM retry decorator with customizable parameters.
@@ -119,6 +173,10 @@ class RetryMixin:
         as-is) or a tenacity retry predicate (e.g. a combined
         ``retry_if_exception_type(...) & retry_if_not_exception(...)``) for
         finer-grained control over which exceptions are retried.
+
+        ``timeout`` is the per-attempt timeout. When set, timeouts stop being
+        retried once the call has spent ``TIMEOUT_RETRY_BUDGET_MULTIPLIER``
+        timeouts in total, and a final timeout says which limit it hit.
         """
         before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
@@ -127,6 +185,34 @@ class RetryMixin:
             if isinstance(retry_exceptions, tuple)
             else retry_exceptions
         )
+
+        stop = stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
+        if timeout:
+            stop = stop | _StopAfterTimeoutBudget(
+                TIMEOUT_RETRY_BUDGET_MULTIPLIER * timeout
+            )
+
+        def diagnosed_retry(retry_state: RetryCallState) -> bool:
+            eligible = retry_condition(retry_state)
+            exc = (
+                retry_state.outcome.exception()
+                if retry_state.outcome is not None
+                else None
+            )
+            if exc is not None:
+                status = exc.status_code if isinstance(exc, _HasStatusCode) else None
+                logger.warning(
+                    "LLM request failed: exception_type=%s.%s status_code=%s "
+                    "attempt=%d max_attempts=%d retry_eligible=%s will_retry=%s",
+                    type(exc).__module__,
+                    type(exc).__qualname__,
+                    status if isinstance(status, int) else None,
+                    retry_state.attempt_number,
+                    num_retries,
+                    eligible,
+                    eligible and not stop(retry_state),
+                )
+            return eligible
 
         exponential_wait = wait_exponential(
             multiplier=retry_multiplier, min=retry_min_wait, max=retry_max_wait
@@ -138,12 +224,13 @@ class RetryMixin:
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=(
-                stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
-            ),
+            stop=stop,
             reraise=True,
-            retry=retry_condition,
+            retry=diagnosed_retry,
             wait=wait,
+            retry_error_callback=(
+                _raise_with_timeout_summary(timeout) if timeout else None
+            ),
         )
         return retry_decorator
 
@@ -182,9 +269,3 @@ class RetryMixin:
         setattr(cast(Any, exc), "retry_attempt", retry_state.attempt_number)
         if max_attempts is not None:
             setattr(cast(Any, exc), "max_retries", max_attempts)
-
-        logger.error(
-            "%s. Attempt #%d | You can customize retry values in the configuration.",
-            exc,
-            retry_state.attempt_number,
-        )

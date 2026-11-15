@@ -28,11 +28,22 @@ from openhands.agent_server.docker_runtime.routers import (
 )
 from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.server_context import server_context_of
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
+from tests.agent_server.conftest import install_test_context
+
+
+def _app_with(registry: DockerConversationRegistry, service: AsyncMock) -> FastAPI:
+    """An app whose server context holds ``registry`` and ``service``."""
+    app = FastAPI()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
+    return app
 
 
 def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
@@ -115,8 +126,13 @@ def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch)
     )
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = DockerConversationRegistry(config)
-    app.state.conversation_service = AsyncMock()
+    install_test_context(
+        app,
+        conversation_registry=DockerConversationRegistry(
+            config, ServerStores.from_config(config)
+        ),
+        conversation_service=AsyncMock(),
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     conversation_id = uuid4()
     captured = {}
@@ -159,9 +175,11 @@ def test_worktree_start_forwards_only_mounted_host_paths(
     )
     app = FastAPI()
     add_domain_error_handler(app)
-    registry = DockerConversationRegistry(config)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     monkeypatch.setattr(
         registry,
@@ -216,10 +234,12 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
 
     app = FastAPI()
     add_domain_error_handler(app)
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     registry.stop = stop
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         response = client.post(
@@ -233,9 +253,7 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
             == 204
         )
     assert stopped == [conversation_id]
-    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
-        conversation_id
-    )
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
 
 
 def test_runtime_release_prunes_cache_but_keeps_conversation_state(
@@ -246,7 +264,7 @@ def test_runtime_release_prunes_cache_but_keeps_conversation_state(
         conversations_path=tmp_path / "conversations",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     registry.provisioning.create(conversation_id)
     conversation_dir = registry.conversation_dir(conversation_id)
@@ -269,8 +287,10 @@ def test_runtime_release_prunes_cache_but_keeps_conversation_state(
 
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         response = client.delete(f"/api/conversations/{conversation_id}/runtime")
@@ -291,7 +311,7 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
         conversations_path=tmp_path / "conversations",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     legacy_id = uuid4()
     legacy_dir = registry.conversation_dir(legacy_id)
     legacy_dir.mkdir(parents=True)
@@ -305,7 +325,7 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
 
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
+    install_test_context(app, conversation_registry=registry)
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         legacy = client.get(f"/api/conversations/{legacy_id}/runtime")
@@ -333,7 +353,7 @@ def test_docker_event_history_reads_persistence_without_starting_a_container(
         secret_key=SecretStr("outer-key"),
     )
     conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     registry.provisioning.create(conversation_id)
     registry.get_or_create = AsyncMock()
     event_service = SimpleNamespace(
@@ -341,10 +361,10 @@ def test_docker_event_history_reads_persistence_without_starting_a_container(
     )
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = SimpleNamespace(
-        get_persisted_event_service=AsyncMock(return_value=event_service),
-        get_event_service=AsyncMock(),
+    service = AsyncMock()
+    service.get_persisted_event_service.return_value = event_service
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
     )
     app.include_router(event_read_router, prefix="/api")
 
@@ -355,10 +375,8 @@ def test_docker_event_history_reads_persistence_without_starting_a_container(
 
     assert response.status_code == 200
     assert response.json() == {"items": [], "next_page_id": None}
-    app.state.conversation_service.get_persisted_event_service.assert_awaited_once_with(
-        conversation_id
-    )
-    app.state.conversation_service.get_event_service.assert_not_awaited()
+    service.get_persisted_event_service.assert_awaited_once_with(conversation_id)
+    service.get_event_service.assert_not_awaited()
     registry.get_or_create.assert_not_awaited()
 
 
@@ -369,7 +387,7 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
         secret_key=SecretStr("outer-key"),
     )
     conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     registry.provisioning.create(conversation_id)
     conversation_dir = registry.conversation_dir(conversation_id)
     conversation_dir.mkdir(parents=True)
@@ -380,17 +398,17 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
 
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         response = client.delete(f"/api/conversations/{conversation_id}")
 
     assert response.status_code == 200
     registry.stop.assert_awaited_once_with(conversation_id)
-    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
-        conversation_id
-    )
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
     assert not conversation_dir.exists()
     assert not runtime_dir.exists()
 
@@ -415,7 +433,7 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
         secret_key=SecretStr("outer-key"),
     )
     conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     identity = registry.provisioning.create(
         conversation_id, workspace_path=repository
     ).model_copy(update={"worktree_repository_path": repository})
@@ -451,8 +469,10 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
 
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         response = client.delete(f"/api/conversations/{conversation_id}")
@@ -488,7 +508,7 @@ def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):
         secret_key=SecretStr("outer-key"),
     )
     conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     identity = registry.provisioning.create(
         conversation_id, workspace_path=repository
     ).model_copy(update={"worktree_repository_path": repository})
@@ -534,7 +554,7 @@ def test_failed_delete_keeps_docker_ownership_until_state_is_removed(
         secret_key=SecretStr("outer-key"),
     )
     conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     registry.provisioning.create(conversation_id)
     conversation_dir = registry.conversation_dir(conversation_id)
     conversation_dir.mkdir(parents=True)
@@ -550,8 +570,10 @@ def test_failed_delete_keeps_docker_ownership_until_state_is_removed(
     monkeypatch.setattr(routers, "safe_rmtree", fail_conversation_delete)
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -569,7 +591,7 @@ async def test_delete_blocks_runtime_restart_while_container_stops(tmp_path):
         secret_key=SecretStr("outer-key"),
     )
     conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     registry.provisioning.create(conversation_id)
     conversation_dir = registry.conversation_dir(conversation_id)
     conversation_dir.mkdir(parents=True)
@@ -582,23 +604,14 @@ async def test_delete_blocks_runtime_restart_while_container_stops(tmp_path):
         await allow_stop.wait()
 
     registry.stop = stop
-    request = Request(
-        {
-            "type": "http",
-            "method": "DELETE",
-            "path": f"/api/conversations/{conversation_id}",
-            "query_string": b"",
-            "headers": [],
-            "app": SimpleNamespace(
-                state=SimpleNamespace(
-                    conversation_registry=registry,
-                    conversation_service=AsyncMock(),
-                )
-            ),
-        }
-    )
 
-    deletion = asyncio.create_task(delete_conversation(conversation_id, request))
+    deletion = asyncio.create_task(
+        delete_conversation(
+            conversation_id,
+            conversation_registry=registry,
+            conversation_service=AsyncMock(),
+        )
+    )
     await stop_started.wait()
     with pytest.raises(RuntimeError, match="Conversation is being deleted"):
         await registry.get_or_create(conversation_id)
@@ -617,7 +630,7 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
         conversations_path=tmp_path / "conversations",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     identity = registry.provisioning.create(conversation_id).model_copy(
         update={
@@ -670,6 +683,7 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
             "more_body": False,
         }
 
+    service = AsyncMock()
     request = Request(
         {
             "type": "http",
@@ -677,24 +691,23 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
             "path": f"/api/conversations/{conversation_id}/secrets",
             "query_string": b"",
             "headers": [(b"content-type", b"application/json")],
-            "app": SimpleNamespace(
-                state=SimpleNamespace(
-                    conversation_registry=registry,
-                    conversation_service=AsyncMock(),
-                )
-            ),
+            "app": _app_with(registry, service),
         },
         receive,
     )
-    await proxy_conversation(conversation_id, "secrets", request)
+    await proxy_conversation(
+        conversation_id,
+        "secrets",
+        request,
+        conversation_registry=registry,
+        conversation_service=service,
+    )
 
     forwarded = UpdateSecretsRequest.model_validate_json(captured["body"])
     assert set(forwarded.secrets) == {"ALLOWED"}
     assert forwarded.secrets["ALLOWED"].get_value() == "resolved-ALLOWED"
     assert looked_up == ["http://outer/api/settings/secrets/ALLOWED"]
-    request.app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
-        conversation_id
-    )
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
 
 
 def _docker_start_app(
@@ -706,11 +719,13 @@ def _docker_start_app(
         workspace_path=tmp_path / "workspaces",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = registry
-    app.state.conversation_service = AsyncMock()
+    service = AsyncMock()
+    install_test_context(
+        app, conversation_registry=registry, conversation_service=service
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     return app, registry
 
@@ -786,9 +801,9 @@ def test_a_successful_start_returns_the_inner_status_and_releases_its_lease(
     assert response.status_code == 201
     assert response.json()["id"] == str(conversation_id)
     assert not registry.has_active_leases(conversation_id)
-    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
-        conversation_id
-    )
+    service = server_context_of(app).conversation_service
+    assert isinstance(service, AsyncMock)
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
 
 
 def test_a_symlinked_conversation_dir_is_rejected(tmp_path, monkeypatch):
@@ -876,11 +891,15 @@ def test_reactions_follow_the_host_switch_before_reaching_the_runtime(
         settings.experimental_features = {"conversation_reactions": enabled}
         return settings
 
-    get_settings_store(config).update(apply)
+    stores = ServerStores.from_config(config)
+    stores.settings.update(apply)
     app = FastAPI()
     add_domain_error_handler(app)
-    app.state.conversation_registry = DockerConversationRegistry(config)
-    app.state.conversation_service = AsyncMock()
+    install_test_context(
+        app,
+        conversation_registry=DockerConversationRegistry(config, stores),
+        conversation_service=AsyncMock(),
+    )
     app.include_router(docker_conversation_router, prefix="/api")
     conversation_id = uuid4()
     forwarded = []

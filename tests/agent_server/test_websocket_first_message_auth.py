@@ -33,9 +33,10 @@ def _make_mock_websocket(*, headers=None):
 @pytest.mark.asyncio
 async def test_no_auth_configured_accepts_immediately():
     ws = _make_mock_websocket()
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = []
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=[])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is True
     ws.accept.assert_called_once()
@@ -48,11 +49,10 @@ async def test_no_auth_configured_accepts_immediately():
 @pytest.mark.asyncio
 async def test_legacy_query_param_valid_key():
     ws = _make_mock_websocket()
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(
-            ws, session_api_key="sk-oh-valid"
-        )
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key="sk-oh-valid", config=config
+    )
 
     assert result is True
     ws.accept.assert_called_once()
@@ -62,11 +62,10 @@ async def test_legacy_query_param_valid_key():
 @pytest.mark.asyncio
 async def test_legacy_query_param_invalid_key():
     ws = _make_mock_websocket()
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(
-            ws, session_api_key="sk-oh-wrong"
-        )
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key="sk-oh-wrong", config=config
+    )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -80,11 +79,10 @@ async def test_legacy_query_param_takes_precedence_over_first_message():
     ws.receive_text.return_value = json.dumps(
         {"type": "auth", "session_api_key": "sk-oh-different"}
     )
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(
-            ws, session_api_key="sk-oh-valid"
-        )
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key="sk-oh-valid", config=config
+    )
 
     assert result is True
     ws.accept.assert_called_once()
@@ -98,9 +96,10 @@ async def test_legacy_query_param_takes_precedence_over_first_message():
 @pytest.mark.asyncio
 async def test_legacy_header_valid_key():
     ws = _make_mock_websocket(headers={"x-session-api-key": "sk-oh-valid"})
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is True
     ws.accept.assert_called_once()
@@ -109,9 +108,10 @@ async def test_legacy_header_valid_key():
 @pytest.mark.asyncio
 async def test_legacy_header_invalid_key():
     ws = _make_mock_websocket(headers={"x-session-api-key": "sk-oh-wrong"})
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -126,9 +126,10 @@ async def test_first_message_auth_valid_key():
     ws.receive_text.return_value = json.dumps(
         {"type": "auth", "session_api_key": "sk-oh-valid"}
     )
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is True
     ws.accept.assert_called_once()
@@ -141,9 +142,10 @@ async def test_first_message_auth_invalid_key():
     ws.receive_text.return_value = json.dumps(
         {"type": "auth", "session_api_key": "sk-oh-wrong"}
     )
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
     ws.accept.assert_called_once()  # accepted before reading first message
@@ -156,9 +158,10 @@ async def test_first_message_auth_wrong_type_field():
     ws.receive_text.return_value = json.dumps(
         {"type": "message", "session_api_key": "sk-oh-valid"}
     )
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
 
@@ -167,9 +170,10 @@ async def test_first_message_auth_wrong_type_field():
 async def test_first_message_auth_missing_key_field():
     ws = _make_mock_websocket()
     ws.receive_text.return_value = json.dumps({"type": "auth"})
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
 
@@ -177,9 +181,10 @@ async def test_first_message_auth_missing_key_field():
 @pytest.mark.asyncio
 async def test_legacy_empty_key_rejected_even_if_listed():
     ws = _make_mock_websocket()
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid", ""]
-        result = await _accept_authenticated_websocket(ws, session_api_key="")
+    config = MagicMock(session_api_keys=["sk-oh-valid", ""])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key="", config=config
+    )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -190,9 +195,10 @@ async def test_legacy_empty_key_rejected_even_if_listed():
 async def test_first_message_auth_empty_key_rejected_even_if_listed():
     ws = _make_mock_websocket()
     ws.receive_text.return_value = json.dumps({"type": "auth", "session_api_key": ""})
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid", ""]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid", ""])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -202,9 +208,10 @@ async def test_first_message_auth_empty_key_rejected_even_if_listed():
 async def test_first_message_auth_malformed_json():
     ws = _make_mock_websocket()
     ws.receive_text.return_value = "not json at all"
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -214,9 +221,10 @@ async def test_first_message_auth_malformed_json():
 async def test_first_message_auth_client_disconnects():
     ws = _make_mock_websocket()
     ws.receive_text.side_effect = WebSocketDisconnect()
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    result = await _accept_authenticated_websocket(
+        ws, session_api_key=None, config=config
+    )
 
     assert result is False
 
@@ -230,14 +238,13 @@ async def test_first_message_auth_timeout():
 
     ws.receive_text.side_effect = slow_receive
 
-    with (
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch(
-            "openhands.agent_server.sockets._FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS", 0.05
-        ),
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    with patch(
+        "openhands.agent_server.sockets._FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS", 0.05
     ):
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+        result = await _accept_authenticated_websocket(
+            ws, session_api_key=None, config=config
+        )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -263,16 +270,13 @@ async def test_events_socket_first_message_auth_e2e():
     mock_event_service.subscribe_to_events = AsyncMock(return_value=uuid4())
     mock_event_service.unsubscribe_from_events = AsyncMock(return_value=True)
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        await events_socket(uuid4(), ws, session_api_key=None)
+    await events_socket(
+        uuid4(), ws, session_api_key=None, config=config, conv_service=conv_service
+    )
 
     ws.accept.assert_called_once()
     mock_event_service.subscribe_to_events.assert_called_once()
@@ -307,17 +311,18 @@ async def test_events_socket_ignores_redundant_auth_control_frame():
     mock_event_service.unsubscribe_from_events = AsyncMock(return_value=True)
     mock_event_service.send_message = AsyncMock()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        # Authenticate via legacy query param so receive_text is never called.
-        await events_socket(uuid4(), ws, session_api_key="sk-oh-valid")
+    # Authenticate via legacy query param so receive_text is never called.
+    await events_socket(
+        uuid4(),
+        ws,
+        session_api_key="sk-oh-valid",
+        config=config,
+        conv_service=conv_service,
+    )
 
     # No ServerErrorEvent should be emitted for the auth control frame.
     ws.send_json.assert_not_called()
@@ -337,10 +342,10 @@ async def test_events_socket_first_message_auth_rejected():
         {"type": "auth", "session_api_key": "sk-oh-wrong"}
     )
 
-    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
-        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-
-        await events_socket(uuid4(), ws, session_api_key=None)
+    config = MagicMock(session_api_keys=["sk-oh-valid"])
+    await events_socket(
+        uuid4(), ws, session_api_key=None, config=config, conv_service=MagicMock()
+    )
 
     ws.accept.assert_called_once()
     # Should not proceed to subscribe
@@ -388,20 +393,14 @@ async def test_bash_socket_ignores_redundant_auth_before_command(
     mock_bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
     mock_bash_service.start_bash_command = AsyncMock()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.bash_event_service",
-            mock_bash_service,
-        ),
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = session_api_keys
-        await bash_events_socket(
-            ws,
-            session_api_key=session_api_key,
-            resend_mode=None,
-            resend_all=False,
-        )
+    await bash_events_socket(
+        ws,
+        session_api_key=session_api_key,
+        resend_mode=None,
+        resend_all=False,
+        config=MagicMock(session_api_keys=session_api_keys),
+        bash_service=mock_bash_service,
+    )
 
     mock_bash_service.start_bash_command.assert_awaited_once()
     request = mock_bash_service.start_bash_command.await_args.args[0]
@@ -427,20 +426,14 @@ async def test_bash_socket_validation_error_log_omits_payload(caplog):
     mock_bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
     mock_bash_service.start_bash_command = AsyncMock()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.bash_event_service",
-            mock_bash_service,
-        ),
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = []
-        await bash_events_socket(
-            ws,
-            session_api_key=None,
-            resend_mode=None,
-            resend_all=False,
-        )
+    await bash_events_socket(
+        ws,
+        session_api_key=None,
+        resend_mode=None,
+        resend_all=False,
+        config=MagicMock(session_api_keys=[]),
+        bash_service=mock_bash_service,
+    )
 
     mock_bash_service.start_bash_command.assert_not_awaited()
     mock_bash_service.unsubscribe_from_events.assert_awaited_once()
@@ -474,20 +467,14 @@ async def test_bash_socket_error_send_failure_log_omits_exceptions(caplog):
     mock_bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
     mock_bash_service.start_bash_command = AsyncMock()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.bash_event_service",
-            mock_bash_service,
-        ),
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = []
-        await bash_events_socket(
-            ws,
-            session_api_key=None,
-            resend_mode=None,
-            resend_all=False,
-        )
+    await bash_events_socket(
+        ws,
+        session_api_key=None,
+        resend_mode=None,
+        resend_all=False,
+        config=MagicMock(session_api_keys=[]),
+        bash_service=mock_bash_service,
+    )
 
     mock_bash_service.start_bash_command.assert_not_awaited()
     mock_bash_service.unsubscribe_from_events.assert_awaited_once()

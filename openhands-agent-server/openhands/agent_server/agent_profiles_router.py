@@ -15,24 +15,26 @@ dangling refs — those appear in the body).
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Path, Request, status
+from fastapi import APIRouter, Depends, Path, status
 from pydantic import BaseModel, ConfigDict, Field, PlainValidator, ValidationError
 
-from openhands.agent_server._secrets_exposure import (
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import (
+    get_agent_profile_store,
     get_cipher,
     get_config,
+    get_settings_store,
+    get_stores,
 )
-from openhands.agent_server.config import Config
 from openhands.agent_server.launch import (
     can_probe_tools,
     server_launch_stores,
     target_launch_runtime,
 )
 from openhands.agent_server.persistence import (
+    FileSettingsStore,
     PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    get_settings_store,
+    ServerStores,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
 from openhands.sdk.errors import Conflict, NotFound, OperationFailed, Unprocessable
@@ -149,7 +151,9 @@ def _llm_has_real_config(llm: LLM) -> bool:
     return False
 
 
-def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
+def _seed_default_llm_profile(
+    llm: LLM, stores: ServerStores, cipher: Cipher | None
+) -> str:
     """Mirror the live LLM config into a ``SEED_PROFILE_NAME`` LLM profile.
 
     ``build_seed_profile`` falls back to the literal name ``SEED_PROFILE_NAME``
@@ -179,7 +183,7 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     ``list()`` membership check — that mismatch would otherwise let ``save()``
     silently clobber it.
     """
-    llm_store = get_llm_profile_store()
+    llm_store = stores.llm_profiles
     try:
         llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
         return SEED_PROFILE_NAME
@@ -222,9 +226,7 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     return SEED_PROFILE_NAME
 
 
-def _ensure_active_profile(
-    store: AgentProfileStore, config: Config, cipher: Cipher | None
-) -> None:
+def _ensure_active_profile(stores: ServerStores, cipher: Cipher | None) -> None:
     """Keep ``active_agent_profile_id`` on a stored profile.
 
     A missing or dangling pointer moves to ``default``, which is seeded from the
@@ -233,13 +235,14 @@ def _ensure_active_profile(
     other profile is activated instead. The lock spans the check, the seed and
     the pointer write, so concurrent callers seed once and agree on the pointer.
     """
-    settings_store = get_settings_store(config)
+    store = stores.agent_profiles
+    settings_store = stores.settings
     with store.lock():
         settings = settings_store.load() or PersistedSettings()
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
             return
-        target = _profile_to_activate(store, settings, cipher)
+        target = _profile_to_activate(stores, settings, cipher)
         if target is None:
             return
         name, profile_id = target
@@ -253,15 +256,16 @@ def _ensure_active_profile(
 
 
 def _profile_to_activate(
-    store: AgentProfileStore, settings: PersistedSettings, cipher: Cipher | None
+    stores: ServerStores, settings: PersistedSettings, cipher: Cipher | None
 ) -> tuple[str, str] | None:
     """Return the name and id of ``default``, seeding it if the store has room."""
+    store = stores.agent_profiles
     try:
         profile = store.load(SEED_PROFILE_NAME)
         return profile.name, str(profile.id)
     except FileNotFoundError:
         try:
-            profile = _seed_default_profile(store, settings, cipher)
+            profile = _seed_default_profile(stores, settings, cipher)
             return profile.name, str(profile.id)
         except ProfileLimitExceeded:
             pass
@@ -282,7 +286,7 @@ def _profile_to_activate(
 
 
 def _seed_default_profile(
-    store: AgentProfileStore, settings: PersistedSettings, cipher: Cipher | None
+    stores: ServerStores, settings: PersistedSettings, cipher: Cipher | None
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
     active_llm_profile = settings.active_profile
     # Falsy check (not `is None`): mirrors build_seed_profile's own
@@ -294,21 +298,21 @@ def _seed_default_profile(
     # on the same condition or the exact #3933 dangling ref reappears.
     if not active_llm_profile and settings.agent_settings.agent_kind != "acp":
         active_llm_profile = _seed_default_llm_profile(
-            settings.agent_settings.llm, cipher
+            settings.agent_settings.llm, stores, cipher
         )
     profile = build_seed_profile(settings.agent_settings, active_llm_profile)
-    store.save(profile, max_profiles=MAX_AGENT_PROFILES)
+    stores.agent_profiles.save(profile, max_profiles=MAX_AGENT_PROFILES)
     logger.info(f"Seeded default agent profile '{profile.name}' (id={profile.id})")
     return profile
 
 
 def active_agent_profile(
-    config: Config, cipher: Cipher | None
+    stores: ServerStores, cipher: Cipher | None
 ) -> OpenHandsAgentProfile | ACPAgentProfile | None:
     """Return the active Agent Profile, activating ``default`` when none is."""
-    store = get_agent_profile_store()
-    _ensure_active_profile(store, config, cipher)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    store = stores.agent_profiles
+    _ensure_active_profile(stores, cipher)
+    settings = stores.settings.load() or PersistedSettings()
     if settings.active_agent_profile_id is None:
         return None
     name = store.name_for_id(settings.active_agent_profile_id)
@@ -331,18 +335,20 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
 
 
 @agent_profiles_router.get("", response_model=AgentProfileListResponse)
-def list_agent_profiles(request: Request) -> AgentProfileListResponse:
+def list_agent_profiles(
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> AgentProfileListResponse:
     """List all stored agent profiles and the active pointer.
 
     Some profile is always active: with no valid pointer, ``default`` is
     activated, and seeded from the current ``agent_settings`` when absent.
     """
-    config = get_config(request)
-    settings_store = get_settings_store(config)
+    settings_store = stores.settings
     settings = settings_store.load() or PersistedSettings()
 
-    store = get_agent_profile_store()
-    _ensure_active_profile(store, config, get_cipher(request))
+    store = stores.agent_profiles
+    _ensure_active_profile(stores, cipher)
     settings = settings_store.load() or settings
 
     summaries = store.list_summaries()
@@ -354,14 +360,16 @@ def list_agent_profiles(request: Request) -> AgentProfileListResponse:
 
 
 @agent_profiles_router.get("/{name}", response_model=AgentProfileDetailResponse)
-def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
+def get_agent_profile(
+    name: ProfileName,
+    store: AgentProfileStore = Depends(get_agent_profile_store),
+) -> AgentProfileDetailResponse:
     """Get a stored profile.
 
     A profile is secret-free at rest (#4017), so there is nothing to mask or
     expose — unlike the LLM ``/api/profiles`` router, this endpoint has no
     ``X-Expose-Secrets`` behavior.
     """
-    store = get_agent_profile_store()
     try:
         profile = store.load(name)
     except FileNotFoundError:
@@ -394,7 +402,9 @@ def _validate_profile_payload(
     status_code=status.HTTP_201_CREATED,
 )
 def save_agent_profile(
-    name: ProfileName, body: dict[str, Any]
+    name: ProfileName,
+    body: dict[str, Any],
+    store: AgentProfileStore = Depends(get_agent_profile_store),
 ) -> AgentProfileMutationResponse:
     """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
 
@@ -405,7 +415,6 @@ def save_agent_profile(
     """
     profile = _validate_profile_payload({**body, "name": name})
 
-    store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
     # keeps the namesake's id and bumps revision; create mints a fresh id,
     # ignoring any client-supplied one. ``save_profile_preserving_identity``
@@ -429,7 +438,9 @@ def save_agent_profile(
 
 @agent_profiles_router.delete("/{name}", response_model=AgentProfileMutationResponse)
 def delete_agent_profile(
-    request: Request, name: ProfileName
+    name: ProfileName,
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> AgentProfileMutationResponse:
     """Delete a stored profile (idempotent).
 
@@ -439,14 +450,13 @@ def delete_agent_profile(
     reset to default OpenHands agent settings so stale ACP configuration does
     not outlive the profile it came from; server-wide settings are carried over.
     """
-    store = get_agent_profile_store()
+    store = stores.agent_profiles
     deleted_id = _summary_id_for_name(store, name)
 
     store.delete(name)
 
     if deleted_id is not None:
-        config = get_config(request)
-        settings_store = get_settings_store(config)
+        settings_store = stores.settings
         settings = settings_store.load() or PersistedSettings()
         if settings.active_agent_profile_id == deleted_id:
 
@@ -467,7 +477,7 @@ def delete_agent_profile(
 
             settings_store.update(clear_pointer_and_reset_settings)
             logger.info(f"Cleared active pointer for deleted profile '{name}'")
-            _ensure_active_profile(store, config, get_cipher(request))
+            _ensure_active_profile(stores, cipher)
 
     logger.info(f"Deleted agent profile '{name}'")
     return AgentProfileMutationResponse(
@@ -479,7 +489,9 @@ def delete_agent_profile(
     "/{name}/rename", response_model=AgentProfileMutationResponse
 )
 def rename_agent_profile(
-    name: ProfileName, body: RenameAgentProfileRequest
+    name: ProfileName,
+    body: RenameAgentProfileRequest,
+    store: AgentProfileStore = Depends(get_agent_profile_store),
 ) -> AgentProfileMutationResponse:
     """Rename a stored profile atomically.
 
@@ -487,7 +499,6 @@ def rename_agent_profile(
     survives the rename untouched. Returns 404 if the source is missing, 409 if
     ``new_name`` is taken.
     """
-    store = get_agent_profile_store()
     try:
         store.rename(name, body.new_name)
     except FileNotFoundError:
@@ -507,7 +518,9 @@ def rename_agent_profile(
     "/{profile_id}/activate", response_model=ActivateAgentProfileResponse
 )
 def activate_agent_profile(
-    request: Request, profile_id: ProfileId
+    profile_id: ProfileId,
+    store: AgentProfileStore = Depends(get_agent_profile_store),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ActivateAgentProfileResponse:
     """Activate a profile by its stable ``id`` — pointer only.
 
@@ -515,15 +528,11 @@ def activate_agent_profile(
     ``/activate``, this does **not** write ``agent_settings`` (the
     creation-time-only contract). Returns 404 if no stored profile has that id.
     """
-    store = get_agent_profile_store()
     known_ids = {
         str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
     }
     if profile_id not in known_ids:
         raise NotFound(f"Agent profile with id '{profile_id}' not found")
-
-    config = get_config(request)
-    settings_store = get_settings_store(config)
 
     def set_pointer(settings: PersistedSettings) -> PersistedSettings:
         settings.active_agent_profile_id = profile_id
@@ -552,9 +561,11 @@ def activate_agent_profile(
     response_model=AgentProfileDiagnostics,
 )
 async def materialize_agent_profile(
-    request: Request,
     name: ProfileName,
     body: MaterializeAgentProfileRequest | None = None,
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+    cipher: Cipher | None = Depends(get_cipher),
 ) -> AgentProfileDiagnostics:
     """Preview the launch of a profile; return a diagnostics report.
 
@@ -568,20 +579,19 @@ async def materialize_agent_profile(
     if body is not None and body.profile is not None:
         profile = _validate_profile_payload({**body.profile, "name": name})
     else:
-        store = get_agent_profile_store()
+        store = stores.agent_profiles
         try:
             # Off the event loop: the store lock wait blocks (up to 30 s).
             profile = await asyncio.to_thread(store.load, name)
         except FileNotFoundError:
             raise NotFound(f"Agent profile '{name}' not found")
 
-    config = get_config(request)
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = stores.settings.load() or PersistedSettings()
     context = settings.agent_settings.agent_context
     return await asyncio.to_thread(
         lambda: preview_launch(
             profile,
-            server_launch_stores(settings, get_cipher(request)),
+            server_launch_stores(settings, stores, cipher),
             target_launch_runtime(config),
             load_memory=context is not None and context.load_memory,
             check_usable=can_probe_tools(config),

@@ -8,7 +8,6 @@ from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import Request
 from fastapi.testclient import TestClient
 from filelock import FileLock
 from litellm.exceptions import BadRequestError
@@ -18,12 +17,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import SecretStr
 
-from openhands.agent_server import (
-    profiles_router as profiles_router_module,
-    prompt_enhancement_router as router_module,
-)
+from openhands.agent_server import prompt_enhancement_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.server_context import server_context_of
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
@@ -40,23 +37,26 @@ from tests.sdk.llm.test_auth_refresh_retry import create_mock_responses_response
 
 
 @pytest.fixture
-def client_and_store(tmp_path, monkeypatch, request):
-    store = LLMProfileStore(base_dir=tmp_path / "profiles")
-    monkeypatch.setattr(router_module, "get_llm_profile_store", lambda: store)
-    monkeypatch.setattr(profiles_router_module, "get_llm_profile_store", lambda: store)
+def disabled_payload_capture(monkeypatch):
     monkeypatch.setattr(router_module, "should_enable_observability", lambda: False)
     monkeypatch.delenv("LMNR_INSTRUMENTS", raising=False)
     monkeypatch.delenv("DEBUG_LLM", raising=False)
+
+
+@pytest.fixture
+def client_and_store(tmp_path, monkeypatch, request, disabled_payload_capture):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
     root_path = getattr(request, "param", "")
     app = create_app(
         Config(
             static_files_path=None,
             session_api_keys=[],
+            secret_key=None,
             web_url=f"https://example.com{root_path}" if root_path else None,
         )
     )
     with TestClient(app) as client:
-        yield client, store
+        yield client, server_context_of(app).stores.llm_profiles
 
 
 def save_profile(
@@ -70,7 +70,7 @@ def save_profile(
             model="openai/gpt-4.1-mini",
             api_mode=api_mode,
             api_key=SecretStr("sk-profile-secret"),
-            log_completions=True,
+            log_completions_to_file=True,
         ),
         include_secrets=True,
     )
@@ -143,11 +143,11 @@ def test_enhance_uses_server_profile_without_side_effects_or_prompt_logs(
     assert messages[1].content[0].text == prompt
     assert tools == []
     assert llm.effective_max_output_tokens == router_module.MAX_OUTPUT_TOKENS
-    assert llm.log_completions is False
+    assert llm.log_completions_to_file is False
     assert llm.num_retries == 0
-    assert llm.telemetry.log_enabled is False
+    assert llm.telemetry.completion_logging_enabled is False
     assert llm.telemetry._log_completions_callback is None
-    assert store.load("draft-profile").log_completions is True
+    assert store.load("draft-profile").log_completions_to_file is True
     assert "sk-profile-secret" not in response.text
     assert client.get("/api/conversations/count").json() == conversations_before
     assert client.get("/api/profiles").json()["active_profile"] == profile_before
@@ -591,13 +591,12 @@ def test_provider_errors_have_stable_codes_without_exposing_details(
 def test_profile_store_errors_have_stable_codes_without_exposing_details(
     client_and_store, monkeypatch, caplog, failure, status_code, code
 ):
-    client, _store = client_and_store
+    client, store = client_and_store
 
-    class FailingProfileStore:
-        def load(self, _name, *, cipher=None, strict=False):
-            raise failure
+    def fail_load(_name, *, cipher=None, strict=False):
+        raise failure
 
-    monkeypatch.setattr(router_module, "get_llm_profile_store", FailingProfileStore)
+    monkeypatch.setattr(store, "load", fail_load)
     response = client.post(
         "/api/prompt-enhancement/enhance",
         json={"profile_name": "draft-profile", "text": "Private draft."},
@@ -646,12 +645,8 @@ def test_encrypted_profile_requires_a_decryptable_key(
     )
     profile_path = store.base_dir / "encrypted-profile.json"
     profile_before = profile_path.read_bytes()
-    client.app.state.config = client.app.state.config.model_copy(
-        update={
-            "secret_key": SecretStr(active_key) if active_key is not None else None,
-            "previous_secret_keys": [SecretStr(key) for key in previous_keys],
-        }
-    )
+    cipher = Cipher(active_key, previous_keys) if active_key is not None else None
+    client.app.dependency_overrides[router_module.get_cipher] = lambda: cipher
     captured = []
     mock_completion(monkeypatch, "Improved draft.", captured)
 
@@ -746,7 +741,7 @@ def test_enhance_enforces_output_validation_limits_and_timeout(
     assert timeout.status_code == 504
     assert error_code(timeout) == "enhancement_timeout"
 
-    async def hang_while_loading_profile(_name, _request):
+    async def hang_while_loading_profile(_name, _store, _cipher):
         await asyncio.sleep(0.05)
 
     monkeypatch.setattr(router_module, "_load_profile", hang_while_loading_profile)
@@ -947,11 +942,11 @@ def test_prompt_enhancement_fails_closed_for_unsafe_instrumentation(
     assert captured == []
 
 
-def test_enhance_propagates_cancellation(monkeypatch):
+def test_enhance_propagates_cancellation(tmp_path, monkeypatch):
     monkeypatch.setattr(router_module, "should_enable_observability", lambda: False)
     monkeypatch.delenv("DEBUG_LLM", raising=False)
 
-    async def load_profile(_name, _request):
+    async def load_profile(_name, _store, _cipher):
         return LLM(model="openai/gpt-4.1-mini", api_mode="chat")
 
     called = False
@@ -964,13 +959,13 @@ def test_enhance_propagates_cancellation(monkeypatch):
     monkeypatch.setattr(router_module, "_load_profile", load_profile)
     monkeypatch.setattr(LLM, "acompletion", cancel)
     monkeypatch.setattr(LLM, "aresponses", cancel)
-    request = Request({"type": "http"})
+    store = LLMProfileStore(base_dir=tmp_path / "profiles")
     body = router_module.PromptEnhancementRequest(
         profile_name="draft-profile", text="Private draft."
     )
 
     async def invoke():
-        await router_module.enhance_prompt(request, body)
+        await router_module.enhance_prompt(body, store, None)
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(invoke())
@@ -1089,3 +1084,155 @@ def test_duplicate_json_fields_follow_the_json_parser_and_do_not_echo_values(
     assert response.status_code == 404
     assert error_code(response) == "profile_not_found"
     assert "sentinel-profile" not in response.text
+
+
+def test_enhancement_profiles_and_credentials_are_scoped_to_the_app(
+    tmp_path, monkeypatch, disabled_payload_capture
+):
+    captured = []
+    mock_completion(monkeypatch, "Edited draft.", captured)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "left"))
+    left_app = create_app(
+        Config(
+            static_files_path=None,
+            session_api_keys=["left-session"],
+            secret_key=SecretStr("left-cipher"),
+            enable_vscode=False,
+            preload_tools=False,
+        )
+    )
+    with TestClient(left_app) as left:
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "right"))
+        right_app = create_app(
+            Config(
+                static_files_path=None,
+                session_api_keys=["right-session"],
+                secret_key=SecretStr("right-cipher"),
+                enable_vscode=False,
+                preload_tools=False,
+            )
+        )
+        with TestClient(right_app) as right:
+            for client, session, model, key in (
+                (left, "left-session", "openai/gpt-4.1-mini", "left-profile-key"),
+                (right, "right-session", "openai/gpt-4.1-nano", "right-profile-key"),
+            ):
+                headers = {"X-Session-API-Key": session}
+                saved = client.post(
+                    "/api/profiles/shared-profile",
+                    headers=headers,
+                    json={
+                        "llm": {"model": model, "api_key": key, "api_mode": "chat"},
+                        "include_secrets": True,
+                    },
+                )
+                assert saved.status_code == 201
+                assert (
+                    client.get(
+                        "/api/prompt-enhancement/availability/shared-profile",
+                        headers=headers,
+                    ).json()["available"]
+                    is True
+                )
+                response = client.post(
+                    "/api/prompt-enhancement/enhance",
+                    headers=headers,
+                    json={"profile_name": "shared-profile", "text": "Draft."},
+                )
+                assert response.status_code == 200
+                assert response.json() == {"enhanced_text": "Edited draft."}
+                assert key not in response.text
+
+            assert (
+                left.get(
+                    "/api/prompt-enhancement/availability/shared-profile",
+                    headers={"X-Session-API-Key": "right-session"},
+                ).status_code
+                == 401
+            )
+
+    assert [entry[0].model for entry in captured] == [
+        "openai/gpt-4.1-mini",
+        "openai/gpt-4.1-nano",
+    ]
+    assert [entry[0].api_key.get_secret_value() for entry in captured] == [
+        "left-profile-key",
+        "right-profile-key",
+    ]
+
+
+def test_enhancement_uses_the_reinitialized_profile_store_and_cipher(
+    tmp_path, monkeypatch, disabled_payload_capture
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "boot"))
+    app = create_app(
+        Config(
+            static_files_path=None,
+            deferred_init=True,
+            secret_key=SecretStr("boot-cipher"),
+            session_api_keys=["boot-session"],
+            enable_vscode=False,
+            preload_tools=False,
+        )
+    )
+    captured = []
+    mock_completion(monkeypatch, "Edited draft.", captured)
+    with TestClient(app) as client:
+        context = server_context_of(app)
+        context.stores.llm_profiles.save(
+            "shared-profile",
+            LLM(model="openai/gpt-4.1-mini", api_key=SecretStr("boot-profile-key")),
+            include_secrets=True,
+            cipher=context.config.cipher,
+        )
+        initialized = client.post(
+            "/api/init",
+            headers={"X-Init-API-Key": "boot-cipher"},
+            json={
+                "secret_key": "runtime-cipher",
+                "session_api_keys": ["runtime-session"],
+                "conversations_path": str(tmp_path / "runtime/conversations"),
+                "bash_events_dir": str(tmp_path / "runtime/bash"),
+                "env": {"OH_PERSISTENCE_DIR": str(tmp_path / "runtime/persistence")},
+            },
+        )
+        assert initialized.status_code == 200, initialized.text
+        headers = {"X-Session-API-Key": "runtime-session"}
+        missing = client.get(
+            "/api/prompt-enhancement/availability/shared-profile", headers=headers
+        )
+        assert missing.status_code == 200
+        assert missing.json()["code"] == "profile_not_found"
+        assert (
+            client.post(
+                "/api/profiles/shared-profile",
+                headers=headers,
+                json={
+                    "llm": {
+                        "model": "openai/gpt-4.1-mini",
+                        "api_mode": "chat",
+                        "api_key": "runtime-profile-key",
+                    },
+                    "include_secrets": True,
+                },
+            ).status_code
+            == 201
+        )
+        response = client.post(
+            "/api/prompt-enhancement/enhance",
+            headers=headers,
+            json={"profile_name": "shared-profile", "text": "Draft."},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"enhanced_text": "Edited draft."}
+        assert "runtime-profile-key" not in response.text
+        assert (
+            client.get(
+                "/api/prompt-enhancement/availability/shared-profile",
+                headers={"X-Session-API-Key": "boot-session"},
+            ).status_code
+            == 401
+        )
+
+    assert len(captured) == 1
+    assert captured[0][0].api_key.get_secret_value() == "runtime-profile-key"
