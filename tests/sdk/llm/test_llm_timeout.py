@@ -475,7 +475,10 @@ async def test_hard_timeouts_stop_retrying_after_the_timeout_budget(caplog) -> N
     ]
     assert len(diagnostics) == 2
     assert "will_retry=True" in diagnostics[0]
-    assert "attempt=2 max_attempts=5 retry_eligible=True will_retry=False" in diagnostics[1]
+    assert (
+        "attempt=2 max_attempts=5 retry_eligible=True will_retry=False"
+        in diagnostics[1]
+    )
     detail = str(exc_info.value)
     assert "LLM hard timeout after 1 seconds" in detail
     assert "within the LLM timeout of 1s (gave up after 2 attempts" in detail
