@@ -22,6 +22,7 @@ Launch: `--webhook-sink`
 
 Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 `GET /api/mcp/oauth/status/{job_id}`, `POST /api/mcp/oauth/callback/{job_id}`,
+`GET /api/mcp/oauth/redirect`,
 `POST /api/settings/mcp/{settings_key}`, `PATCH /api/settings/mcp/{settings_key}`,
 `DELETE /api/settings/mcp/{settings_key}`
 
@@ -48,7 +49,11 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.oauth-callback-validation`: on a live job, an https URL, a foreign host, another port or another path is 400 and the job keeps waiting; the redirect URL with `127.0.0.1` instead of `localhost` completes it.
 - `F19.oauth-consent-denied`: submitting the redirect a provider sends when the user denies consent (`error=access_denied`) answers `ok: false` and fails the job without tokens.
 - `F19.oauth-consent-timeout`: a consent that is not completed within the job's `timeout` fails the job with `error_kind: timeout`.
-- `F19.oauth-public-redirect`: on a server that knows its external URL (`OH_WEB_URL`), OAuth start registers a redirect URI on that public origin, path prefix included, while a server without one keeps the loopback callback (known bug #6828: always `http://localhost:<port>/callback`).
+- `F19.oauth-public-redirect`: on a server that knows its external URL (`OH_WEB_URL`), OAuth start registers `{web_url}/api/mcp/oauth/redirect` as the redirect URI, path prefix included, while a server without one keeps the loopback callback `http://localhost:<port>/callback`.
+- `F19.oauth-redirect-route`: with `callback_base_url` set to the server's own base URL (and no `web_url`), the provider redirects the browser to `<base>/api/mcp/oauth/redirect`, which answers 200 "Authorization complete" without a session key; the job then succeeds with an encrypted `oauth_state`, and a second delivery of the same redirect is 409.
+- `F19.oauth-redirect-unknown-state`: the redirect route answers 400 "Authorization failed" for a forged, empty or missing `state` and leaves the waiting job untouched, while the job's real `state` with a provider error is recognized (400 naming the error) and fails the job.
+- `F19.oauth-callback-base-url-validation`: a `callback_base_url` with a query, a fragment, userinfo, no host or a non-http(s) scheme is 422; a plain https base with a path prefix is accepted.
+- `F19.oauth-web-url-precedence`: on a server with `OH_WEB_URL`, a `callback_base_url` in the start body is ignored for the `web_url` redirect URI, and the redirect delivered to that server's route completes the job.
 - `F19.oauth-callback-no-redirect`: the callback route forwards the submitted query only to the job's own callback address and does not follow a redirect it gets from there (known bug #6808: the redirect is followed).
 - `F19.oauth-inline-writeback`: an OAuth server passed inline on a conversation's agent (not in settings) whose access token has expired is refreshed when the conversation connects, keeps its tools, and the rotated tokens are posted with the run's session key to the webhook's `/mcp-oauth-state`, not stored in settings.
 - `F19.oauth-stored-state`: the returned `oauth_state` used as `auth.state` connects without consent (test, and start without `authorization_url`), and stored through the settings route it is redacted, encrypted on disk and decrypted to the real token.
@@ -74,6 +79,16 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
   `POST /api/mcp/oauth/callback/{job_id}` with the redirect URL the browser
   landed on. The client then saves `oauth_state` under the server's
   `auth.state` through the settings route.
+- REST, browser redirect (no session key, not in the OpenAPI document):
+  `GET /api/mcp/oauth/redirect?code=...&state=...`. When the server has
+  `web_url` (`OH_WEB_URL`), start registers `{web_url}/api/mcp/oauth/redirect`
+  as the provider's redirect URI (also for a pre-registered client); without
+  it, `callback_base_url` in the start body (the server's base URL as the
+  browser reaches it) does the same for a dynamically registered client. The
+  route finds the pending job by the OAuth `state`, answers an HTML page, and
+  the job exchanges the code; the client polls the status route. Without
+  either, the redirect URI is the probe's loopback listener and the client
+  submits the redirect URL to the callback route.
 - Conversations: `POST /api/conversations` with `agent_settings` from
   `GET /api/settings` (what `conversation start` and Agent Canvas do) carries
   `mcp_config`; the server connects to the enabled servers when the agent
@@ -257,6 +272,8 @@ Preconditions:
   test "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$OAUTH_PORT/mcp")" = 401
   test "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$NONE_PORT/mcp")" != 000
   OAUTH_SRV=$(jq -nc --arg url "http://127.0.0.1:$OAUTH_PORT/mcp" '{type: "http", url: $url, auth: {strategy: "oauth2", authentication: {type: "oauth", client_auth_method: "none", scopes: ["mail.read"]}}}')
+  QS_OF='import json, sys, urllib.parse as u; print(json.dumps({k: v[0] for k, v in u.parse_qs(u.urlsplit(sys.argv[1]).query).items()}))'
+  "$PY" -c "$QS_OF" 'http://x.invalid/a?redirect_uri=http%3A%2F%2Fy&state=s' | control-agent-server assert --check redirect_uri eq http://y --check state eq s
   ```
 
 - **Auth (`F19.auth`).** Every route without a key, or with a wrong one.
@@ -625,7 +642,7 @@ Preconditions:
   The job waits in `authorizing`, then, between 4 and 15 seconds after start
   (about four), is `failed` with `error_kind: timeout`; the user would have to
   start over.
-- **Redirect URI on the public origin (`F19.oauth-public-redirect`), known bug #6828.**
+- **Redirect URI on the public origin (`F19.oauth-public-redirect`).**
   A browser that is not on the agent-server's host (a container that
   publishes only the API port, a reverse proxy) cannot reach
   `http://localhost:<port>/callback`. First this run, which has no external
@@ -633,10 +650,9 @@ Preconditions:
   `redirect_uri` the provider was asked to return to out of each
   `authorization_url`.
   ```sh
-  REDIRECT_OF='import json, sys, urllib.parse as u; print(json.dumps({"redirect_uri": u.parse_qs(u.urlsplit(sys.argv[1]).query)["redirect_uri"][0]}))'
   PSTART=$(jq -nc --argjson s "$OAUTH_SRV" '{server: $s, timeout: 5}')
   LAU=$(control-agent-server api POST /api/mcp/oauth/start --json "$PSTART" --expect 200 --check ok eq true --field authorization_url)
-  "$PY" -c "$REDIRECT_OF" "$LAU" | control-agent-server assert --check redirect_uri matches '^http://localhost:[0-9]+/callback$'
+  "$PY" -c "$QS_OF" "$LAU" | control-agent-server assert --check redirect_uri matches '^http://localhost:[0-9]+/callback$'
   stop_public() {
     control-agent-server stop --run "$PUB" >/dev/null
   }
@@ -645,17 +661,137 @@ Preconditions:
   control-agent-server config --run "$PUB" | jq -e '.server_env.OH_WEB_URL == "https://qa-f19.example/qa-f19"'
   PAU=$(control-agent-server api POST /api/mcp/oauth/start --run "$PUB" --json "$PSTART" --expect 200 --check ok eq true \
     --check authorization_url matches "^http://127.0.0.1:$OAUTH_PORT/authorize\\?" --save F19.oauth-public-redirect/start --field authorization_url)
-  "$PY" -c "$REDIRECT_OF" "$PAU" | control-agent-server assert --check redirect_uri matches '^https://qa-f19\.example/qa-f19/'  # bug: value.redirect_uri matches '^http://localhost:[0-9]+/callback$'
+  "$PY" -c "$QS_OF" "$PAU" | control-agent-server assert --check redirect_uri eq https://qa-f19.example/qa-f19/api/mcp/oauth/redirect
   control-agent-server stop --run "$PUB"
   trap - EXIT
   ```
   Without an external URL the redirect URI is the probe's loopback listener,
   `http://localhost:<port>/callback`, which a browser on the same machine
-  reaches. With `OH_WEB_URL=https://qa-f19.example/qa-f19` it must start with
-  that origin and prefix, so the provider sends the browser back to a route
-  the agent-server serves; the bug: `web_url` is not consulted and the
-  redirect URI is the loopback one again, so sign-in never completes for a
-  remote browser. Both jobs end on their 5-second consent timeout.
+  reaches. With `OH_WEB_URL=https://qa-f19.example/qa-f19` it is exactly
+  `https://qa-f19.example/qa-f19/api/mcp/oauth/redirect`: the public origin,
+  its path prefix and the agent-server's redirect route, so the provider
+  sends the browser back to a route the agent-server serves
+  (`F19.oauth-web-url-precedence` delivers one). Both jobs end on their
+  5-second consent timeout.
+- **Redirect to the agent-server's own route (`F19.oauth-redirect-route`).**
+  The browser-facing flow without `web_url`: the start body names this run's
+  base URL as `callback_base_url` (with a trailing slash, which is dropped),
+  and the recipe plays the browser in two hops: it reads the provider's
+  `Location` without following it, then requests that URL with no session
+  key, as a browser would.
+  ```sh
+  CBR="$RUN_URL/api/mcp/oauth/redirect"
+  JP=$(control-agent-server api POST /api/mcp/oauth/start --expect 200 --save F19.oauth-redirect-route/start \
+    --json "$(jq -nc --argjson s "$OAUTH_SRV" --arg cb "$RUN_URL/" '{server: $s, timeout: 60, callback_base_url: $cb, tool_call: {name: "read_subject", arguments: {subject: "pub"}}}')" \
+    --check ok eq true --check authorization_url matches "^http://127.0.0.1:$OAUTH_PORT/authorize\\?" --field job_id)
+  control-agent-server api GET "/api/mcp/oauth/status/$JP" --check status eq authorizing --check callback_ready eq true --until-ok 20 --save F19.oauth-redirect-route/authorizing
+  PAU=$(control-agent-server api GET "/api/mcp/oauth/status/$JP" --field authorization_url)
+  "$PY" -c "$QS_OF" "$PAU" | control-agent-server assert --check redirect_uri eq "$CBR" --check state exists
+  PCB=$(curl -s --noproxy '*' -o /dev/null -w '%{redirect_url}' "$PAU")
+  test "${PCB%%\?*}" = "$CBR"
+  PQ=$("$PY" -c "$QS_OF" "$PCB")
+  PCODE=$(echo "$PQ" | jq -r .code)
+  PSTATE=$(echo "$PQ" | jq -r .state)
+  control-agent-server api GET /api/mcp/oauth/redirect --auth none --query "code=$PCODE" --query "state=$PSTATE" --expect 200 \
+    --check . contains '<h1>Authorization complete</h1>' --check-header content-type contains text/html --save F19.oauth-redirect-route/redirect
+  control-agent-server api GET "/api/mcp/oauth/status/$JP" --until-ok 30 --save F19.oauth-redirect-route/succeeded \
+    --check status eq succeeded --check tools contains read_subject --check tool_result.text eq QA_HTTP_SUBJECT:pub \
+    --check oauth_state.tokens.access_token matches '^gAAAA' --check oauth_state.client_info.client_id exists
+  control-agent-server api GET /api/mcp/oauth/redirect --auth none --query "code=$PCODE" --query "state=$PSTATE" --expect 409 \
+    --check . contains 'This sign-in was already completed.' --save F19.oauth-redirect-route/replay
+  control-agent-server api GET "/api/mcp/oauth/status/$JP" --check status eq succeeded
+  ```
+  The authorization URL asks the provider to return to
+  `<run url>/api/mcp/oauth/redirect`, and the provider's `Location` points
+  there with `code` and `state`. That request, without any key, answers 200
+  with an HTML page titled "Authorization complete"; the job then exchanges
+  the code itself and is `succeeded` with `read_subject`, its result and
+  Fernet-encrypted tokens. Delivering the same redirect again answers 409
+  "This sign-in was already completed." and the job is unchanged.
+- **Unknown sign-ins on the redirect route (`F19.oauth-redirect-unknown-state`).**
+  A job waiting on the redirect route, then requests that do not carry its
+  `state`; the control is the provider's denial with the real `state`.
+  ```sh
+  JX=$(control-agent-server api POST /api/mcp/oauth/start --expect 200 --check ok eq true --field job_id \
+    --json "$(jq -nc --argjson s "$OAUTH_SRV" --arg cb "$RUN_URL" '{server: $s, timeout: 60, callback_base_url: $cb}')")
+  control-agent-server api GET "/api/mcp/oauth/status/$JX" --check callback_ready eq true --until-ok 20
+  XQ=$("$PY" -c "$QS_OF" "$(curl -s --noproxy '*' -o /dev/null -w '%{redirect_url}' "$(control-agent-server api GET "/api/mcp/oauth/status/$JX" --field authorization_url)")")
+  XCODE=$(echo "$XQ" | jq -r .code)
+  XSTATE=$(echo "$XQ" | jq -r .state)
+  test -n "$XCODE" && test -n "$XSTATE" && test "$XSTATE" != qa-f19-forged
+  control-agent-server api GET /api/mcp/oauth/redirect --auth none --query "code=$XCODE" --query state=qa-f19-forged --expect 400 \
+    --check . contains '<h1>Authorization failed</h1>' --check . contains 'This sign-in is unknown or has expired.' --save F19.oauth-redirect-unknown-state/forged-state
+  control-agent-server api GET /api/mcp/oauth/redirect --auth none --query "code=$XCODE" --query state= --expect 400 \
+    --check . contains 'This sign-in is unknown or has expired.'
+  control-agent-server api GET /api/mcp/oauth/redirect --auth none --query "code=$XCODE" --expect 400 \
+    --check . contains 'This sign-in is unknown or has expired.' --save F19.oauth-redirect-unknown-state/no-state
+  control-agent-server api GET "/api/mcp/oauth/status/$JX" --check status eq authorizing --check oauth_state missing --save F19.oauth-redirect-unknown-state/still-waiting
+  control-agent-server api GET /api/mcp/oauth/redirect --auth none --query error=access_denied --query 'error_description=QA denied' --query "state=$XSTATE" \
+    --expect 400 --check . contains '<h1>Authorization failed</h1>' --check . contains 'The provider reported: QA denied' --save F19.oauth-redirect-unknown-state/denied
+  control-agent-server api GET "/api/mcp/oauth/status/$JX" --until-ok 15 --save F19.oauth-redirect-unknown-state/failed \
+    --check status eq failed --check ok eq false --check error eq 'Client failed to connect: OAuth authorization failed: QA denied' \
+    --check error_kind eq connection --check oauth_state missing --check tools missing
+  ```
+  A forged, empty or missing `state` answers 400 with the "Authorization
+  failed" page ("This sign-in is unknown or has expired."), and the job keeps
+  waiting with no tokens. The same route recognizes the job's real `state`:
+  a provider error there answers 400 "The provider reported: QA denied" and
+  fails the job without tokens (`Client failed to connect: OAuth authorization
+  failed: QA denied`, `error_kind: connection`).
+- **Callback base URL validation (`F19.oauth-callback-base-url-validation`).**
+  ```sh
+  cbstart() { jq -nc --argjson s "$OAUTH_SRV" --arg cb "$1" '{server: $s, timeout: 3, callback_base_url: $cb}'; }
+  control-agent-server api POST /api/mcp/oauth/start --json "$(cbstart "$RUN_URL/?qa=1")" --expect 422 \
+    --check detail.0.loc contains callback_base_url --check detail.0.msg contains 'callback_base_url must be a plain http(s) base URL' --save F19.oauth-callback-base-url-validation/query
+  control-agent-server api POST /api/mcp/oauth/start --json "$(cbstart "$RUN_URL/#qa")" --expect 422 \
+    --check detail.0.msg contains 'callback_base_url must be a plain http(s) base URL' --save F19.oauth-callback-base-url-validation/fragment
+  control-agent-server api POST /api/mcp/oauth/start --json "$(cbstart 'http://qa:pw@127.0.0.1:9')" --expect 422 \
+    --check detail.0.msg contains 'callback_base_url must be a plain http(s) base URL' --save F19.oauth-callback-base-url-validation/userinfo
+  control-agent-server api POST /api/mcp/oauth/start --json "$(cbstart 'ftp://127.0.0.1:9')" --expect 422 \
+    --check detail.0.msg contains 'callback_base_url must be a plain http(s) base URL' --save F19.oauth-callback-base-url-validation/scheme
+  control-agent-server api POST /api/mcp/oauth/start --json "$(cbstart 'http:///qa-f19')" --expect 422 \
+    --check detail.0.msg contains 'callback_base_url must be a plain http(s) base URL'
+  CAU=$(control-agent-server api POST /api/mcp/oauth/start --json "$(cbstart 'https://qa-f19.example/qa-f19/')" --expect 200 \
+    --check ok eq true --save F19.oauth-callback-base-url-validation/accepted --field authorization_url)
+  "$PY" -c "$QS_OF" "$CAU" | control-agent-server assert --check redirect_uri eq https://qa-f19.example/qa-f19/api/mcp/oauth/redirect
+  ```
+  Query, fragment, userinfo, a missing host and an `ftp` scheme are each 422
+  on `callback_base_url` before any job starts; a plain https base with a
+  path prefix and a trailing slash is accepted and becomes
+  `https://qa-f19.example/qa-f19/api/mcp/oauth/redirect` (that job ends on
+  its 3-second consent timeout).
+- **`web_url` wins over the request (`F19.oauth-web-url-precedence`).** A
+  second server with `OH_WEB_URL`; the start body also names this run's URL
+  as `callback_base_url`. Translated: no reverse proxy serves
+  `https://qa-f19.example`, so the recipe plays it and delivers the
+  provider's redirect to the second server's own route.
+  ```sh
+  stop_public_cb() {
+    control-agent-server stop --run "$PUBC" >/dev/null
+  }
+  PUBC=$(control-agent-server launch --new --name f19-public-cb --env OH_WEB_URL=https://qa-f19.example/qa-f19 --print-run)
+  trap stop_public_cb EXIT
+  WJ=$(control-agent-server api POST /api/mcp/oauth/start --run "$PUBC" --expect 200 --check ok eq true --save F19.oauth-web-url-precedence/start --field job_id \
+    --json "$(jq -nc --argjson s "$OAUTH_SRV" --arg cb "$RUN_URL" '{server: $s, timeout: 60, callback_base_url: $cb, tool_call: {name: "read_subject", arguments: {subject: "web"}}}')")
+  control-agent-server api GET "/api/mcp/oauth/status/$WJ" --run "$PUBC" --check callback_ready eq true --until-ok 20
+  WAU=$(control-agent-server api GET "/api/mcp/oauth/status/$WJ" --run "$PUBC" --field authorization_url)
+  "$PY" -c "$QS_OF" "$WAU" | control-agent-server assert --check redirect_uri eq https://qa-f19.example/qa-f19/api/mcp/oauth/redirect
+  WCB=$(curl -s --noproxy '*' -o /dev/null -w '%{redirect_url}' "$WAU")
+  test "${WCB%%\?*}" = https://qa-f19.example/qa-f19/api/mcp/oauth/redirect
+  WQ=$("$PY" -c "$QS_OF" "$WCB")
+  control-agent-server api GET /api/mcp/oauth/redirect --run "$PUBC" --auth none --query "code=$(echo "$WQ" | jq -r .code)" --query "state=$(echo "$WQ" | jq -r .state)" \
+    --expect 200 --check . contains '<h1>Authorization complete</h1>' --save F19.oauth-web-url-precedence/redirect
+  control-agent-server api GET "/api/mcp/oauth/status/$WJ" --run "$PUBC" --until-ok 30 --save F19.oauth-web-url-precedence/succeeded \
+    --check status eq succeeded --check tool_result.text eq QA_HTTP_SUBJECT:web --check oauth_state.tokens.access_token matches '^gAAAA'
+  control-agent-server stop --run "$PUBC"
+  trap - EXIT
+  ```
+  The redirect URI is the `web_url` one, not `<run url>/api/mcp/oauth/redirect`
+  from the body, and the provider's `Location` points at it. The second
+  server's route takes the redirect without a key (200 "Authorization
+  complete") and its job succeeds with `QA_HTTP_SUBJECT:web` and encrypted
+  tokens. The evidence of the second server's calls is saved under that
+  run's `evidence/F19.oauth-web-url-precedence/`.
 - **Callback forwarding stops at the listener (`F19.oauth-callback-no-redirect`), known bug #6808.**
   Translated: the probe's own callback listener never redirects, so a
   stand-in takes its place. The job's `tool_call` keeps the job alive for 20
@@ -960,11 +1096,17 @@ Preconditions:
   a submitted URL to the freed port, to whatever listens there
   (`F19.oauth-callback-no-redirect`), or answers 409 `OAuth callback server
   is not listening`.
-- The redirect URI is always FastMCP's loopback listener,
-  `http://localhost:<random port>/callback`, whatever `OH_WEB_URL` says
-  (`F19.oauth-public-redirect`); a client whose browser is elsewhere has to
-  copy the failed redirect URL from the browser and submit it to the callback
-  route.
+- The redirect URI is `{web_url}/api/mcp/oauth/redirect` when the server
+  has `OH_WEB_URL` (whatever the start body says), else
+  `{callback_base_url}/api/mcp/oauth/redirect` for a dynamically registered
+  client, else FastMCP's loopback listener
+  `http://localhost:<random port>/callback`. Only the loopback form goes
+  through the callback route; the redirect route is reached by the browser
+  itself, needs no session key and identifies the job by `state` alone, so a
+  recipe extracts `code` and `state` from the provider's `Location` and
+  passes them as `--query` with `--auth none`. It answers HTML (400 for an
+  unknown, empty or missing `state` or a provider error, 409 for a second
+  delivery), so assert with `--check . contains`.
 - `oauth_state` is Fernet-encrypted when the server has `OH_SECRET_KEY`
   (every launched run does) and plaintext otherwise; posting it unchanged into
   `auth.state` of the settings route is the intended way to persist it.
@@ -988,3 +1130,4 @@ Preconditions:
   `control-agent-server stop` ends them, and each also exits after 25
   minutes or 60 seconds after the run's `/alive` stops answering; their logs
   are under `fixtures/f19/`.
+- Agent Canvas sends `callback_base_url` on OAuth start ([OpenHands/OpenHands#19744](https://github.com/OpenHands/OpenHands/pull/19744)), but bundles Agent Server 1.62.0 by default, which ignores the field and keeps the loopback redirect; the public redirect (`F19.oauth-redirect-route`) reaches Canvas users once Canvas pins a release that has it.

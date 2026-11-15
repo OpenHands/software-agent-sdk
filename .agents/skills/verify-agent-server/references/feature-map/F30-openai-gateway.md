@@ -479,18 +479,21 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check choices.0.message.content eq QA_F30_U2 --raw-out "$F30/usage-2.json" --save F30.chat-usage-per-request/second-turn
   control-agent-server sink read --name qa-f30-usage --contains QA_F30_USAGE_2 --expect-min 1 --expect-max 1
   control-agent-server sink read --name qa-f30-usage --expect-min 2 --expect-max 2
-  control-agent-server api GET "/api/conversations/$UCID" --check stats.usage_to_metrics.default.token_usages len-eq 2 \
-    --check stats.usage_to_metrics.default.token_usages.1.prompt_tokens eq 3 \
-    --check stats.usage_to_metrics.default.token_usages.1.completion_tokens eq 2 \
+  control-agent-server api GET "/api/conversations/$UCID" \
     --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens eq 13 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 --quiet
+  control-agent-server state cat base_state.json --conversation "$UCID" --check stats.usage_to_metrics.default.token_usages len-eq 2 \
+    --check stats.usage_to_metrics.default.token_usages.1.prompt_tokens eq 3 \
+    --check stats.usage_to_metrics.default.token_usages.1.completion_tokens eq 2
   control-agent-server state cat fixtures/qa-f30/usage-2.json --check usage.prompt_tokens eq 3 \
     --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5
   ```
   The stub got exactly two model calls, one per request, so the second
-  request's own usage is the stub's 3/2/5: the conversation's stats hold one
-  `token_usages` entry per model call (10/5, then 3/2) and a running total
-  of 13/7 (the positive control: the server has the per-call numbers).
+  request's own usage is the stub's 3/2/5: the conversation's saved state
+  (`base_state.json`) holds one `token_usages` entry per model call (10/5,
+  then 3/2) and GET reports the running total of 13/7 (the positive
+  control: the server has the per-call numbers; GET's `stats` carries only
+  the aggregates, see `F07.snapshot-compact-stats`).
   The second response reports 3/2/5, not the conversation's accumulated
   13/7/20: the gateway snapshots the combined metrics before the turn and
   reports the difference, so an OpenAI client that sums `usage` per request
@@ -629,7 +632,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   call. The direct run then finishes with its own answer; after that the
   identical request is 200 with the new turn's answer and the same id, and
   its message is stored.
-- **Continue a paused conversation (`F30.chat-reuse-paused`), known bug #6842.**
+- **Continue a paused conversation (`F30.chat-reuse-paused`).**
   A conversation started through the native API whose first model call
   hangs is interrupted, so it rests in `paused` with no run active; then a
   chat completion names it in the header. The request's output is kept in a
@@ -652,18 +655,16 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   control-agent-server api GET "/api/conversations/$PCID/agent_final_response" --check response eq QA_F30_PAUSED_OK --quiet
   control-agent-server sink read --name qa-f30-paused --expect-min 2 --expect-max 2
   control-agent-server assert --json "$F30/paused-turn.json" --check status eq 200 \
-    --check response.body.choices.0.message.content eq QA_F30_PAUSED_OK --check checks.0.ok eq true  # bug: value.status eq 409 && value.response.body.detail contains 'ended with status: paused'
+    --check response.body.choices.0.message.content eq QA_F30_PAUSED_OK --check checks.0.ok eq true
   ```
-  The turn is saved and run either way: the conversation finishes, holds
-  exactly one `QA_F30_PAUSED_TURN` user message, its final response is the
-  stub's `QA_F30_PAUSED_OK`, and the stub got exactly two calls. Expected:
-  the request answers 200 with that answer and the conversation's id in
-  `X-OpenHands-ServerConversation-ID`
-  ([#6842](https://github.com/OpenHands/software-agent-sdk/issues/6842), fix in [#6843](https://github.com/OpenHands/software-agent-sdk/pull/6843)).
-  Today it answers 409 `Agent run ended with status: paused` within a
-  fraction of a second, without the header: the gateway reads the resting
-  `paused` status as the end of the turn it has just started, so a client
-  that retries the 409 adds a second turn.
+  The request answers 200 with the turn's own answer, the stub's
+  `QA_F30_PAUSED_OK`, and the conversation's id in
+  `X-OpenHands-ServerConversation-ID`; the conversation finishes, holds
+  exactly one `QA_F30_PAUSED_TURN` user message, and the stub got exactly
+  two calls. The status the earlier run left behind (`paused`, or `error`)
+  does not end the wait while the turn's own run is alive; only that run's
+  own end decides the answer (409 if it pauses or waits for confirmation,
+  500 if it ends in `error`).
 - **The agent runs its own tools (`F30.chat-agent-tools`).** Ask the real
   model to use the terminal, and pass an OpenAI client tool with
   `tool_choice: required`.
@@ -1108,11 +1109,11 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   conversation whose direct run is active is 409 `Conversation run in
   progress; message not saved` (`F30.chat-reuse-direct-run-409`). Neither
   saves the message, so the request can be sent again later.
-- A 409 or 500 on a continued conversation does not always mean nothing
-  ran: on a conversation resting in `paused` or `error` the turn is saved
-  and runs although the request fails (`F30.chat-reuse-paused`,
-  [#6842](https://github.com/OpenHands/software-agent-sdk/issues/6842)).
-  Read the conversation before retrying.
+- A turn that continues a conversation resting in `paused` or `error` is
+  judged by its own run, not by the status the earlier run left behind
+  (`F30.chat-reuse-paused`). A 409 or 500 then means the turn's own run
+  paused, waits for confirmation or failed; its message is saved either way,
+  so read the conversation before retrying.
   Docker gateway turns for one conversation wait in order inside the container.
   A turn that cannot start before its deadline returns 504 without saving its
   message. A new turn waits for a prior run that remains active after a 504.
