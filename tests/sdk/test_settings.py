@@ -212,6 +212,13 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
     assert general_fields["max_budget_per_run"].default is None
     assert general_fields["max_budget_per_run"].prominence is SettingProminence.MAJOR
+    assert (
+        general_fields["max_budget_per_run"].label
+        == "Default budget per conversation (USD)"
+    )
+    assert "new conversations" in (
+        general_fields["max_budget_per_run"].description or ""
+    )
 
     verification_fields = {f.key: f for f in sections["verification"].fields}
     assert set(verification_fields) == {
