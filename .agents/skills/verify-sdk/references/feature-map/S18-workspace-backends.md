@@ -96,7 +96,7 @@ Preconditions:
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S18/remote_workspace --arg ops --check path_working_dir_error missing --check type eq RemoteWorkspace
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): `Workspace(host=..., working_dir=Path(...))` (and `RemoteWorkspace(working_dir=Path(...))`) raises `pydantic_core.ValidationError: 1 validation error for RemoteWorkspace working_dir Input should be a valid string [type=string_type, input_type=PosixPath]`. `RemoteWorkspaceMixin` redeclares `working_dir: str` without the `BeforeValidator` that `BaseWorkspace` uses to accept a `Path`; the local branch accepts one.
+  Known failure (reproduced 2026-10-13, [#6654](https://github.com/OpenHands/software-agent-sdk/issues/6654)): `Workspace(host=..., working_dir=Path(...))` (and `RemoteWorkspace(working_dir=Path(...))`) raises `pydantic_core.ValidationError: 1 validation error for RemoteWorkspace working_dir Input should be a valid string [type=string_type, input_type=PosixPath]`. `RemoteWorkspaceMixin` redeclares `working_dir: str` without the `BeforeValidator` that `BaseWorkspace` uses to accept a `Path`; the local branch accepts one.
 - **Settings from the server (`S18.remote-settings`).** LLM settings, an LLM profile, two secrets and an MCP server are stored through the server's settings API; the workspace reads them back.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
