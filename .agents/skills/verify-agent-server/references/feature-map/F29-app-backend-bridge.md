@@ -596,10 +596,9 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   ```
   The backend answers 302 and sets `qa_upstream`; through the bridge the
   redirect is 502 without `Location` and the body arrives without the cookie.
-- **One Date and Server header (`F29.proxy-response-headers`), known bug.**
-  The proxy copies the backend's `Date` and `Server` headers and uvicorn adds
-  its own, so a proxied response carries two of each (a client joins them
-  with `, `).
+- **One Date and Server header (`F29.proxy-response-headers`).**
+  The proxy drops the backend's `Date` and `Server` headers because uvicorn
+  adds its own, so a proxied response carries exactly one of each.
   ```sh
   control-agent-server api GET /server_info --auth none --expect 200 \
     --check-header date matches '^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9:]{8} GMT$' --check-header server eq uvicorn
@@ -610,13 +609,13 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   test -n "$RH"
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$RH" --expect 200 \
     --check-header date matches '^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9:]{8} GMT$' \
-    --check-header server not-contains ', ' --all-headers --save F29.proxy-response-headers/echo  # bug: status eq 200 && checks.0.actual contains 'GMT, ' && checks.1.actual contains aiohttp
+    --check-header server not-contains ', ' --all-headers --save F29.proxy-response-headers/echo
   ```
   The controls: a route the server answers itself carries one `Date` and
   `server: uvicorn`, and the backend answered directly sends one of each.
-  Expected: one `Date` and one `Server` through the bridge too. Actual: `date: <uvicorn's>, <aiohttp's>`
-  and `server: uvicorn, Python/3.x aiohttp/3.x` (RFC 9110 allows a single
-  `Date`; the second `Server` also discloses the backend stack).
+  Through the bridge the response carries one `Date` and `server: uvicorn`
+  too: no `date: <uvicorn's>, <aiohttp's>` (RFC 9110 allows a single `Date`)
+  and no `Python/3.x aiohttp/3.x` disclosing the backend stack.
 - **Path traversal (`F29.proxy-path-traversal`).** Checked first, so no
   credential is needed to see it.
 
@@ -682,7 +681,7 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   403 without `Origin`, with the control origin, without a cookie, with a
   bogus or another app's cookie, and with only the session key (header or
   query). The accepted handshake is in the previous bullet.
-- **Subprotocol (`F29.ws-subprotocol`), known bug.** `qa-headers`' `/ws`
+- **Subprotocol (`F29.ws-subprotocol`).** `qa-headers`' `/ws`
   negotiates `qa.v1` when a client asks for it; the direct connection is the
   control. Both sides use a subprotocol-aware client (`websockets` with
   `subprotocols=[...]`), because `ws listen --header 'Sec-WebSocket-Protocol: ...'`
@@ -700,18 +699,17 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   control-agent-server exec --expect-output 'subprotocol=qa.v1' --expect-output '"protocol": "qa.v1"' \
     --save F29.ws-subprotocol/bridged -- "$PWD/.venv/bin/python" -c \
     'import sys; from websockets.sync.client import connect; ws = connect(sys.argv[1], subprotocols=["qa.v1"], origin=sys.argv[2], additional_headers={"Cookie": "oh_app_backend_session=" + sys.argv[3]}, proxy=None); print("subprotocol=" + str(ws.subprotocol)); ws.send("qa-f29-proto"); print(ws.recv(timeout=10)); ws.close()' \
-    "ws://127.0.0.1:$P/app-backends/qa-headers/ws" "$S" "$SP"  # bug: stdout_tail contains subprotocol=None && stdout_tail contains '"protocol": "none"'
+    "ws://127.0.0.1:$P/app-backends/qa-headers/ws" "$S" "$SP"
   ```
   The controls: directly, the backend negotiates `qa.v1`; through the
   bridge, the same client without a subprotocol gets its echo with a fresh
-  cookie. Expected: the bridge negotiates `qa.v1` and the backend reports
-  `protocol: qa.v1`, as it does directly. Actual: `subprotocol=None` and
-  `protocol: none` (the echo frame still arrives); the bridge neither
-  forwards `Sec-WebSocket-Protocol` upstream nor selects one when it
-  accepts. Browsers fail such a handshake (Chrome: "Sent non-empty
-  'Sec-WebSocket-Protocol' header but no response was received"), so
-  clients that require a subprotocol (graphql-ws, many terminal protocols)
-  cannot connect through the bridge.
+  cookie and no subprotocol. Expected: the bridge forwards the client's
+  `Sec-WebSocket-Protocol` offer upstream, connects to the backend before it
+  accepts the client, and accepts with the subprotocol the backend selected,
+  so the client negotiates `qa.v1` and the backend reports `protocol: qa.v1`,
+  as it does directly. When the backend selects none, the bridge selects
+  none; when the upstream connection fails, the bridge accepts without a
+  subprotocol and closes with 1011.
 - **Revoke a session (`F29.session-revoke`).** Two sessions of one app; one
   has a bridged socket open.
   ```sh

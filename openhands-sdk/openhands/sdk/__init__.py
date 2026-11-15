@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent import (
     Agent,
@@ -27,6 +26,8 @@ from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
     LLM_PROFILE_SCHEMA_VERSION,
+    DecisionModel,
+    DecisionResult,
     FallbackStrategy,
     ImageContent,
     LLMProfileStore,
@@ -109,10 +110,6 @@ from openhands.sdk.workspace import (
 )
 
 
-if TYPE_CHECKING:
-    from openhands.sdk.settings.acp_providers import ACPModelOption
-
-
 try:
     __version__ = version("openhands-sdk")
 except PackageNotFoundError:
@@ -124,6 +121,8 @@ _print_banner(__version__)
 
 __all__ = [
     "LLM",
+    "DecisionModel",
+    "DecisionResult",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileStore",
@@ -167,7 +166,6 @@ __all__ = [
     "ACP_PROVIDERS",
     "ACPAgentSettings",
     "ACPFileSecretSpec",
-    "ACPModelOption",
     "ACPProviderInfo",
     "AgentSettingsBase",
     "AgentSettingsConfig",
@@ -211,11 +209,3 @@ __all__ = [
     "page_iterator",
     "__version__",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name == "ACPModelOption":
-        from openhands.sdk.settings.acp_providers import _deprecated_model_option
-
-        return _deprecated_model_option()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -15,7 +15,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookResult
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
 
 
@@ -66,6 +66,9 @@ class HookEventProcessor:
         self.original_callback = original_callback
         self._conversation_state: ConversationState | None = None
         self.emit_hook_events = emit_hook_events
+        # SessionStart additional_context collected by run_session_start() and
+        # delivered later by inject_pending_additional_context(); see those methods.
+        self._pending_additional_context: list[str] = []
 
     def set_conversation_state(self, state: "ConversationState") -> None:
         """Set conversation state for blocking support."""
@@ -337,6 +340,45 @@ class HookEventProcessor:
             )
             if result.error:
                 logger.warning(f"SessionStart hook error: {result.error}")
+
+        # Collect additional_context for delivery to the agent, but do not emit
+        # it here. run_session_start() runs while plugins load, before the agent
+        # emits its SystemPromptEvent, so emitting now would place a user message
+        # ahead of the system prompt and break the system-first invariant (and the
+        # prompt cache, which only applies to a leading system message). The
+        # conversation flushes it with inject_pending_additional_context() once
+        # init_state() has emitted the system prompt.
+        self._pending_additional_context.extend(
+            r.additional_context for r in results if r.additional_context
+        )
+
+    def inject_pending_additional_context(self) -> None:
+        """Deliver collected SessionStart additional_context to the agent.
+
+        Emits the context as a single ``MessageEvent``. Call this after the
+        agent's ``SystemPromptEvent`` is in the log so the system prompt stays
+        first in the request, mirroring the ``UserPromptSubmit`` path (which
+        extends the existing user turn rather than prepending a new one). The
+        pending context is cleared on delivery, so re-running SessionStart hooks
+        (for example when runtime plugin hooks merge) does not deliver it twice.
+        """
+        if not self._pending_additional_context or not self.original_callback:
+            return
+
+        additional_context = "\n".join(self._pending_additional_context)
+        self._pending_additional_context = []
+        logger.debug(
+            f"SessionStart hook injecting context: {additional_context[:100]}..."
+        )
+        self.original_callback(
+            MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=additional_context)],
+                ),
+            )
+        )
 
     def run_session_end(self) -> None:
         """Run SessionEnd hooks. Call before conversation is closed."""

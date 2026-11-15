@@ -8,7 +8,7 @@ from pathlib import Path
 from openhands.sdk.extensions.fetch import (
     SourceType,
     fetch_with_resolution,
-    parse_extension_source,
+    resolve_extension_source,
 )
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
@@ -164,12 +164,12 @@ class InstallationManager[T: ExtensionProtocol]:
     ) -> T:
         """Load the fetched extension, named after its repository if it is one.
 
-        A remote source without ``repo_path`` is fetched to the root of its
+        A remote source without an explicit or embedded subpath is fetched to its
         clone cache, ``<repo>-<hash>``.  A loader that infers the name from the
         directory (a plugin without a manifest) must see ``<repo>`` instead, as
         it would for a local directory, so load from a copy with that name.
         """
-        source_type, url = parse_extension_source(source)
+        source_type, url, repo_path = resolve_extension_source(source, repo_path)
         if repo_path or source_type == SourceType.LOCAL:
             return self.installation_interface.load_from_dir(fetched_path)
 
@@ -273,7 +273,7 @@ class InstallationManager[T: ExtensionProtocol]:
         """Disable an installed extension by name."""
         return self._set_enabled(name, False)
 
-    def list_installed(self) -> list[InstallationInfo]:
+    def list_installed(self, *, strict: bool = False) -> list[InstallationInfo]:
         """List all installed extensions.
 
         Self-healing: the metadata file is updated to remove entries whose
@@ -286,15 +286,21 @@ class InstallationManager[T: ExtensionProtocol]:
         if not self.installation_dir.exists():
             return []
 
-        with self.metadata_session as session:
-            return session.sync()
+        with InstallationMetadata.open(
+            self.installation_dir,
+            interface=self.installation_interface,
+            strict=strict,
+        ) as session:
+            return session.sync(strict=strict)
 
-    def load_installed(self) -> list[T]:
+    def load_installed(self, *, strict: bool = False) -> list[T]:
         """Load all enabled extensions as ``T`` objects.
 
         Calls ``list_installed()`` first (which syncs metadata), then loads
         each enabled extension via the installation interface.  Disabled
-        extensions are skipped.
+        extensions are skipped, and so is an extension that fails to load, so
+        that one broken installation does not hide the others. Strict callers
+        receive load failures instead of a partial result.
 
         Returns:
             List of loaded extension objects of type ``T``.
@@ -304,14 +310,25 @@ class InstallationManager[T: ExtensionProtocol]:
 
         extensions: list[T] = []
 
-        for info in self.list_installed():
+        for info in self.list_installed(strict=strict):
             if not info.enabled:
                 continue
 
             extension_path = self.installation_dir / info.name
-            if extension_path.exists():
-                extension = self.installation_interface.load_from_dir(extension_path)
-                extensions.append(extension)
+            if not extension_path.exists():
+                continue
+            try:
+                extensions.append(
+                    self.installation_interface.load_from_dir(extension_path)
+                )
+            except Exception:
+                if strict:
+                    raise
+                logger.warning(
+                    "Failed to load installed extension '%s'; skipping it",
+                    info.name,
+                    exc_info=True,
+                )
 
         return extensions
 

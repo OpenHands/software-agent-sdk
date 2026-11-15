@@ -90,6 +90,8 @@ Preconditions:
     --check build_git_sha eq "$(git rev-parse HEAD)" \
     --check capabilities contains idempotent_conversation_create_v1 \
     --check capabilities contains tool_catalog_v1 \
+    --check capabilities contains agent_launch_pipeline_v1 \
+    --check capabilities contains profile_public_skills_v1 \
     --check usable_tools contains terminal \
     --check conversation_runtime eq local \
     --check sdk_version exists --save F01.server-info/info
@@ -200,7 +202,7 @@ Preconditions:
   control-agent-server logs --grep 'DEBUG mode: ENABLED' --expect-min $((N + 1))
   control-agent-server api GET /api/workspaces --expect 500 --check detail eq 'Internal Server Error' \
     --check exception contains 'Failed to read workspaces' \
-    --check traceback contains 'HTTPException: 500: Failed to read workspaces' --save F01.debug-tracebacks/on
+    --check traceback contains 'OperationFailed: Failed to read workspaces' --save F01.debug-tracebacks/on
   control-agent-server api GET /api/conversations/count --auth none --expect 401 --check traceback missing
   control-agent-server restart --reset-config
   control-agent-server api GET /api/workspaces --expect 500 --check traceback missing
@@ -209,8 +211,8 @@ Preconditions:
   ```
   Without `DEBUG` the 500 body is `detail`, `exception` and nothing else; with
   `DEBUG=true` the server prints `DEBUG mode: ENABLED` and the same 500 adds a
-  `traceback` string whose last line is the `HTTPException`, while the 401
-  stays `{"detail": ...}`. After `--reset-config` the trace is gone again and
+  `traceback` string whose last line is the `OperationFailed` domain error,
+  while the 401 stays `{"detail": ...}`. After `--reset-config` the trace is gone again and
   the registry reads normally once the directory is removed.
 - **Tool preload (`F01.preload-tools`).** Restart with `preload_tools` on,
   first with whatever Chromium the server finds on its own, then with the
@@ -252,7 +254,7 @@ Preconditions:
   `preload_tools` on, the restart (which waits for `/ready`) returns, `/ready`
   is 200 and `/api/*` serves. A server that finds no Chromium (no
   `browser_tool_set` in `usable_tools`; on this machine the only Chromium is
-  under `$PLAYWRIGHT_BROWSERS_PATH`, which the server ignores) logs `Error
+  under `$PLAYWRIGHT_BROWSERS_PATH`, which `launch` does not pass on) logs `Error
   preloading chromium` with the install hint and `Tool preload service failed
   to start - skipping`, and still serves. With the machine's Chromium linked
   into the run's `~/.cache/ms-playwright`, the next start logs `Chromium is
@@ -292,5 +294,5 @@ Preconditions:
   leaks file paths and source lines in 5xx bodies, so it is never for
   production. Unhandled exceptions get the same `traceback` field next to
   their `error_id`; the map's unhandled 500s either need a conversation or
-  are known bugs, so this family drives the deliberate `HTTPException` 500,
+  are known bugs, so this family drives a deliberate `OperationFailed` 500,
   the cheapest stable 5xx.

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 from pydantic import TypeAdapter
 
 from openhands.sdk.tool.spec import Tool
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -143,23 +142,6 @@ _BOOL_ADAPTER = TypeAdapter(bool)
 
 def drop_retired_tool_switches(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
-
-
-def fold_deprecated_tool_switches(
-    data: Any, *, owner: str, enable_browser: bool
-) -> Any:
-    """Fold deprecated switch input into ``tools`` and warn."""
-    if not isinstance(data, Mapping) or not any(
-        key in data for key in RETIRED_TOOL_SWITCHES
-    ):
-        return data
-    warn_deprecated(
-        f"{owner}.enable_sub_agents and {owner}.enable_switch_llm_tool",
-        deprecated_in="1.51.0",
-        removed_in="1.56.0",
-        details="Select task_tool_set and switch_llm in `tools` instead.",
-    )
-    return fold_retired_tool_switches(data, sparse=True, enable_browser=enable_browser)
 
 
 def fold_retired_tool_switches(

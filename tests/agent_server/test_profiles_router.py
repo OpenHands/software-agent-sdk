@@ -1,9 +1,8 @@
 """Tests for profiles_router endpoints."""
 
-import tempfile
 import time
 import warnings
-from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +12,7 @@ from pydantic import SecretStr
 from openhands.agent_server import profiles_router as profiles_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.llm import LLM, Message
 from openhands.sdk.llm.auth.credentials import OAuthCredentials
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -22,93 +21,45 @@ from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionStore,
 )
 from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
-def temp_profiles_dir():
-    """Create a temporary directory for profiles."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        profiles_dir = Path(tmpdir) / "profiles"
-        profiles_dir.mkdir(parents=True, exist_ok=True)
-        yield profiles_dir
+def temp_settings_dir(tmp_path, monkeypatch):
+    """The server's persistence directory; ``settings.json`` lives in it."""
+    settings_dir = tmp_path / "settings"
+    settings_dir.mkdir()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(settings_dir))
+    return settings_dir
 
 
 @pytest.fixture
-def temp_agent_profiles_dir():
-    """Create a temporary directory for agent profiles (FK store)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        agent_dir = Path(tmpdir) / "agent-profiles"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        yield agent_dir
+def temp_profiles_dir(temp_settings_dir):
+    """Where the server's stores keep LLM profiles."""
+    profiles_dir = temp_settings_dir / "profiles"
+    profiles_dir.mkdir()
+    return profiles_dir
 
 
 @pytest.fixture
-def temp_settings_dir():
-    """Create a temporary directory for settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        settings_dir = Path(tmpdir) / "settings"
-        settings_dir.mkdir(parents=True, exist_ok=True)
-        yield settings_dir
+def temp_agent_profiles_dir(temp_settings_dir):
+    """Where the server's stores keep agent profiles (FK store)."""
+    agent_dir = temp_settings_dir / "agent-profiles"
+    agent_dir.mkdir()
+    return agent_dir
 
 
 @pytest.fixture
-def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
-    """Create test client with isolated profiles/settings directories, no cipher."""
-    # Reset store singletons to ensure clean state
-    reset_stores()
+def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir):
+    """Create test client with isolated profiles/settings directories, no cipher.
 
-    # Set environment variable for persistence directory
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
-
+    The app's own stores live in those directories (its provider connections in
+    ``provider-connections`` beside the profiles), so the routes and the tests
+    read and write the same files.
+    """
     # Explicitly disable cipher by setting secret_key to None
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
-    app = create_app(config)
-
-    # Patch stores to use temp directories (AgentProfileStore is hit by the
-    # FK guard on delete/rename). The LLM profile store is wired to a shared
-    # provider-connection store so ``load`` resolves provider references, and
-    # the router's own ``get_provider_connections_store`` returns the same
-    # instance so CRUD and resolution see one file.
-    provider_store = ProviderConnectionStore(
-        base_dir=temp_profiles_dir.parent / "provider-connections"
-    )
-
-    def make_llm_store():
-        return LLMProfileStore(
-            base_dir=temp_profiles_dir, provider_store=provider_store
-        )
-
-    with (
-        patch(
-            "openhands.agent_server.profiles_router.get_llm_profile_store",
-            make_llm_store,
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_provider_connections_store",
-            lambda config=None: provider_store,
-        ),
-        patch(
-            "openhands.agent_server.settings_router.get_llm_profile_store",
-            make_llm_store,
-        ),
-        patch(
-            "openhands.agent_server.provider_connections_router.get_llm_profile_store",
-            make_llm_store,
-        ),
-        patch(
-            "openhands.agent_server.provider_connections_router."
-            "get_provider_connections_store",
-            lambda config=None: provider_store,
-        ),
-    ):
-        yield TestClient(app)
-
-    # Reset stores after test
-    reset_stores()
+    return TestClient(create_app(config))
 
 
 @pytest.fixture
@@ -161,6 +112,47 @@ def test_rename_llm_profile_cascades_to_agent_refs(client, store, agent_store):
     assert response.status_code == 200
     # The agent profile's FK was cascaded to the new name.
     assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
+
+
+def test_delete_referenced_llm_profile_via_json_alias_returns_409(
+    client, store, agent_store
+):
+    """The ``.json`` alias addresses the same profile, so the FK guard applies."""
+    store.save("base-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="base-llm"))
+
+    response = client.delete("/api/profiles/base-llm.json")
+
+    assert response.status_code == 409
+    assert "agent-a" in response.json()["detail"]
+    assert store.load("base-llm").model == "gpt-4o"
+
+
+def test_delete_active_profile_via_json_alias_clears_active_profile(client, store):
+    store.save("active-profile", LLM(model="gpt-4o"))
+    assert client.post("/api/profiles/active-profile.json/activate").status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] == "active-profile"
+
+    response = client.delete("/api/profiles/active-profile.json")
+
+    assert response.status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] is None
+
+
+def test_rename_llm_profile_via_json_alias_moves_refs_and_active(
+    client, store, agent_store
+):
+    store.save("old-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="old-llm"))
+    assert client.post("/api/profiles/old-llm/activate").status_code == 200
+
+    response = client.post(
+        "/api/profiles/old-llm.json/rename", json={"new_name": "new-llm.json"}
+    )
+
+    assert response.status_code == 200
+    assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
+    assert client.get("/api/settings").json()["active_profile"] == "new-llm"
 
 
 # ── List Profiles ──────────────────────────────────────────────────────────
@@ -891,10 +883,10 @@ def test_save_profile_at_limit_overwrite_allowed(client, store, monkeypatch):
 
 
 def test_list_profiles_timeout_returns_503(client, monkeypatch):
-    """List endpoint surfaces TimeoutError as 503."""
+    """List endpoint surfaces the store's LockTimeout as 503."""
 
     def boom(self):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "list_summaries", boom)
 
@@ -903,11 +895,11 @@ def test_list_profiles_timeout_returns_503(client, monkeypatch):
 
 
 def test_get_profile_timeout_returns_503(client, store, monkeypatch):
-    """Get endpoint surfaces TimeoutError as 503."""
+    """Get endpoint surfaces the store's LockTimeout as 503."""
     store.save("present", LLM(model="gpt-4o"))
 
     def boom(self, name, *, cipher=None, resolve_provider=True):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "load", boom)
 
@@ -916,10 +908,10 @@ def test_get_profile_timeout_returns_503(client, store, monkeypatch):
 
 
 def test_delete_profile_invalid_internal_name_returns_400(client, store, monkeypatch):
-    """If the store raises ValueError, delete responds 400 instead of 500."""
+    """If the store raises Invalid, delete responds 400 instead of 500."""
 
     def boom(self, name):
-        raise ValueError("Invalid profile name: 'x'.")
+        raise Invalid("Invalid profile name: 'x'.")
 
     monkeypatch.setattr(LLMProfileStore, "delete", boom)
 
@@ -992,10 +984,10 @@ def test_get_profile_corrupted_returns_400(client, temp_profiles_dir):
 
 
 def test_save_profile_timeout_returns_503(client, monkeypatch):
-    """Save endpoint surfaces TimeoutError as 503."""
+    """Save endpoint surfaces the store's LockTimeout as 503."""
 
     def boom(self, name, llm, include_secrets=False, *, cipher=None, max_profiles=None):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "save", boom)
 
@@ -1007,11 +999,11 @@ def test_save_profile_timeout_returns_503(client, monkeypatch):
 
 
 def test_rename_profile_timeout_returns_503(client, store, monkeypatch):
-    """Rename endpoint surfaces TimeoutError as 503."""
+    """Rename endpoint surfaces the store's LockTimeout as 503."""
     store.save("src", LLM(model="gpt-4o"))
 
     def boom(self, old, new):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "rename", boom)
 
@@ -1020,11 +1012,11 @@ def test_rename_profile_timeout_returns_503(client, store, monkeypatch):
 
 
 def test_delete_profile_timeout_returns_503(client, store, monkeypatch):
-    """Delete endpoint surfaces TimeoutError as 503."""
+    """Delete endpoint surfaces the store's LockTimeout as 503."""
     store.save("present", LLM(model="gpt-4o"))
 
     def boom(self, name):
-        raise TimeoutError("locked")
+        raise LockTimeout("Profile store is busy. Please retry.", message="locked")
 
     monkeypatch.setattr(LLMProfileStore, "delete", boom)
 
@@ -1095,38 +1087,16 @@ def client_with_cipher(
     temp_agent_profiles_dir,
     temp_settings_dir,
     secret_key,
-    monkeypatch,
 ):
     """Create test client with cipher configured."""
     from pydantic import SecretStr
-
-    # Reset store singletons to ensure clean state
-    reset_stores()
-
-    # Set environment variable for persistence directory
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
 
     config = Config(
         static_files_path=None,
         session_api_keys=[],
         secret_key=SecretStr(secret_key),
     )
-    app = create_app(config)
-
-    with (
-        patch(
-            "openhands.agent_server.profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-        ),
-    ):
-        yield TestClient(app)
-
-    # Reset stores after test
-    reset_stores()
+    return TestClient(create_app(config))
 
 
 @pytest.fixture
@@ -1715,6 +1685,69 @@ def test_patch_provider_connection_rejects_clearing_api_key(client):
     assert client.get("/api/profiles/linked").json()["api_key_set"] is True
 
 
+@pytest.mark.parametrize("unusable_key", ["", "   ", REDACTED_SECRET_VALUE])
+def test_create_provider_connection_rejects_unusable_api_key(client, unusable_key):
+    """POST refuses a blank or redacted key instead of storing a keyless one."""
+    response = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Blank", "api_key": unusable_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "api_key"
+    assert client.get("/api/llm/provider-connections").json() == []
+
+    created = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Valid", "api_key": "sk-valid"},
+    )
+    assert created.status_code == 201
+    assert created.json()["api_key_set"] is True
+
+
+@pytest.mark.parametrize("unusable_key", ["", "   ", REDACTED_SECRET_VALUE])
+def test_patch_provider_connection_rejects_unusable_api_key(client, unusable_key):
+    """PATCH refuses a blank or redacted key and keeps the stored one."""
+    created = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Anthropic", "api_key": "sk-ant-old"},
+    ).json()
+    connection_id = created["id"]
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": unusable_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "api_key"
+    [stored] = client.get("/api/llm/provider-connections").json()
+    assert stored == created
+
+    assert client.post("/api/profiles/linked/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["api_key_set"] is True
+
+
 def test_get_profile_maps_corrupted_provider_file(client, temp_profiles_dir):
     """A corrupted provider file yields a mapped 4xx, not an unhandled 500.
 
@@ -2046,6 +2079,198 @@ def test_validate_profile_unknown_error_returns_error(client):
     assert "Connection refused" in body["error"]["message"]
 
 
+def _stub_litellm_error(error: Exception) -> tuple[Any, list[dict[str, Any]]]:
+    """A litellm acompletion stub that records each call and raises ``error``."""
+    calls: list[dict[str, Any]] = []
+
+    async def fake_litellm_acompletion(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        raise error
+
+    return fake_litellm_acompletion, calls
+
+
+def test_validate_profile_empty_completion_does_not_block(client):
+    """An empty HTTP-200 completion is transient, so it must not block the save.
+
+    The pre-flight runs with ``num_retries=0``; since #6085 an empty
+    ``finish_reason="stop"`` completion raises ``LLMNoResponseError`` there.
+    """
+    from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_litellm_acompletion(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return ModelResponse(
+            id="empty",
+            model="gpt-4o",
+            choices=[
+                Choices(
+                    index=0,
+                    finish_reason="stop",
+                    message=LiteLLMMessage(role="assistant", content=""),
+                )
+            ],
+        )
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.litellm_acompletion", new=fake_litellm_acompletion
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/empty-reply/validate",
+            json={"llm": {"model": "openai/gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+    assert len(calls) == 1
+
+
+def test_validate_profile_does_not_retry_unreachable_endpoint(client):
+    """Pre-flight answers after one attempt, whatever the profile's retry policy.
+
+    Regression for #5100: the ping ran through the profile's runtime retry
+    policy (5 attempts with 8-64 s backoff by default), so an unreachable
+    ``base_url`` held the request for about two minutes.
+    """
+    from litellm.exceptions import APIConnectionError
+
+    fake, calls = _stub_litellm_error(
+        APIConnectionError(
+            message="Connection refused", llm_provider="openai", model="gpt-4o"
+        )
+    )
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", new=fake):
+        response = client.post(
+            "/api/profiles/unreachable/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "base_url": "http://127.0.0.1:9/v1",
+                    "num_retries": 5,
+                    "retry_min_wait": 0,
+                    "retry_max_wait": 0,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMServiceUnavailableError"
+    assert len(calls) == 1
+
+
+def test_validate_profile_caps_the_attempt_timeout(client):
+    """The pre-flight attempt uses a short timeout, not the 300 s runtime one."""
+    from unittest.mock import MagicMock
+
+    seen: dict[str, Any] = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        seen["timeout"] = self.timeout
+        seen["num_retries"] = self.num_retries
+        seen["fallback_strategy"] = self.fallback_strategy
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", new=fake_acompletion),
+    ):
+        default = client.post(
+            "/api/profiles/slow/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+        default_timeout = seen["timeout"]
+        shorter = client.post(
+            "/api/profiles/slow/validate",
+            json={
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "sk-test",
+                    "timeout": 3,
+                    "fallback_strategy": {"fallback_llms": ["backup"]},
+                }
+            },
+        )
+
+    assert default.status_code == 200 and shorter.status_code == 200
+    assert default_timeout == profiles_router_module.PREFLIGHT_TIMEOUT_SECONDS
+    assert seen["timeout"] == 3
+    assert seen["num_retries"] == 0
+    assert seen["fallback_strategy"] is None
+
+
+def test_validate_profile_budget_exceeded_rate_limit_blocks(client):
+    """A 429 that reports an exhausted budget is a failed validation (#5100)."""
+    from litellm.exceptions import RateLimitError
+
+    fake, calls = _stub_litellm_error(
+        RateLimitError(
+            message=(
+                '{"error":{"message":"Budget has been exceeded! Current cost: '
+                '1060.95, Max budget: 1016.82","type":"budget_exceeded",'
+                '"code":"429"}}'
+            ),
+            llm_provider="litellm_proxy",
+            model="litellm_proxy/gpt-5.5",
+        )
+    )
+    with (
+        patch("openhands.sdk.llm.llm.litellm_acompletion", new=fake),
+        patch("openhands.sdk.llm.llm.litellm_aresponses", new=fake),
+    ):
+        response = client.post(
+            "/api/profiles/over-budget/validate",
+            json={
+                "llm": {
+                    "model": "litellm_proxy/gpt-5.5",
+                    "api_key": "sk-test",
+                    "base_url": "http://proxy.invalid",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMRateLimitError"
+    assert "Budget has been exceeded" in body["error"]["message"]
+    assert len(calls) == 1
+
+
+def test_validate_profile_insufficient_quota_blocks(client):
+    """OpenAI's ``insufficient_quota`` 429 is also a failed validation."""
+    from openhands.sdk.llm.exceptions import LLMRateLimitError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMRateLimitError(
+                'RateLimitError: OpenAIException - {"error":{"type":'
+                '"insufficient_quota","message":"You exceeded your current quota"}}'
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/no-quota/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMRateLimitError"
+
+
 def test_validate_profile_invalid_name(client):
     """POST /api/profiles/{name}/validate returns 422 for invalid profile names."""
     response = client.post(
@@ -2210,3 +2435,70 @@ def test_validate_profile_subscription_missing_credentials(client):
     body = response.json()
     assert body["valid"] is False
     assert "subscription login" in body["error"]["message"].lower()
+
+
+def test_validate_profile_resolves_provider_connection(client):
+    """A draft linked to a provider connection is checked with its credentials.
+
+    Regression for #5644: the pre-flight sent the posted LLM as is, so a
+    linked draft without an inline key was checked keyless and reported
+    ``valid=False`` even though activating it would run on the connection's
+    key.
+    """
+    from unittest.mock import MagicMock
+
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-conn",
+            "base_url": "https://conn.example.com",
+        },
+    ).json()["id"]
+
+    captured: dict = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        captured["api_key"] = self._get_litellm_api_key_value()
+        captured["base_url"] = self.base_url
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", fake_acompletion),
+    ):
+        response = client.post(
+            "/api/profiles/draft/validate",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": connection_id,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "error": None}
+    assert captured == {
+        "api_key": "sk-ant-conn",
+        "base_url": "https://conn.example.com",
+    }
+
+
+def test_validate_profile_with_dangling_provider_connection_returns_422(client):
+    """A draft linked to a missing connection names it, like activation does."""
+    with patch("openhands.sdk.llm.llm.LLM.acompletion") as acompletion:
+        response = client.post(
+            "/api/profiles/draft/validate",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": "missing-connection",
+                }
+            },
+        )
+
+    assert response.status_code == 422
+    assert "missing-connection" in response.json()["detail"]
+    acompletion.assert_not_called()

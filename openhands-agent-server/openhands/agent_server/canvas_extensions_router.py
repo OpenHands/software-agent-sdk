@@ -10,13 +10,14 @@ an installed extension's entrypoint bundle to the Canvas frontend.
 import asyncio
 from typing import Annotated, Final
 
-from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from openhands.agent_server.canvas_extensions.backend import (
     BackendLogs,
     BackendRevisionRequest,
+    BackendSecretGrantRequest,
     BackendStatus,
     CanvasExtensionBackendManager,
 )
@@ -37,6 +38,9 @@ from openhands.agent_server.canvas_extensions.manifest import (
     MANIFEST_FILENAME,
     CanvasExtensionManifest,
 )
+from openhands.agent_server.errors import error_responses
+from openhands.agent_server.server_context import server_context_of
+from openhands.sdk.errors import Conflict, Invalid, NotFound, Unprocessable
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.utils.redact import redact_url_credentials
 
@@ -62,9 +66,20 @@ CanvasExtensionNamePath = Annotated[
 def _backend_manager(request: Request) -> CanvasExtensionBackendManager:
     manager = getattr(request.app.state, "canvas_extension_backend_manager", None)
     if manager is None:
-        manager = CanvasExtensionBackendManager()
+        app = request.app
+        manager = CanvasExtensionBackendManager(
+            secrets_store=lambda: server_context_of(app).stores.secrets
+        )
         request.app.state.canvas_extension_backend_manager = manager
     return manager
+
+
+def _lifecycle_lock(request: Request, name: str) -> asyncio.Lock:
+    locks = getattr(request.app.state, "canvas_lifecycle_locks", None)
+    if locks is None:
+        locks = {}
+        request.app.state.canvas_lifecycle_locks = locks
+    return locks.setdefault(name, asyncio.Lock())
 
 
 async def _revoke_and_stop_backend(
@@ -163,6 +178,8 @@ class UpdateCanvasExtensionStateRequest(BaseModel):
     """Request body for updating canvas extension state (enable/disable)."""
 
     enabled: bool
+    revision: str | None = None
+    secret_refs: list[str] | None = None
 
 
 class UpdateCanvasExtensionStateResponse(BaseModel):
@@ -181,11 +198,13 @@ class UninstallCanvasExtensionResponse(BaseModel):
 @canvas_extensions_router.post(
     "/install",
     response_model=InstalledCanvasExtensionResponse,
-    responses={
-        400: {"description": "Could not read canvas extension source"},
-        409: {"description": "Canvas extension already installed (use force=true)"},
-        422: {"description": "Invalid canvas extension (bad manifest, etc.)"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Could not read canvas extension source",
+            Conflict: "Canvas extension already installed (use force=true)",
+            Unprocessable: "Invalid canvas extension (bad manifest, etc.)",
+        }
+    ),
 )
 async def install_canvas_extension_endpoint(
     request: InstallCanvasExtensionRequest,
@@ -199,10 +218,7 @@ async def install_canvas_extension_endpoint(
     """
     manager = _backend_manager(http_request)
     if request.force and manager.has_running_backends():
-        raise HTTPException(
-            status_code=409,
-            detail="Stop running Canvas App backends before a forced install",
-        )
+        raise Conflict("Stop running Canvas App backends before a forced install")
     try:
         info = await asyncio.to_thread(
             install_canvas_extension,
@@ -216,9 +232,8 @@ async def install_canvas_extension_endpoint(
             info, get_installed_canvas_extension_manifest(info.name)
         )
     except FileExistsError:
-        raise HTTPException(
-            status_code=409,
-            detail="Canvas extension already installed. Use force=true to overwrite.",
+        raise Conflict(
+            "Canvas extension already installed. Use force=true to overwrite."
         )
     except ExtensionFetchError as e:
         # Pass the specific reason through -- which of source/ref/repo_path is
@@ -227,26 +242,18 @@ async def install_canvas_extension_endpoint(
         # Deliberately not worded "failed to fetch": the canvas client treats
         # that phrase as a network outage and hides the reason behind a
         # "Disconnected, check your network" toast.
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Could not read canvas extension source: "
-                f"{redact_url_credentials(str(e))}"
-            ),
+        raise Invalid(
+            f"Could not read canvas extension source: {redact_url_credentials(str(e))}"
         )
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"No {MANIFEST_FILENAME} found at the resolved location. "
-                "Source plus Path must point at the extension's own "
-                "directory, not the repository root."
-            ),
+        raise Unprocessable(
+            f"No {MANIFEST_FILENAME} found at the resolved location. "
+            "Source plus Path must point at the extension's own "
+            "directory, not the repository root."
         )
     except (ValidationError, ValueError, OSError):
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid canvas extension. Ensure the manifest is well-formed.",
+        raise Unprocessable(
+            "Invalid canvas extension. Ensure the manifest is well-formed."
         )
 
 
@@ -271,7 +278,7 @@ def list_installed_canvas_extensions_endpoint() -> (
 @canvas_extensions_router.get(
     "/installed/{extension_name}",
     response_model=InstalledCanvasExtensionResponse,
-    responses={404: {"description": "Canvas extension not installed"}},
+    responses=error_responses({NotFound: "Canvas extension not installed"}),
 )
 def get_installed_canvas_extension_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -279,10 +286,7 @@ def get_installed_canvas_extension_endpoint(
     """Get information about a specific installed canvas extension."""
     info = get_installed_canvas_extension(name=extension_name)
     if info is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Canvas extension '{extension_name}' is not installed",
-        )
+        raise NotFound(f"Canvas extension '{extension_name}' is not installed")
     return InstalledCanvasExtensionResponse.from_info(
         info, get_installed_canvas_extension_manifest(extension_name)
     )
@@ -291,31 +295,82 @@ def get_installed_canvas_extension_endpoint(
 @canvas_extensions_router.patch(
     "/installed/{extension_name}",
     response_model=UpdateCanvasExtensionStateResponse,
-    responses={404: {"description": "Canvas extension not installed"}},
+    responses=error_responses({NotFound: "Canvas extension not installed"}),
 )
 async def set_canvas_extension_enabled_endpoint(
     extension_name: CanvasExtensionNamePath,
     request: UpdateCanvasExtensionStateRequest,
     http_request: Request,
 ) -> UpdateCanvasExtensionStateResponse:
-    """Enable or disable an installed canvas extension."""
-    if not request.enabled:
-        await _revoke_and_stop_backend(http_request, extension_name)
-    fn = enable_canvas_extension if request.enabled else disable_canvas_extension
-    if not fn(name=extension_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Canvas extension '{extension_name}' is not installed",
-        )
-    return UpdateCanvasExtensionStateResponse(
-        name=extension_name, enabled=request.enabled
-    )
+    """Enable trusted code only after its managed backend is healthy."""
+    manager = _backend_manager(http_request)
+    lock = _lifecycle_lock(http_request, extension_name)
+    async with lock:
+        if not request.enabled:
+            await _revoke_and_stop_backend(http_request, extension_name)
+            if not disable_canvas_extension(name=extension_name):
+                raise NotFound("Canvas App is not installed")
+            return UpdateCanvasExtensionStateResponse(
+                name=extension_name, enabled=False
+            )
+        manifest = get_installed_canvas_extension_manifest(extension_name)
+        # Legacy toggle-only clients must not implicitly download or execute code.
+        if (
+            manifest
+            and manifest.backend
+            and (
+                request.revision is not None
+                or request.secret_refs is not None
+                or manifest.backend.secret_refs
+            )
+        ):
+            try:
+                if not request.revision or request.revision != manager.revision(
+                    extension_name
+                ):
+                    raise ValueError(
+                        "Review and approve the current revision before enabling"
+                    )
+                if request.secret_refs is not None:
+                    await manager.grant_secrets(
+                        extension_name,
+                        BackendSecretGrantRequest(
+                            revision=request.revision, secret_refs=request.secret_refs
+                        ),
+                    )
+                status = await manager.status(extension_name)
+                if (
+                    manifest.backend.secret_refs
+                    and status.secret_grant_revision != request.revision
+                ):
+                    raise ValueError(
+                        "Select and approve all required secrets before enabling"
+                    )
+                await manager.prepare(extension_name, request.revision)
+                status = await manager.start(extension_name, request.revision)
+                status = await manager.wait_until_ready(extension_name)
+                if status.state != "ready":
+                    raise ValueError(
+                        status.detail
+                        or "Backend failed; check its artifact and required secrets"
+                    )
+            except (ValueError, RuntimeError, OSError) as exc:
+                await _revoke_and_stop_backend(http_request, extension_name)
+                disable_canvas_extension(name=extension_name)
+                raise Conflict(str(exc)) from exc
+            except BaseException:
+                await _revoke_and_stop_backend(http_request, extension_name)
+                disable_canvas_extension(name=extension_name)
+                raise
+        if not enable_canvas_extension(name=extension_name):
+            raise NotFound("Canvas App is not installed")
+        return UpdateCanvasExtensionStateResponse(name=extension_name, enabled=True)
 
 
 @canvas_extensions_router.delete(
     "/installed/{extension_name}",
     response_model=UninstallCanvasExtensionResponse,
-    responses={404: {"description": "Canvas extension not installed"}},
+    responses=error_responses({NotFound: "Canvas extension not installed"}),
 )
 async def uninstall_canvas_extension_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -324,10 +379,7 @@ async def uninstall_canvas_extension_endpoint(
     """Uninstall a canvas extension by name while retaining backend data."""
     await _revoke_and_stop_backend(request, extension_name)
     if not uninstall_canvas_extension(name=extension_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Canvas extension '{extension_name}' is not installed",
-        )
+        raise NotFound(f"Canvas extension '{extension_name}' is not installed")
     return UninstallCanvasExtensionResponse(
         message=f"Canvas extension '{extension_name}' uninstalled"
     )
@@ -348,7 +400,7 @@ async def get_canvas_extension_backend_status_endpoint(
 @canvas_extensions_router.post(
     "/installed/{extension_name}/backend/prepare",
     response_model=BackendStatus,
-    responses={409: {"description": "Revision or checksum approval conflict"}},
+    responses=error_responses({Conflict: "Revision or checksum approval conflict"}),
 )
 async def prepare_canvas_extension_backend_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -359,13 +411,13 @@ async def prepare_canvas_extension_backend_endpoint(
     try:
         return await _backend_manager(request).prepare(extension_name, body.revision)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise Conflict(str(exc)) from exc
 
 
 @canvas_extensions_router.post(
     "/installed/{extension_name}/backend/start",
     response_model=BackendStatus,
-    responses={409: {"description": "Revision is not prepared or cannot start"}},
+    responses=error_responses({Conflict: "Revision is not prepared or cannot start"}),
 )
 async def start_canvas_extension_backend_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -376,7 +428,7 @@ async def start_canvas_extension_backend_endpoint(
     try:
         return await _backend_manager(request).start(extension_name, body.revision)
     except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise Conflict(str(exc)) from exc
 
 
 @canvas_extensions_router.post(
@@ -409,7 +461,7 @@ async def get_canvas_extension_backend_logs_endpoint(
 @canvas_extensions_router.delete(
     "/installed/{extension_name}/backend/data",
     response_model=BackendStatus,
-    responses={409: {"description": "Backend must be stopped first"}},
+    responses=error_responses({Conflict: "Backend must be stopped first"}),
 )
 async def delete_canvas_extension_backend_data_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -419,12 +471,12 @@ async def delete_canvas_extension_backend_data_endpoint(
     try:
         return await _backend_manager(request).delete_data(extension_name)
     except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise Conflict(str(exc)) from exc
 
 
 @canvas_extensions_router.get(
     "/installed/{extension_name}/bundle",
-    responses={404: {"description": "Canvas extension or bundle not found"}},
+    responses=error_responses({NotFound: "Canvas extension or bundle not found"}),
 )
 def get_canvas_extension_bundle_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -441,10 +493,7 @@ def get_canvas_extension_bundle_endpoint(
     """
     bundle_path = get_canvas_extension_bundle_path(name=extension_name)
     if bundle_path is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Canvas extension '{extension_name}' bundle not found",
-        )
+        raise NotFound(f"Canvas extension '{extension_name}' bundle not found")
     return FileResponse(bundle_path, headers={"Cache-Control": "no-cache"})
 
 
@@ -457,7 +506,7 @@ def get_canvas_extension_bundle_endpoint(
                 "image/svg+xml": {"schema": {"type": "string", "format": "binary"}}
             }
         },
-        404: {"description": "Canvas extension or icon not found"},
+        **error_responses({NotFound: "Canvas extension or icon not found"}),
     },
 )
 def get_canvas_extension_icon_endpoint(
@@ -470,10 +519,7 @@ def get_canvas_extension_icon_endpoint(
     """
     icon_path = get_canvas_extension_icon_path(name=extension_name)
     if icon_path is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Canvas extension '{extension_name}' icon not found",
-        )
+        raise NotFound(f"Canvas extension '{extension_name}' icon not found")
     return FileResponse(
         icon_path,
         media_type="image/svg+xml",
@@ -485,3 +531,35 @@ def get_canvas_extension_icon_endpoint(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@canvas_extensions_router.post(
+    "/installed/{extension_name}/backend/secret-grant",
+    response_model=BackendStatus,
+    responses=error_responses({Conflict: "Grant does not match installed declaration"}),
+)
+async def grant_canvas_extension_backend_secrets_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    body: BackendSecretGrantRequest,
+    request: Request,
+) -> BackendStatus:
+    """Explicitly grant named store credentials to trusted backend code."""
+    try:
+        return await _backend_manager(request).grant_secrets(extension_name, body)
+    except ValueError as exc:
+        raise Conflict(str(exc)) from exc
+
+
+@canvas_extensions_router.delete(
+    "/installed/{extension_name}/backend/secret-grant",
+    response_model=BackendStatus,
+)
+async def revoke_canvas_extension_backend_secrets_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: Request,
+) -> BackendStatus:
+    """Revoke consent, terminate the process group and invalidate bridge sessions."""
+    async with _lifecycle_lock(request, extension_name):
+        disable_canvas_extension(name=extension_name)
+        await _backend_manager(request).revoke_secrets(extension_name)
+        return await _revoke_and_stop_backend(request, extension_name)

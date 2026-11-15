@@ -5,6 +5,7 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
   RemoteWorkspace,
@@ -428,7 +429,7 @@ describe('Auxiliary API clients', () => {
         llm_profile_resolved: true,
         llm_api_key_set: true,
         mcp_server_refs: null,
-        resolved_mcp_servers: [],
+        resolved_mcp_config_keys: [],
         dangling_mcp_server_refs: [],
         acp_api_key_secret_name: null,
         acp_base_url_secret_name: null,
@@ -1737,19 +1738,22 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.activateMetaProfile POSTs to the activate endpoint', async () => {
-    global.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' activated" }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-      ) as typeof fetch;
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          name: 'balanced',
+          message: "Meta-profile 'balanced' activated",
+          applied: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
 
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const result = await client.activateMetaProfile('balanced');
 
     expect(result.name).toBe('balanced');
+    expect(result.applied).toBe(true);
     expect(global.fetch).toHaveBeenCalledWith(
       'http://example.com/api/meta-profiles/balanced/activate',
       expect.objectContaining({ method: 'POST', body: '{}' })
@@ -1779,6 +1783,27 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: JSON.stringify({ llm }),
       })
+    );
+  });
+
+  it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.switchAcpEffort('low');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'low' }) })
     );
   });
 
@@ -1996,6 +2021,19 @@ describe('Auxiliary API clients', () => {
     expect(response.data).toBeInstanceOf(Blob);
     expect(await response.data.text()).toBe('zip-data');
   });
+
+  it.each([undefined, 'reload'] as const)(
+    'HttpClient forwards cache=%s without changing the default',
+    async (cache) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response('file contents')) as typeof fetch;
+      const client = new HttpClient({ baseUrl: 'http://example.com' });
+
+      const response = await client.get('/download.txt', { cache });
+
+      expect(response.data).toBe('file contents');
+      expect((global.fetch as Mock).mock.calls[0][1].cache).toBe(cache);
+    }
+  );
   it('SettingsClient manages LLM profiles', async () => {
     const responses = [
       { profiles: [{ name: 'fast', model: 'openai/gpt-4o', base_url: null, api_key_set: true }] },
@@ -2081,6 +2119,25 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: JSON.stringify({ profile_name: 'fast' }),
       })
+    );
+  });
+
+  it('ConversationClient.switchAcpEffort posts the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await new ConversationClient({ host: 'http://example.com' }).switchAcpEffort(
+      'conversation-1',
+      'high'
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'high' }) })
     );
   });
 
@@ -2234,6 +2291,112 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('updateConversation resolves with the updated ConversationInfo, not the PATCH Success body', async () => {
+    const updated = { id: 'c1', title: 'New title', execution_status: 'idle' };
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const mockFetch = () =>
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ success: true }))
+        .mockResolvedValueOnce(jsonResponse(updated)) as typeof fetch;
+
+    for (const client of [
+      new ConversationManager({ host: 'http://example.com' }),
+      new ConversationClient({ host: 'http://example.com' }),
+    ]) {
+      global.fetch = mockFetch();
+      const result = await client.updateConversation('c1', { title: 'New title' });
+
+      expect(result).toEqual(updated);
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        1,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+      );
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        2,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'GET' })
+      );
+    }
+  });
+
+  it('SettingsClient lists and switches experimental features', async () => {
+    const feature = {
+      key: 'qa_feature',
+      label: 'QA feature',
+      description: 'A feature for tests.',
+      enabled: true,
+    };
+    const responses = [[{ ...feature, enabled: false }], feature];
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([
+      { ...feature, enabled: false },
+    ]);
+    await expect(client.updateExperimentalFeature('qa_feature', true)).resolves.toEqual(feature);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/experimental',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/experimental/qa_feature',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
+    );
+  });
+
+  it('ConversationClient.react sends only the fields it is given', async () => {
+    const saved = {
+      id: 'r1',
+      kind: 'ReactionEvent',
+      source: 'user',
+      timestamp: '2026-11-07T00:00:00Z',
+      target_event_id: 'm1',
+      emoji: 'heart',
+      removed: false,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.react('conv-1', 'heart', { targetEventId: 'm1', removed: true });
+    await client.react('conv-1', '+1');
+
+    expect(isReactionEvent(event)).toBe(true);
+    expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/reactions'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      emoji: 'heart',
+      target_event_id: 'm1',
+      removed: true,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
+  });
+
   it('SettingsClient fetches and updates settings and secrets', async () => {
     const responses = [
       { agent_settings: { llm_model: 'gpt-4o' }, conversation_settings: {} },
@@ -2352,13 +2515,16 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenNthCalledWith(
       4,
       'http://example.com/api/file/download?path=%2Fworkspace%2FREADME.md',
-      expect.objectContaining({ method: 'GET' })
+      expect.objectContaining({ method: 'GET', cache: 'no-store' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       5,
       'http://example.com/api/file/download-trajectory/conv%201',
       expect.objectContaining({ method: 'GET' })
     );
+    for (const index of [0, 1, 2, 4]) {
+      expect((global.fetch as Mock).mock.calls[index][1].cache).toBeUndefined();
+    }
   });
 
   it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {
@@ -2473,11 +2639,16 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       9,
-      'http://example.com/api/conversations/c1/runtime',
+      'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       10,
+      'http://example.com/api/conversations/c1/runtime',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      11,
       'http://example.com/api/conversations/c1/runtime/reprovision',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
     );

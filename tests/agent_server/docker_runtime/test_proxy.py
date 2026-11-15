@@ -5,6 +5,7 @@ import pytest
 from starlette.websockets import WebSocket
 
 from openhands.agent_server.docker_runtime.proxy import _bridge_websocket_loop
+from openhands.agent_server.persistence import ServerStores
 
 
 class Upstream:
@@ -89,9 +90,9 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
     monkeypatch, failure
 ):
     import httpx
-    from fastapi import HTTPException
 
     from openhands.agent_server.docker_runtime import proxy
+    from openhands.sdk.errors import UpstreamFailed
 
     errors = {
         "ReadTimeout": httpx.ReadTimeout,
@@ -105,11 +106,9 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
-    expected = asyncio.CancelledError if failure == "cancel" else HTTPException
-    with pytest.raises(expected) as raised:
+    expected = asyncio.CancelledError if failure == "cancel" else UpstreamFailed
+    with pytest.raises(expected):
         await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
-    if isinstance(raised.value, HTTPException):
-        assert raised.value.status_code == 502
     assert client.is_closed
 
 
@@ -133,6 +132,41 @@ async def test_http_client_lives_until_the_stream_is_consumed(monkeypatch):
     assert not client.is_closed
     assert [chunk async for chunk in response.body_iterator] == [b"result"]
     assert client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_http_response_drops_upstream_date_and_server(monkeypatch):
+    """The serving uvicorn adds its own Date and Server; copying the upstream's
+    would send two of each."""
+    import httpx
+
+    from openhands.agent_server.docker_runtime import proxy
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ok"
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={
+                    "Date": "Wed, 14 Oct 2026 10:00:00 GMT",
+                    "Server": "Python/3.13 aiohttp/3.14.3",
+                    "Content-Type": "text/plain",
+                    "X-Upstream": "kept",
+                },
+                stream=Body(),
+            )
+        )
+    )
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
+    response = await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
+    assert [chunk async for chunk in response.body_iterator] == [b"ok"]
+    assert "date" not in response.headers
+    assert "server" not in response.headers
+    assert response.headers["x-upstream"] == "kept"
+    assert response.headers["content-type"] == "text/plain"
 
 
 @pytest.mark.asyncio
@@ -162,12 +196,11 @@ async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     )
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    registry = DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("outer-key"),
-        )
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
     )
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     request, target = request_and_target()
     conversation_id = uuid4()
 

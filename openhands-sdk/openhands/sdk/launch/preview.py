@@ -52,6 +52,7 @@ def preview_launch(
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved_keys,
         secret_refs=profile.secret_refs,
+        integration_refs=profile.integration_refs,
     )
     if isinstance(profile, OpenHandsAgentProfile):
         diagnostics.llm_profile_ref = profile.llm_profile_ref

@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import hashlib
 import io
 import json
@@ -15,18 +16,26 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.canvas_extensions.backend import (
+    BackendSecretGrantRequest,
     CanvasExtensionBackendManager,
     _Runtime,
 )
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
 from openhands.agent_server.canvas_extensions.installed import (
     disable_canvas_extension,
     install_canvas_extension,
     uninstall_canvas_extension,
 )
-from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
+from openhands.agent_server.canvas_extensions.manifest import (
+    MANIFEST_FILENAME,
+    CanvasExtensionBackend,
+)
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
+from openhands.agent_server.persistence.store import FileSecretsStore
 
 from .conftest import write_extension
 
@@ -116,6 +125,34 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
         pass
 
 
+requires_linux_backend = pytest.mark.skipif(
+    CanvasExtensionBackendManager.current_platform() is None,
+    reason="backend artifact fixture only supports Linux amd64/arm64",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    CanvasExtensionBackendManager.current_platform() is not None,
+    reason="backend artifacts are supported on this platform",
+)
+async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+
+    status = await manager.status("my-extension")
+    assert status.state == "unsupported"
+    assert "platform" in (status.detail or "")
+    assert (await manager.prepare("my-extension", revision)).state == "unsupported"
+    assert (await manager.start("my-extension", revision)).state == "unsupported"
+    assert not manager.artifacts_dir.exists()
+
+
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_prepare_start_logs_stop_and_preserve_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -172,6 +209,7 @@ async def test_prepare_start_logs_stop_and_preserve_data(
     assert runtime_file.is_file()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_ready_endpoint_closes_when_ready_backend_exits(tmp_path: Path):
     """A crashed backend is not dialed before anyone polls its status (#5912)."""
@@ -258,6 +296,7 @@ async def test_remote_artifact_download_strip_cache_and_home(tmp_path: Path):
         thread.join()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
@@ -300,6 +339,78 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
     assert not (tmp_path / "escape").exists()
 
 
+def _install_with_artifact_bytes(
+    tmp_path: Path, payload: bytes
+) -> tuple[CanvasExtensionBackendManager, str]:
+    """Install a backend app whose artifact is ``payload``, with a matching sha256."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    (source / "backend-linux-amd64.tar.gz").write_bytes(payload)
+    manifest_path = source / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(payload).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    return manager, revision
+
+
+def _truncated_gzip_tarball() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        data = os.urandom(200_000)
+        info = tarfile.TarInfo("server.py")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()[:-1000]
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"not a tarball\n", id="not-gzip"),
+        pytest.param(gzip.compress(b"not a tarball\n"), id="gzip-not-tar"),
+        pytest.param(_truncated_gzip_tarball(), id="truncated-gzip"),
+    ],
+)
+async def test_prepare_rejects_artifact_that_is_not_a_gzip_tarball(
+    tmp_path: Path, payload: bytes
+):
+    manager, revision = _install_with_artifact_bytes(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="not a valid gzip tar archive"):
+        await manager.prepare("my-extension", revision)
+
+    status = await manager.status("my-extension")
+    assert status.prepared_revision is None
+    assert list((manager.artifacts_dir / "my-extension").iterdir()) == []
+
+
+@requires_linux_backend
+def test_prepare_endpoint_refuses_non_gzip_artifact_with_409(tmp_path: Path):
+    manager, revision = _install_with_artifact_bytes(tmp_path, b"not a tarball\n")
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.state.canvas_extension_backend_manager = manager
+    app.include_router(canvas_extensions_router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/canvas-extensions/installed/my-extension/backend/prepare",
+            json={"revision": revision},
+        )
+
+    assert response.status_code == 409
+    assert "not a valid gzip tar archive" in response.json()["detail"]
+
+
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_start_rejects_executable_that_resolves_outside_artifact(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
@@ -324,6 +435,7 @@ async def test_start_rejects_executable_that_resolves_outside_artifact(tmp_path:
     assert "inside the prepared artifact" in (status.detail or "")
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=0.2)
@@ -362,9 +474,18 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     assert (await manager.status("my-extension-missing")).state == "missing"
     assert (await manager.status("my-extension")).state == "unhealthy"
     assert (await manager.status("browser-only")).state == "unsupported"
+    # `start` is diagnostic for unknown / backend-less apps: it returns the
+    # status instead of raising, even though no valid revision exists for
+    # them (`revision()` is None). Any non-empty revision stands in for the
+    # request body's `min_length=1` value.
+    assert (await manager.start("my-extension-missing", "sha256:0")).state == (
+        "missing"
+    )
+    assert (await manager.start("browser-only", "sha256:0")).state == "unsupported"
     await manager.shutdown()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_status_reports_starting_and_stop_abandons_hung_backend(
     tmp_path: Path,
@@ -443,6 +564,7 @@ server.serve_forever()
 """
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
     """A missed probe must not latch a live backend `unhealthy` (#5646)."""
@@ -500,6 +622,7 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
 
 
 @pytest.mark.parametrize("recovery", ["status", "stop", "restart"])
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_exited_leader_descendant_does_not_block_recovery(
     tmp_path: Path,
@@ -581,6 +704,7 @@ async def test_exited_leader_descendant_does_not_block_recovery(
 
 
 @pytest.mark.parametrize("leader_exited", [False, True])
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_cleanup_kills_sigterm_ignoring_descendant(
     tmp_path: Path,
@@ -676,6 +800,7 @@ def _alive(pid: int) -> bool:
     return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path):
     """A SIGKILLed server's backend must not survive the next server (#5637)."""
@@ -749,6 +874,7 @@ def test_status_degrades_when_manifest_is_corrupted(tmp_path: Path):
     assert status.detail
 
 
+@requires_linux_backend
 def test_backend_http_lifecycle_and_data_deletion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -761,6 +887,7 @@ def test_backend_http_lifecycle_and_data_deletion(
     )
     manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
     app = FastAPI()
+    add_domain_error_handler(app)
     app.state.canvas_extension_backend_manager = manager
     app.include_router(canvas_extensions_router)
 
@@ -810,3 +937,295 @@ def test_backend_http_lifecycle_and_data_deletion(
         )
         assert deleted.status_code == 200
         assert not (manager.data_dir / "my-extension").exists()
+
+
+@pytest.mark.asyncio
+async def test_revision_bound_store_secret_lifecycle(tmp_path: Path, monkeypatch):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    manifest_path = source / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest["backend"]["secret_refs"] = ["DEMO_API_KEY"]
+    manifest_path.write_text(json.dumps(manifest))
+    installed = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed)
+    store = FileSecretsStore(tmp_path / "secrets")
+    manager = CanvasExtensionBackendManager(
+        installed, tmp_path / "state", secrets_store=lambda: store
+    )
+    name = "my-extension"
+    revision = manager.revision(name)
+    assert revision is not None
+    monkeypatch.setenv("DEMO_API_KEY", "ambient-must-not-be-used")
+    await manager.prepare(name, revision)
+    with pytest.raises(ValueError, match="grant"):
+        await manager.start(name, revision)
+    for refs in [[], ["UNDECLARED"], ["DEMO_API_KEY", "DEMO_API_KEY"]]:
+        with pytest.raises(ValueError, match="declared names"):
+            await manager.grant_secrets(
+                name, BackendSecretGrantRequest(revision=revision, secret_refs=refs)
+            )
+    await manager.grant_secrets(
+        name, BackendSecretGrantRequest(revision=revision, secret_refs=["DEMO_API_KEY"])
+    )
+    with pytest.raises(ValueError, match="missing"):
+        await manager.start(name, revision)
+    try:
+        for value in ["safe-test-value-one", "safe-test-value-two"]:
+            store.set_secret("DEMO_API_KEY", value)
+            status = await manager.start(name, revision)
+            assert status.state == "ready"
+            runtime = json.loads((manager.data_dir / name / "runtime.json").read_text())
+            assert runtime["environment"]["DEMO_API_KEY"] == value
+            assert "OH_SECRET_KEY" not in runtime["environment"]
+            assert value not in status.model_dump_json()
+            assert (
+                value
+                not in (
+                    manager.state_dir / "secret-grants" / f"{name}.json"
+                ).read_text()
+            )
+            await manager.stop(name)
+        status = await manager.start(name, revision)
+        assert status.pid is not None
+        revoked = await manager.revoke_secrets(name)
+        assert revoked.pid is None
+        assert revoked.secret_grant_revision is None
+        with pytest.raises(ValueError, match="grant"):
+            await manager.start(name, revision)
+        await manager.grant_secrets(
+            name,
+            BackendSecretGrantRequest(revision=revision, secret_refs=["DEMO_API_KEY"]),
+        )
+        installed_manifest = installed / name / MANIFEST_FILENAME
+        manifest["description"] = "changed revision"
+        installed_manifest.write_text(json.dumps(manifest))
+        assert (await manager.status(name)).secret_grant_revision is None
+        with pytest.raises(ValueError, match="revision"):
+            await manager.start(name, revision)
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_backend_redacts_split_process_output(tmp_path: Path):
+    manager = CanvasExtensionBackendManager(tmp_path / "installed", tmp_path / "state")
+    runtime = _Runtime()
+    runtime.secret_values = (b"safe-split-", b"safe-split-demo-key")
+    script = (
+        "import os,time; os.write(1,b'prefix safe-split-'); time.sleep(.1); "
+        "os.write(1,b'demo-key suffix'); os.write(2,b'safe-split-demo-key')"
+    )
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await asyncio.gather(
+        manager._drain(runtime, process.stdout, b"[stdout] "),
+        manager._drain(runtime, process.stderr, b"[stderr] "),
+    )
+    await process.wait()
+    manager._runtimes["demo"] = runtime
+    logs = (await manager.logs("demo", 65536)).logs
+    assert "safe-split-" not in logs
+    assert "demo-key" not in logs
+    assert "prefix" in logs and "suffix" in logs
+
+
+def test_secret_grant_api_requires_exact_names_and_revokes(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    path = source / MANIFEST_FILENAME
+    manifest = json.loads(path.read_text())
+    manifest["backend"]["secret_refs"] = ["DEMO_API_KEY"]
+    path.write_text(json.dumps(manifest))
+    installed = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed)
+    manager = CanvasExtensionBackendManager(installed, tmp_path / "state")
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.state.canvas_extension_backend_manager = manager
+    app.include_router(canvas_extensions_router, prefix="/api")
+    base = "/api/canvas-extensions/installed/my-extension/backend"
+    with TestClient(app) as client:
+        revision = client.get(base).json()["revision"]
+        assert (
+            client.post(base + "/start", json={"revision": revision}).status_code == 409
+        )
+        assert (
+            client.post(
+                base + "/secret-grant", json={"revision": revision, "secret_refs": []}
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                base + "/secret-grant",
+                json={
+                    "revision": revision,
+                    "secret_refs": ["DEMO_API_KEY"],
+                    "value": "forbidden",
+                },
+            ).status_code
+            == 422
+        )
+        response = client.post(
+            base + "/secret-grant",
+            json={"revision": revision, "secret_refs": ["DEMO_API_KEY"]},
+        )
+        assert response.status_code == 200
+        assert response.json()["secret_grant_revision"] == revision
+        response = client.delete(base + "/secret-grant")
+        assert response.status_code == 200
+        assert response.json()["secret_grant_revision"] is None
+
+
+@pytest.mark.asyncio
+async def test_secret_revoke_api_invalidates_bridge_session(tmp_path: Path):
+    manager = CanvasExtensionBackendManager(tmp_path / "installed", tmp_path / "state")
+    sessions = AppBackendSessionStore()
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.state.canvas_extension_backend_manager = manager
+    app.state.app_backend_session_store = sessions
+    app.include_router(canvas_extensions_router, prefix="/api")
+    endpoint = ("127.0.0.1", 12345)
+    token, _ = await sessions.create("my-extension", endpoint)
+    assert await sessions.authorize(token, "my-extension", endpoint) is not None
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.delete(
+            "/api/canvas-extensions/installed/my-extension/backend/secret-grant"
+        )
+        assert response.status_code == 200
+    assert await sessions.authorize(token, "my-extension", endpoint) is None
+    await sessions.shutdown()
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [
+        ["PATH"],
+        ["OH_SECRET_KEY"],
+        ["OPENHANDS_SESSION_KEY"],
+        ["LD_PRELOAD"],
+        ["NODE_OPTIONS"],
+        ["bad-name"],
+        ["KEY", "KEY"],
+    ],
+)
+def test_backend_rejects_reserved_or_duplicate_secret_refs(tmp_path: Path, refs):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    backend = json.loads((source / MANIFEST_FILENAME).read_text())["backend"]
+    backend["secret_refs"] = refs
+    with pytest.raises(ValueError, match="secret_refs"):
+        CanvasExtensionBackend.model_validate(backend)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("needs_secret", [False, True])
+async def test_enable_orchestrates_backend_and_retains_revision_consent(
+    tmp_path: Path, monkeypatch, needs_secret: bool
+):
+    installed = tmp_path / "installed"
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions.installed.get_installed_canvas_extensions_dir",
+        lambda: installed,
+    )
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    path = source / MANIFEST_FILENAME
+    manifest = json.loads(path.read_text())
+    refs = ["DEMO_API_KEY"] if needs_secret else []
+    manifest["backend"]["secret_refs"] = refs
+    path.write_text(json.dumps(manifest))
+    install_canvas_extension(str(source), installed_dir=installed)
+    store = FileSecretsStore(tmp_path / "secrets")
+    manager = CanvasExtensionBackendManager(
+        installed, tmp_path / "state", secrets_store=lambda: store
+    )
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.state.canvas_extension_backend_manager = manager
+    app.state.app_backend_session_store = AppBackendSessionStore()
+    app.include_router(canvas_extensions_router, prefix="/api")
+    base = "/api/canvas-extensions/installed/my-extension"
+    revision = manager.revision("my-extension")
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        legacy = await client.patch(base, json={"enabled": True})
+        assert legacy.status_code == (409 if needs_secret else 200)
+        assert (await manager.status("my-extension")).state == "stopped"
+        assert manager.ready_endpoint("my-extension") is None
+        if not needs_secret:
+            assert (await client.get(base)).json()["enabled"]
+            await client.patch(base, json={"enabled": False})
+        if needs_secret:
+            failed = await client.patch(
+                base, json={"enabled": True, "revision": revision, "secret_refs": refs}
+            )
+            assert failed.status_code == 409
+            assert not (await client.get(base)).json()["enabled"]
+            store.set_secret("DEMO_API_KEY", "harmless-test-value")
+        enabled = await client.patch(
+            base, json={"enabled": True, "revision": revision, "secret_refs": refs}
+        )
+        assert enabled.status_code == 200, enabled.text
+        status = await manager.status("my-extension")
+        assert status.state == "ready"
+        endpoint = manager.ready_endpoint("my-extension")
+        assert endpoint is not None
+        assert status.port is not None
+        token, _ = await app.state.app_backend_session_store.create(
+            "my-extension", endpoint
+        )
+        assert (await client.patch(base, json={"enabled": False})).status_code == 200
+        assert (await manager.status("my-extension")).state == "stopped"
+        assert (
+            await app.state.app_backend_session_store.authorize(
+                token, "my-extension", ("127.0.0.1", status.port)
+            )
+            is None
+        )
+        assert (
+            await client.patch(base, json={"enabled": True, "revision": revision})
+        ).status_code == 200
+        assert (await manager.status("my-extension")).state == "ready"
+        await client.delete(base + "/backend/secret-grant")
+        assert not (await client.get(base)).json()["enabled"]
+        if needs_secret:
+            assert (
+                await client.patch(base, json={"enabled": True, "revision": revision})
+            ).status_code == 409
+        await manager.stop("my-extension")
+        manifest["backend"]["secret_refs"] = ["NEW_REQUIRED_SECRET"]
+        installed_manifest = installed / "my-extension" / MANIFEST_FILENAME
+        installed_manifest.write_text(json.dumps(manifest))
+        assert (
+            await client.patch(base, json={"enabled": True, "revision": revision})
+        ).status_code == 409
+        assert not (await client.get(base)).json()["enabled"]
+    await app.state.app_backend_session_store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
+    manager = CanvasExtensionBackendManager(tmp_path / "installed", tmp_path / "state")
+    runtime = _Runtime()
+    secret = "clé-秘密"
+    runtime.secret_values = (secret.encode(),)
+    stream = asyncio.StreamReader()
+    task = asyncio.create_task(manager._drain(runtime, stream, b"[stdout] "))
+    payload = ("before " + secret + " after é").encode()
+    for byte in payload:
+        stream.feed_data(bytes([byte]))
+        await asyncio.sleep(0)
+    stream.feed_eof()
+    await task
+    output = b"".join(runtime.logs).decode()
+    assert secret not in output
+    assert "<secret-hidden>" in output
+    assert "é" in output
+    assert "\ufffd" not in output

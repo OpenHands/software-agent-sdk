@@ -39,15 +39,17 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.test-timeout`: a stdio server that never completes the handshake yields `ok: false`, `error_kind: timeout` close to the requested `timeout`, and its process is killed.
 - `F19.test-validation`: a missing server, an empty command, an unknown transport, a `timeout` outside (0, 120], top-level `authentication` and `auth` next to an `Authorization` header are 422.
 - `F19.test-encrypted-env`: `env` values encrypted by the settings API are decrypted before the stdio server starts, and the child does not inherit the agent server's own keys.
-- `F19.test-remote-bearer`: a streamable-HTTP server behind a bearer token connects with `auth.strategy: bearer`, an `Authorization` header (also as `type: shttp`) or `auth.strategy: header`, and a wrong token answers `ok: false`.
+- `F19.test-remote-bearer`: a streamable-HTTP server behind a bearer token connects with `auth.strategy: bearer`, an `Authorization` header (also as `type: shttp`) or `auth.strategy: header`, and a wrong token answers `ok: false` naming the 401 (known bug #6687: the status is lost).
 - `F19.oauth-start-errors`: OAuth start is 400 for a stdio or non-oauth2 server, reports `ok: false` with a failed job for an unreachable server (whose callback is then 409), and finishes without consent for a server that needs no OAuth.
 - `F19.oauth-unknown-job`: status and callback for an unknown job id are 404, and a callback without `callback_url` is 422.
 - `F19.oauth-flow`: against a local OAuth-protected MCP server, start returns an `authorization_url`, status reports `authorizing` and `callback_ready`, and submitting the browser's redirect URL completes the job with tools, the tool result and an encrypted `oauth_state`.
-- `F19.oauth-callback-replay`: submitting a callback again after the job finished answers the job's status or a client error (4xx), not 500, and the job stays `succeeded`.
+- `F19.oauth-callback-replay`: submitting a callback again after the job finished answers 200 with the job's status, not 500, and the job stays `succeeded`.
 - `F19.oauth-callback-bad-port`: a callback URL with a port outside 0-65535 is rejected with 400, not 500.
 - `F19.oauth-callback-validation`: on a live job, an https URL, a foreign host, another port or another path is 400 and the job keeps waiting; the redirect URL with `127.0.0.1` instead of `localhost` completes it.
 - `F19.oauth-consent-denied`: submitting the redirect a provider sends when the user denies consent (`error=access_denied`) answers `ok: false` and fails the job without tokens.
 - `F19.oauth-consent-timeout`: a consent that is not completed within the job's `timeout` fails the job with `error_kind: timeout`.
+- `F19.oauth-public-redirect`: on a server that knows its external URL (`OH_WEB_URL`), OAuth start registers a redirect URI on that public origin, path prefix included, while a server without one keeps the loopback callback (known bug #6828: always `http://localhost:<port>/callback`).
+- `F19.oauth-callback-no-redirect`: the callback route forwards the submitted query only to the job's own callback address and does not follow a redirect it gets from there (known bug #6808: the redirect is followed).
 - `F19.oauth-inline-writeback`: an OAuth server passed inline on a conversation's agent (not in settings) whose access token has expired is refreshed when the conversation connects, keeps its tools, and the rotated tokens are posted with the run's session key to the webhook's `/mcp-oauth-state`, not stored in settings.
 - `F19.oauth-stored-state`: the returned `oauth_state` used as `auth.state` connects without consent (test, and start without `authorization_url`), and stored through the settings route it is redacted, encrypted on disk and decrypted to the real token.
 - `F19.disabled-server`: a conversation started from the settings exposes the tools of enabled servers (including the OAuth server from its stored tokens) and neither exposes nor spawns a disabled server.
@@ -105,7 +107,8 @@ Preconditions:
 - The CLI's stdio fixture (`fixture mcp-server`, tool `qa_echo`) plus three
   recipe-local fixtures written below (no CLI verb exists for them): a stdio
   server with `qa_env`, `qa_sleep` and `qa_fail` whose first argument delays
-  the MCP handshake, an HTTP FastMCP server in three modes (`none`, `bearer`
+  the MCP handshake, an HTTP FastMCP server with `read_subject` and `qa_wait`
+  in three modes (`none`, `bearer`
   with the static token `qa-f19-bearer`, and `oauth` with FastMCP's
   `InMemoryOAuthProvider`, which approves every authorization request), and an
   SDK program. The three HTTP servers run as `helper`s on free ports, so they
@@ -126,7 +129,7 @@ Preconditions:
   import sys
   import time
 
-  from mcp.server.fastmcp import FastMCP
+  from fastmcp import FastMCP
 
   if len(sys.argv) > 1:
       time.sleep(float(sys.argv[1]))
@@ -158,6 +161,7 @@ Preconditions:
   EOF
   cat > "$F19/qa_f19_http.py" <<'EOF'
   """F19 HTTP MCP fixture: argv = port, mode (none|bearer|oauth), ttl seconds, run /alive URL."""
+  import asyncio
   import os
   import sys
   import threading
@@ -190,6 +194,13 @@ Preconditions:
   def read_subject(subject: str) -> str:
       """Return a marked subject line."""
       return f"QA_HTTP_SUBJECT:{subject}"
+
+
+  @mcp.tool()
+  async def qa_wait(seconds: float) -> str:
+      """Wait, then answer."""
+      await asyncio.sleep(seconds)
+      return "QA_HTTP_WAITED"
 
 
   def watchdog() -> None:
@@ -296,22 +307,19 @@ Preconditions:
   ```
   Every body is 422 (the settings routes take `transport`, not the test
   route's legacy `type`) and `qa-bad` never appears.
-- **Server with neither command nor url (`F19.settings-empty-server`), known bug.**
-  `MCPServer` only requires `command` or `url` once `transport` is set,
-  so `{}` is stored as `{"enabled": true}` with 201. While it exists, every new
-  conversation's MCP configuration fails validation as a whole and the agent
-  gets no MCP tools at all, only a `MCP server startup failed ... continuing
-  without its tools` warning in the log (reproduced with a valid stdio server
-  next to it). The correct behavior asserted is 422; on failure the same line
-  removes the stored entry before failing, so later bullets are unaffected.
+- **Server with neither command nor url (`F19.settings-empty-server`).**
+  `MCPServer` requires `command` or `url` whatever the `transport`, so `{}`
+  is rejected with 422 and nothing is stored (a stored server like that once
+  cost every new conversation all of its MCP tools). If the POST is not
+  rejected, the same line removes the stored entry before failing, so later
+  bullets are unaffected.
   ```sh
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-empty missing
-  control-agent-server api POST /api/settings/mcp/qa-empty --json '{}' --expect 422 --save F19.settings-empty-server/create || { control-agent-server api DELETE /api/settings/mcp/qa-empty --expect 200,404 >/dev/null; false; }  # bug: request.method eq DELETE && status eq 200
+  control-agent-server api POST /api/settings/mcp/qa-empty --json '{}' --expect 422 --check detail.0.msg contains "require 'command' or 'url'" --save F19.settings-empty-server/create || { control-agent-server api DELETE /api/settings/mcp/qa-empty --expect 200,404 >/dev/null; false; }
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-empty missing
   ```
-  Today the POST answers 201 with `qa-empty: {"enabled": true}` in the
-  returned settings, the entry is deleted again and the bullet reports
-  `xfail` at the `# bug` line.
+  The POST answers 422 with `MCP servers require 'command' or 'url'` and
+  `qa-empty` never appears.
 - **Sparse patch (`F19.settings-patch`).** Toggle, edit one header, restore
   the default, then the error cases.
   ```sh
@@ -441,7 +449,7 @@ Preconditions:
   ```
   The child sees the decrypted value, not the ciphertext, and does not see the
   server's `OH_SECRET_KEY`. `qa-env` stays stored for `F19.disabled-server`.
-- **Remote server behind a bearer token (`F19.test-remote-bearer`).**
+- **Remote server behind a bearer token (`F19.test-remote-bearer`), known bug #6687.**
   ```sh
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-remote-bearer/auth-bearer \
     --json "{\"name\":\"qa-http\",\"server\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:$BEARER_PORT/mcp\",\"auth\":{\"strategy\":\"bearer\",\"value\":\"qa-f19-bearer\"}},\"timeout\":20,\"tool_call\":{\"name\":\"read_subject\",\"arguments\":{\"subject\":\"hi\"}}}" \
@@ -454,12 +462,15 @@ Preconditions:
     --check ok eq true --check tools contains read_subject
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-remote-bearer/wrong-token \
     --json "{\"server\":{\"transport\":\"http\",\"url\":\"http://127.0.0.1:$BEARER_PORT/mcp\",\"auth\":{\"strategy\":\"bearer\",\"value\":\"qa-f19-wrong\"}},\"timeout\":20}" \
-    --check ok eq false --check error contains 401
+    --check ok eq false --check error contains 401  # bug: status eq 200 && response.body.error contains 'error response'
   ```
   The right token works through `auth.strategy: bearer`, through a plain
   header (with the legacy `shttp` alias) and through `auth.strategy: header`
   (the form the 422 for `auth` plus an `Authorization` header recommends);
-  the wrong one answers `ok: false` naming the 401.
+  the wrong one should answer `ok: false` naming the 401, but today the error
+  is `MCPError: Server returned an error response` (`error_kind: unknown`) and
+  the status is lost since the mcp 2 migration
+  ([OpenHands/software-agent-sdk#6687](https://github.com/OpenHands/software-agent-sdk/issues/6687)).
 - **OAuth start refusals and early outcomes (`F19.oauth-start-errors`).**
   ```sh
   control-agent-server api POST /api/mcp/oauth/start --json "$(jq -nc --argjson s "$MCP" '{server: $s}')" --expect 400 \
@@ -512,47 +523,43 @@ Preconditions:
   after the callback the job is `succeeded` with `read_subject`, its result
   `QA_HTTP_SUBJECT:hi`, and Fernet-encrypted tokens (the run has
   `OH_SECRET_KEY`).
-- **Replayed callback (`F19.oauth-callback-replay`), known bug.** Once the
-  probe finished, its local callback server is closed; the route forwards the
-  URL with `httpx` without handling the connection error, so a second submit
-  (or a submit after the browser already reached the callback itself) is a 500
-  `All connection attempts failed`. The first command shows the job already
-  finished; the `# bug` line asserts the correct behavior, a handled answer
-  (the job's status, or a 4xx such as 409), and the last that the job is
-  unchanged.
+- **Replayed callback (`F19.oauth-callback-replay`).** Once the probe
+  finished, its local callback server is closed. A second submit (or a submit
+  after the browser already reached the callback itself) is not forwarded:
+  the route answers 200 with the finished job's status. The first command
+  shows the job already finished, the second the replay, and the last that
+  the job is unchanged.
 
   Requires: `F19.oauth-flow`
   ```sh
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded --check callback_ready eq true
   RBODY=$(jq -nc --arg u "$CALLBACK" '{callback_url: $u}')
-  control-agent-server api POST "/api/mcp/oauth/callback/$J" --json "$RBODY" --expect 200,4xx --save F19.oauth-callback-replay/replay  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
+  control-agent-server api POST "/api/mcp/oauth/callback/$J" --json "$RBODY" --expect 200 --check status eq succeeded --save F19.oauth-callback-replay/replay
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded
   ```
-  Today the `# bug` line gets 500 `All connection attempts failed`. The same
-  500 (with an empty message) is returned for a callback submitted after a
-  job failed on its consent timeout.
-- **Port out of range (`F19.oauth-callback-bad-port`), known bug.**
+  A callback submitted after a job failed on its consent timeout likewise
+  answers the `failed` status; one that reaches a live job whose callback
+  server is gone is 409 `OAuth callback server is not listening`.
+- **Port out of range (`F19.oauth-callback-bad-port`).**
   `_validate_callback_url` reads `urlparse(...).port`, which raises
-  `ValueError` for `99999` or a non-numeric port; the route lets it escape as
-  500. The bullet uses its own job that is waiting for consent, so only the
-  URL check is under test. The in-range wrong port is the positive control
-  (400 `Unexpected OAuth callback URL`); the two `# bug` lines assert the
-  correct behavior, 400 like every other malformed URL, with the job still
-  waiting.
+  `ValueError` for `99999` or a non-numeric port; the route turns that into
+  the same 400 as any other port that does not match. The bullet uses its own
+  job that is waiting for consent, so only the URL check is under test. The
+  in-range wrong port is the control.
   ```sh
   JB=$(control-agent-server api POST /api/mcp/oauth/start --json "$(jq -nc --argjson s "$OAUTH_SRV" '{server: $s, timeout: 30}')" \
     --check authorization_url exists --field job_id)
   control-agent-server api GET "/api/mcp/oauth/status/$JB" --check callback_ready eq true --until-ok 20
   control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:1/callback?code=x"}' --expect 400 \
     --check detail eq 'Unexpected OAuth callback URL'
-  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:99999/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-99999  # bug: status eq 500 && response.body.exception contains 'Port out of range'
-  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:abc/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-abc  # bug: status eq 500 && response.body.exception contains 'Port could not be cast to integer'
+  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:99999/callback?code=x"}' --expect 400 \
+    --check detail eq 'Unexpected OAuth callback URL' --save F19.oauth-callback-bad-port/port-99999
+  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:abc/callback?code=x"}' --expect 400 \
+    --check detail eq 'Unexpected OAuth callback URL' --save F19.oauth-callback-bad-port/port-abc
   control-agent-server api GET "/api/mcp/oauth/status/$JB" --check status eq authorizing
   ```
-  Today both `# bug` posts are 500 (`Port out of range 0-65535`,
-  `Port could not be cast to integer value as 'abc'`) although the job keeps
-  waiting; port `0` and other in-range ports already get the 400
-  `Unexpected OAuth callback URL`.
+  Both posts answer 400 `Unexpected OAuth callback URL`, like port `0` and
+  any other in-range port that does not match, and the job keeps waiting.
 - **Callback URL checks on a live job (`F19.oauth-callback-validation`).** A
   fresh job, four wrong URLs, then the right one with `127.0.0.1`.
   ```sh
@@ -618,6 +625,102 @@ Preconditions:
   The job waits in `authorizing`, then, between 4 and 15 seconds after start
   (about four), is `failed` with `error_kind: timeout`; the user would have to
   start over.
+- **Redirect URI on the public origin (`F19.oauth-public-redirect`), known bug #6828.**
+  A browser that is not on the agent-server's host (a container that
+  publishes only the API port, a reverse proxy) cannot reach
+  `http://localhost:<port>/callback`. First this run, which has no external
+  URL, then a second server launched with `OH_WEB_URL`; the recipe reads the
+  `redirect_uri` the provider was asked to return to out of each
+  `authorization_url`.
+  ```sh
+  REDIRECT_OF='import json, sys, urllib.parse as u; print(json.dumps({"redirect_uri": u.parse_qs(u.urlsplit(sys.argv[1]).query)["redirect_uri"][0]}))'
+  PSTART=$(jq -nc --argjson s "$OAUTH_SRV" '{server: $s, timeout: 5}')
+  LAU=$(control-agent-server api POST /api/mcp/oauth/start --json "$PSTART" --expect 200 --check ok eq true --field authorization_url)
+  "$PY" -c "$REDIRECT_OF" "$LAU" | control-agent-server assert --check redirect_uri matches '^http://localhost:[0-9]+/callback$'
+  stop_public() {
+    control-agent-server stop --run "$PUB" >/dev/null
+  }
+  PUB=$(control-agent-server launch --new --name f19-public --env OH_WEB_URL=https://qa-f19.example/qa-f19 --print-run)
+  trap stop_public EXIT
+  control-agent-server config --run "$PUB" | jq -e '.server_env.OH_WEB_URL == "https://qa-f19.example/qa-f19"'
+  PAU=$(control-agent-server api POST /api/mcp/oauth/start --run "$PUB" --json "$PSTART" --expect 200 --check ok eq true \
+    --check authorization_url matches "^http://127.0.0.1:$OAUTH_PORT/authorize\\?" --save F19.oauth-public-redirect/start --field authorization_url)
+  "$PY" -c "$REDIRECT_OF" "$PAU" | control-agent-server assert --check redirect_uri matches '^https://qa-f19\.example/qa-f19/'  # bug: value.redirect_uri matches '^http://localhost:[0-9]+/callback$'
+  control-agent-server stop --run "$PUB"
+  trap - EXIT
+  ```
+  Without an external URL the redirect URI is the probe's loopback listener,
+  `http://localhost:<port>/callback`, which a browser on the same machine
+  reaches. With `OH_WEB_URL=https://qa-f19.example/qa-f19` it must start with
+  that origin and prefix, so the provider sends the browser back to a route
+  the agent-server serves; the bug: `web_url` is not consulted and the
+  redirect URI is the loopback one again, so sign-in never completes for a
+  remote browser. Both jobs end on their 5-second consent timeout.
+- **Callback forwarding stops at the listener (`F19.oauth-callback-no-redirect`), known bug #6808.**
+  Translated: the probe's own callback listener never redirects, so a
+  stand-in takes its place. The job's `tool_call` keeps the job alive for 20
+  seconds after consent (`qa_wait`); the browser delivers the code itself, the
+  probe closes its listener, and a recipe-local server takes the freed port
+  and answers every request with a 302 to an HTTP sink. A callback submitted
+  then passes the URL checks (same port and path) and is forwarded.
+  ```sh
+  cat > "$F19/qa_f19_redirect.py" <<'EOF'
+  """Answer every GET on 127.0.0.1:<port> with a 302 to <target>; append each request path to <hits>."""
+  import http.server
+  import sys
+  import time
+
+  port, target, hits = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+
+  class Handler(http.server.BaseHTTPRequestHandler):
+      def do_GET(self) -> None:
+          with open(hits, "a") as out:
+              out.write(self.path + "\n")
+          self.send_response(302)
+          self.send_header("Location", target)
+          self.send_header("Content-Length", "0")
+          self.end_headers()
+
+      def log_message(self, *args: object) -> None:
+          pass
+
+
+  for attempt in range(100):
+      try:
+          server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+          break
+      except OSError:
+          time.sleep(0.1)
+  server.serve_forever()
+  EOF
+  RTARGET=$(control-agent-server fixture http-sink --name qa-f19-redirect-target | jq -r .url)
+  JR=$(control-agent-server api POST /api/mcp/oauth/start --expect 200 --check ok eq true --field job_id \
+    --json "$(jq -nc --argjson s "$OAUTH_SRV" '{server: $s, timeout: 60, tool_call: {name: "qa_wait", arguments: {seconds: 20}}}')")
+  control-agent-server api GET "/api/mcp/oauth/status/$JR" --check callback_ready eq true --until-ok 20
+  RCB=$(curl -s --noproxy '*' -o /dev/null -w '%{redirect_url}' "$(control-agent-server api GET "/api/mcp/oauth/status/$JR" --field authorization_url)")
+  RPORT=${RCB#http://localhost:}
+  RPORT=${RPORT%%/*}
+  test "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$RCB")" = 200
+  control-agent-server helper start --name qa-f19-redirect --log "$F19/redirect.log" \
+    -- "$PY" "$F19/qa_f19_redirect.py" "$RPORT" "$RTARGET/qa-f19-redirected" "$F19/redirect-hits" >/dev/null
+  for i in $(seq 1 80); do test "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$RPORT/qa-f19-up")" = 302 && break; sleep 0.25; done
+  control-agent-server api GET "/api/mcp/oauth/status/$JR" --check status eq authorizing --check oauth_state missing
+  RSUBMIT=$(jq -nc --arg u "http://127.0.0.1:$RPORT/callback?code=qa-f19-code&state=qa-f19-state" '{callback_url: $u}')
+  control-agent-server api POST "/api/mcp/oauth/callback/$JR" --json "$RSUBMIT" \
+    --expect 200 --check job_id eq "$JR" --save F19.oauth-callback-no-redirect/callback
+  control-agent-server helper stop qa-f19-redirect >/dev/null
+  test "$(grep -cx '/callback?code=qa-f19-code&state=qa-f19-state' "$F19/redirect-hits")" = 1
+  control-agent-server sink read --name qa-f19-redirect-target --expect-max 0 --save F19.oauth-callback-no-redirect/redirect-target  # bug: requests eq 1
+  control-agent-server api GET "/api/mcp/oauth/status/$JR" --check status eq succeeded --check tool_result.text eq QA_HTTP_WAITED --until-ok 40
+  ```
+  The stand-in at the job's callback address received the forwarded query
+  exactly once, and the route answered 200 with the job's status. The sink the
+  302 points at must have received nothing: only the address the URL checks
+  accepted may be contacted. The bug: the forwarding client follows redirects,
+  so the sink records one `GET /qa-f19-redirected`, a request to a destination
+  no check ever saw. The job itself is not disturbed and succeeds with
+  `QA_HTTP_WAITED` once the tool returns.
 - **Inline OAuth server refresh (`F19.oauth-inline-writeback`).** The hosted
   case: the app server passes the OAuth server inline on the agent instead of
   storing it here. The recipe takes the token set `F19.oauth-callback-validation`
@@ -809,7 +912,7 @@ Preconditions:
 
 - `POST /api/mcp/test` and OAuth start answer HTTP 200 for every connection
   problem: assert `ok` and `error_kind`, never the status code alone. A
-  wrong bearer token (`HTTPStatusError ... 401`) and a command that exits at
+  wrong bearer token (known bug #6687: `MCPError: Server returned an error response`, no HTTP status) and a command that exits at
   once (`McpError: Connection closed`) are classified `unknown`, not
   `connection`.
 - `tool_call` runs the tool for real and shares the request `timeout`; pick a
@@ -829,11 +932,12 @@ Preconditions:
 - With two or more enabled servers, conversation tool names carry the server
   key as a prefix (`qa-f19_qa_echo`); with one server they are bare
   (`qa_echo`). Prompts and `--contains` checks should not depend on which.
-- An unreachable server costs a conversation only its own tools, but a
-  configuration that fails validation as a whole (the empty server of
-  `F19.settings-empty-server`) drops every MCP tool with only a log warning
-  (`MCP server startup failed for <every key>; continuing without its tools`,
-  wrapped over several log lines, so grep for `MCP server startup`).
+- An unreachable server costs a conversation only its own tools, and so does
+  a server that fails validation: it is skipped with `Skipping invalid MCP
+  server <key>; continuing without its tools` (wrapped over several log lines,
+  so grep for `Skipping invalid MCP server`). `MCP server startup failed for
+  <keys>` still names every enabled key when MCP startup fails as a whole,
+  for example when no server is valid.
 - The settings routes use `transport` (`extra="forbid"`, so the test route's
   legacy `type` is 422 there). A trailing slash on the key path redirects
   (307) and an empty key is 404.
@@ -846,10 +950,21 @@ Preconditions:
   submitting earlier is 409, so poll status with `--until-ok` first.
 - When playing the browser, read the redirect `Location` without following it
   (`curl -w '%{redirect_url}'`). Following it delivers the code to the probe
-  directly, completes the job, and a later callback POST hits the
-  `F19.oauth-callback-replay` 500. The whole consent, including the user's
+  directly, completes the job, and a later callback POST only reports the
+  finished job (`F19.oauth-callback-replay`). The whole consent, including the user's
   sign-in, must finish within the request's `timeout` (default 15 s, at most
   120 s) or the job fails with `error_kind: timeout`.
+- The probe's callback listener closes as soon as it has received a code,
+  while the job stays live until the token exchange, the tool listing and
+  the `tool_call` are done. In that window the callback route still forwards
+  a submitted URL to the freed port, to whatever listens there
+  (`F19.oauth-callback-no-redirect`), or answers 409 `OAuth callback server
+  is not listening`.
+- The redirect URI is always FastMCP's loopback listener,
+  `http://localhost:<random port>/callback`, whatever `OH_WEB_URL` says
+  (`F19.oauth-public-redirect`); a client whose browser is elsewhere has to
+  copy the failed redirect URL from the browser and submit it to the callback
+  route.
 - `oauth_state` is Fernet-encrypted when the server has `OH_SECRET_KEY`
   (every launched run does) and plaintext otherwise; posting it unchanged into
   `auth.state` of the settings route is the intended way to persist it.

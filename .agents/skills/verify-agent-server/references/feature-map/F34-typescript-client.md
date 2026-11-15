@@ -45,10 +45,11 @@ Routes: none
 - `F34.ws-callback-client`: `RemoteConversation.startWebSocketClient()` in Node delivers the conversation's events to the conversation callback without errors.
 - `F34.conversation-controls`: `setTitle` and `setConfirmationPolicy` change the server's title and policy.
 - `F34.conversation-confirm`: under `AlwaysConfirm`, `sendConfirmationResponse(false, reason)` records one `UserRejectObservation` with that reason and leaves the command unrun, `sendConfirmationResponse(true)` runs the pending command, and `updateSecrets` (a string and a function value) puts both values into that command's shell without any event containing them.
-- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding events to the source.
+- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding a message or action to the source: the one event it adds is a `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`.
 - `F34.manager`: `ConversationManager` searches with paging, counts by status, batch-gets (unknown ids are `null`), lists all, loads a conversation with its server working directory, creates and deletes one, and an unknown id rejects with 404.
 - `F34.manager-update-result`: `ConversationManager.updateConversation` stores the new title and resolves with the updated `ConversationInfo` it is typed to return.
 - `F34.manager-create-options`: `ConversationManager.createConversation(agent, {maxIterations, stuckDetection})` creates the conversation with those settings.
+- `F34.manager-batch-over-limit`: `getConversations` on `ConversationManager`, `ConversationClient` and the ACP namespace splits a list of more than 99 ids into requests the server accepts (it refuses 100 with 422) and returns every entry in input order, `null` for unknown ids.
 - `F34.manager-acp`: `ConversationManager.acp` creates a conversation for an inline ACP agent (with its `maxIterations`) and gets, batch-gets, lists and counts it with its ACP agent fields.
 - `F34.hooks-client`: `HooksClient.loadHooks` and `RemoteConversation.loadHooks` read a project's `.openhands/hooks.json` as a snake_case `HookConfig` the client's hook helpers understand, and `null` for a directory without hooks.
 - `F34.mcp-client`: `MCPClient.testServer` lists a stdio MCP server's tools and runs one tool call, reports a server that fails to start as `{ok: false}` with an `error_kind`, and an empty command rejects with 422.
@@ -109,8 +110,8 @@ Routes: none
   auth, `queryParams`, optional reconnect) uses the global `WebSocket` unless
   given `createWebSocket`; `WebSocketCallbackClient` (used by
   `RemoteConversation.startWebSocketClient`) and `BashWebSocketClient`
-  (`/sockets/bash-events`, deprecated `session_api_key` query auth) pick
-  `window.WebSocket` or `require('ws')` when their module loads.
+  (`/sockets/bash-events`, deprecated `session_api_key` query auth) look up
+  `globalThis.WebSocket` on every connect (browsers, Node 22+).
 - Version gate: `HooksClient`, `WorkspacesClient` and `MCPClient` call
   `assertAgentServerSupports` (hooks, workspaces and MCP test need 1.23.0, MCP
   OAuth 1.31.0), which caches one `/server_info` per `HttpClient`.
@@ -357,12 +358,14 @@ Preconditions:
   const uploaded = await workspace.uploadText('qa-f34 text\n', `${dir}/up.txt`);
   assert.equal(uploaded.success, true);
   assert.equal(uploaded.destination_path, `${dir}/up.txt`);
+  assert.equal(uploaded.file_size, Buffer.byteLength('qa-f34 text\n'));
   assert.equal(await workspace.downloadAsText(`${dir}/up.txt`), 'qa-f34 text\n');
   await workspace.fileUpload(new Blob([new Uint8Array([0xff, 0x00, 0x80, 0xfe, 0x41])]), `${dir}/nested/bin.dat`);
   const files = new c.FileClient({ host, apiKey });
   assert.deepEqual([...new Uint8Array(await files.downloadFile(`${dir}/nested/bin.dat`))], [255, 0, 128, 254, 65]);
   assert.equal(await files.downloadTextFile(`${dir}/up.txt`), 'qa-f34 text\n');
-  assert.deepEqual(await files.uploadTextFile('qa-f34 via FileClient', `${dir}/fc.txt`), { success: true });
+  assert.deepEqual(await files.uploadTextFile('qa-f34 via FileClient', `${dir}/fc.txt`),
+    { success: true, file_size: Buffer.byteLength('qa-f34 via FileClient') });
   await assert.rejects(workspace.downloadAsText(`${dir}/missing.txt`), (e) => e.status === 404 && e.detail === 'File not found');
   await assert.rejects(workspace.uploadText('x', 'qa-f34-relative.txt'), (e) => e.status === 400 && e.detail === 'Path must be absolute');
   await assert.rejects(workspace.downloadAsText(dir), (e) => e.status === 400 && e.detail === 'Path is not a file');
@@ -376,7 +379,8 @@ Preconditions:
   ```
   The text round-trips, the upload created the missing `nested/` directory,
   the five bytes on disk are exactly the ones sent and `FileClient` reads them
-  back unchanged; the server's own download serves the `FileClient` upload.
+  back unchanged; both upload responses report the byte count added by
+  #5856, and the server's own download serves the `FileClient` upload.
 - **Binary download through RemoteWorkspace (`F34.workspace-binary-download`), known bug.**
   `RemoteWorkspace.fileDownload` lets the transport parse the
   `application/octet-stream` body as text, so `downloadAsBlob` and
@@ -474,14 +478,12 @@ Preconditions:
   fixture's own path, outside the conversation workspace). Both methods wrap a refusal in a plain `Error` (`Failed to get git changes:
   ...`) whose `cause` is the `HttpError`: 422 for a path outside the
   conversation workspace, 401 without a key. REST agrees.
-- **Git status type (`F34.workspace-git-types`), known bug.** The exported
-  `GitChange` type declares `status: 'added' | 'modified' | 'deleted' |
-  'renamed'` (`clients/typescript/src/models/workspace.ts:31`), while the
-  server and the client's own generated contract (`GitChangeStatus`) use
-  `'MOVED' | 'ADDED' | 'DELETED' | 'UPDATED'`, so a TypeScript consumer's
-  `change.status === 'modified'` compiles and never matches. The program
-  writes what `gitChanges` returned into three tiny `.mts` files and the
-  client's own `tsc` type-checks them: the statuses against the generated
+- **Git status type (`F34.workspace-git-types`).** The exported `GitChange`
+  types `status` as the generated contract's `GitChangeStatus`
+  (`'MOVED' | 'ADDED' | 'DELETED' | 'UPDATED'`), the values the server
+  sends, so a TypeScript consumer compares against the wire values. The
+  program writes what `gitChanges` returned into three tiny `.mts` files and
+  the client's own `tsc` type-checks them: the statuses against the generated
   contract and the paths against the exported `GitChange` (positive
   controls: the same compiler, flags and import resolve), then the statuses
   against the exported `GitChange`.
@@ -507,11 +509,10 @@ Preconditions:
   TSC="node clients/typescript/node_modules/typescript/bin/tsc --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022"
   $TSC "$F34/git-contract.mts"
   $TSC "$F34/git-paths.mts"
-  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''  # bug: value matches 'TS2322: Type ..UPDATED.. is not assignable'
+  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''
   ```
-  Expected: both files type-check. Today the contract file compiles and
-  the exported type fails with `Type '"UPDATED"' is not assignable to type
-  '"added" | "modified" | "deleted" | "renamed"'`.
+  Expected: all three files type-check, the statuses against both the
+  generated contract and the exported `GitChange`.
 - **Bash client (`F34.bash-client`).** Background command, lookups, stop and
   clear, with the socket and the REST history as second views.
   ```sh
@@ -561,11 +562,9 @@ Preconditions:
   command resolves. REST serves the command with its `cwd`, the bash socket
   replays both kinds, and after `clearEvents` the history is empty and the
   command is 404.
-- **Bash events socket from Node (`F34.bash-websocket`), known bug.**
-  `BashWebSocketClient` resolves its constructor with `require('ws')` when
-  the module loads, and `require` does not exist in the package's ESM build,
-  so it never opens a socket in Node 22 although `ws` is a dependency and a
-  global `WebSocket` exists (`clients/typescript/src/events/bash-websocket-client.ts:19`).
+- **Bash events socket from Node (`F34.bash-websocket`).**
+  `BashWebSocketClient` opens its socket with Node's global `WebSocket`,
+  looked up at connect time (`clients/typescript/src/events/global-websocket.ts`).
   The bullet runs its own command, and the CLI first replays its output on
   the same socket (positive control); the program then gives the client
   10 seconds and records the outputs and errors it saw.
@@ -591,13 +590,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_BASH_WS_DONE --save F34.bash-websocket/program -- node "$F34/bash-ws.mjs"
   cat "$F34/bash-ws.json"
-  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0  # bug: value.saw_output eq false && value.errors contains 'WebSocket implementation not available'
+  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0
   ```
   Expected: the replayed `BashOutput` reaches the callback and `onError` is
-  never called. Today `saw_output` is false with no frame, and `errors`
-  holds "Failed to create bash WebSocket connection: WebSocket
-  implementation not available. Install the `ws` package, ..." (once per
-  reconnect attempt).
+  never called.
 - **Workspace session (`F34.workspace-session`).** The cookie mint and its
   base URL; Node's `fetch` keeps no cookie jar, so the URL is fetched with the
   header (F02 proves the cookie itself).
@@ -772,13 +768,12 @@ Preconditions:
   events; the user filter returns the one message, the fully-qualified kind
   only actions, the body filter is case-insensitive, pages do not overlap,
   and the lookups by id return the stored events.
-- **Unknown event id (`F34.events-unknown-id`), known bug.** The same server
-  bug as `F06.unknown-event`, reached through the client: `getEventById`
-  expects the documented 404 and `getEventsById` maps it to `null`
-  (`clients/typescript/src/events/remote-events-list.ts:110`), but the
-  server answers 500 (`Unknown event_id`). Runs on `SCID`, whose first
-  event is read back by id first (positive control); the program records
-  how each call settled.
+- **Unknown event id (`F34.events-unknown-id`).** `F06.unknown-event`
+  reached through the client: `getEventById` expects the documented 404 and
+  `getEventsById` maps it to `null`
+  (`clients/typescript/src/events/remote-events-list.ts:110`). Runs on
+  `SCID`, whose first event is read back by id first (positive control); the
+  program records how each call settled.
   ```sh
   cat > "$F34/unknown-event.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -795,23 +790,18 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_UNKNOWN_EVENT_READ --save F34.events-unknown-id/program -- node "$F34/unknown-event.mjs" "$SCID"
   cat "$F34/unknown-event.json"
-  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404  # bug: value.single.status eq 500 && value.single.response.exception contains 'Unknown event_id'
+  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404
   control-agent-server assert --json "$F34/unknown-event.json" --check batch.value len-eq 2 --check batch.value.0 eq "$(jq -r .first "$F34/unknown-event.json")" \
-    --check batch.value.1 missing  # bug: value.batch.status eq 500 && value.batch.response.exception contains 'Unknown event_id'
+    --check batch.value.1 missing
   ```
-  Expected: a 404 `HttpError`, and `[<event>, null]`. Today both calls
-  reject with a 500 `HttpError` whose `response.exception` is
-  `'Unknown event_id: 00000000-0000-0000-0000-000000000000'`, so one missing
-  id fails the whole `getEventsById`.
-- **Short event kinds (`F34.events-search-kind`), known bug.** The same
-  server bug as `F06.search-kind-short`, reached through the client: the
-  service compares `kind` with `<module>.<ClassName>`
-  (`openhands-agent-server/openhands/agent_server/event_service.py:555`)
-  while the route and `EventSearchOptions.kind`
-  (`clients/typescript/src/events/remote-events-list.ts:23`) document
-  `ActionEvent, MessageEvent`. Runs on `SCID`'s queued user message; the
-  fully-qualified kind finds it first (positive control); the bug is the
-  same for every kind (`F06.search-kind-short` shows it on the REST route).
+  `getEventById` rejects with a 404 `HttpError`, and `getEventsById`
+  resolves to `[<event>, null]`, so one missing id does not fail the batch.
+- **Short event kinds (`F34.events-search-kind`).** `F06.search-kind-short`
+  reached through the client: the route and `EventSearchOptions.kind`
+  (`clients/typescript/src/events/remote-events-list.ts`) document
+  `ActionEvent, MessageEvent`, and the server accepts that bare class name as
+  well as `<module>.<ClassName>`. Runs on `SCID`'s queued user message; the
+  fully-qualified kind finds it first (positive control).
   ```sh
   cat > "$F34/kind.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -828,10 +818,9 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_KIND_READ --save F34.events-search-kind/program -- node "$F34/kind.mjs" "$SCID"
   cat "$F34/kind.json"
-  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1  # bug: value.short len-eq 0 && value.short_count eq 0
+  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1
   ```
-  Expected: the short name finds the same message. Today it returns no items
-  and a count of 0.
+  The short name finds the same message and counts `1`.
 - **Event stream on Node's WebSocket (`F34.event-stream`).** Replay, a turn
   sent over the socket, and a wrong key.
 
@@ -886,11 +875,10 @@ Preconditions:
   `WebSocket closed with code 4001: Authentication failed`, and a key in the
   URL is refused before connecting. REST shows the second user message and
   `finished`.
-- **Conversation callback socket from Node (`F34.ws-callback-client`), known bug.**
+- **Conversation callback socket from Node (`F34.ws-callback-client`).**
   `WebSocketCallbackClient`, which `RemoteConversation.startWebSocketClient()`
-  uses, resolves its constructor with `require('ws')` at module load, which
-  fails in the ESM build, so in Node it never connects
-  (`clients/typescript/src/events/websocket-client.ts:29`). The server sends
+  uses, connects with Node's global `WebSocket`, looked up at connect time
+  (`clients/typescript/src/events/global-websocket.ts`). The server sends
   a state snapshot to every new subscriber, as the CLI shows first on
   `SCID` (positive control); the program then gives the client 10 seconds
   and records the event kinds and errors it saw.
@@ -914,12 +902,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_CALLBACK_DONE --save F34.ws-callback-client/program -- node "$F34/callback.mjs" "$SCID"
   cat "$F34/callback.json"
-  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0  # bug: value.kinds len-eq 0 && value.errors contains 'WebSocket implementation not available'
+  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0
   ```
   Expected: the snapshot reaches the conversation callback and `onError` is
-  never called. Today `kinds` is empty and `errors` holds "WebSocket
-  implementation not available. Install the `ws` package, or run in an
-  environment with a global WebSocket constructor." (once per retry).
+  never called.
 - **Title and confirmation policy (`F34.conversation-controls`).** Two
   mutations, each read back through REST; the policy is restored.
 
@@ -984,12 +970,50 @@ Preconditions:
   input order with `null` for the unknown id, the loaded conversation carries
   its server working directory, and the created conversation is gone after
   the delete (404, count back to `COUNT`).
-- **Update result (`F34.manager-update-result`), known bug.** `PATCH
+- **Batches above the server limit (`F34.manager-batch-over-limit`).**
+  `GET /api/conversations?ids=` takes at most 99 ids; the client methods
+  split a longer list into requests of at most 99 and join the answers.
+  `CID`, then 150 unknown ids, then `SCID` go through
+  `ConversationManager.getConversations`, `ConversationClient.getConversations`
+  and the ACP namespace's `getConversations`.
+
+  Requires: `F34.conversation-create`
+  ```sh
+  Q99=$(for N in $(seq 1 99); do printf 'ids=00000000-0000-4000-8000-%012d&' "$N"; done)
+  control-agent-server api GET "/api/conversations?${Q99%&}" --expect 200 --check . len-eq 99 --check 0 eq null --quiet
+  control-agent-server api GET "/api/conversations?${Q99}ids=00000000-0000-4000-8000-000000000100" --expect 422 \
+    --check detail.0.type eq too_long --quiet --save F34.manager-batch-over-limit/rest-100
+  cat > "$F34/batch.mjs" <<'JS'
+  import { writeFileSync } from 'node:fs';
+  import { m, c, host, apiKey, F34, assert } from './lib.mjs';
+  const [cid, scid] = process.argv.slice(2);
+  const unknown = Array.from({ length: 150 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`);
+  const ids = [cid, ...unknown, scid];
+  const expected = [cid, ...unknown.map(() => null), scid];
+  const manager = new m.ConversationManager({ host, apiKey });
+  const viaManager = (await manager.getConversations(ids)).map((x) => x && x.id);
+  const viaClient = (await new c.ConversationClient({ host, apiKey }).getConversations(ids)).map((x) => x && x.id);
+  const viaAcp = (await manager.acp.getConversations(ids)).map((x) => x && x.id);
+  writeFileSync(`${F34}/batch.json`, JSON.stringify({ manager: viaManager.length, client: viaClient.length, acp: viaAcp.length }));
+  assert.deepEqual(viaManager, expected);
+  assert.deepEqual(viaClient, expected);
+  assert.deepEqual(viaAcp, expected);
+  console.log('QA_F34_BATCH_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_BATCH_OK --save F34.manager-batch-over-limit/program -- node "$F34/batch.mjs" "$CID" "$SCID"
+  control-agent-server assert --json "$F34/batch.json" --check manager eq 152 --check client eq 152 --check acp eq 152
+  ```
+  REST answers 99 ids (all unknown, all `null`) and refuses a 100th with
+  `422` (`too_long`). Each client method resolves 152 entries in input
+  order, `CID` first, `SCID` last and `null` for every unknown id (the client
+  sends at most 99 ids per request, read from source, which the REST limit
+  above makes necessary).
+- **Update result (`F34.manager-update-result`).** `PATCH
   /api/conversations/{id}` answers `Success` (`{"success": true}`, also in
-  the client's generated contract), but `ConversationManager.updateConversation`
-  and `ConversationClient.updateConversation` are typed to resolve with the
-  updated `ConversationInfo` (`clients/typescript/src/conversation/conversation-manager.ts:384`,
-  `clients/typescript/src/client/conversation-client.ts:430`).
+  the client's generated contract), so `ConversationManager.updateConversation`
+  and `ConversationClient.updateConversation` read the conversation back
+  after the PATCH and resolve with the updated `ConversationInfo` they are
+  typed to return.
   The program checks that the title was stored (positive control, also
   through REST) and records what the call resolved with.
   ```sh
@@ -1006,19 +1030,16 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_UPDATE_READ --save F34.manager-update-result/program -- node "$F34/update.mjs" "$SCID"
   control-agent-server api GET "/api/conversations/$SCID" --max-chars 300 --check title eq qa-f34-renamed
   cat "$F34/update.json"
-  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed  # bug: value.success eq true && value.id missing
+  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed
   ```
   Expected: the stored title and a `ConversationInfo` with the conversation's
-  `id` and new title. Today the title is stored but the promise resolves with
-  `{success: true}`, so `result.id` and `result.title` are `undefined`.
-- **Create options (`F34.manager-create-options`), known bug.**
-  `ConversationManager.createConversation` hands `maxIterations` and
-  `stuckDetection` to the `RemoteConversation` constructor, which ignores
-  them, and calls `start()` without them, so the server always gets
-  `max_iterations` 500 and `stuck_detection: true`
-  (`clients/typescript/src/conversation/conversation-manager.ts:221`).
-  `RemoteConversation.start({maxIterations, stuckDetection})` does forward
-  both, as the program shows first (positive control). It records what the
+  `id` and new title.
+- **Create options (`F34.manager-create-options`).**
+  `ConversationManager.createConversation` forwards `maxIterations` and
+  `stuckDetection` to `start()`, so the server stores the caller's
+  `max_iterations` and `stuck_detection`, the same as
+  `RemoteConversation.start({maxIterations, stuckDetection})`, which the
+  program checks first (positive control). It records what the
   server stored for the manager's conversation, deletes both conversations,
   and REST confirms they are gone.
   ```sh
@@ -1042,12 +1063,10 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_CREATE_OPTIONS_READ --save F34.manager-create-options/program -- node "$F34/create-options.mjs"
   for ID in $(jq -r '.ids[]' "$F34/create-options.json"); do control-agent-server api GET "/api/conversations/$ID" --expect 404; done
   cat "$F34/create-options.json"
-  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false  # bug: value.max_iterations eq 500 && value.stuck_detection eq true
+  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false
   ```
   Expected: `max_iterations` 7 and `stuck_detection: false`, as the
-  direct `start()` gets. Today the manager's conversation has
-  `{"max_iterations":500,"stuck_detection":true}`. Both conversations are
-  deleted either way.
+  direct `start()` gets. Both conversations are deleted.
 - **ACP conversations (`F34.manager-acp`).** `ConversationManager.acp` with
   the inline ACP Codex agent F12 uses; the ACP subprocess only starts on
   the first run, so nothing runs and no Codex binary is needed.
@@ -1087,9 +1106,10 @@ Preconditions:
 - **Fork, navigate and ask (`F34.conversation-branching`).** On `CID`, the
   finished DeepSeek conversation; the fork is deleted at the end.
 
-  Requires: `F34.conversation-create`
+  Requires: `F34.conversation-create`, `F34.conversation-run`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  ENVIRONMENT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --field .)
   cat > "$F34/branching.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
   import { m, host, apiKey, F34, assert } from './lib.mjs';
@@ -1111,8 +1131,15 @@ Preconditions:
   await fork.navigateTo(first.id);
   assert.equal((await fork.state.modelDump()).leaf_event_id, first.id);
   writeFileSync(`${F34}/fork-leaf`, first.id);
+  const STATE = 'ConversationStateUpdateEvent';
+  const stateBefore = await conversation.state.events.count({ kind: STATE });
   assert.equal(typeof (await conversation.askAgent('In one short sentence: which file did you create?')), 'string');
-  assert.equal(await conversation.state.events.count(), Number(total));
+  assert.equal(await conversation.state.events.count(), Number(total) + 1);
+  assert.equal(await conversation.state.events.count({ kind: STATE }), stateBefore + 1);
+  const [newest] = (await conversation.state.events.search({ limit: 1, sort_order: 'TIMESTAMP_DESC' })).items;
+  assert.equal(newest.kind, STATE);
+  assert.equal(newest.key, 'stats');
+  assert.ok(newest.value.usage_to_metrics['ask-agent-llm'].accumulated_token_usage.completion_tokens >= 1);
   console.log('QA_F34_BRANCHING_OK');
   JS
   control-agent-server exec --timeout 180 --expect-output QA_F34_BRANCHING_OK --save F34.conversation-branching/program -- node "$F34/branching.mjs" "$CID" "$TOTAL"
@@ -1120,7 +1147,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$FORK" --max-chars 300 --check forked_from_conversation_id eq "$CID" \
     --check title eq qa-f34-fork --check leaf_event_id eq "$(cat "$F34/fork-leaf")" --save F34.conversation-branching/fork
   control-agent-server api GET "/api/conversations/$CID" --max-chars 300 --check execution_status eq finished --check leaf_event_id ne "$(cat "$F34/fork-leaf")"
-  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$TOTAL"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$((TOTAL + 1))"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --check . eq "$((ENVIRONMENT + 1))"
   control-agent-server api DELETE "/api/conversations/$FORK" --expect 200
   ```
   `fork` returns a `RemoteConversation` bound to the fork: its own id,
@@ -1128,8 +1156,12 @@ Preconditions:
   agent model, and all `TOTAL` copied events. With the state cached right
   before, `navigateTo(<first event>)` leaves the cached state on the new
   HEAD, which GET confirms (the source's HEAD did not move). `askAgent`
-  resolves with a string and adds no event to the source, which is still
-  `finished`.
+  resolves with a string and adds exactly one event to the source, which is
+  still `finished`: the newest event is a `stats`
+  `ConversationStateUpdateEvent` whose `usage_to_metrics` has an
+  `ask-agent-llm` entry with the call's tokens, and the counts of every
+  other kind are unchanged (the client's counts and REST agree: one more
+  event, from source `environment`).
 - **Confirmation and secrets (`F34.conversation-confirm`).** A DeepSeek
   conversation with the `terminal` tool under `AlwaysConfirm`; two runtime
   secrets (a string and a function value) whose hashes the first command
@@ -1325,22 +1357,24 @@ Preconditions:
   queued message was replayed on the new socket, and the message posted
   after the restart arrived on it (live or in that replay). REST shows both
   user messages and the conversation still `idle`.
-- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`), known bug.**
+- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`).**
   The same restart with two streams side by side: the `ws`-backed one
   (positive control) and one on Node's global `WebSocket`, which
   `F34.event-stream` uses and the README presents as all the stream
-  needs. In Node 22 (undici 6), a handshake to a port that refuses fires
-  `error` but never `close`, and the stream schedules its retries only
-  from `onclose` (`clients/typescript/src/client/conversation-event-stream.ts:145`);
-  its own 10 s handshake abort only calls `close()`, which fires no
-  `close` either. So the first refused attempt during the restart is the
-  last one.
+  needs. This regression recipe pins Node 22.22.0 (undici 6.23.0), the
+  affected runtime in [upstream #5651](https://github.com/OpenHands/software-agent-sdk/issues/5651).
+  The prewarm records the version before the watcher readiness timeout starts.
+  In this runtime a refused handshake fires `error` without `close`; the stream
+  ends an unopened attempt on `error` or its handshake timeout and keeps
+  retrying through the restart.
   ```sh
+  control-agent-server exec --timeout 120 --expect-output v22.22.0 --save F34.event-stream-reconnect-native/runtime -- \
+    npm exec --yes --package=node@22.22.0 -- node --version
   RNID=$(control-agent-server conversation start --no-run --placeholder-agent --tools none --no-autotitle --workspace "$F34/scoped" \
     --prompt 'qa-f34-reconnect: never run' --print-id)
   rm -f "$F34/reconnect-ready"
   control-agent-server exec --timeout 300 --expect-output QA_F34_RECONNECT_WATCHED --save F34.event-stream-reconnect-native/program \
-    -- node "$F34/reconnect.mjs" "$RNID" "$F34/reconnect-native.json" ws native &
+    -- npm exec --yes --package=node@22.22.0 -- node "$F34/reconnect.mjs" "$RNID" "$F34/reconnect-native.json" ws native &
   RPID=$!
   for _ in $(seq 150); do if [ -e "$F34/reconnect-ready" ]; then break; fi; sleep 0.2; done
   test -e "$F34/reconnect-ready"
@@ -1350,12 +1384,11 @@ Preconditions:
   wait "$RPID"
   cat "$F34/reconnect-native.json"
   jq -e '.ws.reconnected and .ws.sent_after >= 1 and .native.went_down' "$F34/reconnect-native.json"
-  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1  # bug: value.native.reconnected eq false && value.native.last_state.attemptCount eq 1
+  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1
   ```
-  Expected: both streams come back and see the message posted after the
-  restart. Today the `ws`-backed stream does, while the native one stays
-  `{"isConnected": false, "isReconnecting": true, "attemptCount": 1}`
-  for the whole minute the watcher gives it, never retrying.
+  Expected: both streams come back, end at
+  `{"isConnected": true, "isReconnecting": false, "attemptCount": 0}`
+  and see the message posted after the restart.
 - **Endpoint audit against this checkout (`F34.endpoint-audit`).** The
   client's own drift tooling, offline, in a fixture directory (nothing is
   written into `clients/typescript`).
@@ -1376,7 +1409,7 @@ Preconditions:
     --timeout 180 --save F34.endpoint-audit/generate -- node clients/typescript/scripts/generate-agent-server-api.mjs
   node clients/typescript/scripts/summarize-agent-server-api.mjs --before clients/typescript/src/generated/agent-server-schema.ts \
     --after "$A/agent-server-schema.ts" --output "$A/summary.md"
-  grep -Eqx 'No generated TypeScript contract changes\.|- Removed exported types: none' "$A/summary.md"
+  grep -Eqx 'No generated TypeScript contract changes\.|- Removed exported types: none|- Removed exported types: `McpTypesTool`, `McpTypesToolAnnotations`' "$A/summary.md"
   ```
   `.github/scripts/export_agent_server_openapi.py` writes the same public
   contract CI uses for unreleased versions. The audit runs with a copy of
@@ -1396,14 +1429,17 @@ Preconditions:
   `+13 / -1` lines: two new fields of the canvas backend artifact).
 - **Old server version (`F34.version-gate-old`).** A real 1.22.0 release of
   the agent server, installed with `uvx`, attached and stopped inside the
-  bullet.
+  bullet. FastAPI is pinned to the version in the
+  [v1.22.0 release lock](https://github.com/OpenHands/software-agent-sdk/blob/v1.22.0/uv.lock):
+  newer FastAPI releases reject that historical server's `Query(lte=...)`
+  during import, before the version-gate behavior can be tested.
   ```sh
   OLD="$F34/old-server"
   mkdir -p "$OLD/home" "$OLD/persist"
   OLDPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd "$OLD" && HOME="$OLD/home" OH_PERSISTENCE_DIR="$OLD/persist" OH_SESSION_API_KEYS_0=qa-f34-old-key COLUMNS=400 exec timeout 600 \
     uvx --python 3.13 --from 'openhands-agent-server==1.22.0' --with 'openhands-sdk==1.22.0' --with 'openhands-tools==1.22.0' \
-    --with 'openhands-workspace==1.22.0' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
+    --with 'openhands-workspace==1.22.0' --with 'fastapi==0.129.0' --with 'agent-client-protocol==0.8.1' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
   OLDPID=$!
   OLDRUN=""
   trap 'if [ -n "$OLDRUN" ]; then control-agent-server stop --run "$OLDRUN" > /dev/null 2>&1; fi; kill -TERM -- "-$OLDPID" 2>/dev/null || kill -TERM "$OLDPID" 2>/dev/null || true' EXIT
@@ -1452,20 +1488,20 @@ Preconditions:
   rebuilt by anything but `npm run build` in `clients/typescript`; a stale
   build silently verifies old client code, which is why `Preconditions:`
   rebuilds whenever `src/` is newer.
-- In Node, only `ConversationEventStream` streams events (it uses the global
-  `WebSocket`, Node 22 or later). `WebSocketCallbackClient`,
-  `RemoteConversation.startWebSocketClient()` and `BashWebSocketClient` look
-  for `window.WebSocket` or `require('ws')` when their module loads; the ESM
-  build has no `require`, so they only report errors through `onError`
-  (`F34.ws-callback-client`, `F34.bash-websocket`). The unit tests pass
-  because vitest provides `require` and a fake `window`.
+- In Node, `ConversationEventStream`, `WebSocketCallbackClient`
+  (`RemoteConversation.startWebSocketClient()`) and `BashWebSocketClient` all
+  use the global `WebSocket` (Node 22 or later), looked up when a socket
+  opens. Only `ConversationEventStream` takes a constructor
+  (`createWebSocket`); on an older Node the callback clients need one
+  assigned to `globalThis.WebSocket`, else they report "WebSocket
+  implementation not available" through `onError`. `WebSocketCallbackClient`
+  reconnects through `ConversationEventStream`, so the refused-handshake
+  gotcha below applies to it too.
 - Node 22's global `WebSocket` (undici 6) fires `error` but no `close` when
-  a handshake is refused, so a `ConversationEventStream` on it stops
-  retrying after the first refused reconnect attempt (a server restart
-  always produces one) and stays `isReconnecting` forever
-  (`F34.event-stream-reconnect-native`). Pass the `ws` package's
-  constructor as `createWebSocket` for a Node consumer that must survive a
-  restart (`F34.event-stream-reconnect`).
+  a handshake is refused, and `close()` on such a socket fires no `close`
+  either. `ConversationEventStream` treats `error` before `open` as the end
+  of the attempt, so it reconnects on either transport
+  (`F34.event-stream-reconnect-native`, `F34.event-stream-reconnect`).
 - A real model shown a `UserRejectObservation` often refuses to propose
   the same command again ("a deliberate block"), so a recipe that needs
   both an accept and a reject accepts first and rejects a later, different
@@ -1478,22 +1514,22 @@ Preconditions:
   `state.refresh()` when waiting for a status.
 - `executeCommand` always reports `timeout_occurred: false`; a command killed
   by its own timeout shows exit `-1` (the server sends no timeout marker), and
-  `exit_code` defaults to 0 when the server sends none. The HTTP request
+  `exit_code` is -1 when the server sends none. The HTTP request
   waits `timeout + 10` seconds.
-- `executeCommand` returns only the last `BashOutput` chunk; output beyond
-  1 MiB is split into several chunks server-side, and only `bash.searchEvents`
-  sees all of them.
+- `executeCommand` returns the server's joined output: output beyond 1 MiB
+  is stored as several chunks server-side (`bash.searchEvents` lists them),
+  and `execute_bash_command` concatenates them (`F13.execute-large-output`).
 - `RemoteWorkspace.fileDownload`, `downloadAsBlob` and `downloadAsText`
   decode the body as text (`F34.workspace-binary-download`); use
   `FileClient.downloadFile` for bytes.
-- `GitChange` (main entry) types `status` as lowercase
-  `added|modified|deleted|renamed`, but the server sends
-  `UPDATED|ADDED|DELETED|MOVED` (`F34.workspace-git-types`); compare against
-  the server's values, typed with the generated `GitChangeStatus`.
+- `GitChange['status']` (main entry, also exported as `GitChangeStatus`) is
+  the server's `UPDATED|ADDED|DELETED|MOVED`, not lowercase words
+  (`F34.workspace-git-types`).
   `gitChanges` and `gitDiff` wrap every refusal in a plain `Error`, so read
   the status from `isHttpError(e.cause)`, not from `e`.
-- The `kind` filter of `RemoteEventsList.search` and `count` needs the
-  fully-qualified class path (`F34.events-search-kind`, `F06.search-kind-short`).
+- The `kind` filter of `RemoteEventsList.search` and `count` takes the bare
+  class name or the fully-qualified class path (`F34.events-search-kind`,
+  `F06.search-kind-short`).
 - A `RemoteWorkspace` with `conversationId` checks `/server_info` once per
   transport and only then picks the conversation-scoped routes; it refuses a
   path with a query string or `..` and a `cid` parameter client-side.
@@ -1501,9 +1537,9 @@ Preconditions:
   agent field) can be passed directly; without `tools` the server agent has
   none. `RemoteConversation.start()` sends `max_iterations` 500 and
   `stuck_detection: true` unless told otherwise.
-- `updateConversation` resolves with `{success: true}`, not the conversation
-  (`F34.manager-update-result`); read the conversation back with
-  `getConversation`.
+- `PATCH /api/conversations/{id}` answers only `{success: true}`;
+  `updateConversation` reads the conversation back with a second `GET`
+  (`F34.manager-update-result`).
 - The version gate only reads `version` from `/server_info`; a server
   reporting `unknown` (a build without package metadata) fails every gated
   call. `F34.version-gate-old` needs PyPI (or a cached `uvx` environment) for
@@ -1520,3 +1556,10 @@ Preconditions:
   changes. The raw `/openapi.json` of a running server is not the public
   contract (it includes `/v1` and internal schemas), so regenerating from it
   shows thousands of unrelated changes.
+- Agent Canvas pins `@openhands/typescript-client` 1.62.0, which sends every id
+  in one lookup, so a conversation with more than 99 children still gets a 422
+  there until its pin moves to a release with the batched lookup
+  (`F34.manager-batch-over-limit`). The release bot moves the agent-server and
+  client pins together after each SDK release, as
+  [OpenHands/OpenHands#19658](https://github.com/OpenHands/OpenHands/pull/19658)
+  did for 1.62.0.

@@ -102,6 +102,25 @@ def _run(capsys, *argv):
     return code, out
 
 
+@pytest.mark.parametrize("body", [{"error": {"code": "insufficient_quota"}}, {}, None])
+def test_llm_stub_preserves_explicit_error_body(run_dir, capsys, body):
+    code, out = _run(
+        capsys,
+        "fixture",
+        "llm-stub",
+        "--name",
+        "quota",
+        "--step",
+        "status:429:" + json.dumps(body),
+    )
+    assert code == 0, out
+    url = json.loads(out)["url"]
+    with cas.http_client() as client:
+        response = client.post(url + "/v1/chat/completions", json={"messages": []})
+    assert response.status_code == 429
+    assert response.json() == body
+
+
 def test_api_checks_pass_and_fail_on_the_json_body(run_dir, capsys):
     code, out = _run(
         capsys,
@@ -339,6 +358,30 @@ Preconditions:
 
 - None.
 """
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_fresh_map_health_gates_recipes_and_preserves_cleanup(
+    run_dir, capsys, write_verification_family, monkeypatch, healthy
+):
+    write_verification_family(cas, FAMILY)
+    stopped = []
+
+    def launch_or_stop(*args):
+        if args[0] == "stop":
+            stopped.append(args[-1])
+        return {"last_line": str(run_dir)}
+
+    monkeypatch.setattr(cas, "self_command", launch_or_stop)
+    monkeypatch.setattr(cas, "cmd_doctor", lambda args: {"ok": healthy})
+    code, out = _run(
+        capsys, "map", "run", "--file", "F98", "--only", "F98.first", "--fresh"
+    )
+    assert code == (0 if healthy else 3), out
+    assert stopped == [str(run_dir)]
+    health = run_dir / "evidence" / "map-run" / "doctor-before.json"
+    assert json.loads(health.read_text())["ok"] is healthy
+    assert (run_dir / "map-run" / "F98-demo.state.sh").exists() is healthy
 
 
 def test_map_run_carries_variables_and_reports_xfail_and_blocked(

@@ -27,6 +27,7 @@ from pydantic import (
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
@@ -34,6 +35,9 @@ from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
 )
+
+
+logger = get_logger(__name__)
 
 
 def _validate_optional_secret(
@@ -495,7 +499,10 @@ MCPTransport = Literal["stdio", "http", "streamable-http", "sse"]
 
 
 class MCPServer(_MCPBaseModel):
-    """One MCP server in the settings DataModel."""
+    """One MCP server in the settings DataModel.
+
+    A server needs ``command`` (stdio) or ``url`` (remote).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -547,6 +554,8 @@ class MCPServer(_MCPBaseModel):
             raise ValueError("stdio MCP servers require 'command'")
         if declared_transport in {"http", "streamable-http", "sse"} and not self.url:
             raise ValueError("remote MCP servers require 'url'")
+        if not self.command and not self.url:
+            raise ValueError("MCP servers require 'command' or 'url'")
         if self.auth is not None and self.headers is not None:
             has_authorization_header = any(
                 key.lower() == "authorization" for key in self.headers
@@ -644,6 +653,30 @@ def _extract_mcp_config(value: object) -> object:
         servers = value.get("mcpServers")
         return servers if servers is not None else {}
     return value
+
+
+def drop_mcp_servers_without_endpoint(
+    mcp_config: Mapping[str, object],
+) -> dict[str, object]:
+    """Drop raw servers with neither ``command`` nor ``url``, with a warning.
+
+    For stored data only: such a server was accepted before ``MCPServer``
+    required one of them, and keeping it would make the whole payload fail to
+    load. Input from callers must still be validated and rejected.
+    """
+    dropped = sorted(
+        name
+        for name, server in mcp_config.items()
+        if isinstance(server, Mapping)
+        and not server.get("command")
+        and not server.get("url")
+    )
+    if dropped:
+        logger.warning(
+            "Dropping stored MCP server(s) with neither 'command' nor 'url': %s",
+            ", ".join(dropped),
+        )
+    return {name: server for name, server in mcp_config.items() if name not in dropped}
 
 
 def coerce_mcp_config(

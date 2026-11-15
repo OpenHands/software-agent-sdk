@@ -99,7 +99,9 @@ def test_launch_addition_uses_existing_acp_prompt_path():
 
 @pytest.mark.parametrize("profile_launch", [False, True])
 @pytest.mark.asyncio
-async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp_path):
+async def test_launch_additions_apply_after_agent_resolution(
+    profile_launch, tmp_path, server_stores
+):
     profile = OpenHandsAgentProfile(
         name="p",
         llm_profile_ref="default",
@@ -132,7 +134,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
         execution_status=ConversationExecutionStatus.IDLE,
     )
     captured: dict[str, Any] = {}
-    service = ConversationService(conversations_dir=tmp_path)
+    service = ConversationService(conversations_dir=tmp_path, stores=server_stores)
     service._event_services = {}
 
     async def capture_start(stored, **kwargs):
@@ -227,21 +229,6 @@ class TestLaunchSkills:
         assert [(s.name, s.content) for s in restored.agent_context.skills] == [
             ("docker", "# docker")
         ]
-
-    @pytest.mark.parametrize("managed", [False, True])
-    def test_acp_launch_skills_follow_runtime_sourcing(self, managed):
-        agent = ACPAgent(acp_command=["echo"])
-        sourcing = "openhands_managed" if managed else "native"
-        launched = finalize(
-            agent,
-            LaunchRuntime(acp_skill_sourcing=sourcing),
-            additions=AgentLaunchAdditions(skills=[_skill("docker")]),
-        ).agent
-
-        assert launched.agent_context is not None
-        assert [s.name for s in launched.agent_context.skills] == (
-            ["docker"] if managed else []
-        )
 
     def test_no_additions_leaves_the_skills_untouched(self):
         assert sorted(_launched_skills(_agent_with([_skill("github")]), [])) == [

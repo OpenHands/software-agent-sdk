@@ -399,6 +399,11 @@ class TestHookConfig:
                 {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
             )
 
+    @pytest.mark.parametrize("wrapped", [None, [], "PreToolUse"])
+    def test_malformed_legacy_wrapper_raises_validation_error(self, wrapped):
+        with pytest.raises(ValidationError):
+            HookConfig.from_dict({"hooks": wrapped})
+
 
 class TestAsyncHooks:
     """Tests for async hook configuration."""

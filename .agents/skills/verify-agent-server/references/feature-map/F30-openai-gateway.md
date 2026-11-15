@@ -3,20 +3,22 @@
 An OpenAI-shaped front door so OpenAI clients (the official SDKs, or anything
 else that takes a `base_url`) can talk to the agent server. It is not an LLM
 proxy. Every chat or responses call starts a full, persisted OpenHands agent
-conversation (or continues one), built from the saved settings with the LLM of
-the named profile. The agent runs in the server's workspace with its own
-tools, the gateway waits for the run to finish, and it returns the agent's
+conversation (or continues one), built from the active Agent Profile with
+the LLM of the named LLM profile and the saved conversation settings. In a
+local runtime, the agent runs in the server workspace. In a Docker runtime,
+the agent runs in its conversation container. The gateway waits for the run
+to finish and returns the agent's
 final answer as an OpenAI object. Model ids are `openhands_<llm-profile-name>`,
 one per saved profile. The session key works as `X-Session-API-Key` or as
 `Authorization: Bearer`. The `X-OpenHands-ServerConversation-ID` response
 header names the conversation behind each answer, and sending it back on a
 chat completion continues that conversation.
 
-Source: `openhands-agent-server/openhands/agent_server/openai/`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `examples/02_remote_agent_server/15_openai_compatible_gateway.py`
+Source: `openhands-agent-server/openhands/agent_server/openai/`, `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/docker_runtime/routers.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/agent_profiles_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `examples/02_remote_agent_server/15_openai_compatible_gateway.py`
 
 Needs: `llm`, `tmux`
 
-Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
+Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `POST /api/conversations/{conversation_id}/events/_gateway/run`. The last route is mounted on local, hybrid, and inner Docker servers. Docker outer servers proxy it to the conversation container. It requires the `/api` session key when keys are configured.
 
 ## Sub-features
 
@@ -24,6 +26,8 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.auth-bearer-or-header`: with session keys configured, all three routes accept the key as `Authorization: Bearer` or as `X-Session-API-Key`, and answer 401 `Unauthorized` to a missing or wrong key before the body is validated, while `/api/*` still refuses Bearer.
 - `F30.auth-open-without-keys`: a server with no session keys serves `/v1` without any credential and with any Bearer value.
 - `F30.chat-basic`: `POST /v1/chat/completions` on a real model returns a `chat.completion` whose single choice carries the agent's final answer with `finish_reason` `stop`, echoes the model, reports usage, and names a new finished conversation in `X-OpenHands-ServerConversation-ID`.
+- `F30.inner-gateway-run`: the inner gateway route runs a new user turn on an existing conversation and returns its final text and token use.
+- `F30.active-agent-profile`: new gateway conversations keep the active Agent Profile's identity, tools and system suffix, override its LLM only for the launch, append gateway instructions without changing the stored profile, reject oversized instructions with 400, and fall back to default after active-profile deletion.
 - `F30.chat-system-suffix`: `system` and `developer` messages become the new conversation's `agent_context.system_message_suffix` (in the system prompt) and never appear as user messages.
 - `F30.chat-latest-user-only`: a new conversation receives only the last user message of `messages[]`; earlier user and assistant turns are dropped and stored nowhere.
 - `F30.chat-stream`: `stream: true` answers `text/event-stream` with the conversation header and the frames role, whole content, `finish_reason` `stop`, usage (only with `stream_options.include_usage`) and `[DONE]`; a failing streaming request is a plain JSON error, not an SSE frame.
@@ -31,16 +35,19 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.chat-reuse-after-restart`: after a server restart the header still continues the persisted conversation.
 - `F30.chat-header-new-id`: a well-formed but unknown id in the header creates the conversation with exactly that id; a malformed id is 422 and creates nothing.
 - `F30.chat-reuse-keeps-llm`: on a continued conversation the requested model must still exist (404 otherwise) but is not applied: the conversation keeps its own LLM and system suffix, and the other profile's provider is never called.
-- `F30.chat-usage-per-request`: `usage` on a continued conversation reports that request's tokens, not the conversation's running total (reproduces a real bug).
+- `F30.chat-usage-per-request`: `usage` on a continued conversation reports that request's tokens, not the conversation's running total.
 - `F30.chat-reuse-concurrent`: two overlapping requests on one conversation each get the answer to their own turn (reproduces a real bug: the first request returns the second request's answer).
+- `F30.direct-event-during-turn-409`: while a gateway turn runs on a conversation, a direct `POST /api/conversations/{id}/events` answers 409 `Gateway run in progress; message not saved` at once and saves nothing, the gateway reply is its own turn's answer, and the same POST is accepted once the turn is over.
+- `F30.chat-reuse-direct-run-409`: a chat completion that continues a conversation whose direct (non-gateway) run is active answers 409 `Conversation run in progress; message not saved` at once, without the conversation header and without saving the message; the same request succeeds once that run has finished.
+- `F30.chat-reuse-paused`: a chat completion that continues a conversation resting in `paused` (after an interrupt) answers 200 with its own turn's answer and the conversation header, and the turn's user message is stored once.
 - `F30.chat-agent-tools`: the agent runs its own tools in the server workspace (a file appears there), the answer carries no `tool_calls`, and the client's `tools`/`tool_choice` are ignored.
 - `F30.chat-input-errors`: bad chat input fails before any conversation exists: 400 without a user message or with a bad content part, 404 for a model without the `openhands_` prefix or an unknown profile, 400 for an invalid profile name, 422 for schema errors.
 - `F30.observability-headers`: `X-OpenHands-Observability-*` headers are stored on the new conversation (chat and responses); invalid values are 422 before anything runs.
 - `F30.chat-run-error-500`: a run that ends in `error` answers 500 with the rewritten body (`exception` `500: Agent run ended with status: error`), without the conversation header, and leaves the conversation in `error`.
 - `F30.chat-confirmation-409`: with confirmation mode saved in the settings, a new conversation that stops `waiting_for_confirmation` answers 409 at once.
-- `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` must also answer 409 promptly (reproduces a real bug: it waits out 120 s and answers 504).
+- `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` also answers 409 within seconds, like a new one.
 - `F30.chat-run-limit-429`: when `max_concurrent_runs` is full a new gateway conversation is refused with 429 and nothing is created; the same request succeeds once a slot is free.
-- `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 must also leave nothing behind, so a client retry is safe (reproduces a real bug: each refused try appends the user message again).
+- `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 also leaves nothing behind, so a client retry is safe.
 - `F30.chat-timeout-504`: a run longer than the fixed 120 s answers 504 `Agent run timed out`, and the run keeps going server-side.
 - `F30.responses-basic`: `POST /v1/responses` on a real model returns a completed `response` with one `output_text` message equal to the agent's final answer, echoes `instructions` and `metadata`, and puts the instructions in the system suffix.
 - `F30.responses-stateless-replay`: every responses call is a new conversation (the conversation header is ignored); replayed items become one user message wrapped in `<message role="...">` markers, and developer items go to the system suffix.
@@ -72,8 +79,10 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
   server-only (`clients/typescript/endpoint-audit.config.json`).
 - Native second views (owned by other families): `GET /api/profiles`,
   `POST /api/profiles/{name}/rename` and `DELETE /api/profiles/{name}` (the
-  model list's source), `PATCH /api/settings` (agent and confirmation
-  settings every gateway conversation inherits), `GET /api/conversations/{id}`,
+  model list's source), `GET /api/agent-profiles` and profile activation
+  (the agent configuration every new gateway conversation inherits),
+  `PATCH /api/settings` (conversation settings, including confirmation policy
+  and iteration limits), `GET /api/conversations/{id}`,
   `/agent_final_response`, `/events/search`, `/sockets/events/{id}`.
 - Configuration: session keys (`OH_SESSION_API_KEYS_*`), `OH_PERSISTENCE_DIR`
   (profiles and settings), `OH_WORKSPACE_PATH` (where every gateway agent
@@ -211,6 +220,68 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   untitled (gateway conversations never autotitle), runs the profile's model
   and works in the server's workspace (`OH_WORKSPACE_PATH`). The answer is
   exactly the conversation's `agent_final_response`; never assert its words.
+- **Inner gateway run (`F30.inner-gateway-run`).** Send a new turn to the
+  route that the outer gateway uses for a Docker conversation.
+
+  ```sh
+  ICID=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$ICID/events/_gateway/run" --timeout 180 \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F30_INNER: reply with one short word and use no tools."}],"run":true}' \
+    --expect 200 --check status eq finished --check final_response len-ge 1 \
+    --check usage.prompt_tokens gt 0 --save F30.inner-gateway-run/turn
+  control-agent-server api GET "/api/conversations/$ICID/events/search" \
+    --query source=user --check items len-eq 1 --check items.0.llm_message.content.0.text contains QA_F30_INNER --quiet
+  control-agent-server api DELETE "/api/conversations/$ICID" --expect 200
+  ```
+  The response comes from the new turn. The route adds one user message. It
+  runs on its own conversation, not on `CID`: a turn added to `CID` would
+  break the user-message counts of the bullets after it.
+- **Active Agent Profile (`F30.active-agent-profile`).** Select a profile
+  with no tools and its own system suffix, while the gateway request selects
+  a different LLM profile. The named model overrides only the LLM for this
+  launch; the stored Agent Profile stays unchanged.
+  ```sh
+  GATEWAY_SEED=$(control-agent-server api GET /api/agent-profiles --expect 200 --field active_agent_profile_id)
+  control-agent-server api POST /api/agent-profiles/qa-f30-gateway --expect 201 \
+    --json '{"llm_profile_ref": "deepseek-pro", "tools": [], "mcp_server_refs": [], "system_message_suffix": "QA_F30_PROFILE: answer briefly and do not use tools."}'
+  GATEWAY_PROFILE=$(control-agent-server api GET /api/agent-profiles/qa-f30-gateway --expect 200 --field profile.id)
+  control-agent-server api POST "/api/agent-profiles/$GATEWAY_PROFILE/activate" --expect 200
+  GCID=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --expect 200 \
+    --json '{"model": "openhands_deepseek-flash", "messages": [{"role": "system", "content": "QA_F30_GATEWAY: use plain text."}, {"role": "user", "content": "Say hello in one short sentence and use no tools."}]}' \
+    --check choices.0.message.content len-ge 1 --save F30.active-agent-profile/completion \
+    --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api GET "/api/conversations/$GCID" --expect 200 --quiet \
+    --check execution_status eq finished --check launched_agent_profile.agent_profile_id eq "$GATEWAY_PROFILE" \
+    --check launched_agent_profile.revision eq 0 --check agent.llm.model eq deepseek/deepseek-flash \
+    --check agent.tools len-eq 0 \
+    --check agent.agent_context.system_message_suffix eq "$(printf 'QA_F30_PROFILE: answer briefly and do not use tools.\n\nQA_F30_GATEWAY: use plain text.')" \
+    --save F30.active-agent-profile/conversation
+  control-agent-server api GET /api/agent-profiles/qa-f30-gateway --expect 200 \
+    --check profile.revision eq 0 --check profile.llm_profile_ref eq deepseek-pro \
+    --check profile.system_message_suffix eq 'QA_F30_PROFILE: answer briefly and do not use tools.' \
+    --save F30.active-agent-profile/unchanged
+  GATEWAY_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  LONG_SYSTEM=$(jq -cn '{model:"openhands_deepseek-flash",messages:[{role:"system",content:("x" * 32769)},{role:"user",content:"unused"}]}')
+  control-agent-server api POST /v1/chat/completions --auth bearer --json "$LONG_SYSTEM" --expect 400 \
+    --check detail eq 'System instructions are too long' --save F30.active-agent-profile/long-system
+  control-agent-server api GET /api/conversations/count --expect 200 --check . eq "$GATEWAY_COUNT"
+  control-agent-server api DELETE /api/agent-profiles/qa-f30-gateway --expect 200
+  GCID_FALLBACK=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --expect 200 \
+    --json '{"model": "openhands_deepseek-flash", "messages": [{"role": "user", "content": "Reply with one short word and use no tools."}]}' \
+    --save F30.active-agent-profile/default-fallback --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api GET "/api/conversations/$GCID_FALLBACK" --expect 200 --quiet \
+    --check execution_status eq finished --check launched_agent_profile.agent_profile_id eq "$GATEWAY_SEED" \
+    --check agent.llm.model eq deepseek/deepseek-flash \
+    --check agent.agent_context.system_message_suffix not-contains QA_F30_PROFILE
+  control-agent-server api GET /api/settings --expect 200 --check active_agent_profile_id eq "$GATEWAY_SEED" --quiet
+  ```
+  The gateway records the active Agent Profile's identity and revision,
+  keeps its tools, appends the request's system text to its suffix, and runs
+  the model named in the gateway request. An oversized system addition is
+  400 and creates nothing. Deleting the active profile repairs the pointer
+  to `default`, and the next gateway launch records that profile, so a
+  normal deletion does not cause the gateway's no-active-profile 409. The
+  default Agent Profile is active again for the remaining recipes.
 - **System text goes to the system prompt (`F30.chat-system-suffix`).** Read
   back the chat-basic conversation.
 
@@ -390,7 +461,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   the response echoes the requested model. An unknown model is still 404 and
   appends nothing. The last call is the positive control: a new conversation
   on the same profile does call the stub.
-- **Usage per request (`F30.chat-usage-per-request`), known bug.** A stub
+- **Usage per request (`F30.chat-usage-per-request`).** A stub
   that reports 10/5 tokens on the first model call and 3/2 on the second; one
   gateway turn is one model call here.
   ```sh
@@ -414,17 +485,17 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens eq 13 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 --quiet
   control-agent-server state cat fixtures/qa-f30/usage-2.json --check usage.prompt_tokens eq 3 \
-    --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5  # bug: content.usage.prompt_tokens eq 13 && content.usage.completion_tokens eq 7 && content.usage.total_tokens eq 20
+    --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5
   ```
   The stub got exactly two model calls, one per request, so the second
   request's own usage is the stub's 3/2/5: the conversation's stats hold one
   `token_usages` entry per model call (10/5, then 3/2) and a running total
   of 13/7 (the positive control: the server has the per-call numbers).
-  Expected: the second response reports 3/2/5. Today it reports the
-  conversation's accumulated 13/7/20 (`_openai_usage_from_state` reads
-  `accumulated_token_usage`), so an OpenAI client that sums `usage` per
-  request double-counts every earlier turn. The stream's usage chunk carries
-  the same value (it is the response's `usage`).
+  The second response reports 3/2/5, not the conversation's accumulated
+  13/7/20: the gateway snapshots the combined metrics before the turn and
+  reports the difference, so an OpenAI client that sums `usage` per request
+  counts every model call once. The stream's usage chunk carries the same
+  value (it is the response's `usage`).
 - **Overlapping turns on one conversation (`F30.chat-reuse-concurrent`), known bug.**
   A stub whose second model call answers `QA_F30_RACE_B` after 8 s. The
   `llm-stub` steps cannot delay a reply, so the bullet rewrites the stub's
@@ -471,6 +542,128 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   `QA_F30_RACE_B` and report `xpass`; rerun the bullet before removing the
   marker. A fix that refuses Y with 409 instead of queueing it is also
   correct; update the expectations for Y if that is the chosen fix.
+- **A direct message during a gateway turn (`F30.direct-event-during-turn-409`).**
+  The same kind of stub: its second model call answers `QA_F30_DIRECT_B`
+  after 8 s. A gateway request continues the conversation in the background;
+  while its model call is in flight, the native events route gets a message
+  for the same conversation.
+  ```sh
+  DIRECT=$(control-agent-server fixture llm-stub --name qa-f30-direct --step reply:QA_F30_DIRECT_A \
+    --step reply:QA_F30_DIRECT_B --step reply:QA_F30_DIRECT_C --print-path)
+  cat > "$AGENT_SERVER_VERIFY_RUN/fixtures/llm-stub/qa-f30-direct.json" <<'JSON'
+  [{"reply": "QA_F30_DIRECT_A"}, {"hang": 8, "reply": "QA_F30_DIRECT_B"}, {"reply": "QA_F30_DIRECT_C"}]
+  JSON
+  control-agent-server llm set --profile qa-f30-direct --model openai/qa-stub --base-url "$DIRECT/v1" \
+    --no-api-key --no-validate --no-activate --num-retries 0
+  DCID=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 \
+    --json '{"model": "openhands_qa-f30-direct", "messages": [{"role": "user", "content": "QA_F30_DIRECT_1"}]}' \
+    --check choices.0.message.content eq QA_F30_DIRECT_A --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $DCID" \
+    --json '{"model": "openhands_qa-f30-direct", "messages": [{"role": "user", "content": "QA_F30_DIRECT_TURN"}]}' \
+    --expect 200 --raw-out "$F30/direct-turn.json" --save F30.direct-event-during-turn-409/turn > "$F30/direct-turn.out" &
+  TPID=$!
+  control-agent-server sink read --name qa-f30-direct --expect-min 2 --wait 20 > /dev/null
+  INTRUDER='{"role": "user", "content": [{"type": "text", "text": "QA_F30_DIRECT_INTRUDER"}], "run": true}'
+  control-agent-server api POST "/api/conversations/$DCID/events" --json "$INTRUDER" --expect 409 \
+    --check detail eq 'Gateway run in progress; message not saved' --expect-max-ms 5000 --save F30.direct-event-during-turn-409/refused
+  control-agent-server api GET "/api/conversations/$DCID/events/search" --query source=user --query body=QA_F30_DIRECT_TURN \
+    --check items len-eq 1 --quiet
+  control-agent-server api GET "/api/conversations/$DCID/events/search" --query source=user --query body=QA_F30_DIRECT_INTRUDER \
+    --check items len-eq 0 --save F30.direct-event-during-turn-409/not-saved
+  wait "$TPID" || { cat "$F30/direct-turn.out"; false; }
+  control-agent-server state cat fixtures/qa-f30/direct-turn.json --check choices.0.message.content eq QA_F30_DIRECT_B
+  control-agent-server sink read --name qa-f30-direct --expect-min 2 --expect-max 2
+  control-agent-server api GET "/api/conversations/$DCID/events/search" --query source=user --query body=QA_F30_DIRECT_INTRUDER \
+    --check items len-eq 0 --quiet
+  control-agent-server api POST "/api/conversations/$DCID/events" --json "$INTRUDER" --expect 200 --check success eq true \
+    --save F30.direct-event-during-turn-409/accepted
+  control-agent-server conversation wait "$DCID" --until finished,error --timeout 60
+  control-agent-server api GET "/api/conversations/$DCID/events/search" --query source=user --query body=QA_F30_DIRECT_INTRUDER \
+    --check items len-eq 1 --quiet
+  control-agent-server api GET "/api/conversations/$DCID/agent_final_response" --check response eq QA_F30_DIRECT_C --quiet
+  ```
+  While the gateway turn waits on its model, the direct POST is refused
+  within a fraction of a second with 409 `Gateway run in progress; message
+  not saved`: the `body` search that finds the turn's own user message finds
+  no intruder message, during the turn and after it. The gateway request
+  answers `QA_F30_DIRECT_B`, its own turn's reply, and the stub got exactly
+  two model calls, so the refused message started no run. Once the turn is
+  over the identical POST is 200, the message is stored and its run answers
+  `QA_F30_DIRECT_C`.
+- **A gateway turn during a direct run (`F30.chat-reuse-direct-run-409`).**
+  A conversation started through the native API whose first model call
+  answers after 15 s (the stub's script file is rewritten as above), then a
+  chat completion that names it in the header.
+  ```sh
+  BUSY=$(control-agent-server fixture llm-stub --name qa-f30-busy --step reply:QA_F30_BUSY_A --step reply:QA_F30_BUSY_OK --print-path)
+  cat > "$AGENT_SERVER_VERIFY_RUN/fixtures/llm-stub/qa-f30-busy.json" <<'JSON'
+  [{"hang": 15, "reply": "QA_F30_BUSY_A"}, {"reply": "QA_F30_BUSY_OK"}]
+  JSON
+  BCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt QA_F30_BUSY_DIRECT --print-id \
+    --llm-json "{\"model\": \"openai/qa-stub\", \"base_url\": \"$BUSY/v1\", \"api_key\": \"qa-f30-stub\", \"num_retries\": 0}")
+  control-agent-server conversation wait "$BCID" --until running --timeout 30
+  control-agent-server sink read --name qa-f30-busy --expect-min 1 --wait 30 > /dev/null
+  BUSYREQ='{"model": "openhands_deepseek-flash", "messages": [{"role": "user", "content": "QA_F30_BUSY_GATEWAY"}]}'
+  control-agent-server api POST /v1/chat/completions --auth bearer --header "X-OpenHands-ServerConversation-ID: $BCID" --json "$BUSYREQ" \
+    --expect 409 --check detail eq 'Conversation run in progress; message not saved' \
+    --check-header x-openhands-serverconversation-id missing --expect-max-ms 10000 --save F30.chat-reuse-direct-run-409/refused
+  control-agent-server api GET "/api/conversations/$BCID/events/search" --query source=user --query body=QA_F30_BUSY_DIRECT \
+    --check items len-eq 1 --quiet
+  control-agent-server api GET "/api/conversations/$BCID/events/search" --query source=user --query body=QA_F30_BUSY_GATEWAY \
+    --check items len-eq 0 --save F30.chat-reuse-direct-run-409/not-saved
+  control-agent-server api GET "/api/conversations/$BCID" --check execution_status eq running --quiet
+  control-agent-server sink read --name qa-f30-busy --expect-min 1 --expect-max 1
+  control-agent-server conversation wait "$BCID" --until finished,error --timeout 60
+  control-agent-server api GET "/api/conversations/$BCID/agent_final_response" --check response eq QA_F30_BUSY_A --quiet
+  BR=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $BCID" \
+    --json "$BUSYREQ" --expect 200 --check choices.0.message.content eq QA_F30_BUSY_OK \
+    --save F30.chat-reuse-direct-run-409/after-run --print-header X-OpenHands-ServerConversation-ID)
+  test "$BR" = "$BCID"
+  control-agent-server api GET "/api/conversations/$BCID/events/search" --query source=user --query body=QA_F30_BUSY_GATEWAY \
+    --check items len-eq 1 --quiet
+  ```
+  While the direct run waits on its model the gateway answers 409
+  `Conversation run in progress; message not saved` at once, with no
+  conversation header; the conversation is still `running`, holds its own
+  prompt but no `QA_F30_BUSY_GATEWAY` message, and the stub got no further
+  call. The direct run then finishes with its own answer; after that the
+  identical request is 200 with the new turn's answer and the same id, and
+  its message is stored.
+- **Continue a paused conversation (`F30.chat-reuse-paused`), known bug #6842.**
+  A conversation started through the native API whose first model call
+  hangs is interrupted, so it rests in `paused` with no run active; then a
+  chat completion names it in the header. The request's output is kept in a
+  file, so the second reads run before the response is judged.
+  ```sh
+  PAUSED=$(control-agent-server fixture llm-stub --name qa-f30-paused --step hang:300 --step reply:QA_F30_PAUSED_OK --print-path)
+  PCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt QA_F30_PAUSED_DIRECT --print-id \
+    --llm-json "{\"model\": \"openai/qa-stub\", \"base_url\": \"$PAUSED/v1\", \"api_key\": \"qa-f30-stub\", \"num_retries\": 0}")
+  control-agent-server conversation wait "$PCID" --until running --timeout 30
+  control-agent-server sink read --name qa-f30-paused --expect-min 1 --wait 30 > /dev/null
+  control-agent-server api POST "/api/conversations/$PCID/interrupt" --expect 200 --quiet
+  control-agent-server conversation wait "$PCID" --until paused --timeout 30
+  control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $PCID" \
+    --json '{"model": "openhands_deepseek-flash", "messages": [{"role": "user", "content": "QA_F30_PAUSED_TURN"}]}' \
+    --check-header x-openhands-serverconversation-id eq "$PCID" > "$F30/paused-turn.json" || true
+  control-agent-server conversation wait "$PCID" --until finished,error --timeout 60
+  control-agent-server api GET "/api/conversations/$PCID" --check execution_status eq finished --quiet
+  control-agent-server api GET "/api/conversations/$PCID/events/search" --query source=user --query body=QA_F30_PAUSED_TURN \
+    --check items len-eq 1 --save F30.chat-reuse-paused/user-message
+  control-agent-server api GET "/api/conversations/$PCID/agent_final_response" --check response eq QA_F30_PAUSED_OK --quiet
+  control-agent-server sink read --name qa-f30-paused --expect-min 2 --expect-max 2
+  control-agent-server assert --json "$F30/paused-turn.json" --check status eq 200 \
+    --check response.body.choices.0.message.content eq QA_F30_PAUSED_OK --check checks.0.ok eq true  # bug: value.status eq 409 && value.response.body.detail contains 'ended with status: paused'
+  ```
+  The turn is saved and run either way: the conversation finishes, holds
+  exactly one `QA_F30_PAUSED_TURN` user message, its final response is the
+  stub's `QA_F30_PAUSED_OK`, and the stub got exactly two calls. Expected:
+  the request answers 200 with that answer and the conversation's id in
+  `X-OpenHands-ServerConversation-ID`
+  ([#6842](https://github.com/OpenHands/software-agent-sdk/issues/6842), fix in [#6843](https://github.com/OpenHands/software-agent-sdk/pull/6843)).
+  Today it answers 409 `Agent run ended with status: paused` within a
+  fraction of a second, without the header: the gateway reads the resting
+  `paused` status as the end of the turn it has just started, so a client
+  that retries the 409 adds a second turn.
 - **The agent runs its own tools (`F30.chat-agent-tools`).** Ask the real
   model to use the terminal, and pass an OpenAI client tool with
   `tool_choice: required`.
@@ -606,7 +799,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   The gateway answers 409 within seconds; the conversation inherited
   `AlwaysConfirm` from the saved settings and waits with the command not run.
   The settings are restored at the end.
-- **Confirmation on a continued conversation (`F30.chat-reuse-confirmation`), known bug.**
+- **Confirmation on a continued conversation (`F30.chat-reuse-confirmation`).**
   The same settings (restored by a trap even when the bullet fails); the
   stub answers the first turn with text and the second with a command.
   ```sh
@@ -621,7 +814,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check choices.0.message.content eq QA_F30_FIRST_OK --print-header X-OpenHands-ServerConversation-ID)
   control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $RCID" \
     --json '{"model": "openhands_qa-f30-reconf", "messages": [{"role": "user", "content": "QA_F30_RECONF_2"}]}' \
-    --expect 409,504 --check-header x-openhands-serverconversation-id missing \
+    --expect 409 --check-header x-openhands-serverconversation-id missing \
     --save F30.chat-reuse-confirmation/second-turn > "$F30/reconf-2.json" &
   XPID=$!
   control-agent-server sink read --name qa-f30-reconf --expect-min 2 --wait 30 > /dev/null
@@ -630,17 +823,15 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   test ! -e "$AGENT_SERVER_VERIFY_RUN/server/workspace/project/qa_f30_reconf.txt"
   wait "$XPID" || { cat "$F30/reconf-2.json"; false; }
   control-agent-server state cat fixtures/qa-f30/reconf-2.json --check status eq 409 \
-    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000  # bug: content.status eq 504 && content.response.body.exception contains 'Agent run timed out'
+    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000
   ```
   The second turn's model call proposes the command and the conversation is
   `waiting_for_confirmation` within seconds (the command not run), while the
-  gateway request is still open; the request then ends with 409 or 504 (any
-  other answer is not this bug). Expected: it answers 409 within seconds,
-  like a new conversation. Today it blocks for the full 120 s and answers 504
-  `Agent run timed out` (`exception` `504: Agent run timed out`):
-  `_wait_for_reused_conversation_completion` only returns on `is_terminal()`
-  (finished, error, stuck), so `paused` and `waiting_for_confirmation` are
-  never seen. The bullet takes about two minutes.
+  gateway request is still open; the request then answers 409
+  `Agent run ended with status: waiting_for_confirmation` within seconds,
+  like a new conversation: the continued-conversation wait
+  (`_wait_for_reused_conversation_completion`) stops on `paused` and
+  `waiting_for_confirmation` as well as on terminal states.
 - **Run limit (`F30.chat-run-limit-429`).** Restart with one run slot, hold
   it with a conversation whose model call hangs, then call the gateway.
   ```sh
@@ -672,13 +863,13 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   caller-chosen id does not exist and the count is unchanged. Once the holder
   is deleted the same request succeeds and creates `$LID`. The last line
   restores the default capacity.
-- **Run limit on a continued conversation (`F30.chat-reuse-run-limit-429`), known bug.**
+- **Run limit on a continued conversation (`F30.chat-reuse-run-limit-429`).**
   The same full slot, then a turn on the finished `CID` sent twice, as an
   OpenAI SDK does when it retries a 429 (`max_retries` defaults to 2). A trap
   frees the slot and restores the default capacity even when the bullet
   fails.
 
-  Requires: `F30.chat-basic`
+  Requires: `F30.chat-reuse-header`
   ```sh
   trap 'control-agent-server api DELETE "/api/conversations/$HOLD2" >/dev/null || true; control-agent-server restart --reset-config >/dev/null || true' EXIT
   control-agent-server restart --config-json '{"max_concurrent_runs": 1}'
@@ -698,20 +889,16 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --expect 429 --expect-max-ms 10000 --save F30.chat-reuse-run-limit-429/retry
   control-agent-server api GET "/api/conversations/$HOLD2" --check execution_status eq running --quiet
   control-agent-server api GET "/api/conversations/$CID/events/search" --query source=user --query body=QA_F30_429_REUSE \
-    --check items len-eq 0 --save F30.chat-reuse-run-limit-429/user-messages  # bug: status eq 200 && response.body.items len-ge 1 && response.body.items.0.source eq user
+    --check items len-eq 0 --save F30.chat-reuse-run-limit-429/user-messages
   ```
   Both tries are refused with 429 at once while the holder still runs, and
   the same `body` search finds an earlier user turn of `CID` (so an empty
-  result is not a filter that matches nothing). Expected: like a new
-  conversation, a 429 leaves nothing behind, so the client's retry is safe.
-  Today the gateway appends the user message before the run is refused
-  (`EventService.send_message` saves it, then `run()` raises
-  `ConversationRunLimitExceeded`, whose 429 detail says `Message saved, but
-  the conversation run limit was reached. Retry POST
-  /api/conversations/<id>/run without resending the message.`), so the
-  conversation holds one copy per try (2 here), and a retry that finally
-  succeeds adds a third. An OpenAI client cannot follow that detail without
-  the native API.
+  result is not a filter that matches nothing). Like a new conversation, a
+  429 leaves nothing behind: the gateway reserves the run slot
+  (`EventService.reserve_run_slot`) before it saves the user message, so the
+  refused tries add no user turn and the client's retry is safe. (The native
+  `POST /api/conversations/{id}/events` still saves the message and answers
+  429 with a `/run` retry hint.)
 - **Gateway timeout (`F30.chat-timeout-504`).** A stub whose model call
   hangs past the gateway's fixed 120 s; the server's own timer is under test,
   so the bullet takes two minutes.
@@ -889,17 +1076,19 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 
 ## Gotchas
 
-- It is an agent, not a proxy: every call runs the full OpenHands agent from
-  the saved settings (default tools including `terminal`, MCP servers,
-  condenser, confirmation policy and security analyzer, `max_iterations`) in
-  the one shared `workspace_path`, so concurrent gateway calls see each
-  other's files. A vague prompt can make the agent run many tools for
-  minutes; the client sees nothing until the run ends.
+- Every call runs the full agent from the active Agent Profile (tools, MCP
+  servers, condenser and system context), with saved conversation settings
+  (confirmation policy, security analyzer and iteration limit). Local runtime
+  calls use the shared `workspace_path`. Docker runtime calls use the
+  conversation container and its `/workspace`. A vague prompt can make the
+  agent run many tools for minutes; the client sees nothing until the run ends.
 - Model ids are `openhands_` plus an LLM profile name, case-sensitive. The
-  active profile is not a default and there is no alias. Profiles and
+  active LLM profile is not a gateway default and there is no model alias. Profiles and
   settings come from `OH_PERSISTENCE_DIR` (the run's `home/.openhands`), not
-  from the conversations directory. If the saved settings select an ACP
-  agent, the profile's LLM is ignored and only the system text is applied.
+  from the conversations directory. A missing or dangling active Agent
+  Profile pointer is repaired to `default` before launch; 409 means no valid
+  profile could be selected. If the active Agent Profile selects an ACP
+  agent, the named LLM profile is ignored and only the system text is applied.
 - Chat completions keep only the last user message plus all system and
   developer text; earlier turns in `messages[]` are dropped without an error.
   A client that replays history (the normal OpenAI pattern) gets an agent
@@ -909,14 +1098,30 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   observability headers are validated (an unknown model is still 404) but not
   applied; the response's `model` echoes the request, not the LLM that ran.
   `/v1/responses` never reads the conversation header.
-- Do not overlap requests on one conversation. A message sent while the
-  conversation runs is queued for a rerun, and the waiting request returns
-  whatever the conversation's final answer is when its 2 s poll sees a
-  terminal state, which can be the later request's answer (see
-  `F30.chat-reuse-concurrent`).
-- `usage` is the conversation's accumulated usage (see
-  `F30.chat-usage-per-request`); on a fresh conversation that equals the
-  request's own usage summed over every model call the agent made.
+- Do not overlap requests on one local-runtime conversation. A second
+  gateway request sent while a gateway turn runs is queued for a rerun, and
+  the first request can then return another turn's answer (see
+  `F30.chat-reuse-concurrent`). The native routes and the gateway keep out
+  of each other's turns: a direct `POST .../events` during a gateway turn is
+  409 `Gateway run in progress; message not saved`
+  (`F30.direct-event-during-turn-409`), and a gateway request on a
+  conversation whose direct run is active is 409 `Conversation run in
+  progress; message not saved` (`F30.chat-reuse-direct-run-409`). Neither
+  saves the message, so the request can be sent again later.
+- A 409 or 500 on a continued conversation does not always mean nothing
+  ran: on a conversation resting in `paused` or `error` the turn is saved
+  and runs although the request fails (`F30.chat-reuse-paused`,
+  [#6842](https://github.com/OpenHands/software-agent-sdk/issues/6842)).
+  Read the conversation before retrying.
+  Docker gateway turns for one conversation wait in order inside the container.
+  A turn that cannot start before its deadline returns 504 without saving its
+  message. A new turn waits for a prior run that remains active after a 504.
+- `usage` is the request's own usage summed over every model call the agent
+  made while serving it; on a continued conversation earlier turns are not
+  included (see `F30.chat-usage-per-request`). Overlapping local-runtime
+  requests on one conversation still mix their usage (see
+  `F30.chat-reuse-concurrent`). Docker runtime reports the request's token
+  use from the inner gateway route.
 - Streaming is simulated: the router runs the whole agent first
   (`stream` is forced off for the run), then sends three or four frames and
   `[DONE]` at once. Errors are plain JSON with a status code, never SSE error
@@ -939,10 +1144,9 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   `max_concurrent_runs` (default 10) is full the gateway answers 429 at once
   instead of queueing. For a new conversation a 429 creates nothing, so
   retrying the same request (even with the same caller-chosen id) is safe.
-  On a continued conversation the user message is already saved when the
-  429 comes back (see `F30.chat-reuse-run-limit-429`), and OpenAI SDKs retry
-  429 automatically, so turn off SDK retries (`max_retries=0`) for continued
-  conversations or expect duplicate turns.
+  The same holds on a continued conversation (`F30.chat-reuse-run-limit-429`):
+  the 429 comes before the user message is saved, so the OpenAI SDKs'
+  automatic 429 retries add no duplicate turns.
 - Gateway conversations are untitled (`autotitle` off) and never deleted;
   `store: false` is not a retention control. Delete them with
   `DELETE /api/conversations/{id}`.

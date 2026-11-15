@@ -14,7 +14,7 @@ Source: `openhands-agent-server/openhands/agent_server/plugins_router.py`, `open
 
 Needs: `llm`, `git`, `node`, `network`
 
-Routes: `POST /api/plugins`, `POST /api/plugins/install`,
+Routes: `POST /api/plugins`, `POST /api/plugins/fetch`, `POST /api/plugins/install`,
 `GET /api/plugins/installed`, `GET /api/plugins/installed/{plugin_name}`,
 `PATCH /api/plugins/installed/{plugin_name}`,
 `DELETE /api/plugins/installed/{plugin_name}`,
@@ -26,8 +26,9 @@ Routes: `POST /api/plugins`, `POST /api/plugins/install`,
 - `F26.auth`: every plugins route answers 401 without a valid session key and installs nothing.
 - `F26.catalog-project`: `POST /api/plugins` with a `project_dir` lists the plugins under its `.agents/plugins` and `.openhands/plugins` (also from the enclosing git root) with their skills, command skills and files; `load_project: false` or no `project_dir` lists none, and a request without a JSON body is 422.
 - `F26.catalog-user-precedence`: `load_user` lists the plugins under `~/.agents/plugins` and `$OH_PERSISTENCE_DIR/plugins`; a project plugin wins over a user plugin of the same name, and a user-directory plugin wins over an enabled installed plugin of the same name.
+- `F26.fetch-source`: strict fetch pins and describes a git plugin without installing it, reuses the pinned cache, and rejects an unknown ref, escaping subpath or missing secret with a typed 422 error.
 - `F26.install-local`: installing a local Claude Code layout plugin answers 200 with its metadata, skills and files, copies it into the store, records it in `.installed.json`, and the ambient catalog lists it (never the store itself).
-- `F26.install-agent-plugins`: a root `plugin.json` with the Agent Plugins `$schema` installs with its `skills/` and `dev.openhands/commands`; the same manifest without `$schema` is 422.
+- `F26.install-agent-plugins`: a root `plugin.json` with the Agent Plugins `$schema` installs with its `skills/` and `dev.openhands/commands`; an object without `$schema` falls back to the Claude Code layout and infers metadata from its directory.
 - `F26.install-git`: installing from a `file://` git source with `repo_path` records the source, `repo_path` and the resolved commit, and copies only that subdirectory.
 - `F26.install-repo-root-name`: a git source installed without `repo_path` and without a manifest is named after the repository, not after the server's cache directory.
 - `F26.install-conflict`: a second install of the same plugin is 409 and changes nothing; `force: true` reinstalls and keeps the enabled flag.
@@ -42,7 +43,7 @@ Routes: `POST /api/plugins`, `POST /api/plugins/install`,
 - `F26.uninstall`: uninstall removes the directory and the record; the single view, the list and the ambient catalog no longer show it, and a second uninstall is 404.
 - `F26.conversation-ambient`: a new conversation loads an enabled installed plugin on its first message: its `UserPromptSubmit` hook runs (a `HookExecutionEvent`, also on the events socket), its command skill activates, and its skills show in the conversation.
 - `F26.conversation-disabled`: a conversation started after the plugin was disabled loads neither its hook nor its skills, while the user-directory plugins still load.
-- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely, its command as well as its hook.
+- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely: its command, skills and hook, and the MCP server its `.mcp.json` added.
 - `F26.restart-persist`: installed plugins, their records and their enabled flags survive a restart.
 - `F26.marketplace-local`: against a local stand-in for the extensions repository, `GET /api/plugins/marketplace` lists only `./plugins/` entries (local contents for local entries, attach coordinates for git entries) with a fresh `installed` flag; a repository without a manifest gives an empty catalog that is not cached.
 - `F26.marketplace-cache`: a non-empty catalog is served from a per-process cache (a new upstream entry appears only after a restart; the 5-minute TTL itself is not waited out), while `installed` stays fresh.
@@ -57,6 +58,12 @@ Routes: `POST /api/plugins`, `POST /api/plugins/install`,
   `{"plugins": [{name, version, description, path, skills, files}]}`, the set
   a conversation in `project_dir` would auto-load. Driven by the
   `F26.catalog-*` bullets and as the second view of every mutation.
+- REST, strict fetch: `POST /api/plugins/fetch` accepts `source`, `ref`,
+  `repo_path`, `secrets` and `timeout`, and returns the pinned cache path,
+  resolved ref, source, manifest, skills and commands without installing or
+  enabling the plugin (`F26.fetch-source`). Source errors include typed
+  `detail.code` values with 422, 502 or 504 statuses. This route was added
+  in #5987; the pinned TypeScript client has no fetch wrapper yet.
 - REST, installed plugins: `POST /api/plugins/install` (`source`, `ref`,
   `repo_path`, `force`), `GET /api/plugins/installed`,
   `GET|PATCH|DELETE /api/plugins/installed/{plugin_name}` (`PATCH` takes
@@ -159,6 +166,7 @@ Preconditions:
   with a wrong key), then once with the key.
   ```sh
   control-agent-server api POST /api/plugins --auth none --json '{}' --expect 401
+  control-agent-server api POST /api/plugins/fetch --auth none --json '{"source": "'"$PL"'"}' --expect 401
   control-agent-server api POST /api/plugins/install --auth none --json '{"source": "'"$PL"'"}' --expect 401
   control-agent-server api GET /api/plugins/installed --auth bad --expect 401
   control-agent-server api GET /api/plugins/installed/qa-f26-inst --auth none --expect 401
@@ -169,7 +177,7 @@ Preconditions:
   test ! -e "$I"
   control-agent-server api GET /api/plugins/installed --expect 200 --check plugins len-eq 0
   ```
-  All eight answer `401 {"detail": "Unauthorized"}`, the store directory does
+  All nine answer `401 {"detail": "Unauthorized"}`, the store directory does
   not exist, and the same list with the key answers 200 with no plugins.
 - **Project plugins (`F26.catalog-project`).** List only the fixture
   project, from its root and from a subdirectory, then with the project tier
@@ -257,6 +265,36 @@ Preconditions:
   `.installed.json` and the copied files agree. The ambient catalog appends
   the installed plugin after the directory plugins and does not mistake the
   store directory `$OH_PERSISTENCE_DIR/plugins/installed` for a plugin.
+- **Fetch without installing (`F26.fetch-source`).** Pin a git plugin and
+  read its metadata without adding it to the installed catalog.
+  ```sh
+  FETCH_SOURCE=$(control-agent-server fixture git-source --name qa-f26-fetch --print-path)
+  FETCH_SHA=$(git -C "$FETCH_SOURCE" rev-parse HEAD)
+  FETCH_BODY=$(jq -cn --arg source "file://$FETCH_SOURCE" --arg ref "$FETCH_SHA" \
+    '{source:$source,ref:$ref,repo_path:"plugins/qa-f26-fetch-plugin"}')
+  FETCH_PATH=$(control-agent-server api POST /api/plugins/fetch --json "$FETCH_BODY" --expect 200 \
+    --check resolved_ref eq "$FETCH_SHA" --check manifest.name eq qa-f26-fetch-plugin \
+    --check skills contains qa-f26-fetch-plugin-skill --check commands contains qa-hello \
+    --save F26.fetch-source/fetched --field path)
+  test -f "$FETCH_PATH/.plugin/plugin.json"
+  control-agent-server api GET /api/plugins/installed/qa-f26-fetch-plugin --expect 404 \
+    --save F26.fetch-source/not-installed
+  control-agent-server api POST /api/plugins/fetch --json "$FETCH_BODY" --expect 200 \
+    --check path eq "$FETCH_PATH" --check resolved_ref eq "$FETCH_SHA" --save F26.fetch-source/cached
+  control-agent-server api POST /api/plugins/fetch \
+    --json "$(jq -cn --arg source "file://$FETCH_SOURCE" '{source:$source,ref:"qa-no-such-ref",repo_path:"plugins/qa-f26-fetch-plugin"}')" \
+    --expect 422 --check detail.code eq ref_not_found --save F26.fetch-source/unknown-ref
+  control-agent-server api POST /api/plugins/fetch \
+    --json "$(jq -cn --arg source "file://$FETCH_SOURCE" --arg ref "$FETCH_SHA" '{source:$source,ref:$ref,repo_path:"../outside"}')" \
+    --expect 422 --check detail.code eq repo_path_not_found --save F26.fetch-source/outside
+  control-agent-server api POST /api/plugins/fetch --json '{"source":"${QA_F26_MISSING_SOURCE}"}' \
+    --expect 422 --check detail.code eq missing_secret --save F26.fetch-source/missing-secret
+  control-agent-server api GET /api/plugins/installed/qa-f26-fetch-plugin --expect 404
+  ```
+  Fetch returns a pinned cache path, manifest, skill names and command names;
+  repeating the same SHA reuses that path. An unknown ref and an escaping
+  subpath fail with typed errors, and a missing source secret is rejected
+  before git runs. None of these calls installs or enables the plugin.
 - **Agent Plugins layout (`F26.install-agent-plugins`).** Install a root
   `plugin.json` with the Agent Plugins `$schema`, then the same manifest
   without it.
@@ -267,14 +305,21 @@ Preconditions:
     --check files contains plugin.json --check files contains dev.openhands/commands/run.md \
     --save F26.install-agent-plugins/install
   control-agent-server api GET /api/plugins/installed/qa-f26-ap --expect 200 --check skills.1.name eq qa-f26-ap:run
-  control-agent-server api POST /api/plugins/install --json '{"source": "'"$F/qa-f26-ap-noschema"'"}' --expect 422 \
-    --check detail eq 'Invalid plugin. Ensure it has a valid kebab-case name.' --save F26.install-agent-plugins/no-schema
-  test ! -e "$I/qa-f26-ap-noschema"
+  control-agent-server api POST /api/plugins/install --json '{"source": "'"$F/qa-f26-ap-noschema"'"}' --expect 200 \
+    --check name eq qa-f26-ap-noschema --check version eq 1.0.0 --check skills len-eq 0 \
+    --save F26.install-agent-plugins/no-schema
+  control-agent-server api GET /api/plugins/installed/qa-f26-ap-noschema --expect 200 \
+    --check name eq qa-f26-ap-noschema --check files contains plugin.json
+  control-agent-server api DELETE /api/plugins/installed/qa-f26-ap-noschema --expect 200
+  control-agent-server api GET /api/plugins/installed/qa-f26-ap-noschema --expect 404
   ```
   The Agent Plugins format is detected from the root `plugin.json`: the skill
   comes from `skills/` and the command from `dev.openhands/commands/`
-  (`qa-f26-ap:run`). Without `$schema` the manifest is claimed by the same
-  format and rejected (422), not loaded as a manifest-less plugin.
+  (`qa-f26-ap:run`). A JSON object without `$schema` does not declare that
+  format and falls back to the Claude Code layout, as specified by #5990.
+  Its root manifest is ignored, so this fixture gets its directory's name
+  and version `1.0.0`. The read confirms the install before cleanup keeps
+  later catalog counts unchanged.
 - **Install from a git source (`F26.install-git`).** Install the plugin
   subdirectory of the `file://` fixture repository.
   ```sh
@@ -509,7 +554,7 @@ Preconditions:
   `qa-f26-mismatch` (manifest name `qa-f26-other`), leaving it on disk.
   `POST /api/plugins` and new conversations reconcile the same way, so a
   copied plugin is loaded although its single view said 404.
-- **Unfetchable refresh (`F26.refresh-unfetchable`), known bug.**
+- **Unfetchable refresh (`F26.refresh-unfetchable`).**
   Install two plugins from temporary directories and adopt a third copied
   into the store; then delete the first source, break the second one's
   manifest, and refresh all three. The bullet arranges everything itself,
@@ -525,23 +570,18 @@ Preconditions:
   control-agent-server api GET /api/plugins/installed/qa-f26-adopted --expect 200 --check source eq local
   rm -rf "$F/tmp/qa-f26-gone"
   printf '{bad json' > "$F/tmp/qa-f26-broken/.plugin/plugin.json"
-  control-agent-server api POST /api/plugins/installed/qa-f26-gone/refresh --expect 400,422 --save F26.refresh-unfetchable/vanished  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
+  control-agent-server api POST /api/plugins/installed/qa-f26-gone/refresh --expect 400,422 --save F26.refresh-unfetchable/vanished
   control-agent-server api GET /api/plugins/installed/qa-f26-gone --expect 200 --check enabled eq true
-  control-agent-server api POST /api/plugins/installed/qa-f26-broken/refresh --expect 422 --save F26.refresh-unfetchable/invalid  # bug: status eq 500 && response.body.exception contains 'Invalid JSON'
+  control-agent-server api POST /api/plugins/installed/qa-f26-broken/refresh --expect 422 --save F26.refresh-unfetchable/invalid
   control-agent-server api GET /api/plugins/installed/qa-f26-broken --expect 200 --check version eq 0.1.0
-  control-agent-server api POST /api/plugins/installed/qa-f26-adopted/refresh --expect 400,422 --save F26.refresh-unfetchable/local  # bug: status eq 500 && response.body.exception contains 'Unable to parse extension source'
+  control-agent-server api POST /api/plugins/installed/qa-f26-adopted/refresh --expect 400,422 --save F26.refresh-unfetchable/local
   control-agent-server api GET /api/plugins/installed/qa-f26-adopted --expect 200 --check source eq local
   ```
   The install route answers an unfetchable source with 400 and an invalid
-  plugin with 422; the refresh route should do the same and keep the
-  installed copy. Today all three refreshes are `500` with the exception
-  text: `Local extension path does not exist: ...`, `Invalid JSON in ...`
-  and `Unable to parse extension source: local`.
-  `refresh_plugin_endpoint` does not catch `ExtensionFetchError` or
-  `ValueError` as the install route does. The installed copies survive.
-  Each refresh alone encodes the bug, so each is marked `# bug`; a replay
-  stops at the first one still failing (today the vanished source), and the
-  reads after a fixed refresh check that the installation was kept.
+  plugin with 422; the refresh route does the same and keeps the installed
+  copy: the vanished source and the adopted `local` one are `400` (nothing
+  can be fetched), the broken manifest `422`. The reads after each refresh
+  check that the installation was kept.
 - **Uninstall (`F26.uninstall`).** Remove the Agent Plugins layout plugin,
   read it back everywhere, remove it again; then clear the leftovers of the
   earlier bullets.
@@ -624,7 +664,7 @@ Preconditions:
   first `full_state` frame embeds hook configuration); the same reads with
   the plugin enabled match in `F26.conversation-ambient`. The plugin stays
   disabled.
-- **Resume after disabling (`F26.conversation-resume-disabled`), known bug.**
+- **Resume after disabling (`F26.conversation-resume-disabled`).**
   Install and enable the plugin (`force`, so the bullet also runs alone with
   `map run --only`), let a conversation load it with a plain prompt, disable
   the plugin, restart the server, and send the command, for the first time,
@@ -632,9 +672,18 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/plugins/install --json '{"source": "'"$PL"'", "force": true}' --expect 200
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": true}' --expect 200
+  PMC=$(control-agent-server fixture plugin --name qa-f26-mcpplug --print-path)
+  MCPR=$(control-agent-server fixture mcp-server --name qa-f26-mcp | jq -c .mcp_server)
+  printf '{"mcpServers": {"qa-f26-mcp": %s}}\n' "$MCPR" > "$PMC/.mcp.json"
+  control-agent-server api POST /api/plugins/install --json '{"source": "'"$PMC"'", "force": true}' --expect 200 --check enabled eq true
   CIDR=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with the single word: ok' --wait --timeout 240 --print-id)
   control-agent-server conversation events "$CIDR" --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-count 1
+  control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 --check agent.mcp_config.qa-f26-mcp.command exists \
+    --check agent.agent_context.skills contains '"name": "qa-f26-mcpplug-skill"' --quiet --save F26.conversation-resume-disabled/before
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers contains qa-f26-mcp \
+    --check ambient_plugin_skills contains qa-f26-inst:qa-hello
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": false}' --expect 200
+  control-agent-server api PATCH /api/plugins/installed/qa-f26-mcpplug --json '{"enabled": false}' --expect 200
   control-agent-server restart
   control-agent-server ws start "/sockets/events/$CIDR" --name qa-f26-resume --duration 300
   control-agent-server conversation send "$CIDR" --text '/qa-f26-inst:qa-hello' --wait --timeout 240
@@ -642,21 +691,37 @@ Preconditions:
   control-agent-server ws read qa-f26-resume --kinds MessageEvent --contains '"text": "/qa-f26-inst:qa-hello"' --expect-min 1 --wait 30
   control-agent-server ws read qa-f26-resume --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-none
   control-agent-server ws stop qa-f26-resume --kinds MessageEvent --contains '"activated_skills": ["qa-f26-inst:qa-hello"]' --expect-none \
-    --save F26.conversation-resume-disabled/frames  # bug: matching ge 1
+    --save F26.conversation-resume-disabled/frames
   control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 \
-    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation  # bug: status eq 200 && response.body.agent.agent_context.skills contains qa-f26-inst
+    --check agent.agent_context.skills not-contains qa-f26-inst --check agent.agent_context.skills not-contains qa-f26-mcpplug \
+    --check agent.mcp_config.qa-f26-mcp missing --save F26.conversation-resume-disabled/conversation
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers len-eq 0 \
+    --check ambient_plugin_skills not-contains qa-f26-inst
+  control-agent-server api DELETE /api/plugins/installed/qa-f26-mcpplug --expect 200
   ```
   The conversation loaded the plugin before it was disabled (its hook ran
   for the prompt). Ambient plugins are not pinned to a conversation; on
   resume they are "re-discovered from disk / current enabled state"
-  (`LocalConversation._ensure_plugins_loaded`), so the resumed turn should
-  behave like `F26.conversation-disabled`. It does run the user hook and not
-  the disabled plugin's hook, but the disabled plugin's command still
-  activates (`activated_skills: ["qa-f26-inst:qa-hello"]` on the user
-  message, the first marked check), and the agent context still lists its
-  skills (the second): they were merged into the agent and persisted in
-  `base_state.json`, so only its hooks follow the current state (by the same
-  path, read from source and not driven here, its MCP servers stay too). The command is sent here for the
+  (`LocalConversation._ensure_plugins_loaded`), so the resumed turn
+  behaves like `F26.conversation-disabled`: the user hook runs, the disabled
+  plugin's hook does not, its command does not activate (no
+  `activated_skills: ["qa-f26-inst:qa-hello"]` on the user message), and the
+  agent context lists none of its skills. Ambient contributions are merged
+  into the agent persisted in `base_state.json`, so the conversation records
+  their skill and MCP server names and drops them after successful discovery.
+  A failed scan preserves the previous contributions and ownership record.
+  A second plugin, `qa-f26-mcpplug`, adds the stdio MCP server `qa-f26-mcp`
+  through its `.mcp.json`: before the restart the conversation's
+  `agent.mcp_config` has it and `base_state.json` records it in
+  `ambient_plugin_mcp_servers` (with the skills in `ambient_plugin_skills`;
+  neither field is in the REST view); after the plugin is disabled and the
+  conversation resumes, `agent.mcp_config` no longer has it and both records
+  hold only what is still enabled. The drop happens when the conversation
+  loads its plugins on the first resumed message, which is why the recipe
+  sends one before it reads the agent. That plugin is uninstalled at the end.
+  Read from source and not driven here: explicit replacement agents start with no inherited ownership, and legacy
+  conversations without a record retain unidentifiable contributions rather
+  than deleting caller content by name. The command is sent here for the
   first time because a keyword skill activates once per conversation
   (`activated_knowledge_skills`). The plugin stays disabled.
 - **Persistence across a restart (`F26.restart-persist`).** Disable
@@ -832,7 +897,10 @@ Preconditions:
   the whole directory is copied (a git source without `repo_path` copies the
   clone including `.git`, which `files` hides). Never install a large
   directory such as `/tmp` to test this.
-- Every `ValueError` while loading a plugin (invalid JSON, missing `$schema`,
+- A root `plugin.json` object without `$schema` falls back to the Claude
+  Code layout (#5990); malformed JSON or an unsupported explicit `$schema`
+  is still rejected by the Agent Plugins format.
+- Every `ValueError` while loading a plugin (invalid JSON, unsupported `$schema`,
   Agent Plugins schema violations, a non-kebab-case name) answers the same
   `422 Invalid plugin. Ensure it has a valid kebab-case name.`; the real
   reason is in neither the response nor the server log (the log repeats the
@@ -850,7 +918,8 @@ Preconditions:
   dropped. A plugin installed from a marketplace entry records the absolute
   path into the public clone, so its refresh copies whatever the clone holds
   (only refreshed by a later catalog fetch). A plugin adopted from disk has
-  source `local` and cannot be refreshed (`F26.refresh-unfetchable`).
+  source `local` and cannot be refreshed: its refresh is `400`
+  (`F26.refresh-unfetchable`).
 - The marketplace always reads `https://github.com/OpenHands/extensions` at
   `EXTENSIONS_REF` (default `main`); an existing clone is updated from its own
   `origin`, which is what makes the local stand-in work. A non-empty catalog
@@ -859,8 +928,8 @@ Preconditions:
   name counts, whatever its source.
 - Ambient plugins load once per conversation, at its first message or run.
   Disabling or uninstalling a plugin does not unload it from a conversation
-  that is already running; after a restart its hooks are gone but its skills
-  and commands stay (`F26.conversation-resume-disabled`).
+  that is already running; after a restart it is gone, hooks, skills,
+  commands and MCP servers alike (`F26.conversation-resume-disabled`).
 - `GET /api/conversations/{id}` trims `agent.agent_context.skills` unless
   `include_skills=true`, so a plain `GET` shows no plugin skills.
 - `POST /api/plugins` needs a JSON body; without one it is 422 (the

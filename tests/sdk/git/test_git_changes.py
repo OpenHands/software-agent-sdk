@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
-from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
+from openhands.sdk.git.git_changes import (
+    _parse_name_status,
+    get_changes_in_repo,
+    get_git_changes,
+)
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 
 
@@ -187,6 +191,30 @@ def test_get_changes_in_repo_nested_directories():
         # All should be added files
         for change in changes:
             assert change.status == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_subdirectory_paths_are_relative_to_it(tmp_path):
+    """A subdirectory of a repository lists only its own changes, on its base."""
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("hello\n")
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+    (tmp_path / "src" / "old.py").write_text("old\n")
+    run_bash_command("git add . && git commit -m init", str(tmp_path))
+
+    (tmp_path / "README.md").write_text("edited\n")
+    (tmp_path / "notes.txt").write_text("note\n")
+    (tmp_path / "src" / "app.py").write_text("x = 2\n")
+    (tmp_path / "src" / "old.py").unlink()
+    (tmp_path / "src" / "new.py").write_text("new\n")
+
+    changes = get_changes_in_repo(tmp_path / "src", ref="HEAD")
+
+    assert sorted((str(c.path), c.status) for c in changes) == [
+        ("app.py", GitChangeStatus.UPDATED),
+        ("new.py", GitChangeStatus.ADDED),
+        ("old.py", GitChangeStatus.DELETED),
+    ]
 
 
 def test_get_changes_in_repo_staged_and_unstaged():
@@ -806,3 +834,89 @@ def test_get_git_changes_non_repo_without_repo_below_still_raises():
 
         with pytest.raises(GitRepositoryError):
             get_git_changes(temp_dir)
+
+
+@pytest.mark.parametrize(
+    "output, expected",
+    [
+        ("M\0my notes.md\0", [(GitChangeStatus.UPDATED, "my notes.md")]),
+        ("M\0café.txt\0", [(GitChangeStatus.UPDATED, "café.txt")]),
+        (
+            "R100\0old name.txt\0new name.txt\0",
+            [
+                (GitChangeStatus.DELETED, "old name.txt"),
+                (GitChangeStatus.ADDED, "new name.txt"),
+            ],
+        ),
+        ("C75\0a b.txt\0c d.txt\0", [(GitChangeStatus.ADDED, "c d.txt")]),
+        (
+            'A\0tab\there\0D\0new\nline "q" \\b\0',
+            [
+                (GitChangeStatus.ADDED, "tab\there"),
+                (GitChangeStatus.DELETED, 'new\nline "q" \\b'),
+            ],
+        ),
+        ("", []),
+    ],
+)
+def test_parse_name_status_keeps_names_verbatim(output, expected):
+    """``-z`` name-status fields are parsed without whitespace splitting."""
+    changes = _parse_name_status(output)
+
+    assert [(c.status, c.path) for c in changes] == [
+        (status, Path(path)) for status, path in expected
+    ]
+
+
+def test_parse_name_status_rejects_truncated_output():
+    with pytest.raises(GitCommandError):
+        _parse_name_status("R100\0only-old.txt\0")
+
+
+def test_get_changes_in_repo_lists_special_names_verbatim():
+    """Names with spaces and non-ASCII characters keep their real names,
+    for modified, renamed and untracked files alike."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        repo = Path(temp_dir)
+        (repo / "my notes.md").write_text("a\n")
+        (repo / "café.txt").write_text("b\n")
+        (repo / "old name.txt").write_text("rename me\n")
+        run_bash_command("git add -A && git commit -qm names", temp_dir)
+
+        (repo / "my notes.md").write_text("a2\n")
+        (repo / "café.txt").write_text("b2\n")
+        run_bash_command("git mv 'old name.txt' 'new name.txt'", temp_dir)
+        (repo / "ünïcode untracked.txt").write_text("u\n")
+
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        assert sorted((str(c.path), c.status) for c in changes) == sorted(
+            [
+                ("my notes.md", GitChangeStatus.UPDATED),
+                ("café.txt", GitChangeStatus.UPDATED),
+                ("old name.txt", GitChangeStatus.DELETED),
+                ("new name.txt", GitChangeStatus.ADDED),
+                ("ünïcode untracked.txt", GitChangeStatus.ADDED),
+            ]
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_get_changes_in_repo_type_change_does_not_abort_listing(tmp_path):
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "target.txt").write_text("target")
+    (tmp_path / "link.txt").write_text("regular file")
+    (tmp_path / "other.txt").write_text("before")
+    run_bash_command("git add -A", str(tmp_path))
+    run_bash_command("git commit -q -m 'commit'", str(tmp_path))
+    (tmp_path / "link.txt").unlink()
+    (tmp_path / "link.txt").symlink_to("target.txt")
+    (tmp_path / "other.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert {(c.status, c.path) for c in changes} == {
+        (GitChangeStatus.UPDATED, Path("link.txt")),
+        (GitChangeStatus.UPDATED, Path("other.txt")),
+    }

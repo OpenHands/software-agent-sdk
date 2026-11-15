@@ -12,6 +12,8 @@ import time
 from collections import deque
 from collections.abc import Mapping
 
+import psutil
+
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
@@ -26,6 +28,9 @@ from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
     parse_ctrl_key,
 )
+from openhands.tools.terminal.terminal.process_priority import (
+    should_lower_process_priority,
+)
 
 
 logger = get_logger(__name__)
@@ -37,6 +42,9 @@ _SETUP_DELAY_SECONDS = 0.5
 _SETUP_POLL_INTERVAL_SECONDS = 0.05
 _MAX_SETUP_WAIT_SECONDS = 2.0
 _INTERRUPT_GRACE_SECONDS = 0.5
+_DEFAULT_STDIN_TIMEOUT_SECONDS = 5.0
+_PROCESS_TERMINATE_TIMEOUT_SECONDS = 5.0
+_PROCESS_KILL_TIMEOUT_SECONDS = 2.0
 
 _WINDOWS_SPECIALS: dict[str, str] = {
     "ENTER": "\n",
@@ -92,6 +100,10 @@ class WindowsTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        env = build_terminal_env(self._env)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
+
         startupinfo = None
         creationflags = 0
         if platform.system() == "Windows":
@@ -101,10 +113,9 @@ class WindowsTerminal(TerminalInterface):
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-        env = build_terminal_env(self._env)
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
+            # Not PROCESS_MODE_BACKGROUND_BEGIN: it also throttles disk I/O.
+            if should_lower_process_priority(env):
+                creationflags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
         self.process = subprocess.Popen(
             [self.shell_path, "-NoLogo", "-NoProfile"],
@@ -181,32 +192,45 @@ class WindowsTerminal(TerminalInterface):
         self._stop_reader.set()
         self._terminate_child_processes()
 
-        if self.process is not None:
+        proc = self.process
+        if proc is not None:
             try:
-                if self.process.stdin is not None:
-                    self.process.stdin.close()
-            except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdin: %s", exc)
+                proc.terminate()
+                proc.wait(timeout=_PROCESS_TERMINATE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                logger.warning("PowerShell process did not terminate, forcing kill")
+                try:
+                    proc.kill()
+                    proc.wait(timeout=_PROCESS_KILL_TIMEOUT_SECONDS)
+                except Exception as exc:
+                    logger.debug("Error killing PowerShell process: %s", exc)
+            except Exception as exc:
+                logger.debug("Error terminating PowerShell process: %s", exc)
 
+        # Terminating the process causes the OS to close the pipe write end,
+        # unblocking stdout.read() with EOF (b""). Safe to join now.
         if self.reader_thread and self.reader_thread.is_alive():
             self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
 
-        if self.process is not None:
+        if proc is not None:
             try:
-                if self.process.stdout is not None:
-                    self.process.stdout.close()
+                if proc.stdin is not None:
+                    proc.stdin.close()
             except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdout: %s", exc)
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                logger.warning("PowerShell process did not terminate, forcing kill")
-                self.process.kill()
-            except Exception as exc:
-                logger.debug("Error terminating PowerShell process: %s", exc)
-            finally:
-                self.process = None
+                logger.debug("Error closing PowerShell stdin: %s", exc)
+
+            # Close stdout pipe only after reader thread is no longer reading it.
+            # On Windows, closing a pipe while another thread is blocked in
+            # ReadFile deadlocks.
+            if proc.stdout is not None and (
+                self.reader_thread is None or not self.reader_thread.is_alive()
+            ):
+                try:
+                    proc.stdout.close()
+                except (OSError, ValueError) as exc:
+                    logger.debug("Error closing PowerShell stdout: %s", exc)
+
+            self.process = None
 
         self._closed = True
 
@@ -281,15 +305,51 @@ class WindowsTerminal(TerminalInterface):
     def _escape_single_quoted(text: str) -> str:
         return text.replace("'", "''")
 
-    def _write_to_stdin(self, text: str) -> None:
+    def _write_to_stdin(
+        self, text: str, timeout: float | None = _DEFAULT_STDIN_TIMEOUT_SECONDS
+    ) -> None:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("PowerShell stdin is not available")
-        try:
-            self.process.stdin.write(text.encode("utf-8"))
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            logger.error("Failed to write to PowerShell stdin: %s", exc)
-            raise RuntimeError("Failed to write to PowerShell session") from exc
+
+        encoded = text.encode("utf-8")
+        stdin = self.process.stdin
+
+        if timeout is None:
+            try:
+                stdin.write(encoded)
+                stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                logger.error("Failed to write to PowerShell stdin: %s", exc)
+                raise RuntimeError("Failed to write to PowerShell session") from exc
+            return
+
+        write_error: list[Exception] = []
+
+        def _do_write() -> None:
+            try:
+                stdin.write(encoded)
+                stdin.flush()
+            except Exception as exc:
+                write_error.append(exc)
+
+        writer_thread = threading.Thread(target=_do_write, daemon=True)
+        writer_thread.start()
+        writer_thread.join(timeout=timeout)
+
+        if writer_thread.is_alive():
+            logger.warning(
+                "Writing to PowerShell stdin timed out after %s seconds", timeout
+            )
+            raise TimeoutError(
+                f"Writing to PowerShell stdin timed out after {timeout} seconds"
+            )
+
+        if write_error:
+            exc = write_error[0]
+            if isinstance(exc, (BrokenPipeError, OSError)):
+                logger.error("Failed to write to PowerShell stdin: %s", exc)
+                raise RuntimeError("Failed to write to PowerShell session") from exc
+            raise exc
 
     def _read_output(self) -> None:
         if self.process is None or self.process.stdout is None:
@@ -342,7 +402,13 @@ class WindowsTerminal(TerminalInterface):
         self._command_running_event.clear()
 
     def _terminate_child_processes(self) -> bool:
-        """Terminate descendants of the persistent PowerShell process."""
+        """Terminate descendants of the persistent PowerShell process.
+
+        Enumerating descendants and killing them through ``psutil`` avoids the
+        WMI query (``Get-CimInstance``) that used to back this method: on a
+        loaded Windows runner that query can exceed the subprocess timeout, so
+        the child that kept a timed-out command alive was never terminated.
+        """
         if (
             platform.system() != "Windows"
             or self.process is None
@@ -350,52 +416,28 @@ class WindowsTerminal(TerminalInterface):
         ):
             return False
 
-        script = f"""
-$root = {self.process.pid}
-$childrenByParent = @{{}}
-Get-CimInstance Win32_Process | ForEach-Object {{
-    $parentId = [int]$_.ParentProcessId
-    if (-not $childrenByParent.ContainsKey($parentId)) {{
-        $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[int]
-    }}
-    $childrenByParent[$parentId].Add([int]$_.ProcessId)
-}}
-$toStop = New-Object System.Collections.Generic.List[int]
-function Add-Descendants([int]$processId) {{
-    if (-not $childrenByParent.ContainsKey($processId)) {{ return }}
-    foreach ($childId in $childrenByParent[$processId]) {{
-        if ($childId -eq $PID) {{ continue }}
-        $toStop.Add($childId)
-        Add-Descendants $childId
-    }}
-}}
-Add-Descendants $root
-for ($i = $toStop.Count - 1; $i -ge 0; $i--) {{
-    Stop-Process -Id $toStop[$i] -Force -ErrorAction SilentlyContinue
-}}
-if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
-"""
-        startupinfo = None
-        startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
-        if startupinfo_cls is not None:
-            startupinfo = startupinfo_cls()
-            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
         try:
-            result = subprocess.run(
-                [self.shell_path, "-NoLogo", "-NoProfile", "-Command", script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5.0,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            logger.debug("Failed to terminate PowerShell child processes: %s", exc)
+            root = psutil.Process(self.process.pid)
+            children = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            logger.debug("Failed to enumerate PowerShell descendants: %s", exc)
             return False
+
+        if not children:
+            return False
+
+        # Kill leaves first so parents cannot reparent surviving grandchildren
+        # before they are terminated.
+        terminated = False
+        for child in reversed(children):
+            try:
+                child.kill()
+                terminated = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+                logger.debug("Failed to terminate child %s: %s", child.pid, exc)
+
+        psutil.wait_procs(children, timeout=_INTERRUPT_GRACE_SECONDS)
+        return terminated
 
     def interrupt(self) -> bool:
         """Interrupt the active command if the process is still alive."""
@@ -424,9 +466,11 @@ if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
         sent_ctrl_c_input = False
         if not sent_ctrl_break and not terminated_children:
             try:
-                self._write_to_stdin(_WINDOWS_SPECIALS["C-C"])
+                self._write_to_stdin(
+                    _WINDOWS_SPECIALS["C-C"], timeout=_INTERRUPT_GRACE_SECONDS
+                )
                 sent_ctrl_c_input = True
-            except RuntimeError as exc:
+            except (RuntimeError, TimeoutError) as exc:
                 logger.debug("Failed to write Ctrl+C to PowerShell stdin: %s", exc)
                 return False
 

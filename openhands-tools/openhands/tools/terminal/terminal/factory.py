@@ -55,11 +55,6 @@ def _get_powershell_command(explicit_shell_path: str | None = None) -> str | Non
     return None
 
 
-def _is_powershell_available() -> bool:
-    """Check if PowerShell is available on the system."""
-    return _get_powershell_command() is not None
-
-
 def _create_windows_terminal(
     work_dir: str,
     username: str | None,

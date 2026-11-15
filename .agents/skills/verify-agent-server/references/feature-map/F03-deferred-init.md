@@ -28,7 +28,7 @@ at boot; this family reproduces it.
 
 Source: `openhands-agent-server/openhands/agent_server/init_router.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/config.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-agent-server/openhands/agent_server/middleware.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`
 
-Needs: `git`
+Needs: `git`, `llm`
 
 Launch: `--no-auth --deferred-init`
 
@@ -41,13 +41,14 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.dormant-gates-sockets`: while dormant the bash-events, conversation events and session WebSockets refuse the handshake (the gate closes with 1013 before accept, which the client sees as HTTP 403), so no auth frame is ever read.
 - `F03.dormant-gates-v1`: while dormant the OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` answer 503 with the gate's reason, as does the Canvas app-backend bridge (`/app-backends/...`).
 - `F03.init-key-auth`: `POST /api/init` requires `X-Init-API-Key` equal to the dormant `secret_key`; a missing or wrong key is 401, checked before the body is validated, and leaves the state dormant.
-- `F03.init-validation`: an unknown field or an out-of-range value is a 422 (`extra_forbidden` / constraint) and the state stays dormant.
+- `F03.init-validation`: an unknown field, an out-of-range value or an empty delivered session key is a 422 and the state stays dormant.
 - `F03.init-redacts-secret-input`: a 422 whose echoed input carries a secret-bearing key (`Authorization` header) redacts it to `<redacted>` and the raw value appears nowhere in the response.
 - `F03.init-failure-rollback`: an init that fails mid-build returns 500, rolls the state back to `dormant` with the gate still closed, and records the error on `GET /api/init` so it can be retried.
 - `F03.init-success`: a valid `POST /api/init` flips the server to `ready`, and new conversations are stored under the delivered `conversations_path`.
 - `F03.init-delivered-webhooks`: `webhooks` delivered at init (on a pod that booted with none) receive the new conversation's `ConversationInfo` at `{base_url}/conversations`, with the delivered headers and the delivered session key.
 - `F03.init-enforces-session-keys`: after init, `/api/*` rejects a missing or wrong key with 401 and accepts the delivered session key with 200, on a pod that booted without keys.
 - `F03.init-applies-env`: `env` entries delivered at init reach `os.environ` and therefore the bash subprocesses, and the delivered `bash_events_dir` receives the events.
+- `F03.init-failure-restores-env`: `env` entries sent only in a failed init are taken back with it: after the successful retry bash subprocesses do not see them, while the retry's own entries are there.
 - `F03.init-keys-gate-bash-socket`: after init, `/sockets/bash-events` closes with 4001 for a client without the delivered key and runs commands for one with it.
 - `F03.init-opens-events-socket-and-v1`: after init, the conversation events socket that was refused while dormant opens and replays the conversation's state with the delivered key (4001 without it), and `GET /v1/models` answers 401 without a key and 200 with the delivered key as a Bearer token.
 - `F03.init-web-url-root-path`: a delivered `web_url` with a path becomes the root path: prefixed URLs serve and the OpenAPI document advertises the prefix.
@@ -55,6 +56,7 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.init-delivered-max-runs`: a delivered `max_concurrent_runs` of 1 replaces the boot default (10): a second conversation's `/run` is 429 while another run holds the slot, and is accepted once the slot is free.
 - `F03.init-delivered-cors-origins`: an origin delivered in `allow_cors_origins` must pass a CORS preflight after init, as the field promises (reproduces a real bug; see Gotchas).
 - `F03.init-second-call-400`: a second `POST /api/init` after `ready` is rejected with 400 and the state is unchanged; the init key is now the delivered `secret_key`, so the dormant bootstrap key is 401.
+- `F03.init-child-launcher`: after a keyless boot and key delivery at init, a real-model parent uses the authenticated internal launcher to start a child.
 - `F03.init-open-without-secret`: a pod booted with neither a secret key nor session keys accepts `POST /api/init` without `X-Init-API-Key`; afterwards the first delivered session key is the init key (a keyless retry is 401, a retry with it is 400).
 - `F03.init-state-not-persisted`: the init state lives in memory only, so after a restart a deferred pod is dormant again (the previously delivered key gets the dormant 503 too) and must be re-initialized.
 - `F03.auth-before-gate`: retired by #5700. It asserted that a dormant pod with boot session keys answered 401 to a missing key before the 503 gate; readiness is now checked first, see `F03.gate-before-auth`.
@@ -110,9 +112,10 @@ Preconditions:
 - A fresh warm-pool run, launched dormant and without boot session keys, is
   live and exported: `control-agent-server launch --new --no-auth
   --deferred-init`. `doctor` is ok (a deferred run's `doctor` uses `/alive`,
-  since `/ready` is 200 even while dormant). No LLM profile is needed: the
-  only model calls go to an `llm-stub` that hangs (the one way to hold a run
-  slot on demand), and `git` is needed for the worktree fixture.
+  since `/ready` is 200 even while dormant). `$DEEPSEEK_API_KEY` is needed
+  only for the child-launcher bullet; capacity checks use an `llm-stub` that
+  hangs (the one way to hold a run slot on demand). `git` is needed for the
+  worktree fixture.
 - The following `sh` block runs first: it reads the run's dormant
   `secret_key` (the bootstrap `X-Init-API-Key`, never printed) into `$SK`,
   creates the user workspace dirs the success bullet delivers, a git
@@ -171,8 +174,8 @@ Preconditions:
   rewritten by the 5xx handler, so assert on the status and on `exception`,
   which carries `server is in deferred-init state 'dormant'; call POST
   /api/init first`. The workspace file route is mounted on its own `/api`
-  router (cookie auth), which carries the same gate since #5700, so it no
-  longer reaches the missing conversation service.
+  router (cookie auth), which carries the same gate, so it never reaches
+  the missing conversation service.
 - **Dormant sockets (`F03.dormant-gates-sockets`).** Every WebSocket is refused at the handshake while dormant.
   ```sh
   F03_ZERO=00000000-0000-0000-0000-0000000000f3
@@ -213,17 +216,21 @@ Preconditions:
   All three posts are 401; the third carries a body that the right key turns
   into a 422 (next bullet), so the key is checked first. `GET /api/init` is
   still dormant. The right key's 200 is `F03.init-success`.
-- **Init validation (`F03.init-validation`).** Unknown fields and out-of-range values are 422; the state stays dormant.
+- **Init validation (`F03.init-validation`).** Unknown fields, out-of-range
+  values and empty delivered session keys are 422; the state stays dormant.
   ```sh
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
     --json '{"bogus":1}' --expect 422 --check 'detail.0.type' eq extra_forbidden --save F03.init-validation/unknown-field
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
     --json '{"max_concurrent_runs":0}' --expect 422 --check 'detail.0.type' eq greater_than_equal
+  control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
+    --json '{"session_api_keys":[""]}' --expect 422 \
+    --check detail eq 'session_api_keys cannot contain empty keys' --save F03.init-validation/empty-session-key
   control-agent-server api GET /api/init --auth none --check state eq dormant
   ```
   `InitRequest` is `extra="forbid"`, so `bogus` is `extra_forbidden`;
-  `max_concurrent_runs` has `ge=1`, so `0` fails the bound. Neither touches the
-  state.
+  `max_concurrent_runs` has `ge=1`, so `0` fails the bound. Empty delivered
+  keys are rejected before initialization (PR #5659). None changes the state.
 - **Input redaction (`F03.init-redacts-secret-input`).** A 422 echo redacts secret-bearing keys.
   ```sh
   RAW_REDACTED="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f03-422-redacted.json"
@@ -242,7 +249,7 @@ Preconditions:
 - **Failure rollback (`F03.init-failure-rollback`).** A failing init returns 500 and returns to dormant with the error recorded.
   ```sh
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
-    --json '{"conversations_path":"/proc/oh-cannot-create-f03"}' --expect 500 \
+    --json '{"conversations_path":"/proc/oh-cannot-create-f03","env":{"QA_F03_FAILED_ONLY":"qa-failed-attempt"}}' --expect 500 \
     --check exception contains oh-cannot-create-f03 --save F03.init-failure-rollback/failure
   control-agent-server api GET /api/init --auth none --check state eq dormant --check error contains oh-cannot-create-f03
   control-agent-server api GET /api/settings --auth none --expect 503
@@ -251,7 +258,9 @@ Preconditions:
   rolls the state back to `dormant`, keeps the gate closed, and stores
   `<ExceptionType>: <message>` under `error` (on Linux
   `FileNotFoundError: [Errno 2] ... '/proc/oh-cannot-create-f03'`), so an
-  orchestrator can retry. The successful retry is the next bullet.
+  orchestrator can retry. The body also carries an `env` entry that no later
+  init sends (`F03.init-failure-restores-env` reads it back). The successful
+  retry is the next bullet.
 - **Successful init (`F03.init-success`).** A valid body flips the pod to `ready`; conversations land in the delivered directory. The body delivers every field the later bullets read back.
   ```sh
   BODY="$(python3 -c "import json,os,sys;r=os.environ['AGENT_SERVER_VERIFY_RUN']+'/fixtures/';print(json.dumps({'session_api_keys':['qa-user-key'],'secret_key':'qa-f03-delivered-secret','conversations_path':r+'conv','bash_events_dir':r+'bash','conversation_worktree_root':r+'qa-f03-worktrees','webhooks':[{'base_url':sys.argv[1],'headers':{'X-QA-F03':'delivered-hook'},'flush_delay':1}],'web_url':'http://qa-f03.invalid/rt/qa-f03','allow_cors_origins':['https://qa-f03.example'],'max_concurrent_runs':1,'env':{'PROBE_VAR':'qa-hello'}}))" "$F03_HOOKS")"
@@ -300,6 +309,18 @@ Preconditions:
   ```
   The command prints `PROBE=qa-hello` (the init-delivered env), and the
   delivered bash-events directory now holds the command and output events.
+- **A failed init takes its env back (`F03.init-failure-restores-env`).** The failed attempt carried `QA_F03_FAILED_ONLY`; the successful one carried only `PROBE_VAR`.
+
+  Requires: `F03.init-failure-rollback`, `F03.init-success`
+  ```sh
+  control-agent-server api POST /api/bash/execute_bash_command --auth none --header 'X-Session-API-Key: qa-user-key' \
+    --json '{"command":"echo \"PROBE=$PROBE_VAR FAILED_ONLY=[${QA_F03_FAILED_ONLY-unset}]\""}' --expect 200 \
+    --check stdout contains 'PROBE=qa-hello' --check stdout contains 'FAILED_ONLY=[unset]' --save F03.init-failure-restores-env/env
+  ```
+  One command prints both: `PROBE=qa-hello`, the entry of the successful
+  init (the positive control), and `FAILED_ONLY=[unset]`, because the failed
+  attempt's entry was removed from the server's environment when that attempt
+  was rolled back.
 - **Delivered keys gate the bash socket (`F03.init-keys-gate-bash-socket`).** After init the socket authenticates with the delivered keys.
   ```sh
   SOCK_PROBE="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f03-ws-after-init.txt"
@@ -423,7 +444,7 @@ Preconditions:
   OPEN=$(control-agent-server launch --new --no-auth --no-secret-key --deferred-init --name f03-open --print-run)
   trap 'control-agent-server stop --run "$OPEN" >/dev/null' EXIT
   control-agent-server api GET /api/init --run "$OPEN" --auth none --expect 200 --check state eq dormant
-  control-agent-server api POST /api/init --run "$OPEN" --auth none --json '{"session_api_keys":["qa-open-key"]}' \
+  control-agent-server api POST /api/init --run "$OPEN" --auth none --json '{"session_api_keys":["qa-open-key"],"secret_key":""}' \
     --expect 200 --check state eq ready --save F03.init-open-without-secret/open
   control-agent-server api GET /api/settings --run "$OPEN" --auth none --expect 401
   control-agent-server api GET /api/settings --run "$OPEN" --auth none --header 'X-Session-API-Key: qa-open-key' --expect 200
@@ -434,9 +455,68 @@ Preconditions:
   ```
   With no `secret_key` (`check_init_api_key`: "No key configured → endpoint is
   open. Acceptable for dev."), the first post needs no header and applies the
-  delivered key. Because the dormant config had no secret, the merged config's
-  `secret_key` falls back to `qa-open-key`, so a keyless retry is now 401 and a
+  delivered key. The explicitly empty `secret_key` is normalized, so the
+  merged config's `secret_key` falls back to `qa-open-key`, so a keyless retry is now 401 and a
   retry with `qa-open-key` reaches the one-shot 400.
+- **Child launcher after init (`F03.init-child-launcher`).** A separate pod
+  boots without session keys, receives one at init, and uses it internally
+  when a real model calls the explicitly attached child-launch tool.
+  ```sh
+  CHILD_RUN=$(control-agent-server launch --new --no-auth --no-secret-key --deferred-init --name f03-child --print-run)
+  trap 'control-agent-server stop --run "$CHILD_RUN" >/dev/null' EXIT
+  control-agent-server doctor --run "$CHILD_RUN"
+  control-agent-server api POST /api/init --run "$CHILD_RUN" --auth none \
+    --json '{"session_api_keys":["qa-f03-child-key"],"max_concurrent_runs":2}' \
+    --expect 200 --check state eq ready --save F03.init-child-launcher/init
+  control-agent-server api GET /api/settings --run "$CHILD_RUN" --auth none --expect 401
+  CHILD_BODY=$(python3 - "$CHILD_RUN" <<'PY'
+  import json, os, sys
+  print(json.dumps({
+      "agent": {"llm": {"model": "deepseek/deepseek-flash", "api_key": os.environ["DEEPSEEK_API_KEY"]},
+                "tools": [{"name": "start_child_conversation"}]},
+      "workspace": {"working_dir": sys.argv[1] + "/fixtures/child-workspace"},
+      "autotitle": False, "max_iterations": 5,
+      "initial_message": {"role": "user", "content": [{"type": "text", "text":
+          'Call start_child_conversation exactly once with these arguments: {"title": "QA_F03_CHILD", "isolation": "shared", "task": "Reply with the single word ok. Do not use tools or create any child conversations."}. After the call returns, finish without any more tool calls.'}]},
+  }))
+  PY
+  )
+  mkdir -p "$CHILD_RUN/fixtures/child-workspace"
+  DPARENT=$(control-agent-server api POST /api/conversations --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --json "$CHILD_BODY" --expect 201 --field id)
+  for attempt in $(seq 1 120); do
+    DSTATUS=$(control-agent-server api GET "/api/conversations/$DPARENT" --run "$CHILD_RUN" --auth none \
+      --header 'X-Session-API-Key: qa-f03-child-key' --field execution_status)
+    [ "$DSTATUS" = finished ] && break
+    [ "$DSTATUS" != error ]
+    sleep 2
+  done
+  test "$DSTATUS" = finished
+  DOBS=$(control-agent-server api GET "/api/conversations/$DPARENT/events/search" --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --query kind=ObservationEvent \
+    --check items contains StartChildConversationObservation --save F03.init-child-launcher/observation --field items)
+  DCHILD=$(jq -er --arg parent "$DPARENT" '[.[] | select(.tool_name == "start_child_conversation")] |
+    select(length == 1) | .[0].observation |
+    select(.is_error == false and .parent_conversation_id == $parent and .isolation == "shared") |
+    .conversation_id' <<< "$DOBS")
+  for attempt in $(seq 1 120); do
+    DSTATUS=$(control-agent-server api GET "/api/conversations/$DCHILD" --run "$CHILD_RUN" --auth none \
+      --header 'X-Session-API-Key: qa-f03-child-key' --field execution_status)
+    [ "$DSTATUS" = finished ] && break
+    [ "$DSTATUS" != error ]
+    sleep 2
+  done
+  control-agent-server api GET "/api/conversations/$DCHILD" --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --check execution_status eq finished \
+    --check parent_conversation_id eq "$DPARENT" --check title eq QA_F03_CHILD \
+    --save F03.init-child-launcher/child
+  control-agent-server api GET "/api/conversations/$DPARENT" --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --check sub_conversation_ids contains "$DCHILD"
+  control-agent-server stop --run "$CHILD_RUN"
+  ```
+  The child tool's observation and catalog link prove that the internal
+  launcher received the init-delivered session key. A server that exported
+  only its empty boot credential would reject that internal request with 401.
 - **Init state is not persisted (`F03.init-state-not-persisted`).** This bullet restarts the run; a deferred pod comes back dormant.
   ```sh
   control-agent-server restart
@@ -492,11 +572,9 @@ Preconditions:
   client as an HTTP 403 handshake rejection (`ws listen --expect-reject 403`),
   not as a 1013 close frame. An unknown socket path is also a 403, so pair
   the dormant check with the same socket opening after init.
-- The gate precedes every auth check since #5700 (`F03.gate-before-auth`), so
+- The gate precedes every auth check (`F03.gate-before-auth`) and covers the
+  workspace static-file routes, the sockets, `/v1` and `/app-backends`, so
   while dormant a 503 says nothing about the key; prove a key only after init.
-  Before #5700 the workspace static-file routes, the sockets, `/v1` and
-  `/app-backends` were outside the gate (#5661, #5700 closed them); a baseline
-  checkout older than those PRs answers those recipes differently.
 - The bootstrap `X-Init-API-Key` is the dormant `secret_key`, which defaults to
   the first session key when `OH_SECRET_KEY` is unset and is **open to anyone**
   when neither is set (`F03.init-open-without-secret`). `control-agent-server
@@ -505,9 +583,9 @@ Preconditions:
 - Harness: `api --auth init` reads `<run>/private/secret_key`, but on a
   `--no-auth` run it sends no header at all (the auth helper returns early when
   the run has no session key), so these recipes pass `--header
-  "X-Init-API-Key: $SK"` explicitly. `doctor`'s dormant detection reads a
-  `status` field that `GET /api/init` does not have (`state`), so it treats a
-  deferred run as dormant even after init.
+  "X-Init-API-Key: $SK"` explicitly. `doctor` reads the init `state`: while
+  dormant it checks the 503 HTTP and 403 socket gates; after init it checks
+  ordinary authentication using the run's configured credentials.
 - Init is one-shot and in-memory: it does not persist across a restart
   (`F03.init-state-not-persisted`), and a second call is 400 (`already in
   state: ready`; a call that lands while another is still building gets
@@ -515,11 +593,10 @@ Preconditions:
   the init body sets `secret_key`, or if the dormant config had none and
   session keys are delivered, the bootstrap key changes and a retry with the old
   key is 401 instead of 400.
-- A failed init rolls back only the state: `env` entries it applied stay in
-  `os.environ` (observed: a variable sent only in a failed attempt is visible
-  to bash after the successful retry), and the bash service it entered before
-  failing is not exited. `InitRequest.env` documents the `os.environ.update`,
-  not a rollback; resend the full env on retry.
+- A failed init is all-or-nothing: the state returns to `dormant`, the
+  services it started are stopped, and the `env` entries it applied are put
+  back to their previous values (`F03.init-failure-restores-env`). Nothing
+  of a failed attempt carries over, so resend the full env on retry.
 - `OH_DEFERRED_INIT` must be `1`/`true` (case-insensitive); `yes` parses as
   False.
 - An init-delivered `allow_cors_origins` is a no-op

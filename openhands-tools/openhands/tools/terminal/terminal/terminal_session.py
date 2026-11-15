@@ -660,6 +660,15 @@ class TerminalSession(TerminalSessionBase):
 
         # Loop until the command completes or times out
         while True:
+            # A closed terminal never shows the command finishing, and a command with
+            # a timeout skips the no-change timeout, so stop waiting on it here.
+            if self._closed or self.terminal.closed:
+                return TerminalObservation.from_text(
+                    text="[The terminal was closed while the command was running.]",
+                    command=command,
+                    exit_code=-1,
+                    is_error=True,
+                )
             _start_time = time.time()
             logger.debug(f"GETTING TERMINAL CONTENT at {_start_time}")
             cur_terminal_output = self.terminal.read_screen()

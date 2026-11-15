@@ -5,10 +5,15 @@ import time
 from importlib.metadata import version
 from typing import Literal
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.launch import configured_browser_available
+from openhands.agent_server.server_context import (
+    ServerContext,
+    get_server_context,
+)
+from openhands.sdk.settings.model import ConversationRuntime
 from openhands.sdk.tool import BROWSER_TOOL_NAME
 from openhands.sdk.tool.registry import list_registered_tools, list_usable_tools
 from openhands.tools.terminal.timeout_policy import (
@@ -62,6 +67,13 @@ class ServerInfo(BaseModel):
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    available_conversation_runtimes: list[ConversationRuntime] = Field(
+        default_factory=list,
+        description=(
+            "Runtimes a start request may select with `conversation_runtime`. "
+            "Empty means only `conversation_runtime` is served."
+        ),
+    )
     capabilities: list[str] = Field(
         default_factory=lambda: [
             "conversation_runtime_routes_v1",
@@ -78,6 +90,7 @@ class ServerInfo(BaseModel):
             "agent_profile_draft_materialize_v1",
             "agent_launch_pipeline_v1",
             "profile_public_skills_v1",
+            "skill_catalog_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(
@@ -150,6 +163,7 @@ def _usable_tools(browser_available: bool | None) -> list[str]:
 def build_server_info(
     conversation_runtime: Literal["local", "docker"] = "local",
     app_backend_ingress_url: str | None = None,
+    conversation_runtime_selectable: bool = False,
     browser_available: bool | None = None,
 ) -> ServerInfo:
     """Build the server info; ``browser_available`` None probes this process."""
@@ -158,19 +172,27 @@ def build_server_info(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
         conversation_runtime=conversation_runtime,
+        available_conversation_runtimes=(
+            ["local", "docker"] if conversation_runtime_selectable else []
+        ),
         app_backend_ingress_url=app_backend_ingress_url,
         usable_tools=_usable_tools(browser_available),
     )
+    info.capabilities.append("canvas_app_backend_secret_grants_v1")
+    info.capabilities.append("canvas_app_backend_enable_lifecycle_v1")
     if app_backend_ingress_url:
         info.capabilities.append("canvas_app_backend_bridge_v1")
     return info
 
 
 @server_details_router.get("/server_info")
-async def get_server_info(request: Request) -> ServerInfo:
-    config = request.app.state.config
+async def get_server_info(
+    context: ServerContext = Depends(get_server_context),
+) -> ServerInfo:
+    config = context.config
     return build_server_info(
         config.conversation_runtime,
         app_backend_ingress_url=config.app_backend_public_url,
+        conversation_runtime_selectable=config.conversation_runtime_selectable,
         browser_available=configured_browser_available(config),
     )
