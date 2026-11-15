@@ -40,10 +40,12 @@ export interface ConversationRuntimeInfo {
 
 /** Secret references for the remote native terminal; never credential values. */
 export interface TerminalCredentialBinding {
-  consumer: 'git' | 'gh' | 'glab';
-  host: string;
+  consumer: string;
+  adapter?: 'environment' | 'git_helper';
+  env_var?: string | null;
+  host?: string | null;
   secret_ref: string;
-  /** Required and nonempty for git; validated by the server. */
+  /** Required and nonempty for git_helper; validated by the server. */
   username?: string | null;
 }
 

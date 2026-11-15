@@ -24,7 +24,7 @@ from openhands.tools.terminal.env import (
     ENV_VAR_NAME_RE,
     normalize_terminal_env,
 )
-from openhands.tools.terminal.git_credentials import TerminalCredentialRuntime
+from openhands.tools.terminal.credential_runtime import TerminalCredentialRuntime
 from openhands.tools.terminal.terminal.factory import (
     _is_tmux_available,
     create_terminal_session,

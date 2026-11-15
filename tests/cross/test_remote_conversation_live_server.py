@@ -3603,10 +3603,12 @@ def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
 def test_terminal_credential_bindings_settings_and_launch(server_env):
     host, workspace_path = server_env["host"], server_env["workspace_path"]
     binding = {
-        "consumer": "git",
-        "host": "github.com",
+        "consumer": "custom-cli",
+        "adapter": "environment",
+        "env_var": "API_KEY",
         "secret_ref": "WORK_PAT",
-        "username": "x-access-token",
+        "host": None,
+        "username": None,
     }
     with httpx.Client(base_url=host, timeout=30) as client:
         response = client.patch(

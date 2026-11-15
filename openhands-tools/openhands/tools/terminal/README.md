@@ -65,56 +65,69 @@ the persistent session. Neither mechanism isolates credentials from later comman
 
 ## Command credentials
 
-Automatic authentication is opt-in, independently for each consumer and exact host:
+Credential delivery is opt-in for any executable basename. Each binding names a
+registry secret and a delivery adapter; it does not constrain how the program
+uses the credential.
 
 ```python
 from openhands.sdk import TerminalCredentialBinding
 
 bindings = [
     TerminalCredentialBinding(
-        consumer="git", host="github.com", username="x-access-token",
-        secret_ref="WORK_PAT",
+        consumer="my-company-cli", env_var="API_KEY", secret_ref="WORK_API_KEY",
     ),
     TerminalCredentialBinding(
-        consumer="gh", host="github.com", secret_ref="WORK_PAT",
+        consumer="gh", env_var="GH_TOKEN", secret_ref="WORK_PAT",
+    ),
+    TerminalCredentialBinding(
+        consumer="glab", env_var="GITLAB_TOKEN", secret_ref="WORK_GITLAB_PAT",
+    ),
+    TerminalCredentialBinding(
+        consumer="git", adapter="git_helper", host="github.com",
+        username="x-access-token", secret_ref="WORK_PAT",
     ),
 ]
-# Pass terminal_credential_bindings=bindings and secrets={"WORK_PAT": ...}
+# Pass terminal_credential_bindings=bindings and the corresponding secrets
 # to Conversation, or configure defaults in ConversationSettings.
 ```
 
-`git`, `gh`, and `glab` are separate consumers. Git requires an explicit HTTPS
-username (for example `x-access-token` for GitHub or `oauth2` for GitLab).
-Hosts are exact, case-normalized names with an optional port; URLs, paths and
-wildcards are not accepted. Secret names do not implicitly enable authentication.
-Agent-profile secret restrictions still apply. Bindings do not grant access to
-secrets absent from the conversation registry.
+The default `environment` adapter maps a secret to the caller-selected `env_var`
+in the executable's child environment. Multiple bindings can supply multiple
+variables to one program, such as AWS access-key and secret-key variables.
+The bound value overrides an inherited value of the same variable; unrelated
+inherited environment variables are unchanged. If a bound secret cannot be
+resolved, the adapter does not launch the program. CLI arguments are passed
+through unchanged: there are no provider-specific command allowlists, host
+inference, or destination restrictions. Configure the program's own host and
+account selection normally. `gh` and `glab` use this same generic adapter.
 
-The native terminal installs private PATH adapters for bound consumers. Each
-adapter launches the executable resolved from the initial configured PATH, not a
-replacement selected by a later shell PATH change. Git receives an appended,
-HTTPS-host-checked credential helper; existing helpers and `GIT_CONFIG_COUNT`
-entries are preserved. `gh` and `glab` receive only the selected token in their
-child environment. Tokens are resolved on demand and tracked by the existing
-output masker; they are not written to adapter files, Git configuration, remote
-URLs, or the persistent shell environment. Reset and close revoke the adapter's
-local broker and remove its private files.
+The `git_helper` adapter implements Git's HTTPS credential protocol. Its `host`
+and `username` select which credential to return to a helper request; this is
+credential selection, not a restriction on where a recipient can use the value.
+Hosts are exact, case-normalized names with an optional port. Existing helpers
+and `GIT_CONFIG_COUNT` entries are preserved. The adapter can also target a
+renamed executable that implements Git's protocol; it does not key off the
+consumer's name.
 
-CLI target selection supports explicit host/repository options, HTTPS URLs,
-CLI host/repository environment variables, and unambiguous repository remotes.
-Conflicting hosts and unsupported command families fail closed. The supported
-families are `api`, `pr`, `mr`, `issue`, `repo`, `release`, `workflow`, `run`, and
-`search`; help/version run without injected credentials. Absolute executable paths
-and commands that replace PATH bypass these adapters and receive no automatic
-credentials. Existing CLI authentication remains separate.
+The native terminal installs private PATH wrappers for bound consumers, resolving
+the executable from the initial configured PATH. Credentials are fetched on
+demand from the conversation registry and tracked by the existing output masker.
+Values are not written to wrapper files or the persistent shell environment.
+The broker capability is stored in a private temporary directory and is itself
+sensitive. Reset and close revoke the broker and remove those files. Agent-profile
+secret restrictions still apply; binding a name does not make an unavailable
+registry secret accessible. Resume, fork and task delegation preserve bindings.
 
-These are same-user credential-delivery controls, **not a sandbox**: the CLI and
-its children receive the token, and code with access to the private broker
-capability can request a bound credential. Masking prevents accidental transcript
-exposure, not deliberate exfiltration. Explicit name-based secret injection
-remains available and retains its existing, broader session-scoped behavior.
-This feature configures native terminal tools, not ACP harnesses, interactive
-server terminals, or initial repository cloning.
+This is **not a security sandbox**. A program and its descendants can read and
+use their credentials, and same-user code can access the private broker
+capability. A program may itself persist or transmit a credential. Masking is
+not protection against deliberate exfiltration. Explicit name-based injection
+remains available and retains its existing session-scoped behavior.
+
+Absolute executable paths, shell functions/builtins, and replacing PATH can bypass
+these wrappers and receive no automatic bound credentials. The feature configures
+native terminal tools, not ACP harnesses, interactive server terminals, or initial
+repository cloning.
 
 Terminal processes run below the agent server's CPU priority so CPU-heavy
 commands cannot starve it: `taskpolicy -c utility` on macOS, `nice -n 10` on

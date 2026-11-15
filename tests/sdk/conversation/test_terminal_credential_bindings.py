@@ -15,6 +15,7 @@ from openhands.sdk.workspace import LocalWorkspace
 def binding():
     return TerminalCredentialBinding(
         consumer="git",
+        adapter="git_helper",
         host="GitHub.COM:0443",
         secret_ref="MyKey",
         username="x-access-token",
@@ -42,7 +43,13 @@ def binding():
 )
 def test_invalid_host(host):
     with pytest.raises(ValidationError):
-        TerminalCredentialBinding(consumer="gh", host=host, secret_ref="KEY")
+        TerminalCredentialBinding(
+            consumer="git",
+            adapter="git_helper",
+            host=host,
+            secret_ref="KEY",
+            username="user",
+        )
 
 
 def test_binding_normalization_and_immutability(binding):
@@ -60,7 +67,9 @@ def test_binding_normalization_and_immutability(binding):
         {"username": "bad\nvalue"},
         {"secret_ref": ""},
         {"secret_ref": "\t"},
-        {"consumer": "curl"},
+        {"consumer": "../curl"},
+        {"adapter": "unknown"},
+        {"env_var": "TOKEN"},
         {"token": "not-a-reference"},
     ],
 )
@@ -138,3 +147,67 @@ def test_local_factory_resume_and_fork(binding, tmp_path):
         )
     ) as cleared:
         assert cleared.state.terminal_credential_bindings == []
+
+
+@pytest.mark.parametrize(
+    "consumer", ["curl", "aws", "my-company-cli", "gh", "glab", "python3.13"]
+)
+def test_arbitrary_environment_consumers(consumer):
+    binding = TerminalCredentialBinding(
+        consumer=consumer, secret_ref="WORK_KEY", env_var="API_KEY"
+    )
+    assert binding.adapter == "environment"
+    assert binding.host is None
+    assert (
+        TerminalCredentialBinding.model_validate_json(binding.model_dump_json())
+        == binding
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"consumer": ""},
+        {"consumer": "/usr/bin/curl"},
+        {"consumer": "../curl"},
+        {"consumer": "curl;env"},
+        {"consumer": "config.json"},
+        {"consumer": "adapter.py"},
+        {"env_var": None},
+        {"env_var": ""},
+        {"env_var": "KEY=value"},
+        {"env_var": "1KEY"},
+        {"host": "example.test"},
+        {"username": "user"},
+        {"adapter": "git_helper"},
+    ],
+)
+def test_invalid_environment_binding(changes):
+    with pytest.raises(ValidationError):
+        TerminalCredentialBinding.model_validate(
+            {
+                "consumer": "custom-cli",
+                "secret_ref": "KEY",
+                "env_var": "TOKEN",
+                **changes,
+            }
+        )
+
+
+def test_environment_duplicate_targets_and_multiple_secrets():
+    first = TerminalCredentialBinding(
+        consumer="aws", secret_ref="ID", env_var="AWS_ACCESS_KEY_ID"
+    )
+    second = TerminalCredentialBinding(
+        consumer="aws", secret_ref="SECRET", env_var="AWS_SECRET_ACCESS_KEY"
+    )
+    assert (
+        len(
+            ConversationSettings(
+                terminal_credential_bindings=[first, second]
+            ).terminal_credential_bindings
+        )
+        == 2
+    )
+    with pytest.raises(ValidationError, match="duplicate"):
+        ConversationSettings(terminal_credential_bindings=[first, first])

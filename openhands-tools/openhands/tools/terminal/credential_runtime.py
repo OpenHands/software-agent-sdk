@@ -39,10 +39,10 @@ class TerminalCredentialRuntime:
         )
         executables = {
             consumer: shutil.which(consumer, path=search_path)
-            for consumer in {"git", *(b.consumer for b in bindings)}
+            for consumer in {b.consumer for b in bindings}
         }
         capability = secrets.token_urlsafe(32)
-        authorized = {(b.consumer, b.host): b for b in bindings}
+        authorized = {str(index): binding for index, binding in enumerate(bindings)}
         self_runtime = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -64,16 +64,16 @@ class TerminalCredentialRuntime:
                     if not 0 < length <= 4096:
                         raise ValueError("invalid request size")
                     query = json.loads(self.rfile.read(length))
-                    binding = authorized.get((query["consumer"], query["host"]))
+                    binding = authorized.get(query["binding"])
                     result = {}
                     if binding is not None:
                         token = registry.get_secret_value(binding.secret_ref)
                         if (
-                            token
+                            token is not None
                             and not self_runtime._closed
-                            and not any(c in token for c in "\r\n\0")
+                            and "\0" not in token
                         ):
-                            result = {"token": token, "username": binding.username}
+                            result = {"value": token}
                     payload = json.dumps(result).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -102,7 +102,10 @@ class TerminalCredentialRuntime:
                     {
                         "url": f"http://127.0.0.1:{self._server.server_port}/",
                         "capability": capability,
-                        "git_hosts": [b.host for b in bindings if b.consumer == "git"],
+                        "bindings": {
+                            key: binding.model_dump(mode="json")
+                            for key, binding in authorized.items()
+                        },
                         "launcher": launcher,
                         "executables": executables,
                     }
@@ -113,7 +116,7 @@ class TerminalCredentialRuntime:
                 wrapper = self.directory / consumer
                 wrapper.write_text(
                     "#!/bin/sh\nexec "
-                    + shlex.join(launcher + [str(config_path), consumer])
+                    + shlex.join(launcher + [str(config_path), "exec", consumer])
                     + ' "$@"\n'
                 )
                 wrapper.chmod(0o700)
@@ -125,7 +128,8 @@ class TerminalCredentialRuntime:
                     wrapper.with_suffix(".ps1").write_text(
                         "& "
                         + " ".join(
-                            quote(v) for v in launcher + [str(config_path), consumer]
+                            quote(v)
+                            for v in launcher + [str(config_path), "exec", consumer]
                         )
                         + " @args\nexit $LASTEXITCODE\n"
                     )

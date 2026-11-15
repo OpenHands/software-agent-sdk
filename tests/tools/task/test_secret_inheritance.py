@@ -173,10 +173,9 @@ def test_task_secret_delivery_and_masking(
 def test_sources_available_before_agent_initialization(tmp_path: Path, resume: bool):
     token = secrets.token_hex(32)
     binding = TerminalCredentialBinding(
-        consumer="git",
-        host="github.com",
+        consumer="custom-cli",
+        env_var="CUSTOM_TOKEN",
         secret_ref="TASK_PROBE_TOKEN",
-        username="x-access-token",
     )
     register_agent("probe", lambda llm: Agent(llm=llm), "Secret source probe")
     manager = TaskManager()

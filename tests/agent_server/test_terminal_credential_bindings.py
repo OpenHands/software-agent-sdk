@@ -20,10 +20,10 @@ from openhands.sdk.workspace import LocalWorkspace
 def bindings():
     return [
         TerminalCredentialBinding(
-            consumer="gh", host="github.com", secret_ref="selected"
+            consumer="gh", env_var="GH_TOKEN", secret_ref="selected"
         ),
         TerminalCredentialBinding(
-            consumer="glab", host="gitlab.com", secret_ref="other"
+            consumer="custom-cli", env_var="CUSTOM_API_KEY", secret_ref="other"
         ),
     ]
 
