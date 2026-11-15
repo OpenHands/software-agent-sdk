@@ -149,7 +149,7 @@ async def _first_agent_event(url: str, timeout: float = 120) -> float:
 SCENARIOS: dict[str, int] = {"default": 8, "pause": 2, "worktree": 5, "mcp": 5}
 PAUSE_S = 3.0
 FETCH_DELAY_S = 0.5
-MCP_STARTUP_DELAY_S = 1.0
+MCP_STARTUP_DELAY_S = 3.0
 
 REPORT_ROWS = [
     ("default", "create_s", False, "Create conversation (warm)"),
