@@ -1,0 +1,6 @@
+name = "conversation_start_formal"
+version = "0.1.0"
+defaultTargets = ["ConversationStart"]
+
+[[lean_lib]]
+name = "ConversationStart"
