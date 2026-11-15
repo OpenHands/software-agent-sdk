@@ -61,8 +61,11 @@ def test_pool_shells_see_tricky_values(tmp_path):
     dump = tmp_path / "env.txt"
     partial = shlex.quote(str(dump) + ".partial")
     try:
+        # The window must outlive new_window(), which looks it up afterwards.
         pool._session.new_window(
-            window_shell=f"env > {partial} && mv {partial} {shlex.quote(str(dump))}"
+            window_shell=(
+                f"env > {partial} && mv {partial} {shlex.quote(str(dump))}; sleep 60"
+            )
         )
         deadline = time.monotonic() + 10
         while not dump.exists() and time.monotonic() < deadline:
