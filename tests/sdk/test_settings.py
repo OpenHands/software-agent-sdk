@@ -409,10 +409,17 @@ def test_conversation_settings_create_request_forwards_budget() -> None:
         workspace=workspace,
         max_budget_per_run=None,
     )
+    raised = ConversationSettings(max_budget_per_run=2.5).create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+        max_budget_per_run=5.0,
+    )
 
     assert unset.max_budget_per_run is None
     assert budgeted.max_budget_per_run == 2.5
     assert overridden.max_budget_per_run is None
+    assert raised.max_budget_per_run == 5.0
 
 
 @pytest.mark.parametrize("budget", [0, -1])
