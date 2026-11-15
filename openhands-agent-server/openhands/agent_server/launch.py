@@ -43,6 +43,7 @@ from openhands.sdk.launch import (
     LaunchStores,
     ResolvedLaunch,
     resolve,
+    resolve_llm_credentials,
 )
 from openhands.sdk.llm.meta_profile_store import (
     MetaProfileStore,
@@ -151,11 +152,15 @@ def launch_source(
         )
     agent: AgentBase | None = request.agent
     if agent is not None:
-        if context is None:
-            return agent
-        return type(agent).model_validate(
-            agent.model_dump(mode="json", context={"expose_secrets": True}),
-            context=context,
+        if context is not None:
+            agent = type(agent).model_validate(
+                agent.model_dump(mode="json", context={"expose_secrets": True}),
+                context=context,
+            )
+        # A client-built agent names provider connections instead of carrying
+        # their keys, exactly as a stored profile does.
+        return resolve_llm_credentials(
+            agent, lambda: stores().llm_profiles, cipher=cipher
         )
     if request.agent_settings is None:
         raise AgentLaunchError("The start request has no agent source")
@@ -163,7 +168,11 @@ def launch_source(
         settings = validate_agent_settings(request.agent_settings, context=context)
     except (TypeError, ValueError) as exc:
         raise AgentLaunchError(f"Invalid agent_settings: {exc}") from exc
-    return ResolvedLaunch(settings=settings)
+    return ResolvedLaunch(
+        settings=resolve_llm_credentials(
+            settings, lambda: stores().llm_profiles, cipher=cipher
+        )
+    )
 
 
 def request_secrets(
