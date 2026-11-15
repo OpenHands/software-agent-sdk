@@ -5,9 +5,19 @@ on:
     pull_request:
         paths:
             - openhands-agent-server/**
-            - openhands-tools/openhands/tools/terminal/**
+            - openhands-tools/**
+            - openhands-sdk/openhands/sdk/agent/**
+            - openhands-sdk/openhands/sdk/context/**
             - openhands-sdk/openhands/sdk/conversation/**
+            - openhands-sdk/openhands/sdk/launch/**
+            - openhands-sdk/openhands/sdk/llm/**
             - openhands-sdk/openhands/sdk/mcp/**
+            - openhands-sdk/openhands/sdk/profiles/**
+            - openhands-sdk/openhands/sdk/settings/**
+            - openhands-sdk/openhands/sdk/skills/**
+            - openhands-sdk/openhands/sdk/tool/**
+            - '**/pyproject.toml'
+            - uv.lock
             - scripts/agent_server_benchmarks/**
             - .github/workflows/agent-server-start-benchmark.yml
 
@@ -23,23 +33,30 @@ jobs:
     benchmark:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 40
+        # Fork and Dependabot PRs get a read-only token; their report stays in the
+        # job summary and artifact.
+        env:
+            CAN_COMMENT: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
         steps:
-            - name: Checkout PR head
+            - name: Checkout PR (merge commit)
               uses: actions/checkout@v7.0.1
               with:
                   path: head
+                  persist-credentials: false
 
             - name: Checkout PR base
               uses: actions/checkout@v7.0.1
               with:
                   ref: ${{ github.event.pull_request.base.sha }}
                   path: base
+                  persist-credentials: false
 
             - name: Checkout public extensions
               uses: actions/checkout@v7.0.1
               with:
                   repository: OpenHands/extensions
                   path: extensions
+                  persist-credentials: false
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -47,7 +64,11 @@ jobs:
                   enable-cache: true
                   python-version: '3.13'
 
+            # Precompiled bytecode keeps the first server start of each side from
+            # paying for .pyc generation, which skewed one sample per side.
             - name: Install base and head
+              env:
+                  UV_COMPILE_BYTECODE: '1'
               run: |
                   (cd base && uv sync --frozen --group dev)
                   (cd head && uv sync --frozen --group dev)
@@ -56,14 +77,14 @@ jobs:
             - name: Run benchmark
               env:
                   BASE_REF: ${{ github.event.pull_request.base.ref }}@${{ github.event.pull_request.base.sha }}
-                  HEAD_REF: ${{ github.event.pull_request.head.sha }}
+                  HEAD_REF: ${{ github.sha }}
               run: |
                   head/.venv/bin/python head/scripts/agent_server_benchmarks/conversation_start.py compare \
                     --base-python base/.venv/bin/python \
                     --head-python head/.venv/bin/python \
-                    --base-ref "${BASE_REF:0:60}" --head-ref "${HEAD_REF:0:10}" \
+                    --base-ref "${BASE_REF:0:60}" --head-ref "merge ${HEAD_REF:0:10}" \
                     --extensions-path "$PWD/extensions" \
-                    --rounds 3 \
+                    --rounds 5 \
                     --report report.md
                   cat report.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -76,22 +97,31 @@ jobs:
                       report.md
                       report.json
 
-            # Fork PRs get a read-only token; their report stays in the job summary.
             - name: Post or update PR comment
-              if: github.event.pull_request.head.repo.full_name == github.repository
+              # Not on cancel: a newer push to the PR replaces this run.
+              if: (success() || failure()) && env.CAN_COMMENT == 'true'
               uses: actions/github-script@v9
+              env:
+                  BENCHMARK_FAILED: ${{ job.status != 'success' }}
               with:
                   script: |
                       const fs = require('fs');
-                      const body = fs.readFileSync('report.md', 'utf8');
-                      const marker = body.split('\n')[0];
+                      const marker = '<!-- agent-server-conversation-start-benchmark -->';
+                      const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                      const body = process.env.BENCHMARK_FAILED === 'true' || !fs.existsSync('report.md')
+                        ? `${marker}\n### Agent-server conversation start benchmark\n\n` +
+                          `The benchmark failed for \`${context.sha.slice(0, 10)}\`; see [the run](${run}). ` +
+                          `Earlier numbers on this PR are not for the latest commit.`
+                        : fs.readFileSync('report.md', 'utf8');
                       const comments = await github.paginate(github.rest.issues.listComments, {
                         owner: context.repo.owner,
                         repo: context.repo.repo,
                         issue_number: context.issue.number,
                         per_page: 100,
                       });
-                      const existing = comments.find(c => c.body.startsWith(marker));
+                      const existing = comments.find(
+                        c => c.user.type === 'Bot' && c.body.startsWith(marker),
+                      );
                       if (existing) {
                         await github.rest.issues.updateComment({
                           owner: context.repo.owner,
