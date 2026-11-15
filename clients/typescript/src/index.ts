@@ -69,6 +69,7 @@ export {
   isConversationErrorEvent,
   isCondensationEvent,
   isHookExecutionEvent,
+  isReactionEvent,
 } from './events/types';
 export type {
   EventID,
@@ -98,6 +99,8 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  ReactionEmoji,
+  ReactionEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
@@ -224,6 +227,7 @@ export type {
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
 export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
 export type {
+  ACPEffortOption,
   ACPModelDiscovery,
   ACPModelDiscoveryError,
   ACPModelDiscoveryRequest,

@@ -244,8 +244,8 @@ class HookExecutor:
                 "timeout": hook.timeout,
             }
         )
-        # Isolate Metrics so hook spend doesn't accrue to the parent's bucket.
-        hook_llm.reset_metrics()
+        # Its own usage_id gives the copy its own session, so hook spend
+        # doesn't accrue to the parent's bucket.
 
         # Never hand the parent's already-initialized visualizer instance to the
         # sub-conversation: LocalConversation.__init__ calls initialize() on it,
@@ -328,7 +328,6 @@ class HookExecutor:
                 "stream": False,
             }
         )
-        hook_llm.reset_metrics()
 
         messages = [
             Message(

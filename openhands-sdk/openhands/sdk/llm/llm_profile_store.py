@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from filelock import FileLock, Timeout
 
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
@@ -179,8 +180,9 @@ class LLMProfileStore:
                 yield
         except Timeout:
             logger.error(f"[Profile Store] Failed to acquire lock within {timeout}s")
-            raise TimeoutError(
-                f"Profile store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Profile store is busy. Please retry.",
+                message=f"Profile store lock acquisition timed out after {timeout}s",
             )
 
     def list(self) -> list[str]:
@@ -203,7 +205,7 @@ class LLMProfileStore:
         """
         clean_name = canonical_profile_name(name)
         if not PROFILE_NAME_REGEX.match(clean_name):
-            raise ValueError(
+            raise Invalid(
                 f"Invalid profile name: {name!r}. "
                 "Profile names must be 1-64 characters, start with a letter "
                 "or digit, and contain only letters, digits, '.', '_', or '-'."
@@ -353,7 +355,7 @@ class LLMProfileStore:
                 raise
             except Exception as e:
                 # Re-raise as ValueError for clearer error handling
-                raise ValueError(f"Failed to load profile `{name}`: {e}") from e
+                raise Invalid(f"Failed to load profile `{name}`: {e}") from e
 
             logger.info(f"[Profile Store] Loaded profile `{name}` from {profile_path}")
 

@@ -25,7 +25,6 @@ from openhands.agent_server.canvas_extensions.installed import (
     install_canvas_extension,
 )
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.extensions.installation import InstallationMetadata
 
 from .canvas_extensions.conftest import write_extension
@@ -86,7 +85,6 @@ async def test_alive_answers_while_canvas_request_waits_for_lock(
         lambda: installed_dir,
     )
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
-    reset_stores()
     install_canvas_extension(
         source=str(write_extension(tmp_path / "src" / _NAME, name=_NAME))
     )
@@ -145,4 +143,3 @@ async def test_alive_answers_while_canvas_request_waits_for_lock(
         safety.cancel()
         if held.is_locked:
             held.release(force=True)
-        reset_stores()

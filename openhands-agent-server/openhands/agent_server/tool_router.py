@@ -2,13 +2,18 @@
 
 import asyncio
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 # Registered only in the agent-server: the tool needs a server to create the
 # child on, so it is deliberately absent from get_default_tools().
 import openhands.tools.child_conversation  # noqa: E402, F401
+
+# Reactions work in any conversation; registering them here makes them
+# available to agents this server runs.
+import openhands.tools.reaction  # noqa: E402, F401
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.launch import (
     can_probe_tools,
     configured_browser_available,
@@ -47,13 +52,14 @@ class ToolCatalogResponse(BaseModel):
 
 
 @tool_router.get("/catalog")
-async def get_tool_catalog(request: Request) -> ToolCatalogResponse:
+async def get_tool_catalog(
+    config: Config = Depends(get_config),
+) -> ToolCatalogResponse:
     """List the tools this server offers for configuring an agent.
 
     Clients offer the ``user_selectable`` entries; ``usable`` says whether the
     runtime conversations run in can run the tool.
     """
-    config: Config = request.app.state.config
     entries = await asyncio.to_thread(
         list_tool_catalog, check_usable=can_probe_tools(config)
     )

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
@@ -222,9 +223,8 @@ def test_session_lock_times_out_instead_of_blocking_forever(
 
     assert len(errors) == 1
     assert isinstance(errors[0], InstallationMetadataLockTimeoutError)
-    # Not an OSError: the Canvas install endpoint maps OSError to 422
-    # "Invalid canvas extension".
-    assert not isinstance(errors[0], OSError)
+    # The agent server maps every LockTimeout to 503.
+    assert isinstance(errors[0], LockTimeout)
     assert errors[0].installed_dir == installation_dir
 
 

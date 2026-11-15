@@ -136,4 +136,6 @@ def test_lock_timeout_returns_503(
         response = client.request(method, path, json=json_body)
 
     assert response.status_code == 503, response.text
-    assert response.json() == {"detail": _BUSY_DETAIL}
+    # The client is told to retry and never sees the local path.
+    assert _BUSY_DETAIL in response.json()["exception"]
+    assert str(stores[store]) not in response.text

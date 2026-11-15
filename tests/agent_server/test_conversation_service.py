@@ -3832,22 +3832,22 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="cheap-model")
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
             ) as mock_generate_title,
         ):
-            mock_store_instance = MockStore.return_value
+            mock_store_instance = profile_store
             mock_store_instance.load.return_value = mock_llm
 
-            subscriber = AutoTitleSubscriber(service=service)
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
-            MockStore.assert_called_once_with()
             mock_store_instance.load.assert_called_once_with(
                 "cheap-model", cipher=service.cipher
             )
@@ -3864,20 +3864,21 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="nonexistent-profile")
         agent_llm = service._conversation.agent.llm
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
         ):
-            mock_store_instance = MockStore.return_value
+            mock_store_instance = profile_store
             mock_store_instance.load.side_effect = FileNotFoundError(
                 "Profile 'nonexistent-profile' not found"
             )
 
-            subscriber = AutoTitleSubscriber(service=service)
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
@@ -3914,18 +3915,19 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="corrupted-profile")
         agent_llm = service._conversation.agent.llm
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
         ):
-            mock_store_instance = MockStore.return_value
+            mock_store_instance = profile_store
             mock_store_instance.load.side_effect = ValueError("Invalid profile format")
 
-            subscriber = AutoTitleSubscriber(service=service)
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
@@ -3967,16 +3969,17 @@ class TestAutoTitle:
         service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
         profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._TITLE_WITH_LLM_PATH, return_value="Profile Title"
             ) as mock_llm_title,
         ):
-            MockStore.return_value.load.return_value = profile_llm
-            subscriber = AutoTitleSubscriber(service=service)
+            profile_store.load.return_value = profile_llm
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
@@ -4044,23 +4047,17 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        # Point the agent-server profile store singleton at our tmp dir via
-        # OH_PERSISTENCE_DIR so the real _load_title_llm code path finds our
-        # on-disk profile under `{tmp_path}/profiles`.
-        from openhands.agent_server.persistence import reset_stores
-
-        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
-        reset_stores()
-        # Clear the singleton at teardown even if an assertion raises, so the
-        # stale store (pointing at the soon-deleted tmp_path) can't leak.
-        request.addfinalizer(reset_stores)
-
         with patch(
             "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
             side_effect=fake_generate,
         ):
-            subscriber = AutoTitleSubscriber(service=service)
+            # The real _load_title_llm code path, reading the on-disk
+            # profile under `{tmp_path}/profiles`.
+            subscriber = AutoTitleSubscriber(
+                service=service,
+                llm_profile_store=LLMProfileStore(base_dir=profile_dir),
+            )
             await subscriber(self._user_message_event("Fix the login bug"))
             # Wait for the background executor task to complete. The production
             # code uses run_in_executor, so sleep(0) is not enough.
@@ -4141,20 +4138,17 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        from openhands.agent_server.persistence import reset_stores
-
-        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
-        reset_stores()
-        # Clear the singleton at teardown even if an assertion raises, so the
-        # stale store (pointing at the soon-deleted tmp_path) can't leak.
-        request.addfinalizer(reset_stores)
-
         with patch(
             "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
             side_effect=fake_generate,
         ):
-            subscriber = AutoTitleSubscriber(service=service)
+            # The real _load_title_llm code path, reading the on-disk
+            # profile under `{tmp_path}/profiles`.
+            subscriber = AutoTitleSubscriber(
+                service=service,
+                llm_profile_store=LLMProfileStore(base_dir=profile_dir),
+            )
             await subscriber(self._user_message_event("Fix the login bug"))
             for _ in range(50):
                 await asyncio.sleep(0.02)

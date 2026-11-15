@@ -10,6 +10,7 @@ from typing import Any, ClassVar, Final
 from filelock import BaseFileLock, FileLock, Timeout
 from pydantic import BaseModel, Field, model_validator
 
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
     InstallationInterface,
@@ -74,19 +75,26 @@ class InstallationMetadataLoadError(Exception):
         self.metadata_path = metadata_path
 
 
-class InstallationMetadataLockTimeoutError(Exception):
+class InstallationMetadataLockTimeoutError(LockTimeout):
     """The installation metadata lock was not acquired in time.
 
     Another operation (an install, update, uninstall or listing) held it for
-    the whole timeout. Retrying later can succeed. Deliberately not a
-    ``TimeoutError``: that is an ``OSError``, which callers already map to
-    unrelated errors (an invalid extension, for one).
+    the whole timeout. Retrying later can succeed, so the agent server answers
+    503. The client sees a generic message; the local path is only logged.
+
+    Like every ``LockTimeout`` it is also a ``TimeoutError``, and so an
+    ``OSError``: code that maps ``OSError`` to another error must re-raise
+    ``LockTimeout`` first.
     """
 
     def __init__(self, installed_dir: Path, timeout: float) -> None:
         super().__init__(
-            f"Timed out after {timeout}s waiting for the installation "
-            f"metadata lock in {installed_dir}"
+            "Another plugin, skill or extension operation is in progress. "
+            "Please retry.",
+            message=(
+                f"Timed out after {timeout}s waiting for the installation "
+                f"metadata lock in {installed_dir}"
+            ),
         )
         self.installed_dir = installed_dir
 
@@ -117,7 +125,7 @@ class MetadataSession:
     def extensions(self) -> dict[str, InstallationInfo]:
         return self.metadata.extensions
 
-    def sync(self) -> list[InstallationInfo]:
+    def sync(self, *, strict: bool = False) -> list[InstallationInfo]:
         """Reconcile metadata with what is actually on disk.
 
         Prunes stale tracked entries whose directories are missing and
@@ -136,7 +144,7 @@ class MetadataSession:
         )
         valid = self.metadata.validate_tracked(self.installed_dir)
         discovered = self.metadata.discover_untracked(
-            self.installed_dir, self.interface
+            self.installed_dir, self.interface, strict=strict
         )
         return valid + discovered
 
@@ -262,13 +270,15 @@ class InstallationMetadata(BaseModel):
         return installed_dir / cls.metadata_filename
 
     @classmethod
-    def load_from_dir(cls, installed_dir: Path) -> InstallationMetadata:
+    def load_from_dir(
+        cls, installed_dir: Path, *, strict: bool = False
+    ) -> InstallationMetadata:
         """Load metadata from the installed extensions directory.
 
         For read-only callers. Takes no lock: a save swaps in a complete file,
         so a concurrent read sees the old or the new version, never a partial
         one. On Windows, a read that meets the swap is retried. A file that
-        cannot be read or parsed loads as empty.
+        cannot be read or parsed loads as empty, or raises with ``strict``.
         """
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
@@ -277,6 +287,8 @@ class InstallationMetadata(BaseModel):
         try:
             return cls.model_validate_json(read_text_retrying(metadata_path))
         except Exception as e:
+            if strict:
+                raise
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
 
@@ -360,6 +372,8 @@ class InstallationMetadata(BaseModel):
         self,
         installed_dir: Path,
         installation_interface: InstallationInterface,
+        *,
+        strict: bool = False,
     ) -> list[InstallationInfo]:
         """Discover extension directories not tracked by the metadata.
 
@@ -386,6 +400,8 @@ class InstallationMetadata(BaseModel):
             try:
                 extension = installation_interface.load_from_dir(item)
             except Exception as e:
+                if strict:
+                    raise
                 logger.debug(f"Skipping directory {item}: {e}")
                 continue
 
