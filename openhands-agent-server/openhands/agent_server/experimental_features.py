@@ -59,7 +59,21 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [CONVERSATION_REACTIONS]
+MESSAGE_EDITS = ExperimentalFeatureDefinition(
+    key="message_edits",
+    label="Message edits",
+    description=(
+        "The agent can edit its earlier messages when they got answered or "
+        "became wrong: it strikes the outdated part and adds a short note, and "
+        "the message shows as edited. Applies to conversations started after "
+        "you turn it on."
+    ),
+)
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
+    CONVERSATION_REACTIONS,
+    MESSAGE_EDITS,
+]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -86,10 +100,14 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
     if is_enabled(features, CONVERSATION_REACTIONS.key):
         # Tool names as registered by openhands.tools.reaction.
-        return [Tool(name="react"), Tool(name="unreact")]
-    return []
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, MESSAGE_EDITS.key):
+        # Tool name as registered by openhands.tools.message_edit.
+        tools.append(Tool(name="edit_message"))
+    return tools
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"

@@ -9,8 +9,9 @@ from pydantic import BaseModel
 # child on, so it is deliberately absent from get_default_tools().
 import openhands.tools.child_conversation  # noqa: E402, F401
 
-# Reactions work in any conversation; registering them here makes them
-# available to agents this server runs.
+# Reactions and message edits work in any conversation; registering them here
+# makes them available to agents this server runs.
+import openhands.tools.message_edit  # noqa: E402, F401
 import openhands.tools.reaction  # noqa: E402, F401
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config
