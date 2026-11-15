@@ -1,0 +1,51 @@
+mode: is_input=False terminal_type=None
+===== OBS 1 cmd='python3' =====
+Python 3.11.18 (main, Oct 26 2026, 15:28:55) [GCC 13.3.0] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+>>>
+[The command has no new output after 3 seconds. You may wait longer to see additional output by sending empty command '', send other commands to interact with the current process, send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command, or use the timeout parameter in terminal for future commands.]
+===== OBS 2 cmd='print(6 * 7)' =====
+python3
+Python 3.11.18 (main, Oct 26 2026, 15:28:55) [GCC 13.3.0] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+>>>
+KeyboardInterrupt
+>>> clear
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+NameError: name 'clear' is not defined
+>>> print(6 * 7)
+42
+>>>
+[The command has no new output after 3 seconds. You may wait longer to see additional output by sending empty command '', send other commands to interact with the current process, send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command, or use the timeout parameter in terminal for future commands.]
+===== OBS 3 cmd='exit()' =====
+python3
+Python 3.11.18 (main, Oct 26 2026, 15:28:55) [GCC 13.3.0] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+>>>
+KeyboardInterrupt
+>>> clear
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+NameError: name 'clear' is not defined
+>>> print(6 * 7)
+42
+>>>
+KeyboardInterrupt
+>>> clear
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+NameError: name 'clear' is not defined
+>>> exit()
+[The command completed with exit code 0.]
+[Current working directory: /tmp/repl2ws-_vx6clbn]
+[Python interpreter: /usr/local/bin/python]
+[Command finished with exit code 0]
+===== OBS 4 cmd='echo back-in-shell' =====
+back-in-shell
+[The command completed with exit code 0.]
+[Current working directory: /tmp/repl2ws-_vx6clbn]
+[Python interpreter: /usr/local/bin/python]
+[Command finished with exit code 0]
+===== OBS 5 cmd=None =====
+done

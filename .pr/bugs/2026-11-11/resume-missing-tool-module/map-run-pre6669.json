@@ -1,0 +1,62 @@
+{
+  "ok": false,
+  "file": "F27-hooks-subagents-tools.md",
+  "summary": {
+    "pass": 2,
+    "fail": 1,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "no-commands": 0
+  },
+  "bullets": [
+    {
+      "bullet": "Preconditions",
+      "ids": [],
+      "line": 147,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 20870,
+      "transcript": "<scratch>/agent-server/20261111-090117-7a26-map-f27/evidence/map-run/F27-hooks-subagents-tools-00-preconditions.json"
+    },
+    {
+      "bullet": "Custom tool module (`F27.custom-tool-modules`).",
+      "ids": [
+        "F27.custom-tool-modules"
+      ],
+      "line": 687,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 51808,
+      "transcript": "<scratch>/agent-server/20261111-090117-7a26-map-f27/evidence/map-run/F27-hooks-subagents-tools-01-custom-tool-module-f27-custom-tool-modul.json"
+    },
+    {
+      "bullet": "Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug.",
+      "ids": [
+        "F27.custom-tool-missing-on-resume"
+      ],
+      "line": 777,
+      "status": "fail",
+      "exit_code": 1,
+      "elapsed_ms": 16361,
+      "transcript": "<scratch>/agent-server/20261111-090117-7a26-map-f27/evidence/map-run/F27-hooks-subagents-tools-02-tool-module-gone-on-resume-f27-custom-to.json",
+      "failed_line": 4,
+      "failed_command": "control-agent-server api POST \"/api/conversations/$MCID/events\" --json '{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Reply with the single word ok.\"}], \"run\": false}' --expect 2xx,4xx --save F27.custom-tool-missing-on-resume/send",
+      "stdout_tail": "nown kind 'QaF27EchoObservation' for openhands.sdk.tool.schema.Observation; Expected one of: ['MCPToolObservation', 'ClassifyAndSwitchLLMObservation', 'FinishObservation', 'InvokeSkillObservation', 'SwitchLLMObservation', 'ThinkObservation', 'VisionInspectObservation', 'ClientToolObservation', 'AskOracleObservation', 'BrowserObservation', 'StartChildConversationObservation', 'DelegateObservation', 'FileEditorObservation', 'EditObservation', 'ListDirectoryObservation', 'ReadFileObservation', 'WriteFileObservation', 'GlobObservation', 'GrepObservation', 'PlanningFileEditorObservation', 'TaskObservation', 'TaskTrackerObservation', 'TerminalObservation', 'WorkflowObservation'] [type=value_error, input_value={'content': [{'cache_prom... 'QaF27EchoObservation'}, input_type=dict]\\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error\",\n      \"error_id\": \"0f2b201e1bfd49a4957d7357ab125435\"\n    },\n    \"truncated\": false\n  },\n  \"elapsed_ms\": 1987,\n  \"saved\": \"<scratch>/agent-server/20261111-090117-7a26-map-f27/evidence/F27.custom-tool-missing-on-resume/send.json\",\n  \"hint\": \"expected 2xx,4xx, got 500\"\n}\n",
+      "stderr_tail": "",
+      "bug_predicate": "status eq 500 && response.body.exception contains \"ToolDefinition 'qa_f27_echo' is not registered\"",
+      "failed_status": 1,
+      "observed": {
+        "status": 500,
+        "hint": "expected 2xx,4xx, got 500"
+      },
+      "hint": "the `# bug` command failed, but not with the documented failure (`# bug: status eq 500 && response.body.exception contains \"ToolDefinition 'qa_f27_echo' is not registered\"`); the bug was not reproduced"
+    }
+  ],
+  "run": "<scratch>/agent-server/20261111-090117-7a26-map-f27",
+  "launch_flags": [
+    "--checkout",
+    "<scratch>/repro/wt-pre6669"
+  ]
+}

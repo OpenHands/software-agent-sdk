@@ -451,10 +451,11 @@ async def test_exhausted_stream_timeout_transitions_conversation_to_error(
 
 
 @pytest.mark.asyncio
-async def test_hard_timeouts_stop_retrying_after_the_timeout_budget() -> None:
+async def test_hard_timeouts_stop_retrying_after_the_timeout_budget(caplog) -> None:
     """Attempts that all reach the hard timeout stop after two timeouts' worth
     of time instead of using every retry, and the final error names the limit
     and points at settings (#6249)."""
+    caplog.set_level("WARNING")
     async with _hung_chat_completion_server() as (base_url, attempts):
         llm = _streaming_llm(
             base_url, timeout=1, stream_idle_timeout=None, num_retries=5
@@ -467,6 +468,14 @@ async def test_hard_timeouts_stop_retrying_after_the_timeout_budget() -> None:
             )
 
     assert len(attempts) == 2
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if "LLM request failed:" in record.getMessage()
+    ]
+    assert len(diagnostics) == 2
+    assert "will_retry=True" in diagnostics[0]
+    assert "attempt=2 max_attempts=5 retry_eligible=True will_retry=False" in diagnostics[1]
     detail = str(exc_info.value)
     assert "LLM hard timeout after 1 seconds" in detail
     assert "within the LLM timeout of 1s (gave up after 2 attempts" in detail

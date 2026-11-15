@@ -1567,6 +1567,105 @@ def test_openai_gateway_rejects_direct_event_during_turn(
         assert user_events.json() == expected_count + 1
 
 
+def test_openai_gateway_continues_an_interrupted_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
+) -> None:
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / ".openhands" / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    original_acompletion = LLM.acompletion
+    direct_started = threading.Event()
+    release_direct = threading.Event()
+
+    async def gated_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        last_user_text = [
+            part.text
+            for message in messages
+            if message.role == "user"
+            for part in message.content
+            if isinstance(part, TextContent)
+        ][-1]
+        if last_user_text == "Direct turn.":
+            direct_started.set()
+            await asyncio.to_thread(release_direct.wait, 5)
+        result = await original_acompletion(self, messages, tools, **kwargs)
+        return result.model_copy(
+            update={
+                "message": Message(
+                    role="assistant",
+                    content=[TextContent(text=f"Reply to: {last_user_text}")],
+                )
+            }
+        )
+
+    monkeypatch.setattr(LLM, "acompletion", gated_acompletion)
+
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        gateway_url = f"{env['host']}/v1/chat/completions"
+        seed = client.post(
+            gateway_url,
+            json={
+                "model": "openhands_smoke",
+                "messages": [{"role": "user", "content": "Start conversation."}],
+            },
+            timeout=10,
+        )
+        assert seed.status_code == 200, seed.text
+        conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
+        conversation_url = f"{env['host']}/api/conversations/{conversation_id}"
+
+        direct = client.post(
+            f"{conversation_url}/events",
+            json={"content": [{"type": "text", "text": "Direct turn."}], "run": True},
+            timeout=5,
+        )
+        assert direct.status_code == 200, direct.text
+        try:
+            assert direct_started.wait(5)
+            interrupted = client.post(f"{conversation_url}/interrupt", timeout=10)
+        finally:
+            release_direct.set()
+        assert interrupted.status_code == 200, interrupted.text
+        deadline = time.monotonic() + 5
+        while client.get(conversation_url).json()["execution_status"] != "paused":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+
+        gateway = client.post(
+            gateway_url,
+            headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+            json={
+                "model": "openhands_smoke",
+                "messages": [{"role": "user", "content": "Gateway turn."}],
+            },
+            timeout=15,
+        )
+
+        assert gateway.status_code == 200, gateway.text
+        assert gateway.json()["choices"][0]["message"]["content"] == (
+            "Reply to: Gateway turn."
+        )
+        assert gateway.headers["X-OpenHands-ServerConversation-ID"] == conversation_id
+        gateway_turns = client.get(
+            f"{conversation_url}/events/search",
+            params={"source": "user", "body": "Gateway turn."},
+        )
+        assert len(gateway_turns.json()["items"]) == 1
+        assert client.get(conversation_url).json()["execution_status"] == "finished"
+
+
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1914,6 +2013,29 @@ def test_conversation_stats_with_live_server(
     assert stats_from_field, "Expected non-empty stats in the 'stats' field after run()"
 
     conv.close()
+
+
+def test_ask_agent_usage_is_in_conversation_info_at_once(server_env, patched_llm):
+    """GET /api/conversations/{id} counts a side question's usage as soon as
+    ask_agent returns, with no run or other state change after it.
+    """
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        conv.ask_agent("How's the progress?")
+
+        with httpx.Client(base_url=server_env["host"]) as client:
+            response = client.get(f"/api/conversations/{conv.id}")
+        response.raise_for_status()
+        usage_to_metrics = response.json()["stats"]["usage_to_metrics"]
+        assert "ask-agent-llm" in usage_to_metrics
+        token_usage = usage_to_metrics["ask-agent-llm"]["accumulated_token_usage"]
+        assert token_usage["prompt_tokens"] == 7  # one patched_llm call
+    finally:
+        conv.close()
 
 
 def test_events_not_lost_during_client_disconnection(
