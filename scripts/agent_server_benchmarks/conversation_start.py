@@ -121,10 +121,14 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _wait_alive(base: str, timeout: float = 300) -> float:
+async def _wait_alive(
+    base: str, server: subprocess.Popen, timeout: float = 300
+) -> float:
     start = time.perf_counter()
     async with httpx.AsyncClient() as client:
         while time.perf_counter() - start < timeout:
+            if server.poll() is not None:
+                raise RuntimeError(f"agent-server exited with code {server.returncode}")
             try:
                 if (await client.get(f"{base}/alive", timeout=2)).status_code == 200:
                     return time.perf_counter() - start
@@ -135,14 +139,17 @@ async def _wait_alive(base: str, timeout: float = 300) -> float:
 
 
 async def _first_agent_event(url: str, timeout: float = 120) -> float:
-    async with websockets.connect(url, max_size=None) as ws:
-        while True:
-            event = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
-            if event.get("source") == "agent" and event.get("kind") in (
-                "MessageEvent",
-                "ActionEvent",
-            ):
-                return time.perf_counter()
+    async def wait_for_agent_event() -> float:
+        async with websockets.connect(url, max_size=None) as ws:
+            while True:
+                event = json.loads(await ws.recv())
+                if event.get("source") == "agent" and event.get("kind") in (
+                    "MessageEvent",
+                    "ActionEvent",
+                ):
+                    return time.perf_counter()
+
+    return await asyncio.wait_for(wait_for_agent_event(), timeout)
 
 
 # Creates per server start, by scenario.
@@ -153,7 +160,12 @@ MCP_STARTUP_DELAY_S = 3.0
 
 REPORT_ROWS = [
     ("default", "create_s", False, "Create conversation (warm)"),
-    ("default", "first_agent_event_s", False, "Create → first agent event (warm)"),
+    (
+        "default",
+        "first_agent_event_s",
+        False,
+        "Create → first agent event on a new socket (warm)",
+    ),
     ("default", "create_s", True, "First create right after server start"),
     ("pause", "create_s", True, f"First create {PAUSE_S:g} s after server start"),
     (
@@ -267,8 +279,9 @@ async def _run_server(python: str, scenario: str, extensions_path: str | None) -
     )
     headers = {"X-Session-API-Key": SESSION_KEY}
     result: dict = {"scenario": scenario, "creates": []}
+    failed = False
     try:
-        result["startup_s"] = await _wait_alive(base)
+        result["startup_s"] = await _wait_alive(base, server)
         async with httpx.AsyncClient(base_url=base, headers=headers, timeout=300) as c:
             r = await c.post(
                 "/api/profiles/benchmark",
@@ -307,14 +320,23 @@ async def _run_server(python: str, scenario: str, extensions_path: str | None) -
                         c, base, port, root, profile_id, repo=repo, cold=i == 0
                     )
                 )
+    except BaseException:
+        failed = True
+        raise
     finally:
         server.terminate()
         try:
             server.wait(30)
         except subprocess.TimeoutExpired:
             server.kill()
+            server.wait()
         llm.shutdown()
+        llm.server_close()
         log.close()
+        if failed:
+            tail = (root / "server.log").read_text(errors="replace").splitlines()[-60:]
+            print(f"--- {python} ({scenario}) server.log tail ---", file=sys.stderr)
+            print("\n".join(tail), file=sys.stderr)
         if os.environ.get("BENCHMARK_KEEP_LOGS"):
             print(f"logs kept in {root}", file=sys.stderr)
         else:
@@ -392,29 +414,37 @@ def _samples(runs: list[dict], key: str, cold: bool) -> list[float]:
 MIN_SAMPLES_FOR_SIZE_ONLY = 8
 
 
+# Smallest change worth flagging: event-loop stalls start from a few ms, the
+# timings from about 100 ms.
+STALL_FLOOR_S = 0.02
+TIME_FLOOR_S = 0.05
+
+
 def _verdict(
     base: tuple[float, float, float],
     head: tuple[float, float, float],
     samples: int,
+    floor: float,
 ) -> str:
-    """Flag a change of at least 25% that is large or clearly separated."""
+    """Flag a clear change (separated 95% CIs, at least ``floor``) or a large
+    one (at least 150 ms and 25%) on a row with enough samples."""
     (bm, blo, bhi), (hm, hlo, hhi) = base, head
     delta = abs(hm - bm)
-    separated = hlo > bhi or hhi < blo
-    large = delta >= 0.15 and samples >= MIN_SAMPLES_FOR_SIZE_ONLY
-    if delta >= 0.25 * bm and (large or (delta >= 0.05 and separated)):
+    clear = (hlo > bhi or hhi < blo) and delta >= floor
+    large = samples >= MIN_SAMPLES_FOR_SIZE_ONLY and delta >= max(0.15, 0.25 * bm)
+    if clear or large:
         return "⚠️ slower" if hm > bm else "✅ faster"
     return "≈ same"
 
 
-def _row(label: str, b: list[float], h: list[float]) -> str:
+def _row(label: str, b: list[float], h: list[float], floor: float) -> str:
     base, head = _median_ci(b), _median_ci(h)
     (bm, blo, bhi), (hm, hlo, hhi) = base, head
     change = (hm - bm) / bm if bm else 0.0
     return (
         f"| {label} | {bm:.3f} s [{blo:.3f}, {bhi:.3f}] "
         f"| {hm:.3f} s [{hlo:.3f}, {hhi:.3f}] | {change:+.0%} "
-        f"| {_verdict(base, head, min(len(b), len(h)))} |"
+        f"| {_verdict(base, head, min(len(b), len(h)), floor)} |"
     )
 
 
@@ -424,12 +454,20 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
         if scenario in runs:
             base = _samples(runs[scenario]["base"], key, cold)
             head = _samples(runs[scenario]["head"], key, cold)
-            rows.append(_row(label, base, head))
+            floor = STALL_FLOOR_S if key == "max_alive_s" else TIME_FLOOR_S
+            rows.append(_row(label, base, head, floor))
     startups = {
         side: [r["startup_s"] for s in runs for r in runs[s][side]]
         for side in ("base", "head")
     }
-    rows.append(_row("Server startup (`/alive`)", startups["base"], startups["head"]))
+    rows.append(
+        _row(
+            "Server startup (`/alive`)",
+            startups["base"],
+            startups["head"],
+            TIME_FLOOR_S,
+        )
+    )
     return "\n".join(
         [
             REPORT_MARKER,
@@ -461,11 +499,14 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
             "- **mcp**: the agent profile enables one stdio MCP server that starts "
             f"after {MCP_STARTUP_DELAY_S:g} s, like an `npx`/`uvx` launch.",
             "",
-            "A change is flagged when the medians differ by at least 25% and "
-            "either by 50 ms with non-overlapping 95% CIs, or by 150 ms in a row "
-            f"with at least {MIN_SAMPLES_FOR_SIZE_ONLY} samples per side. The "
-            "first-create rows have one sample per server start, so only a "
-            "clearly separated change is flagged there. Runner: "
+            "A change is flagged when the 95% CIs do not overlap and the medians "
+            f"differ by at least {TIME_FLOOR_S * 1000:g} ms "
+            f"({STALL_FLOOR_S * 1000:g} ms for `/alive` stalls), or when a row "
+            f"with at least {MIN_SAMPLES_FOR_SIZE_ONLY} samples per side moves by "
+            "at least 150 ms and 25%. The first-create rows have one sample per "
+            "server start, so they are flagged only on a clear change. The "
+            "first-event row opens the socket after the create returns, as Agent "
+            "Canvas does, so it includes the connect and replay. Runner: "
             f"`{meta['runner']}`, {meta['env_vars']} environment "
             "variables. Run it locally with `python scripts/agent_server_benchmarks/"
             "conversation_start.py --help`.",
@@ -523,7 +564,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--rounds", type=int, default=3, help="server starts per side and scenario"
+        "--rounds", type=int, default=5, help="server starts per side and scenario"
     )
     common.add_argument(
         "--scenarios",
