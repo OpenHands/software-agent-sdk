@@ -956,6 +956,51 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ask_user", [True, False])
+async def test_a_new_coordinator_can_pass_on_its_members_questions(
+    tmp_path, workspace_dir, monkeypatch, ask_user
+):
+    from openhands.agent_server import conversation_service as module
+    from openhands.agent_server.persistence import PersistedSettings
+
+    monkeypatch.setattr(
+        module,
+        "launch_source",
+        lambda request, stores, cipher: Agent(
+            llm=LLM(model="gpt-4o", usage_id="cat-profile"), tools=[]
+        ),
+    )
+    stores = ServerStores.from_config(Config())
+
+    def turn_on(settings: PersistedSettings) -> PersistedSettings:
+        settings.experimental_features = {"ask_user": ask_user}
+        return settings
+
+    stores.settings.update(turn_on)
+    services: dict[UUID, Any] = {}
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=tmp_path / "worktrees",
+            stores=stores,
+        ) as service:
+            info = await service.start_project_coordinator(
+                uuid4().hex, str(workspace_dir), agent_profile_id=uuid4()
+            )
+
+    tools = services[info.id].get_conversation().agent.tools
+    asks = [tool for tool in tools if tool.name == "ask_user"]
+    if ask_user:
+        # One ask_user, the coordinator's: it names the member it asks for.
+        assert [tool.params for tool in asks] == [{"for_conversations": True}]
+    else:
+        assert asks == []
+
+
+@pytest.mark.asyncio
 async def test_a_new_coordinator_needs_a_profile(tmp_path, workspace_dir, monkeypatch):
     from openhands.agent_server import conversation_service as module
 

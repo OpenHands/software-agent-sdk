@@ -41,6 +41,7 @@ from openhands.agent_server.project_board import (
 from openhands.agent_server.project_prompts import (
     RESTART_STOP,
     SenderRole,
+    card_header,
     paused_header,
     sender_header,
     stop_header,
@@ -61,6 +62,7 @@ from openhands.sdk.conversation.types import (
     conversation_sender,
 )
 from openhands.sdk.event import ActionEvent, Event, MessageEvent
+from openhands.sdk.event.ask_user import PendingAsk
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.finish import FinishAction
 
@@ -260,11 +262,17 @@ async def notify_coordinator(
     member = await service.get_conversation(member_id)
     title = member.title if member else None
     asked = turn == "asked"
-    header = (
-        user_turn_header(title, member_id, asked=asked)
-        if by_user
-        else update_header(title, member_id, asked=asked)
-    )
+    card = None
+    if asked and not by_user:
+        member_events = await service.get_event_service(member_id)
+        if member_events is not None:
+            card = await asyncio.to_thread(member_events.pending_ask)
+    if by_user:
+        header = user_turn_header(title, member_id, asked=asked)
+    elif card is not None:
+        header = card_header(title, member_id)
+    else:
+        header = update_header(title, member_id, asked=asked)
     await _deliver(
         coordinator_id,
         coordinator,
@@ -361,6 +369,75 @@ async def relay_user_message(
         run=False,
     )
     return True
+
+
+async def pass_on_answer(
+    service: "ConversationService",
+    coordinator_id: UUID,
+    project_hex: str,
+    closed_by: str,
+    picked: str | None,
+    words: str | None,
+) -> bool:
+    """Record the user's answer to a coordinator's card in the member it asks for.
+
+    A coordinator passes on a member's ``ask_user`` question with its own
+    card, naming the member in ``for_conversation``. When the user answers
+    that card, by a tap (``picked``, the option's label, and ``words``) or by
+    writing in the chat (``words``), the server records the same answer on the
+    member's own question and runs the member: the answer is the user's, so it
+    closes the member's card, which nothing the coordinator says could do.
+    ``closed_by`` is the user's event that answered the coordinator's card.
+
+    Nothing happens when that card asked for no member, the member left the
+    project, or the user already answered it there. Returns whether the
+    answer was passed on.
+    """
+    if await _coordinator_id(service, project_hex) != coordinator_id:
+        return False
+    coordinator = await service.get_event_service(coordinator_id)
+    if coordinator is None:
+        return False
+    card = await asyncio.to_thread(coordinator.pending_ask, closed_by)
+    if card is None or card.for_conversation is None:
+        return False
+    try:
+        member_id = UUID(card.for_conversation)
+    except ValueError:
+        logger.info("Card for %r names no conversation", card.for_conversation)
+        return False
+    if member_id == coordinator_id:
+        return False
+    member = await service.get_event_service(member_id)
+    if member is None or member.stored.tags.get(PROJECT_TAG_KEY) != project_hex:
+        return False
+    question = await asyncio.to_thread(member.pending_ask)
+    if question is None:
+        return False
+    index, text = _matched_answer(question, picked, words)
+    await member.answer_ask(
+        question.ask_id, index, text, sender=conversation_sender(coordinator_id)
+    )
+    return True
+
+
+def _matched_answer(
+    question: PendingAsk, picked: str | None, words: str | None
+) -> tuple[int | None, str | None]:
+    """The member's option the user picked, and the rest as words.
+
+    The coordinator may word its options differently; a label it kept picks
+    the member's option, any other is passed on as words.
+    """
+    words = (words or "").strip() or None
+    picked = (picked or "").strip() or None
+    if picked is None:
+        return None, words
+    key = picked.casefold()
+    for i, label in enumerate(question.option_labels):
+        if label.strip().casefold() == key:
+            return i, words
+    return None, " — ".join(part for part in (picked, words) if part)
 
 
 _TURN_LOOKBACK = 50

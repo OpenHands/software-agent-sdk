@@ -74,6 +74,18 @@ class AskUserAction(Action):
         return text
 
 
+class AskUserForConversationAction(AskUserAction):
+    """A coordinator's question, which may pass on a member's question."""
+
+    for_conversation: str | None = Field(
+        default=None,
+        description=(
+            "The id of the conversation in your project whose question you "
+            "pass on to the user. Leave it empty for a question of your own."
+        ),
+    )
+
+
 class AskUserObservation(Observation):
     """Confirms the question was shown; the answer comes as a later message."""
 
@@ -103,6 +115,17 @@ depend on the answer first, then ask. Do not wait or ask again. The answer \
 arrives as the person's next message, starting with \
 "[Answer to your question" when they picked on the card."""
 
+_FOR_CONVERSATION_DESCRIPTION = """
+
+A conversation in your project can ask the user a question too; you get it \
+in an update, and the user answers it here, in your conversation. Pass it on \
+with this tool: put that conversation's id in `for_conversation`, and keep \
+its meaning and its options (you may word them more clearly or add what the \
+user needs to know). However the user answers, by a tap on the card or in \
+their own words in the chat, the answer reaches that conversation as theirs \
+and it goes on by itself. You see the answer too: do not send it there, and \
+never answer such a question yourself."""
+
 
 class AskUserExecutor(ToolExecutor[AskUserAction, AskUserObservation]):
     """Nothing to do here: the call itself is the question clients show."""
@@ -130,16 +153,27 @@ class AskUserTool(ToolDefinition[AskUserAction, AskUserObservation]):
     def create(
         cls,
         conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        for_conversations: bool = False,
         **params,
     ) -> Sequence[Self]:
+        """Make the tool.
+
+        Args:
+            for_conversations: Let the agent pass on other conversations'
+                questions (``for_conversation``). A project's coordinator gets
+                this, so the user answers its members' questions in one place.
+        """
         if params:
             raise ValueError(
                 f"AskUserTool does not accept parameters: {sorted(params)}"
             )
         return [
             cls(
-                description=_DESCRIPTION,
-                action_type=AskUserAction,
+                description=_DESCRIPTION
+                + (_FOR_CONVERSATION_DESCRIPTION if for_conversations else ""),
+                action_type=(
+                    AskUserForConversationAction if for_conversations else AskUserAction
+                ),
                 observation_type=AskUserObservation,
                 executor=AskUserExecutor(),
                 annotations=ToolAnnotations(

@@ -87,6 +87,10 @@ class PendingAsk:
     question: str
     option_labels: tuple[str, ...]
     recommended: int | None
+    for_conversation: str | None = None
+    """The conversation this question asks on behalf of, when a project's
+    coordinator passes on a member's question; the user's answer goes there
+    too."""
 
 
 def is_from_person(event: Event) -> bool:
@@ -117,12 +121,23 @@ def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
         for o in data.get("options") or ()
     )
     recommended = data.get("recommended")
+    for_conversation = data.get("for_conversation")
     return PendingAsk(
         ask_id=action_event.id,
         question=question,
         option_labels=labels,
         recommended=recommended if isinstance(recommended, int) else None,
+        for_conversation=for_conversation
+        if isinstance(for_conversation, str) and for_conversation.strip()
+        else None,
     )
+
+
+def pending_ask_from_action(action_event: ActionEvent) -> PendingAsk | None:
+    """The question an ``ask_user`` call asks, whether or not it is answered."""
+    if action_event.tool_name != ASK_USER_TOOL_NAME:
+        return None
+    return _as_pending(action_event)
 
 
 def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:

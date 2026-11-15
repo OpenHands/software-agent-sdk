@@ -50,6 +50,11 @@ from openhands.sdk.event import (
     Event,
     MessageEvent,
 )
+from openhands.sdk.event.ask_user import (
+    ANSWER_HEADER_PREFIX,
+    AskUserAnswerEvent,
+    pending_ask_from_action,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import FULL_STATE_KEY
 from openhands.sdk.llm.message import TextContent
@@ -87,6 +92,11 @@ user message that started the turn (None when the user sent it)."""
 
 
 OnUserMessage = Callable[[str, str], Awaitable[object]]
+
+OnUserAnswer = Callable[[str, str, str | None, str | None], Awaitable[object]]
+"""``(project, event_id, picked, words)`` when the user's event may answer an
+``ask_user`` card: a tap on one (``picked`` is the option's label) or a
+message of their own. Lets a coordinator's card pass the answer on."""
 
 OnStopped = Callable[[str, str, str | None, str | None], Awaitable[object]]
 """``(project, status, text, turn_sender)`` when a run stops on the user:
@@ -256,6 +266,28 @@ def describe_action(event: ActionEvent) -> str:
     return text[:_ACTION_SUMMARY_MAX]
 
 
+def card_text(event: ActionEvent) -> tuple[str, str] | None:
+    """The question of an ``ask_user`` call, and the call as text.
+
+    The text is what a coordinator reads of a member's question card: the
+    question, then each option with what picking it does. ``None`` when the
+    event is not an ``ask_user`` call.
+    """
+    ask = pending_ask_from_action(event)
+    if ask is None or event.action is None:
+        return None
+    options = event.action.model_dump().get("options") or []
+    lines = [f"Question: {ask.question}"]
+    for i, label in enumerate(ask.option_labels):
+        option = options[i] if i < len(options) else {}
+        consequence = option.get("consequence") if isinstance(option, dict) else ""
+        mark = " (recommended)" if i == ask.recommended else ""
+        lines.append(
+            f"{i + 1}. {label}{mark}" + (f": {consequence}" if consequence else "")
+        )
+    return ask.question, "\n".join(lines)
+
+
 @dataclass
 class ConversationOutcomeSubscriber(Subscriber[Event]):
     """Tag a project conversation with how its runs end.
@@ -272,6 +304,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     on_finished: OnFinished | None = None
     on_user_message: OnUserMessage | None = None
     on_stopped: OnStopped | None = None
+    on_user_answer: OnUserAnswer | None = None
     turn_sender_lookup: TurnSenderLookup | None = None
     judge: ResolutionJudge | None = None
     projects_enabled: ProjectsEnabled | None = None
@@ -289,6 +322,10 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     _asked_since_user: bool = field(default=False, init=False)
     # The question that made the turn ``asked``, kept for the same reason.
     _ask: str | None = field(default=None, init=False)
+    # The question of the ``ask_user`` card the turn ended on: the user owes
+    # an answer, so the judge is not asked, also in a turn a coordinator
+    # started.
+    _card: str | None = field(default=None, init=False)
     # ``sender`` of the latest user message: who started the current turn and
     # so who waits for its final message (None for the user).
     _turn_sender: str | None = field(default=None, init=False)
@@ -322,6 +359,9 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             )
 
     def _handle(self, event: Event) -> None:
+        if isinstance(event, AskUserAnswerEvent):
+            self._answered(event.id, event.option_label, event.text)
+            return
         if isinstance(event, MessageEvent):
             if event.source == "user" and not starts_turn(event):
                 # A /goal nudge continues the current turn, and a copy saved
@@ -344,6 +384,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 self._reported_hold = None
                 self._last_action = None
                 self._last_error = None
+                text = extract_message_text(event) or ""
+                if event.sender is None and not text.startswith(ANSWER_HEADER_PREFIX):
+                    # A tap was handled with its answer event; this is the
+                    # user writing, which also answers a pending card.
+                    self._answered(event.id, None, text)
                 if event.sender is None and self.on_user_message is not None:
                     project = self.tags().get(PROJECT_TAG_KEY)
                     text = extract_message_text(event)
@@ -365,8 +410,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                     self._ask = extract_ask(self._last_text) or self._ask
             return
         if isinstance(event, ActionEvent):
+            card = card_text(event) if event.source == "agent" else None
             if event.source == "agent" and isinstance(event.action, FinishAction):
                 self._note_agent_output(event.action.message, event)
+            elif card is not None:
+                # ask_user ends the turn on a question card.
+                question, text = card
+                self._note_agent_output(text, event)
+                self._card = question
             elif event.source == "agent":
                 self._turn_open = True
                 self._last_action = describe_action(event)
@@ -389,12 +440,17 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             # also reads as finished; only a run this subscriber saw counts.
             if not self._seen_agent_output:
                 return
-            turn = classify_turn(self._last_text)
-            if turn == "asked":
+            card = self._card
+            turn = "asked" if card else classify_turn(self._last_text)
+            if card:
+                self._ask = card
+            elif turn == "asked":
                 self._ask = extract_ask(self._last_text) or self._ask
             # Asked in an earlier message of this turn, which the final one
-            # does not repeat: the judge sees only the final one.
-            carried = self._asked_since_user and turn == "answered"
+            # does not repeat, or on a card: the judge has nothing to decide.
+            carried = card is not None or (
+                self._asked_since_user and turn == "answered"
+            )
             if self._asked_since_user:
                 turn = "asked"
             self._asked_since_user = turn == "asked"
@@ -423,6 +479,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                         None if carried else judged,
                     )
                 )
+
+    def _answered(self, event_id: str, picked: str | None, words: str | None) -> None:
+        """Let the user's answer to a card reach the conversation it asks for."""
+        project = self.tags().get(PROJECT_TAG_KEY)
+        if not project or self.on_user_answer is None:
+            return
+        callback = self.on_user_answer
+        self._notify_later(lambda: callback(project, event_id, picked, words))
 
     def _stopped(self, status: str) -> None:
         """Tell the coordinator, once, that a turn stopped on the user."""
@@ -456,6 +520,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     def _note_agent_output(
         self, text: str | None, event: MessageEvent | ActionEvent
     ) -> None:
+        # Output after a card means its call failed and the turn went on.
+        self._card = None
         self._seen_agent_output = True
         self._turn_open = True
         if text:
@@ -467,6 +533,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         self._last_text = None
         self._last_score = None
         self._seen_agent_output = False
+        self._card = None
 
     def _enqueue(self, step: Callable[[], Awaitable[None]]) -> None:
         previous = self._tail

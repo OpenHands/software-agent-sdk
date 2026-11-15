@@ -111,6 +111,19 @@ def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> s
     )
 
 
+def card_header(title: str | None, conversation_id: UUID) -> str:
+    """First line of the update a coordinator gets when a member it started
+    ends its turn on an ``ask_user`` card: the user answers it through the
+    coordinator."""
+    return (
+        f"[Update from {_name(title, conversation_id)}, a conversation in your "
+        "project, not from the user. It asked the user a question on a card "
+        "and waits for the answer; the question follows. Ask the user with "
+        "ask_user, giving this conversation's id as for_conversation: their "
+        "answer then reaches it. Do not answer it yourself.]"
+    )
+
+
 RESTART_STOP = "restart"
 """The stop :func:`stop_header` names for a run a server shutdown paused."""
 

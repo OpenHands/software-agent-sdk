@@ -84,7 +84,11 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
-from openhands.sdk.event.ask_user import AskUserAnswerEvent
+from openhands.sdk.event.ask_user import (
+    AskUserAnswerEvent,
+    PendingAsk,
+    find_pending_ask,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
@@ -2385,8 +2389,15 @@ class EventService:
         ask_id: str,
         option_index: int | None = None,
         text: str | None = None,
+        *,
+        sender: str | None = None,
     ) -> AskUserAnswerEvent:
         """Record the person's answer to a pending ``ask_user`` question and run.
+
+        ``sender`` is recorded on the message that carries the answer: a
+        project's coordinator, when the user answered there, on its card
+        (see :func:`~openhands.agent_server.project_wake.pass_on_answer`).
+        The answer is the user's either way.
 
         Raises:
             ValueError: The question is not pending, or the answer is invalid.
@@ -2398,8 +2409,33 @@ class EventService:
             None,
             partial(self._conversation.answer_ask, ask_id, option_index, text),
         )
-        await self.send_message(message, run=True)
+        await self.send_message(
+            message,
+            run=True,
+            sender=sender,
+            # Delivered by the server for the user, like a coordinator's
+            # update: a conversation that waits on the user is not run.
+            refuse_pending_confirmation=sender is not None,
+            keep_goal_loop=sender is not None,
+        )
         return answer
+
+    def pending_ask(self, before: str | None = None) -> PendingAsk | None:
+        """The agent's unanswered ``ask_user`` question, from the event log.
+
+        With ``before``, the question that was pending just before that event
+        (the user's message or answer that closed it). Reads the log without
+        the state lock, as :meth:`_get_agent_final_response_sync` does.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        events = list(self._conversation._state.active_branch())
+        if before is not None:
+            index = next((i for i, e in enumerate(events) if e.id == before), None)
+            if index is None:
+                return None
+            events = events[:index]
+        return find_pending_ask(events)
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""

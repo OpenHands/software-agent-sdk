@@ -174,11 +174,15 @@ async def test_every_feature_is_listed_and_off(client):
         ("conversation_mentions", False),
         ("message_edits", False),
         ("projects", True),
+        ("ask_user", False),
     ]
 
 
 def test_feature_tools_follow_the_flags():
     assert experimental_feature_tools({}) == []
+    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
+        "ask_user"
+    ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_reactions": True})
     ] == [

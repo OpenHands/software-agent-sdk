@@ -27,6 +27,7 @@ from openhands.agent_server.event_service import (
     RunSlot,
 )
 from openhands.agent_server.experimental_features import (
+    ASK_USER,
     PROJECT_TOOL_NAMES,
     experimental_feature_tools,
     experimental_feature_withheld_tools,
@@ -78,6 +79,7 @@ from openhands.agent_server.project_wake import (
     latest_turn_start,
     notify_coordinator,
     notify_coordinator_of_stop,
+    pass_on_answer,
     reconcile_coordinator_updates,
     relay_user_message,
 )
@@ -128,6 +130,7 @@ from openhands.sdk.credential import (
 )
 from openhands.sdk.errors import Conflict
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -2753,6 +2756,14 @@ class ConversationService:
         conversation_id = start.conversation_id or uuid4()
         if self._has_conversation(conversation_id):
             raise ValueError(f"Conversation {conversation_id} already exists")
+        server_tools = [Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS]
+        if await feature_enabled_now(ASK_USER.key, stores.settings if stores else None):
+            # Its ask_user also passes on the members' questions, so the user
+            # answers them all in the coordinator's conversation. It takes the
+            # place of the plain ask_user the feature gives every conversation.
+            server_tools.append(
+                Tool(name=ASK_USER_TOOL_NAME, params={"for_conversations": True})
+            )
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             try:
                 info, _ = await self._create_conversation(
@@ -2760,9 +2771,7 @@ class ConversationService:
                     conversation_id,
                     run_slot,
                     title=title,
-                    server_tools=[
-                        Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS
-                    ],
+                    server_tools=server_tools,
                     # A concurrent create with the same reserved id must not
                     # hand one coordinator to two projects.
                     reuse_existing=False,
@@ -3299,6 +3308,7 @@ class ConversationService:
                     on_stopped=functools.partial(
                         notify_coordinator_of_stop, self, stored.id
                     ),
+                    on_user_answer=functools.partial(pass_on_answer, self, stored.id),
                     turn_sender_lookup=functools.partial(
                         _logged_turn_sender, event_service
                     ),
