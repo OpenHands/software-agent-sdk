@@ -3,6 +3,7 @@ import importlib
 import json
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -178,14 +179,28 @@ def _fetch_origin(repo_root: Path) -> None:
         )
 
 
+_DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS = 300
+
+
+def _fetched_recently(repo_root: Path) -> bool:
+    try:
+        fetch_head = run_git_command(
+            ["git", "rev-parse", "--git-path", "FETCH_HEAD"], repo_root
+        )
+        modified = (repo_root / fetch_head).stat().st_mtime
+    except (GitCommandError, OSError):
+        return False
+    return time.time() - modified < _DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS
+
+
 def _get_worktree_start_point(repo_root: Path) -> str:
     """Resolve the base ref a new conversation worktree should be created from.
 
     Policy (in order):
       1. ``origin/<default_branch>`` if an ``origin`` remote is configured.
-         ``git fetch origin`` is run first so the worktree starts from the
-         latest remote tip; the default branch is resolved via
-         ``refs/remotes/origin/HEAD``.
+         ``git fetch origin`` is run first, unless the repository was fetched
+         in the last five minutes, so the worktree starts from a recent remote
+         tip; the default branch is resolved via ``refs/remotes/origin/HEAD``.
       2. Local ``main`` if there is no usable remote default but ``main``
          exists locally.
       3. Local ``master`` if neither remote default nor local ``main`` is
@@ -194,7 +209,8 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          checks whether the selected ref resolves to a commit.
     """
     if _has_git_remote(repo_root):
-        _fetch_origin(repo_root)
+        if not _fetched_recently(repo_root):
+            _fetch_origin(repo_root)
         try:
             ref = run_git_command(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],

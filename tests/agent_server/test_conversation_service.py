@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -25,6 +26,7 @@ from openhands.agent_server.conversation_service import (
     _compose_conversation_info,
     _ConversationRecord,
     _create_conversation_worktree,
+    _fetch_origin,
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
@@ -2380,6 +2382,30 @@ class TestConversationServiceStartConversation:
             ["git", "--no-pager", "rev-parse", start_point], repo_dir
         )
         assert resolved == remote_tip
+
+    def test_get_worktree_start_point_skips_a_fetch_done_minutes_ago(self, tmp_path):
+        upstream = tmp_path / "upstream.git"
+        run_git_command(["git", "init", "--bare", "-b", "main", str(upstream)])
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        run_git_command(["git", "remote", "add", "origin", str(upstream)], repo_dir)
+        run_git_command(["git", "push", "-u", "origin", "HEAD:main"], repo_dir)
+        run_git_command(["git", "remote", "set-head", "origin", "main"], repo_dir)
+
+        module = "openhands.agent_server.conversation_service"
+        with patch(
+            f"{module}._fetch_origin",
+            wraps=_fetch_origin,
+        ) as fetch:
+            assert _get_worktree_start_point(repo_dir) == "origin/main"
+            assert _get_worktree_start_point(repo_dir) == "origin/main"
+            assert fetch.call_count == 1
+
+            fetch_head = repo_dir / ".git" / "FETCH_HEAD"
+            stale = time.time() - 600
+            os.utime(fetch_head, (stale, stale))
+            _get_worktree_start_point(repo_dir)
+            assert fetch.call_count == 2
 
     def test_get_worktree_start_point_falls_back_to_local_main(self, tmp_path):
         """No ``origin`` remote → fall back to local ``main``."""
