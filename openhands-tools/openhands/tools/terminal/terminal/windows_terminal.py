@@ -68,6 +68,7 @@ _STARTUP_PROMPT_TIMEOUT_SECONDS = 30.0
 _INTERRUPT_PROMPT_WAIT_SECONDS = 3.0
 _CTRL_C_HELPER_TIMEOUT_SECONDS = 5.0
 _PROCESS_EXIT_WAIT_SECONDS = 5.0
+_DEFAULT_STDIN_TIMEOUT_SECONDS = 5.0
 # Screen buffer budget in characters (the tmux backend keeps 10k lines).
 _OUTPUT_BUFFER_MAX_CHARS = 1_000_000
 
@@ -308,23 +309,31 @@ class WindowsTerminal(TerminalInterface):
                     process.kill()
                 except OSError as exc:
                     logger.debug("Error killing PowerShell process: %s", exc)
-            for stream in (process.stdin, process.stdout):
-                try:
-                    if stream is not None:
-                        stream.close()
-                except (OSError, ValueError) as exc:
-                    logger.debug("Error closing PowerShell pipe: %s", exc)
-
-        if self.reader_thread and self.reader_thread.is_alive():
-            self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
-
-        if process is not None:
             try:
                 process.wait(timeout=_PROCESS_EXIT_WAIT_SECONDS)
             except subprocess.TimeoutExpired:
                 logger.warning("PowerShell process did not exit after termination")
             except Exception as exc:
                 logger.debug("Error waiting for PowerShell process: %s", exc)
+
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
+
+        if process is not None:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except (OSError, ValueError) as exc:
+                logger.debug("Error closing PowerShell stdin: %s", exc)
+
+            # Closing stdout during a blocked Windows ReadFile can deadlock.
+            if process.stdout is not None and (
+                self.reader_thread is None or not self.reader_thread.is_alive()
+            ):
+                try:
+                    process.stdout.close()
+                except (OSError, ValueError) as exc:
+                    logger.debug("Error closing PowerShell stdout: %s", exc)
             self.process = None
 
         if self._job is not None:
@@ -368,15 +377,51 @@ class WindowsTerminal(TerminalInterface):
                 command += "\n"
         self._write_to_stdin(command)
 
-    def _write_to_stdin(self, text: str) -> None:
+    def _write_to_stdin(
+        self, text: str, timeout: float | None = _DEFAULT_STDIN_TIMEOUT_SECONDS
+    ) -> None:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("PowerShell stdin is not available")
-        try:
-            self.process.stdin.write(text.encode("utf-8"))
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            logger.error("Failed to write to PowerShell stdin: %s", exc)
-            raise RuntimeError("Failed to write to PowerShell session") from exc
+
+        encoded = text.encode("utf-8")
+        stdin = self.process.stdin
+
+        if timeout is None:
+            try:
+                stdin.write(encoded)
+                stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                logger.error("Failed to write to PowerShell stdin: %s", exc)
+                raise RuntimeError("Failed to write to PowerShell session") from exc
+            return
+
+        write_error: list[Exception] = []
+
+        def _do_write() -> None:
+            try:
+                stdin.write(encoded)
+                stdin.flush()
+            except Exception as exc:
+                write_error.append(exc)
+
+        writer_thread = threading.Thread(target=_do_write, daemon=True)
+        writer_thread.start()
+        writer_thread.join(timeout=timeout)
+
+        if writer_thread.is_alive():
+            logger.warning(
+                "Writing to PowerShell stdin timed out after %s seconds", timeout
+            )
+            raise TimeoutError(
+                f"Writing to PowerShell stdin timed out after {timeout} seconds"
+            )
+
+        if write_error:
+            exc = write_error[0]
+            if isinstance(exc, (BrokenPipeError, OSError)):
+                logger.error("Failed to write to PowerShell stdin: %s", exc)
+                raise RuntimeError("Failed to write to PowerShell session") from exc
+            raise exc
 
     # ------------------------------------------------------------------
     # Output

@@ -31,7 +31,7 @@ openhands-agent-server = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.3.0",
+    "pre-commit>=4.7.0",
     "packaging>=26.3",
     "pillow>=13.0.0",
     "psutil>=7.2.2",
@@ -45,7 +45,7 @@ dev = [
     "pytest-xdist>=3.6.0",
     "tabulate>=0.10.0",
     "pyinstaller>=6.22.3",
-    "streamlit>=1.66.1",
+    "streamlit>=1.67.0",
     "pytest-timeout>=2.4.0",
     "griffe[pypi]>=2.3.0",
 ]
