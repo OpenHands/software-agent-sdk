@@ -1,3 +1,10 @@
+> [!NOTE]
+> **Fork of [OpenHands/software-agent-sdk](https://github.com/OpenHands/software-agent-sdk) (v1.58.2) with one change: the agent-server Docker WebSocket proxy forwards frames larger than 1 MiB.**
+>
+> `bridge_websocket` in `openhands-agent-server/openhands/agent_server/docker_runtime/proxy.py` opened the upstream (conversation container) socket with the `websockets` default `max_size` of 1 MiB. Any bigger event (a large observation or file) closed the proxied socket with code 1009, and the UI kept reconnecting. The fork passes `max_size=None`, so the inner server keeps owning its frame limits. Regression test: `tests/agent_server/docker_runtime/test_proxy.py::test_websocket_bridge_forwards_frame_over_default_max_size`.
+>
+> Branches: `fix/docker-websocket-frame-size` (on v1.58.2) and `fix/docker-websocket-frame-size-v1.55.1` (backport).
+
 <a name="readme-top"></a>
 
 <div align="center">
