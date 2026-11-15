@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
@@ -214,6 +215,44 @@ def test_a_client_registered_for_the_loopback_callback_is_registered_again(
         != (stored_client["client_id"])
     )
     assert second["oauth_state"]["client_info"]["redirect_uris"] == [PUBLIC_REDIRECT]
+
+
+def test_changed_callback_refreshes_stored_tokens_without_authorization(
+    protected_oauth_mcp_server: str,  # noqa: F811
+    oauth_provider: InMemoryOAuthProvider,  # noqa: F811
+    jobs: None,
+):
+    client = _client()
+    job_id, authorization_url = _start(
+        client, {"server": _oauth_server(protected_oauth_mcp_server)}
+    )
+    httpx.get(_sign_in(authorization_url), timeout=10.0)
+    first = _wait_for_result(client, job_id)
+    state = first["oauth_state"]
+    state["token_expires_at"] = time.time() - 60
+    registered_clients = set(oauth_provider.clients)
+    refresh_tokens = set(oauth_provider.refresh_tokens)
+
+    response = client.post(
+        "/api/mcp/oauth/start",
+        json={
+            "timeout": 10.0,
+            "server": _oauth_server(protected_oauth_mcp_server, state),
+            "callback_base_url": "https://canvas.example.test",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    started = response.json()
+    assert started["ok"] is True, started
+    assert "authorization_url" not in started, started
+    second = _wait_for_result(client, started["job_id"])
+    assert second["status"] == "succeeded", second
+    assert second["tools"] == ["read_subject"]
+    assert second["oauth_state"]["client_info"] == state["client_info"]
+    assert second["oauth_state"]["token_expires_at"] > time.time()
+    assert set(oauth_provider.clients) == registered_clients
+    assert not refresh_tokens.intersection(oauth_provider.refresh_tokens)
 
 
 def _job() -> _MCPOAuthProbeJob:
