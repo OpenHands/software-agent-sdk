@@ -311,6 +311,14 @@ async def _prepare_forward(
     except (OSError, PermissionError):
         settings = None
     settings = settings or PersistedSettings()
+    if "terminal_credential_bindings" not in start.model_fields_set:
+        start = start.model_copy(
+            update={
+                "terminal_credential_bindings": (
+                    settings.conversation_settings.terminal_credential_bindings
+                )
+            }
+        )
     context = settings.agent_settings.agent_context
     load_memory = context is not None and context.load_memory
     secrets = await asyncio.to_thread(request_secrets, start, config.cipher)

@@ -35,6 +35,7 @@ from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile as LaunchedAgentProfile,
 )
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -233,6 +234,10 @@ class _ConversationInfoBase(BaseModel):
         default_factory=ConversationStats,
         description="Conversation statistics for tracking LLM metrics",
     )
+    terminal_credential_bindings: TerminalCredentialBindings = Field(
+        default_factory=list
+    )
+
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",

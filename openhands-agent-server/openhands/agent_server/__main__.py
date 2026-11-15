@@ -230,6 +230,10 @@ def _setup_crash_diagnostics() -> None:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["--terminal-credential-adapter"]:
+        from openhands.tools.terminal.credential_adapter import main as adapter_main
+
+        sys.exit(adapter_main(sys.argv[2:]))
     # Set up crash diagnostics early, before any other initialization
     _setup_crash_diagnostics()
 

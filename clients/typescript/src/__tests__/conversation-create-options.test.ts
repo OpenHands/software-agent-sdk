@@ -1,5 +1,9 @@
 import { createServer, Server } from 'node:http';
 import { AddressInfo } from 'node:net';
+import { ConversationClient } from '../client/conversation-client';
+import { LocalConversation } from '../conversation/local-conversation';
+import type { LocalConversationOptions } from '../conversation/local-conversation';
+import type { TerminalCredentialBinding } from '../models/conversation';
 import { ConversationManager } from '../conversation/conversation-manager';
 import { RemoteConversation } from '../conversation/remote-conversation';
 import type { AgentBase } from '../types/base';
@@ -23,7 +27,13 @@ describe('conversation create options', () => {
         }
         if (req.method === 'POST' && req.url === '/api/conversations') {
           bodies.push(JSON.parse(raw));
-          res.end(JSON.stringify({ id: 'created', workspace: { working_dir: '/workspace' } }));
+          res.end(
+            JSON.stringify({
+              id: 'created',
+              workspace: { working_dir: '/workspace' },
+              ...JSON.parse(raw),
+            })
+          );
           return;
         }
         res.statusCode = 404;
@@ -88,6 +98,46 @@ describe('conversation create options', () => {
       stuck_detection: true,
     });
     expect(bodies[2]).toHaveProperty('max_budget_per_run', null);
+  });
+
+  const bindings: TerminalCredentialBinding[] = [
+    { consumer: 'git', host: 'github.com', secret_ref: 'GITHUB_TOKEN', username: 'x-access-token' },
+    { consumer: 'gh', host: 'github.com', secret_ref: 'GITHUB_TOKEN', username: null },
+    { consumer: 'glab', host: 'gitlab.example.com', secret_ref: 'GITLAB_TOKEN' },
+  ];
+
+  it('forwards remote bindings and lets an explicit empty start list override them', async () => {
+    const workspace = new RemoteWorkspace({ host, workingDir: '/workspace' });
+    await new RemoteConversation(agent, workspace, {
+      terminalCredentialBindings: bindings,
+    }).start();
+    await new RemoteConversation(agent, workspace, { terminalCredentialBindings: bindings }).start({
+      terminalCredentialBindings: [],
+    });
+    await new RemoteConversation(agent, workspace).start();
+    expect(bodies[0]).toHaveProperty('terminal_credential_bindings', bindings);
+    expect(bodies[1]).toHaveProperty('terminal_credential_bindings', []);
+    expect(bodies[2]).not.toHaveProperty('terminal_credential_bindings');
+  });
+
+  it('forwards manager bindings and roundtrips the Canvas profile launch payload', async () => {
+    const manager = new ConversationManager({ host });
+    await manager.createConversation(agent, { terminalCredentialBindings: bindings });
+    const client = new ConversationClient({ host });
+    const info = await client.createConversation({
+      agent_profile_id: 'profile',
+      terminal_credential_bindings: bindings,
+    });
+    expect(bodies[0]).toHaveProperty('terminal_credential_bindings', bindings);
+    expect(info.terminal_credential_bindings).toEqual(bindings);
+  });
+
+  it('rejects bindings on the unsupported local TypeScript runtime', () => {
+    const workspace = new RemoteWorkspace({ host });
+    const options = { terminalCredentialBindings: bindings } as unknown as LocalConversationOptions;
+    expect(() => new LocalConversation(agent, workspace, options)).toThrow(
+      'remote-native terminal'
+    );
   });
 
   it('ACP creation forwards the budget through the manager namespace', async () => {

@@ -10,6 +10,7 @@ import type {
   ConversationEventPage,
   ConversationEventSearchOptions,
   ConversationInfo,
+  TerminalCredentialBinding,
   ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
@@ -41,6 +42,8 @@ export interface ConversationClientOptions {
  * as-is. `agent_profile_id` support lands with SDK PR #3784.
  */
 export interface CreateConversationPayload {
+  /** Applied only by the remote native terminal, not ACP harnesses. */
+  terminal_credential_bindings?: TerminalCredentialBinding[];
   /** Stable UUID of an agent profile to resolve server-side. */
   agent_profile_id?: string;
   agent?: unknown;

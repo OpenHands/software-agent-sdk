@@ -36,6 +36,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -289,6 +290,11 @@ class ConversationConfig(BaseModel):
         description="If true, the conversation will use stuck detection to "
         "prevent infinite loops.",
     )
+    terminal_credential_bindings: TerminalCredentialBindings = Field(
+        default_factory=list,
+        description="Terminal credential consumers with secret references, not values.",
+    )
+
     secrets: dict[str, SecretSource] = Field(
         default_factory=dict,
         description="Secrets available in the conversation",

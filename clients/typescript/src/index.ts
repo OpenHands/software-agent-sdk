@@ -279,6 +279,7 @@ export type {
   CreateACPConversationRequest,
   UpdateConversationRequest,
   UpdateSecretsRequest,
+  TerminalCredentialBinding,
   StaticSecret,
   LookupSecret,
   SecretObject,

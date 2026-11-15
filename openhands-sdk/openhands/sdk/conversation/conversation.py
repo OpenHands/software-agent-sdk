@@ -19,6 +19,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.redact import redact_url_credentials
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
@@ -82,6 +83,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        terminal_credential_bindings: TerminalCredentialBindings | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
@@ -113,6 +115,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        terminal_credential_bindings: TerminalCredentialBindings | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
@@ -144,6 +147,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        terminal_credential_bindings: TerminalCredentialBindings | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
@@ -209,6 +213,7 @@ class Conversation:
                 visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
+                terminal_credential_bindings=terminal_credential_bindings,
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
                 user_id=user_id,
@@ -234,6 +239,7 @@ class Conversation:
             workspace=workspace,
             persistence_dir=persistence_dir,
             secrets=secrets,
+            terminal_credential_bindings=terminal_credential_bindings,
             delete_on_close=delete_on_close,
             tags=tags,
             user_id=user_id,

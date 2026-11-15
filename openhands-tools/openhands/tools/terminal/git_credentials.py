@@ -1,68 +1,145 @@
-"""Let git and git-provider CLIs authenticate with a saved provider token secret.
+"""Conversation-owned, same-user capability broker; not a security sandbox."""
 
-The terminal exports a secret only when the command text names it, so a plain
-``git push`` or ``gh pr create`` never sees a saved ``GITHUB_TOKEN``. When a
-command runs ``git``, ``gh`` or ``glab`` and a provider token secret is
-registered, this exports that token plus a command-scoped git credential helper
-(via ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_n``/``GIT_CONFIG_VALUE_n``) that
-reads it from the environment. No git config file is written, and helpers the
-user already configured are consulted first.
-"""
-
-import re
-from dataclasses import dataclass
-from typing import Final
+import hmac
+import json
+import os
+import secrets
+import shlex
+import shutil
+import sys
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBinding
+from openhands.tools.terminal import credential_adapter
 
 
-@dataclass(frozen=True)
-class _GitHost:
-    url: str
-    username: str
-    secret_names: tuple[str, ...]
-
-
-_GIT_HOSTS: Final[tuple[_GitHost, ...]] = (
-    _GitHost("https://github.com", "x-access-token", ("GITHUB_TOKEN", "GH_TOKEN")),
-    _GitHost("https://gitlab.com", "oauth2", ("GITLAB_TOKEN",)),
-)
-
-_GIT_CLI_RE: Final = re.compile(r"(?:^|[\s;&|(`/])(?:git|gh|glab)(?=$|[\s;&|)`])")
-
-
-def _credential_helper(secret_name: str, username: str) -> str:
-    # git appends the operation ("get", "store", "erase") as $1.
-    return (
-        f'!f() {{ test "$1" = get && test -n "${secret_name}" && '
-        f'echo "username={username}" && echo "password=${secret_name}"; }}; f'
-    )
-
-
-def git_credential_env(command: str, registry: SecretRegistry) -> dict[str, str]:
-    """Environment that lets ``command``'s git/gh/glab calls use saved tokens."""
-    if not _GIT_CLI_RE.search(command):
-        return {}
-
-    env: dict[str, str] = {}
-    helpers: list[tuple[str, str]] = []
-    for host in _GIT_HOSTS:
-        name = next(
-            (n for n in host.secret_names if n in registry.secret_sources), None
+class TerminalCredentialRuntime:
+    def __init__(
+        self,
+        bindings: tuple[TerminalCredentialBinding, ...],
+        registry: SecretRegistry,
+        *,
+        executable_path: str | None = None,
+    ) -> None:
+        self.bindings = bindings
+        self.registry = registry
+        self._temporary = tempfile.TemporaryDirectory(prefix="openhands-credentials-")
+        self.directory = Path(self._temporary.name)
+        self._closed = False
+        search_path = os.pathsep.join(
+            entry
+            for entry in (executable_path or os.environ.get("PATH", "")).split(
+                os.pathsep
+            )
+            if Path(entry).is_absolute()
         )
-        if name is None:
-            continue
-        token = registry.get_env_vars_for_keys([name])
-        if not token:
-            continue
-        env.update(token)
-        helpers.append(
-            (f"credential.{host.url}.helper", _credential_helper(name, host.username))
-        )
+        executables = {
+            consumer: shutil.which(consumer, path=search_path)
+            for consumer in {"git", *(b.consumer for b in bindings)}
+        }
+        capability = secrets.token_urlsafe(32)
+        authorized = {(b.consumer, b.host): b for b in bindings}
+        self_runtime = self
 
-    if helpers:
-        env["GIT_CONFIG_COUNT"] = str(len(helpers))
-        for i, (key, value) in enumerate(helpers):
-            env[f"GIT_CONFIG_KEY_{i}"] = key
-            env[f"GIT_CONFIG_VALUE_{i}"] = value
-    return env
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+            def setup(self) -> None:
+                super().setup()
+                self.connection.settimeout(5)
+
+            def do_POST(self) -> None:
+                if not hmac.compare_digest(
+                    self.headers.get("Authorization", ""), "Bearer " + capability
+                ):
+                    self.send_error(403)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 4096:
+                        raise ValueError("invalid request size")
+                    query = json.loads(self.rfile.read(length))
+                    binding = authorized.get((query["consumer"], query["host"]))
+                    result = {}
+                    if binding is not None:
+                        token = registry.get_secret_value(binding.secret_ref)
+                        if (
+                            token
+                            and not self_runtime._closed
+                            and not any(c in token for c in "\r\n\0")
+                        ):
+                            result = {"token": token, "username": binding.username}
+                    payload = json.dumps(result).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except Exception:
+                    self.send_error(400, "Credential request failed")
+
+        try:
+            self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        except BaseException:
+            self._temporary.cleanup()
+            raise
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        try:
+            if getattr(sys, "frozen", False):
+                launcher = [sys.executable, "--terminal-credential-adapter"]
+            else:
+                adapter = self.directory / "adapter.py"
+                adapter.write_bytes(Path(credential_adapter.__file__).read_bytes())
+                launcher = [sys.executable, "-I", str(adapter)]
+            config_path = self.directory / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "url": f"http://127.0.0.1:{self._server.server_port}/",
+                        "capability": capability,
+                        "git_hosts": [b.host for b in bindings if b.consumer == "git"],
+                        "launcher": launcher,
+                        "executables": executables,
+                    }
+                )
+            )
+            config_path.chmod(0o600)
+            for consumer in {b.consumer for b in bindings}:
+                wrapper = self.directory / consumer
+                wrapper.write_text(
+                    "#!/bin/sh\nexec "
+                    + shlex.join(launcher + [str(config_path), consumer])
+                    + ' "$@"\n'
+                )
+                wrapper.chmod(0o700)
+                if os.name == "nt":
+
+                    def quote(value: str) -> str:
+                        return "'" + value.replace("'", "''") + "'"
+
+                    wrapper.with_suffix(".ps1").write_text(
+                        "& "
+                        + " ".join(
+                            quote(v) for v in launcher + [str(config_path), consumer]
+                        )
+                        + " @args\nexit $LASTEXITCODE\n"
+                    )
+            self._thread.start()
+        except BaseException:
+            self._server.server_close()
+            self._temporary.cleanup()
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+        self._temporary.cleanup()

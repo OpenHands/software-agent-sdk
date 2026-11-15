@@ -103,6 +103,7 @@ from openhands.sdk.plugin import (
 )
 from openhands.sdk.plugin.strict_fetch import expand_plugin_source
 from openhands.sdk.secret import StaticSecret
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -299,6 +300,7 @@ class LocalConversation(BaseConversation):
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
+        terminal_credential_bindings: TerminalCredentialBindings | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -467,6 +469,7 @@ class LocalConversation(BaseConversation):
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
+            terminal_credential_bindings=terminal_credential_bindings,
         )
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
@@ -1007,6 +1010,9 @@ class LocalConversation(BaseConversation):
             # Build the fork conversation (empty – no events yet)
             fork_conv = LocalConversation(
                 agent=fork_agent,
+                terminal_credential_bindings=list(
+                    self._state.terminal_credential_bindings
+                ),
                 workspace=self.workspace,
                 plugins=self._plugin_specs,
                 persistence_dir=fork_persistence,

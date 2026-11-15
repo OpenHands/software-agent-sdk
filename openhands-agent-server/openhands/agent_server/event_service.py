@@ -1399,6 +1399,7 @@ class EventService:
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
+            terminal_credential_bindings=self.stored.terminal_credential_bindings,
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,

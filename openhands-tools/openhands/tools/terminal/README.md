@@ -60,15 +60,61 @@ tools = TerminalTool.create(
 ```
 
 Raw secret values passed through `env` become session-scoped environment
-variables. Use the SDK secret registry when you need command-scoped secret
-injection behavior.
+variables. Explicitly naming a registry secret in a command also exports it into
+the persistent session. Neither mechanism isolates credentials from later commands.
 
-A registry secret is exported when the command names it. Git provider tokens
-are also exported when the command runs `git`, `gh` or `glab`: a
-`GITHUB_TOKEN` (or `GH_TOKEN`) secret authenticates HTTPS git operations
-against `github.com`, and a `GITLAB_TOKEN` secret against `gitlab.com`, through
-a credential helper set with `GIT_CONFIG_COUNT`. No git config file is written,
-and credential helpers the user already configured are consulted first.
+## Command credentials
+
+Automatic authentication is opt-in, independently for each consumer and exact host:
+
+```python
+from openhands.sdk import TerminalCredentialBinding
+
+bindings = [
+    TerminalCredentialBinding(
+        consumer="git", host="github.com", username="x-access-token",
+        secret_ref="WORK_PAT",
+    ),
+    TerminalCredentialBinding(
+        consumer="gh", host="github.com", secret_ref="WORK_PAT",
+    ),
+]
+# Pass terminal_credential_bindings=bindings and secrets={"WORK_PAT": ...}
+# to Conversation, or configure defaults in ConversationSettings.
+```
+
+`git`, `gh`, and `glab` are separate consumers. Git requires an explicit HTTPS
+username (for example `x-access-token` for GitHub or `oauth2` for GitLab).
+Hosts are exact, case-normalized names with an optional port; URLs, paths and
+wildcards are not accepted. Secret names do not implicitly enable authentication.
+Agent-profile secret restrictions still apply. Bindings do not grant access to
+secrets absent from the conversation registry.
+
+The native terminal installs private PATH adapters for bound consumers. Each
+adapter launches the executable resolved from the initial configured PATH, not a
+replacement selected by a later shell PATH change. Git receives an appended,
+HTTPS-host-checked credential helper; existing helpers and `GIT_CONFIG_COUNT`
+entries are preserved. `gh` and `glab` receive only the selected token in their
+child environment. Tokens are resolved on demand and tracked by the existing
+output masker; they are not written to adapter files, Git configuration, remote
+URLs, or the persistent shell environment. Reset and close revoke the adapter's
+local broker and remove its private files.
+
+CLI target selection supports explicit host/repository options, HTTPS URLs,
+CLI host/repository environment variables, and unambiguous repository remotes.
+Conflicting hosts and unsupported command families fail closed. The supported
+families are `api`, `pr`, `mr`, `issue`, `repo`, `release`, `workflow`, `run`, and
+`search`; help/version run without injected credentials. Absolute executable paths
+and commands that replace PATH bypass these adapters and receive no automatic
+credentials. Existing CLI authentication remains separate.
+
+These are same-user credential-delivery controls, **not a sandbox**: the CLI and
+its children receive the token, and code with access to the private broker
+capability can request a bound credential. Masking prevents accidental transcript
+exposure, not deliberate exfiltration. Explicit name-based secret injection
+remains available and retains its existing, broader session-scoped behavior.
+This feature configures native terminal tools, not ACP harnesses, interactive
+server terminals, or initial repository cloning.
 
 Terminal processes run below the agent server's CPU priority so CPU-heavy
 commands cannot starve it: `taskpolicy -c utility` on macOS, `nice -n 10` on

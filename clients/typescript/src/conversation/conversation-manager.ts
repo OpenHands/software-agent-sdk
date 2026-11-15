@@ -26,6 +26,7 @@ import {
   ACPConversationInfo,
   ACPConversationSearchResponse,
   ConversationInfo,
+  TerminalCredentialBinding,
   ConversationSearchRequest,
   ConversationSearchResponse,
   CreateACPConversationRequest,
@@ -206,6 +207,7 @@ export class ConversationManager {
   async createConversation(
     agent: AgentBase,
     options: {
+      terminalCredentialBindings?: TerminalCredentialBinding[];
       initialMessage?: string;
       maxIterations?: number;
       maxBudgetPerRun?: number | null;
@@ -225,6 +227,7 @@ export class ConversationManager {
       maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
+      terminalCredentialBindings: options.terminalCredentialBindings,
     });
 
     await conversation.start({
@@ -233,6 +236,7 @@ export class ConversationManager {
       maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
+      terminalCredentialBindings: options.terminalCredentialBindings,
     });
 
     return conversation;
