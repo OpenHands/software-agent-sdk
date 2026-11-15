@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import random
 import shutil
@@ -178,7 +179,7 @@ REPORT_ROWS = [
         "worktree",
         "max_alive_s",
         False,
-        "Worst `/alive` latency during a worktree create",
+        "Worktree creates that stalled the server > 20 ms",
     ),
     (
         "mcp",
@@ -186,7 +187,7 @@ REPORT_ROWS = [
         False,
         f"Create with one stdio MCP server (warm, {MCP_STARTUP_DELAY_S:g} s startup)",
     ),
-    ("default", "max_alive_s", False, "Worst `/alive` latency during a create"),
+    ("default", "max_alive_s", False, "Creates that stalled the server > 20 ms"),
 ]
 
 _MCP_SERVER = """\
@@ -414,10 +415,11 @@ def _samples(runs: list[dict], key: str, cold: bool) -> list[float]:
 MIN_SAMPLES_FOR_SIZE_ONLY = 8
 
 
-# Smallest change worth flagging: event-loop stalls start from a few ms, the
-# timings from about 100 ms.
-STALL_FLOOR_S = 0.02
+# Smallest timing change worth flagging; the timings start from about 100 ms.
 TIME_FLOOR_S = 0.05
+# Event-loop stalls are intermittent (a create either hits one or not), so they
+# are compared as the share of creates that stalled, not as a median.
+STALL_THRESHOLD_S = 0.02
 
 
 def _verdict(
@@ -448,14 +450,42 @@ def _row(label: str, b: list[float], h: list[float], floor: float) -> str:
     )
 
 
+def _fisher_p(a: int, n1: int, b: int, n2: int) -> float:
+    """Two-sided Fisher exact test of a/n1 against b/n2."""
+    k, n = a + b, n1 + n2
+
+    def prob(x: int) -> float:
+        return math.comb(n1, x) * math.comb(n2, k - x) / math.comb(n, k)
+
+    observed = prob(a) * (1 + 1e-9)
+    tables = range(max(0, k - n2), min(k, n1) + 1)
+    return min(1.0, sum(p for p in map(prob, tables) if p <= observed))
+
+
+def _stall_row(label: str, b: list[float], h: list[float]) -> str:
+    """Flag a change of at least 20 points in the share of stalled creates."""
+    a, n1 = sum(v > STALL_THRESHOLD_S for v in b), len(b)
+    c, n2 = sum(v > STALL_THRESHOLD_S for v in h), len(h)
+    shift = c / n2 - a / n1 if n1 and n2 else 0.0
+    verdict = "≈ same"
+    if abs(shift) >= 0.2 and _fisher_p(a, n1, c, n2) < 0.01:
+        verdict = "⚠️ slower" if shift > 0 else "✅ faster"
+    return (
+        f"| {label} | {a}/{n1} ({a / n1:.0%}) | {c}/{n2} ({c / n2:.0%}) "
+        f"| {shift * 100:+.0f} pts | {verdict} |"
+    )
+
+
 def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
     rows = []
     for scenario, key, cold, label in REPORT_ROWS:
         if scenario in runs:
             base = _samples(runs[scenario]["base"], key, cold)
             head = _samples(runs[scenario]["head"], key, cold)
-            floor = STALL_FLOOR_S if key == "max_alive_s" else TIME_FLOOR_S
-            rows.append(_row(label, base, head, floor))
+            if key == "max_alive_s":
+                rows.append(_stall_row(label, base, head))
+            else:
+                rows.append(_row(label, base, head, TIME_FLOOR_S))
     startups = {
         side: [r["startup_s"] for s in runs for r in runs[s][side]]
         for side in ("base", "head")
@@ -499,11 +529,13 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
             "- **mcp**: the agent profile enables one stdio MCP server that starts "
             f"after {MCP_STARTUP_DELAY_S:g} s, like an `npx`/`uvx` launch.",
             "",
-            "A change is flagged when the 95% CIs do not overlap and the medians "
-            f"differ by at least {TIME_FLOOR_S * 1000:g} ms "
-            f"({STALL_FLOOR_S * 1000:g} ms for `/alive` stalls), or when a row "
-            f"with at least {MIN_SAMPLES_FOR_SIZE_ONLY} samples per side moves by "
-            "at least 150 ms and 25%. The first-create rows have one sample per "
+            "A timing is flagged when the 95% CIs do not overlap and the medians "
+            f"differ by at least {TIME_FLOOR_S * 1000:g} ms, or when a row with at "
+            f"least {MIN_SAMPLES_FOR_SIZE_ONLY} samples per side moves by at least "
+            "150 ms and 25%. A create stalled the server when its slowest `/alive` "
+            f"took over {STALL_THRESHOLD_S * 1000:g} ms; stall rows are flagged when "
+            "the share of stalled creates moves by at least 20 points with a "
+            "Fisher exact p below 0.01. The first-create rows have one sample per "
             "server start, so they are flagged only on a clear change. The "
             "first-event row opens the socket after the create returns, as Agent "
             "Canvas does, so it includes the connect and replay. Runner: "
