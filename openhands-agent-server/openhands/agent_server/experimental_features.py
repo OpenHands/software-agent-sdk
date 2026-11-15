@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.tool.spec import Tool
 
 
@@ -86,6 +87,17 @@ MESSAGE_EDITS = ExperimentalFeatureDefinition(
     ),
 )
 
+ASK_USER = ExperimentalFeatureDefinition(
+    key="ask_user",
+    label="Decision cards",
+    description=(
+        "When a choice is yours to make, the agent can ask you one question "
+        "with a few options and a recommendation, shown as a card you answer "
+        "in one tap or in your own words. Applies to conversations started "
+        "after you turn it on."
+    ),
+)
+
 PROJECTS = ExperimentalFeatureDefinition(
     key="projects",
     label="Projects",
@@ -117,6 +129,7 @@ EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_MENTIONS,
     MESSAGE_EDITS,
     PROJECTS,
+    ASK_USER,
 ]
 
 
@@ -154,6 +167,9 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     if is_enabled(features, MESSAGE_EDITS.key):
         # Tool name as registered by openhands.tools.message_edit.
         tools.append(Tool(name="edit_message"))
+    if is_enabled(features, ASK_USER.key):
+        # Registered by openhands.tools.ask_user.
+        tools.append(Tool(name=ASK_USER_TOOL_NAME))
     return tools
 
 

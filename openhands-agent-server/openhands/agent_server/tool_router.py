@@ -5,6 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+import openhands.tools.ask_user  # noqa: E402, F401
 # Registered only in the agent-server: these tools need a server to create the
 # child on or to read the project from, so they are deliberately absent from
 # get_default_tools().

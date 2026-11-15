@@ -247,6 +247,7 @@ class _ActionBatch:
 
     action_events: list[ActionEvent]
     has_finish: bool
+    ends_turn: bool = False
     blocked_reasons: dict[str, str] = field(default_factory=dict)
     results_by_id: dict[str, list[Event]] = field(default_factory=dict)
 
@@ -277,6 +278,25 @@ class _ActionBatch:
                 f"after FinishTool: {', '.join(names)}"
             )
         return action_events[: finish_idx + 1], True
+
+    @staticmethod
+    def _ends_turn(
+        executed: list[ActionEvent],
+        results_by_id: dict[str, list[Event]],
+        tools: dict[str, ToolDefinition] | None,
+    ) -> bool:
+        """Whether a call to an ``ends_turn`` tool succeeded in this batch."""
+        for ae in executed:
+            tool = (tools or {}).get(ae.tool_name)
+            if tool is None or not tool.ends_turn:
+                continue
+            for event in results_by_id.get(ae.id, ()):
+                if (
+                    isinstance(event, ObservationEvent)
+                    and not event.observation.is_error
+                ):
+                    return True
+        return False
 
     @classmethod
     def prepare(
@@ -313,6 +333,7 @@ class _ActionBatch:
         return cls(
             action_events=action_events,
             has_finish=has_finish,
+            ends_turn=cls._ends_turn(executable, results_by_id, tools),
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
@@ -357,6 +378,7 @@ class _ActionBatch:
         return cls(
             action_events=action_events,
             has_finish=has_finish,
+            ends_turn=cls._ends_turn(executable, results_by_id, tools),
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
@@ -407,6 +429,9 @@ class _ActionBatch:
         """
         # Nothing to finalise: no FinishTool, or it was blocked by a hook.
         if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            # A tool such as ask_user ends the turn without finish.
+            if self.ends_turn:
+                mark_finished()
             return
 
         should_continue, followup = check_iterative_refinement(self.action_events[-1])
