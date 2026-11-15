@@ -572,10 +572,10 @@ class _BrowserCoordinatedOAuth(MCPOAuth):
         if self._static_client_info is not None:
             self._static_client_info.redirect_uris = redirect_uris
 
-    async def _initialize(self) -> None:
-        await super()._initialize()
-        # A client registered for an earlier redirect URI (e.g. a loopback
-        # port) would be rejected for this one; register a new client.
+    async def redirect_handler(self, authorization_url: str) -> None:
+        """Capture the URL instead of opening a browser from the backend."""
+        # Keep the original client for refresh; only fresh authorization needs
+        # a registration for this redirect. FastMCP retries stale clients once.
         redirect_url = self._redirect_url
         client_info = self.context.client_info
         if (
@@ -585,10 +585,8 @@ class _BrowserCoordinatedOAuth(MCPOAuth):
             and redirect_url
             not in {str(uri) for uri in client_info.redirect_uris or []}
         ):
-            self.context.client_info = None
+            raise ClientNotFoundError("OAuth client has a different redirect URI")
 
-    async def redirect_handler(self, authorization_url: str) -> None:
-        """Capture the URL instead of opening a browser from the backend."""
         async with self.httpx_client_factory() as client:
             response = await client.get(authorization_url, follow_redirects=False)
             if response.status_code == 400:
