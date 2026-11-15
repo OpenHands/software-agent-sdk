@@ -390,8 +390,8 @@ async def pass_on_answer(
     ``closed_by`` is the user's event that answered the coordinator's card.
 
     Nothing happens when that card asked for no member, the member left the
-    project, or the user already answered it there. Returns whether the
-    answer was passed on.
+    project, or the member's question was already answered, so passing the
+    same answer twice is harmless. Returns whether the answer was passed on.
     """
     if await _coordinator_id(service, project_hex) != coordinator_id:
         return False
@@ -415,9 +415,14 @@ async def pass_on_answer(
     if question is None:
         return False
     index, text = _matched_answer(question, picked, words)
-    await member.answer_ask(
-        question.ask_id, index, text, sender=conversation_sender(coordinator_id)
-    )
+    try:
+        await member.answer_ask(
+            question.ask_id, index, text, sender=conversation_sender(coordinator_id)
+        )
+    except ValueError:
+        # Answered in the meantime, by the user in the member or by another
+        # pass of this same answer: nothing is left to close.
+        return False
     return True
 
 

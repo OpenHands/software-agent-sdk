@@ -6,6 +6,7 @@ question; the coordinator asks the user with its own card naming the member
 member's card as the user's.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -298,6 +299,31 @@ async def _record(service, conversation_id: UUID, *events: Event) -> None:
             conversation._on_event(event)
 
 
+async def _answers(service, conversation_id: UUID) -> list[AskUserAnswerEvent]:
+    return [
+        e
+        for e in await _events(service, conversation_id)
+        if isinstance(e, AskUserAnswerEvent)
+    ]
+
+
+async def _passed_on(service, coordinator: UUID, member: UUID) -> None:
+    """Wait for the coordinator's board to pass the user's answer to the member.
+
+    Recorded events reach the board on later turns of the loop, and the board
+    then passes the answer on in the background.
+    """
+    event_service = await service.get_event_service(coordinator)
+    assert event_service is not None
+    for _ in range(200):
+        if await _answers(service, member):
+            break
+        await asyncio.sleep(0.025)
+    for subscriber in list(event_service._pub_sub._subscribers.values()):
+        if isinstance(subscriber, ConversationOutcomeSubscriber):
+            await subscriber.drain()
+
+
 async def _events(service, conversation_id: UUID) -> list[Event]:
     event_service = await service.get_event_service(conversation_id)
     assert event_service is not None
@@ -349,9 +375,9 @@ async def test_a_tap_on_the_coordinators_card_answers_the_member(
     tap = AskUserAnswerEvent(
         ask_id=passed_id, option_index=0, option_label="Postgres", text="We grow."
     )
+    # Recording the tap is enough: the coordinator's board passes it on.
     await _record(service, cat, tap)
-
-    assert await pass_on_answer(service, cat, project, tap.id, "Postgres", "We grow.")
+    await _passed_on(service, cat, worker)
 
     events = await _events(service, worker)
     (answer,) = [e for e in events if isinstance(e, AskUserAnswerEvent)]
@@ -373,6 +399,23 @@ async def test_a_tap_on_the_coordinators_card_answers_the_member(
 
 
 @pytest.mark.asyncio
+async def test_passing_the_same_answer_twice_is_harmless(client, service, tmp_path):
+    project, cat, worker = await _project(client, service, tmp_path)
+    _, passed_id = await _ask_through(service, cat, worker)
+    tap = AskUserAnswerEvent(ask_id=passed_id, option_index=0, option_label="Postgres")
+    await _record(service, cat, tap)
+
+    # A second pass races the board's own; neither fails, one answer lands.
+    await pass_on_answer(service, cat, project, tap.id, "Postgres", None)
+    await _passed_on(service, cat, worker)
+
+    answers = [
+        e for e in await _events(service, worker) if isinstance(e, AskUserAnswerEvent)
+    ]
+    assert len(answers) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_option_the_coordinator_reworded_reaches_the_member_as_words(
     client, service, tmp_path
 ):
@@ -384,8 +427,7 @@ async def test_an_option_the_coordinator_reworded_reaches_the_member_as_words(
         option_label="SQLite, for now",
     )
     await _record(service, cat, tap)
-
-    assert await pass_on_answer(service, cat, project, tap.id, "SQLite, for now", None)
+    await _passed_on(service, cat, worker)
 
     (answer,) = [
         e for e in await _events(service, worker) if isinstance(e, AskUserAnswerEvent)
@@ -404,8 +446,7 @@ async def test_the_users_words_in_the_coordinator_answer_the_member(
         llm_message=Message(role="user", content=[TextContent(text="SQLite.")]),
     )
     await _record(service, cat, reply)
-
-    assert await pass_on_answer(service, cat, project, reply.id, None, "SQLite.")
+    await _passed_on(service, cat, worker)
 
     (answer,) = [
         e for e in await _events(service, worker) if isinstance(e, AskUserAnswerEvent)
