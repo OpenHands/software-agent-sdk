@@ -847,7 +847,14 @@ class EventService:
             raise ValueError("inactive_service")
         state = self._conversation._state
         with state:
-            return ConversationStateUpdateEvent.from_conversation_state(state)
+            event = ConversationStateUpdateEvent.from_conversation_state(state)
+        # Like conversation responses (trim_conversation_response_skills), the
+        # snapshot pushed to sockets and webhooks leaves out skill bodies: they
+        # made it ~600 KB, and every known reader only uses status and stats.
+        agent_context = event.value.get("agent", {}).get("agent_context")
+        if isinstance(agent_context, dict) and agent_context.get("skills"):
+            agent_context["skills"] = []
+        return event
 
     def _create_initial_state_sync(
         self,

@@ -2809,6 +2809,39 @@ class TestEventServiceConcurrentSubscriptions:
         return conversation
 
     @pytest.mark.asyncio
+    async def test_initial_state_leaves_out_skill_bodies(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        state = mock_conversation_with_real_lock._state
+        state.model_dump.return_value = {
+            "execution_status": "idle",
+            "agent": {
+                "llm": {"model": "gpt-4o-mini"},
+                "agent_context": {
+                    "skills": [{"name": "big", "content": "x" * 100_000}],
+                    "system_message_suffix": "kept",
+                },
+            },
+        }
+        event_service._conversation = mock_conversation_with_real_lock
+        received: list[Event] = []
+
+        class Recorder(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received.append(event)
+
+        await event_service.subscribe_to_events(Recorder())
+
+        snapshot = cast(ConversationStateUpdateEvent, received[0])
+        assert snapshot.key == "full_state"
+        assert snapshot.value["agent"]["agent_context"] == {
+            "skills": [],
+            "system_message_suffix": "kept",
+        }
+        assert snapshot.value["agent"]["llm"] == {"model": "gpt-4o-mini"}
+        assert snapshot.value["execution_status"] == "idle"
+
+    @pytest.mark.asyncio
     async def test_concurrent_subscriptions_no_deadlock(
         self, event_service, mock_conversation_with_real_lock
     ):
