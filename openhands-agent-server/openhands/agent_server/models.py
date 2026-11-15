@@ -474,7 +474,7 @@ class ReactionRequest(BaseModel):
 
 
 class AskUserAnswerRequest(BaseModel):
-    """The person's answer to the agent's pending ``ask_user`` question."""
+    """The user's answer to the agent's pending ``ask_user`` question."""
 
     ask_id: EventID = Field(
         description="Id of the agent's `ask_user` call (its ActionEvent) answered."
@@ -485,7 +485,7 @@ class AskUserAnswerRequest(BaseModel):
     text: str | None = Field(
         default=None,
         max_length=10_000,
-        description="The person's own words, instead of an option or with one.",
+        description="The user's own words, instead of an option or with one.",
     )
 
 

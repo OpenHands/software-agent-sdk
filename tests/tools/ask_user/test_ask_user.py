@@ -227,7 +227,7 @@ def test_the_answer_starts_the_next_turn_with_a_well_formed_history(tmp_path):
 
     (request,) = model.requests
     roles = [m["role"] for m in request]
-    # The tool call is followed by its result, then the person's answer.
+    # The tool call is followed by its result, then the user's answer.
     assert roles[-3:] == ["assistant", "tool", "user"]
     assert "Behind a flag" in json.dumps(request[-1])
 
@@ -307,7 +307,7 @@ def test_the_answer_event_round_trips():
         AskUserAnswerEvent(ask_id="a")
 
 
-def test_the_person_s_own_message_is_what_closes_it():
+def test_the_user_s_own_message_is_what_closes_it():
     user = MessageEvent(
         source="user",
         llm_message=Message(role="user", content=[TextContent(text="hi")]),

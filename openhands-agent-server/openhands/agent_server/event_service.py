@@ -2392,7 +2392,7 @@ class EventService:
         *,
         sender: str | None = None,
     ) -> AskUserAnswerEvent:
-        """Record the person's answer to a pending ``ask_user`` question and run.
+        """Record the user's answer to a pending ``ask_user`` question and run.
 
         ``sender`` is recorded on the message that carries the answer: a
         project's coordinator, when the user answered there, on its card

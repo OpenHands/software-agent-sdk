@@ -71,6 +71,7 @@ export {
   isHookExecutionEvent,
   isReactionEvent,
   isMessageEditEvent,
+  isAskUserAnswerEvent,
 } from './events/types';
 export type {
   EventID,
@@ -103,6 +104,7 @@ export type {
   ReactionEmoji,
   ReactionEvent,
   MessageEditEvent,
+  AskUserAnswerEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
