@@ -388,22 +388,24 @@ def _samples(runs: list[dict], key: str, cold: bool) -> list[float]:
     return [c[key] for run in runs for c in run["creates"] if c["cold"] == cold]
 
 
-def _verdict(base: float, head: float) -> str:
-    delta = head - base
-    if delta >= max(0.15, 0.25 * base):
-        return "⚠️ slower"
-    if -delta >= max(0.15, 0.25 * base):
-        return "✅ faster"
+def _verdict(base: tuple[float, float, float], head: tuple[float, float, float]) -> str:
+    """Flag a large change, or a smaller one whose 95% CIs do not overlap."""
+    (bm, blo, bhi), (hm, hlo, hhi) = base, head
+    delta = abs(hm - bm)
+    separated = hlo > bhi or hhi < blo
+    if delta >= 0.25 * bm and (delta >= 0.15 or (delta >= 0.05 and separated)):
+        return "⚠️ slower" if hm > bm else "✅ faster"
     return "≈ same"
 
 
 def _row(label: str, b: list[float], h: list[float]) -> str:
-    bm, blo, bhi = _median_ci(b)
-    hm, hlo, hhi = _median_ci(h)
+    base, head = _median_ci(b), _median_ci(h)
+    (bm, blo, bhi), (hm, hlo, hhi) = base, head
     change = (hm - bm) / bm if bm else 0.0
     return (
         f"| {label} | {bm:.3f} s [{blo:.3f}, {bhi:.3f}] "
-        f"| {hm:.3f} s [{hlo:.3f}, {hhi:.3f}] | {change:+.0%} | {_verdict(bm, hm)} |"
+        f"| {hm:.3f} s [{hlo:.3f}, {hhi:.3f}] | {change:+.0%} "
+        f"| {_verdict(base, head)} |"
     )
 
 
@@ -450,8 +452,9 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
             "- **mcp**: the agent profile enables one stdio MCP server that starts "
             f"after {MCP_STARTUP_DELAY_S:g} s, like an `npx`/`uvx` launch.",
             "",
-            "A change is flagged only when the medians differ by at least 25% and "
-            f"150 ms. Runner: `{meta['runner']}`, {meta['env_vars']} environment "
+            "A change is flagged when the medians differ by at least 25% and "
+            "either by 150 ms, or by 50 ms with non-overlapping 95% CIs. Runner: "
+            f"`{meta['runner']}`, {meta['env_vars']} environment "
             "variables. Run it locally with `python scripts/agent_server_benchmarks/"
             "conversation_start.py --help`.",
             "",
