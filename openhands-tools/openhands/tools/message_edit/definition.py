@@ -65,10 +65,13 @@ class EditMessageObservation(Observation):
 
 
 _DESCRIPTION = """\
-Edit one of your earlier messages to the user, when you understand that it
-got answered, was wrong, or became wrong. The user sees the edited message in
-place, marked "edited"; editing does not notify them and does not end your
-turn.
+Edit one of your earlier messages to the user when it is out of date:
+- a question you asked got answered, by the user or by what you found:
+  strike the question and note the answer;
+- something you said was wrong, or became wrong: strike it and note what
+  holds now.
+The user sees the edited message in place, marked "edited"; editing does not
+notify them and does not end your turn.
 
 Keep what you wrote visible: strike the outdated part with ~~...~~ and add a
 short [Edit: ...] after it. For example, old_str
@@ -76,9 +79,8 @@ short [Edit: ...] after it. For example, old_str
 "~~Should I run the lookup on windy?~~ [Edit: Running it on windy.]".
 Strike each line or list item on its own, since ~~ does not span lines.
 
-Edit only when the message would mislead the user if left as it is, not to
-reword it. Something new for the user (a result, a question, a change of
-plan) belongs in a new message, not an edit."""
+Do not edit to reword or polish. Something new for the user (a result, a
+question, a change of plan) belongs in a new message, not an edit."""
 
 
 class EditMessageTool(ToolDefinition[EditMessageAction, EditMessageObservation]):
