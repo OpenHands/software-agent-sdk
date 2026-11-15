@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@3c66af1d14d0a7fbe74b8dc4218412ec7a877b79 (2026-11-14). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **1038 sub-features**.
+The map has **1043 sub-features**.
 
 ## Baseline preconditions
 
@@ -102,6 +102,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F36 | [Projects and coordinator tools](F36-projects.md) | project records, membership through the `project` conversation tag, conversations grouped by attention, confirmation-safe messages, coordinator `list_project_conversations` and `message_project_conversation` tools, asks, project memory, restart, corrupted file | `GET`/`POST /api/projects`, `GET`/`PATCH`/`DELETE /api/projects/{id}`, `GET /api/projects/{id}/conversations`, `PUT`/`DELETE /api/projects/{id}/conversations/{conversation_id}`, `GET .../conversations/{conversation_id}/messages`, `POST /api/conversations/{id}/events` (sender, confirmation guard) | llm; recipes: tmux | 31 |
 | F37 | [Emoji reactions and feature flags](F37-reactions.md) | the `conversation_reactions` feature flag (stored and runtime env), the user's reactions over REST and the TypeScript client, validation, active-branch targets, the agent's `react`/`unreact` tools, what the model sees | `POST /api/conversations/{id}/reactions` (the flag's routes are F18's) | llm | 12 |
 | F38 | [Conversation mentions](F38-conversation-mentions.md) | the `conversation_mentions` feature flag, the agent's read-only `find_conversations` and `read_conversation` tools, mention links `[Title](conversation:<id>)` in its answers | behavior only: agent tools (the flag's routes are F18's) | llm | 5 |
+| F39 | [Message edits](F39-message-edits.md) | the `message_edits` feature flag, the agent's `edit_message` tool (`str_replace` on its own earlier messages), the `MessageEditEvent` clients show in place, what the model sees, reactions on an edited message | behavior only: `edit_message` tool, `MessageEditEvent` (the flag's routes are F18's) | llm | 5 |
 
 ## Not mapped
 

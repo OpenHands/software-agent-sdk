@@ -75,6 +75,17 @@ CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
+MESSAGE_EDITS = ExperimentalFeatureDefinition(
+    key="message_edits",
+    label="Message edits",
+    description=(
+        "The agent can edit its earlier messages when they got answered or "
+        "became wrong: it strikes the outdated part and adds a short note, and "
+        "the message shows as edited. Applies to conversations started after "
+        "you turn it on."
+    ),
+)
+
 PROJECTS = ExperimentalFeatureDefinition(
     key="projects",
     label="Projects",
@@ -104,6 +115,7 @@ new conversations while Projects is off rather than added while it is on."""
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
     CONVERSATION_MENTIONS,
+    MESSAGE_EDITS,
     PROJECTS,
 ]
 
@@ -139,6 +151,9 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     if is_enabled(features, CONVERSATION_MENTIONS.key):
         # Tool names as registered by openhands.tools.conversation_mentions.
         tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    if is_enabled(features, MESSAGE_EDITS.key):
+        # Tool name as registered by openhands.tools.message_edit.
+        tools.append(Tool(name="edit_message"))
     return tools
 
 

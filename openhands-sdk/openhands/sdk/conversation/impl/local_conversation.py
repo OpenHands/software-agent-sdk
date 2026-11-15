@@ -55,6 +55,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.message_edit import message_text
 from openhands.sdk.event.reaction import (
     check_reaction_emoji,
     find_reaction_target,
@@ -2280,7 +2281,9 @@ class LocalConversation(BaseConversation):
             target = find_reaction_target(
                 self._state.active_branch(), target_event_id, source="user"
             )
-            ending, clipped = reaction_target_text(target)
+            ending, clipped = reaction_target_text(
+                message_text(self._state.active_branch(), target)
+            )
             event = ReactionEvent(
                 source="user",
                 target_event_id=target.id,

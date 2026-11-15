@@ -192,11 +192,28 @@ export interface ReactionEvent extends BaseEvent {
 }
 
 /**
+ * Message edit event - the agent's edit of one of its earlier messages.
+ *
+ * The event log is append-only: the message itself never changes. Show the
+ * latest edit's `text` in place of the message's text, marked as edited.
+ * The LLM does not see this event. Needs the `message_edits` feature.
+ */
+export interface MessageEditEvent extends BaseEvent {
+  kind: 'MessageEditEvent';
+  /** The agent's message or finish action that was edited */
+  target_event_id: EventID;
+  /** The message's whole text after the edit */
+  text: string;
+  source: 'agent';
+}
+
+/**
  * Union type of all conversation events
  */
 export type ConversationEvent =
   | AgentServerEvent
   | ReactionEvent
+  | MessageEditEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
   | StuckDetectionEvent
@@ -215,6 +232,13 @@ export function isMessageEvent(event: BaseEvent): event is MessageEvent {
  */
 export function isReactionEvent(event: BaseEvent): event is ReactionEvent {
   return event.kind === 'ReactionEvent';
+}
+
+/**
+ * Type guard to check if an event is a MessageEditEvent
+ */
+export function isMessageEditEvent(event: BaseEvent): event is MessageEditEvent {
+  return event.kind === 'MessageEditEvent';
 }
 
 /**

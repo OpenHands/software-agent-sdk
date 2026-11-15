@@ -131,18 +131,8 @@ def is_reactable(event: Event) -> bool:
     )
 
 
-def reaction_target_text(event: Event) -> tuple[str, bool]:
-    """The end of a reactable message's text, and whether it was clipped."""
-    from openhands.sdk.tool.builtins.finish import FinishAction
-
-    if isinstance(event, MessageEvent):
-        text = "\n".join(
-            c.text for c in event.llm_message.content if isinstance(c, TextContent)
-        )
-    elif isinstance(event, ActionEvent) and isinstance(event.action, FinishAction):
-        text = event.action.message
-    else:
-        text = ""
+def reaction_target_text(text: str) -> tuple[str, bool]:
+    """The end of a reacted message's text, and whether it was clipped."""
     text = text.strip()
     if len(text) <= REACTION_TEXT_ENDING_MAX:
         return text, False

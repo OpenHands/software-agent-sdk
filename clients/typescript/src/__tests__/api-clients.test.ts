@@ -5,6 +5,7 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isMessageEditEvent,
   isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
@@ -2360,6 +2361,20 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/settings/experimental/qa_feature',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
     );
+  });
+
+  it('isMessageEditEvent recognizes an edit of an agent message', () => {
+    const edit = {
+      id: 'e1',
+      kind: 'MessageEditEvent',
+      source: 'agent',
+      timestamp: '2026-11-15T00:00:00Z',
+      target_event_id: 'm1',
+      text: '~~Should I run it?~~ [Edit: Running it.]',
+    };
+
+    expect(isMessageEditEvent(edit)).toBe(true);
+    expect(isMessageEditEvent({ ...edit, kind: 'MessageEvent' })).toBe(false);
   });
 
   it('ConversationClient.react sends only the fields it is given', async () => {

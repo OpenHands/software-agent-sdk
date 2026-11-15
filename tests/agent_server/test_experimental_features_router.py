@@ -172,6 +172,7 @@ async def test_every_feature_is_listed_and_off(client):
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
         ("conversation_reactions", False),
         ("conversation_mentions", False),
+        ("message_edits", False),
         ("projects", True),
     ]
 
@@ -194,6 +195,9 @@ def test_feature_tools_follow_the_flags():
             {"conversation_reactions": True, "conversation_mentions": True}
         )
     ] == ["react", "unreact", "find_conversations", "read_conversation"]
+    assert [t.name for t in experimental_feature_tools({"message_edits": True})] == [
+        "edit_message"
+    ]
 
 
 def _runtime() -> LaunchRuntime:
