@@ -141,7 +141,8 @@ def run_tmux_commands(server: libtmux.Server, commands: list[list[str]]) -> None
             batch = []
             run(command)
             continue
-        if batch and sum(len(a) + 1 for a in batch + command) > _TMUX_BATCH_BYTES:
+        size = sum(len(a.encode()) + 1 for a in batch + command)
+        if batch and size > _TMUX_BATCH_BYTES:
             run(batch[:-1])
             batch = []
         batch += [*command, ";"]

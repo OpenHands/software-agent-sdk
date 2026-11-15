@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import socket
 import tempfile
 import threading
@@ -2401,11 +2400,51 @@ class TestConversationServiceStartConversation:
             assert _get_worktree_start_point(repo_dir) == "origin/main"
             assert fetch.call_count == 1
 
-            fetch_head = repo_dir / ".git" / "FETCH_HEAD"
-            stale = time.time() - 600
-            os.utime(fetch_head, (stale, stale))
-            _get_worktree_start_point(repo_dir)
+            later = time.monotonic() + 600
+            with patch(f"{module}.time.monotonic", return_value=later):
+                _get_worktree_start_point(repo_dir)
             assert fetch.call_count == 2
+
+    def test_get_worktree_start_point_fetches_origin_after_another_remote(
+        self, tmp_path
+    ):
+        """A fetch of another remote must not stand in for one of origin."""
+        upstream = tmp_path / "upstream.git"
+        other = tmp_path / "other.git"
+        for bare in (upstream, other):
+            run_git_command(["git", "init", "--bare", "-b", "main", str(bare)])
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        run_git_command(["git", "remote", "add", "origin", str(upstream)], repo_dir)
+        run_git_command(["git", "remote", "add", "other", str(other)], repo_dir)
+        run_git_command(["git", "push", "-u", "origin", "HEAD:main"], repo_dir)
+        run_git_command(["git", "push", "other", "HEAD:main"], repo_dir)
+        run_git_command(["git", "remote", "set-head", "origin", "main"], repo_dir)
+
+        clone_dir = tmp_path / "publisher"
+        run_git_command(["git", "clone", str(upstream), str(clone_dir)])
+        run_git_command(
+            [
+                "git",
+                "-c",
+                "user.name=OpenHands Test",
+                "-c",
+                "user.email=openhands@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "remote update",
+            ],
+            clone_dir,
+        )
+        run_git_command(["git", "push", "origin", "main"], clone_dir)
+        remote_tip = run_git_command(["git", "rev-parse", "HEAD"], clone_dir)
+        run_git_command(["git", "fetch", "other"], repo_dir)
+
+        start_point = _get_worktree_start_point(repo_dir)
+
+        resolved = run_git_command(["git", "rev-parse", start_point], repo_dir)
+        assert resolved == remote_tip
 
     def test_get_worktree_start_point_falls_back_to_local_main(self, tmp_path):
         """No ``origin`` remote → fall back to local ``main``."""
