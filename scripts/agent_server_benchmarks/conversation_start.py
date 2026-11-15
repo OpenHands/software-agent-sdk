@@ -4,7 +4,9 @@ Each round starts a real agent-server, creates conversations the way Agent
 Canvas does (agent profile, first message in the create request), and measures
 the create request, the first agent event, and how long the event loop stalls
 meanwhile. A mock OpenAI-compatible LLM answers instantly, so the numbers are
-pure agent-server overhead.
+pure agent-server overhead. Scenarios (see ``SCENARIOS``) cover a plain
+directory, a first create after a pause, a git worktree with a slow ``origin``,
+and an agent profile with a stdio MCP server.
 
     # one interpreter
     python conversation_start.py run --python .venv/bin/python
@@ -143,7 +145,80 @@ async def _first_agent_event(url: str, timeout: float = 120) -> float:
                 return time.perf_counter()
 
 
-async def _run_server(python: str, creates: int, extensions_path: str | None) -> dict:
+# Creates per server start, by scenario.
+SCENARIOS: dict[str, int] = {"default": 8, "pause": 2, "worktree": 5, "mcp": 5}
+PAUSE_S = 3.0
+FETCH_DELAY_S = 0.5
+MCP_STARTUP_DELAY_S = 1.0
+
+REPORT_ROWS = [
+    ("default", "create_s", False, "Create conversation (warm)"),
+    ("default", "first_agent_event_s", False, "Create → first agent event (warm)"),
+    ("default", "create_s", True, "First create right after server start"),
+    ("pause", "create_s", True, f"First create {PAUSE_S:g} s after server start"),
+    (
+        "worktree",
+        "create_s",
+        False,
+        f"Create in a new git worktree (warm, {FETCH_DELAY_S:g} s `git fetch`)",
+    ),
+    (
+        "worktree",
+        "max_alive_s",
+        False,
+        "Worst `/alive` latency during a worktree create",
+    ),
+    (
+        "mcp",
+        "create_s",
+        False,
+        f"Create with one stdio MCP server (warm, {MCP_STARTUP_DELAY_S:g} s startup)",
+    ),
+    ("default", "max_alive_s", False, "Worst `/alive` latency during a create"),
+]
+
+_MCP_SERVER = """\
+import sys, time
+time.sleep(float(sys.argv[1]))
+from fastmcp import FastMCP
+mcp = FastMCP("benchmark")
+@mcp.tool
+def echo(text: str) -> str:
+    return text
+mcp.run()
+"""
+
+
+def _git(*args: str, cwd: Path | None = None) -> None:
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _make_repo(root: Path) -> Path:
+    """A clone whose `origin` answers fetches after a fixed delay, like a network."""
+    src = root / "repo-src"
+    src.mkdir()
+    _git("init", "-q", "-b", "main", cwd=src)
+    for i in range(200):
+        (src / f"file_{i:03d}.py").write_text(f"VALUE = {i}\n" * 20)
+    _git("add", ".", cwd=src)
+    identity = ["-c", "user.name=bench", "-c", "user.email=bench@example.com"]
+    _git(*identity, "commit", "-q", "-m", "init", cwd=src)
+    _git("clone", "-q", "--bare", str(src), str(root / "origin.git"))
+    repo = root / "repo"
+    _git("clone", "-q", str(root / "origin.git"), str(repo))
+    slow = root / "slow-upload-pack"
+    slow.write_text(f'#!/bin/sh\nsleep {FETCH_DELAY_S}\nexec git-upload-pack "$@"\n')
+    slow.chmod(0o755)
+    _git("config", "remote.origin.uploadpack", str(slow), cwd=repo)
+    return repo
+
+
+async def _run_server(python: str, scenario: str, extensions_path: str | None) -> dict:
     """Start one agent-server from `python`, create conversations, return timings."""
     llm = ThreadingHTTPServer(("127.0.0.1", 0), _MockLLM)
     threading.Thread(target=llm.serve_forever, daemon=True).start()
@@ -173,6 +248,7 @@ async def _run_server(python: str, creates: int, extensions_path: str | None) ->
         env["EXTENSIONS_PATH"] = extensions_path
     for sub in ("home", "tmux", "workspaces"):
         (root / sub).mkdir()
+    repo = _make_repo(root) if scenario == "worktree" else None
     log = open(root / "server.log", "w")
     server = subprocess.Popen(
         [
@@ -190,7 +266,7 @@ async def _run_server(python: str, creates: int, extensions_path: str | None) ->
         stderr=subprocess.STDOUT,
     )
     headers = {"X-Session-API-Key": SESSION_KEY}
-    result: dict = {"creates": []}
+    result: dict = {"scenario": scenario, "creates": []}
     try:
         result["startup_s"] = await _wait_alive(base)
         async with httpx.AsyncClient(base_url=base, headers=headers, timeout=300) as c:
@@ -206,6 +282,16 @@ async def _run_server(python: str, creates: int, extensions_path: str | None) ->
                 },
             )
             r.raise_for_status()
+            if scenario == "mcp":
+                (root / "mcp_server.py").write_text(_MCP_SERVER)
+                r = await c.post(
+                    "/api/settings/mcp/benchmark",
+                    json={
+                        "command": sys.executable,
+                        "args": [str(root / "mcp_server.py"), str(MCP_STARTUP_DELAY_S)],
+                    },
+                )
+                r.raise_for_status()
             r = await c.post(
                 "/api/agent-profiles/benchmark",
                 json={"agent_kind": "openhands", "llm_profile_ref": "benchmark"},
@@ -213,9 +299,13 @@ async def _run_server(python: str, creates: int, extensions_path: str | None) ->
             r.raise_for_status()
             profiles = (await c.get("/api/agent-profiles")).json()["profiles"]
             profile_id = next(p["id"] for p in profiles if p["name"] == "benchmark")
-            for i in range(creates):
+            if scenario == "pause":
+                await asyncio.sleep(PAUSE_S)
+            for i in range(SCENARIOS[scenario]):
                 result["creates"].append(
-                    await _create_one(c, base, port, root, profile_id, cold=i == 0)
+                    await _create_one(
+                        c, base, port, root, profile_id, repo=repo, cold=i == 0
+                    )
                 )
     finally:
         server.terminate()
@@ -232,10 +322,15 @@ async def _run_server(python: str, creates: int, extensions_path: str | None) ->
     return result
 
 
-async def _create_one(c, base, port, root, profile_id, *, cold: bool) -> dict:
+async def _create_one(
+    c, base, port, root, profile_id, *, repo: Path | None, cold: bool
+) -> dict:
     conversation_id = str(uuid.uuid4())
-    working_dir = root / "workspaces" / conversation_id.replace("-", "")
-    working_dir.mkdir()
+    if repo is None:
+        working_dir = root / "workspaces" / conversation_id.replace("-", "")
+        working_dir.mkdir()
+    else:
+        working_dir = repo
     body = {
         "conversation_id": conversation_id,
         "agent_profile_id": profile_id,
@@ -289,14 +384,6 @@ def _median_ci(xs: list[float], n: int = 2000) -> tuple[float, float, float]:
     return statistics.median(xs), boots[int(0.025 * n)], boots[int(0.975 * n)]
 
 
-METRICS = [
-    ("create_s", False, "Create conversation (warm)"),
-    ("first_agent_event_s", False, "Create → first agent event (warm)"),
-    ("create_s", True, "First create after server start"),
-    ("max_alive_s", False, "Worst `/alive` latency during a create"),
-]
-
-
 def _samples(runs: list[dict], key: str, cold: bool) -> list[float]:
     return [c[key] for run in runs for c in run["creates"] if c["cold"] == cold]
 
@@ -310,25 +397,28 @@ def _verdict(base: float, head: float) -> str:
     return "≈ same"
 
 
-def render_report(base_runs: list[dict], head_runs: list[dict], meta: dict) -> str:
-    rows = []
-    for key, cold, label in METRICS:
-        b = _samples(base_runs, key, cold)
-        h = _samples(head_runs, key, cold)
-        bm, blo, bhi = _median_ci(b)
-        hm, hlo, hhi = _median_ci(h)
-        rows.append(
-            f"| {label} | {bm:.3f} s [{blo:.3f}, {bhi:.3f}] "
-            f"| {hm:.3f} s [{hlo:.3f}, {hhi:.3f}] "
-            f"| {(hm - bm) / bm:+.0%} | {_verdict(bm, hm)} |"
-        )
-    startup_b = statistics.median(r["startup_s"] for r in base_runs)
-    startup_h = statistics.median(r["startup_s"] for r in head_runs)
-    change = (startup_h - startup_b) / startup_b
-    rows.append(
-        f"| Server startup (`/alive`) | {startup_b:.2f} s | {startup_h:.2f} s "
-        f"| {change:+.0%} | {_verdict(startup_b, startup_h)} |"
+def _row(label: str, b: list[float], h: list[float]) -> str:
+    bm, blo, bhi = _median_ci(b)
+    hm, hlo, hhi = _median_ci(h)
+    change = (hm - bm) / bm if bm else 0.0
+    return (
+        f"| {label} | {bm:.3f} s [{blo:.3f}, {bhi:.3f}] "
+        f"| {hm:.3f} s [{hlo:.3f}, {hhi:.3f}] | {change:+.0%} | {_verdict(bm, hm)} |"
     )
+
+
+def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
+    rows = []
+    for scenario, key, cold, label in REPORT_ROWS:
+        if scenario in runs:
+            base = _samples(runs[scenario]["base"], key, cold)
+            head = _samples(runs[scenario]["head"], key, cold)
+            rows.append(_row(label, base, head))
+    startups = {
+        side: [r["startup_s"] for s in runs for r in runs[s][side]]
+        for side in ("base", "head")
+    }
+    rows.append(_row("Server startup (`/alive`)", startups["base"], startups["head"]))
     return "\n".join(
         [
             REPORT_MARKER,
@@ -336,9 +426,9 @@ def render_report(base_runs: list[dict], head_runs: list[dict], meta: dict) -> s
             "",
             f"Base `{meta['base_ref']}` vs this PR `{meta['head_ref']}`, measured "
             "in the same job on the same runner, interleaved: "
-            f"{meta['rounds']} server starts per side × {meta['creates']} creates "
-            "each. Medians with 95% bootstrap CIs. The LLM is a mock that answers "
-            "instantly, so this is agent-server overhead only.",
+            f"{meta['rounds']} server starts per side and scenario. Medians with "
+            "95% bootstrap CIs. The LLM is a mock that answers instantly, so this "
+            "is agent-server overhead only.",
             "",
             "| | base | this PR | change | |",
             "|---|---|---|---|---|",
@@ -346,13 +436,23 @@ def render_report(base_runs: list[dict], head_runs: list[dict], meta: dict) -> s
             "",
             "<details><summary>How this is measured</summary>",
             "",
-            "Each create is a Canvas-shaped `POST /api/conversations` (agent profile, "
-            "`worktree: true` on a fresh directory, first message included, so the "
-            "request waits for agent startup). A side task polls `/alive` every 20 ms "
-            "to catch event-loop stalls. A change is flagged only when the medians "
-            "differ by at least 25% and 150 ms. Runner: "
-            f"`{meta['runner']}`, {meta['env_vars']} environment variables. "
-            "Run it locally with `python scripts/agent_server_benchmarks/"
+            "Each create is a Canvas-shaped `POST /api/conversations` (agent "
+            "profile, `worktree: true`, first message included, so the request "
+            "waits for agent startup). A side task polls `/alive` every 20 ms to "
+            "catch event-loop stalls. Scenarios, each on its own server starts:",
+            "",
+            f"- **default**: a fresh directory per create, {SCENARIOS['default']} "
+            "creates per start.",
+            f"- **pause**: the first create waits {PAUSE_S:g} s after startup, as "
+            "a user opening the UI would.",
+            "- **worktree**: every create branches a new worktree from a local "
+            f"repository whose `origin` answers fetches after {FETCH_DELAY_S:g} s.",
+            "- **mcp**: the agent profile enables one stdio MCP server that starts "
+            f"after {MCP_STARTUP_DELAY_S:g} s, like an `npx`/`uvx` launch.",
+            "",
+            "A change is flagged only when the medians differ by at least 25% and "
+            f"150 ms. Runner: `{meta['runner']}`, {meta['env_vars']} environment "
+            "variables. Run it locally with `python scripts/agent_server_benchmarks/"
             "conversation_start.py --help`.",
             "",
             "</details>",
@@ -360,35 +460,43 @@ def render_report(base_runs: list[dict], head_runs: list[dict], meta: dict) -> s
     )
 
 
+def _scenarios(value: str) -> list[str]:
+    names = [name for name in value.split(",") if name]
+    unknown = set(names) - set(SCENARIOS)
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown scenarios: {sorted(unknown)}")
+    return names
+
+
 async def _cmd_run(args) -> None:
     for _ in range(args.rounds):
-        print(
-            json.dumps(
-                await _run_server(args.python, args.creates, args.extensions_path)
-            )
-        )
+        for scenario in args.scenarios:
+            run = await _run_server(args.python, scenario, args.extensions_path)
+            print(json.dumps(run))
 
 
 async def _cmd_compare(args) -> None:
-    base_runs, head_runs = [], []
+    runs: dict[str, dict[str, list[dict]]] = {
+        s: {"base": [], "head": []} for s in args.scenarios
+    }
     for i in range(args.rounds):
-        order = [("base", args.base_python), ("head", args.head_python)]
-        for side, python in order if i % 2 == 0 else order[::-1]:
-            run = await _run_server(python, args.creates, args.extensions_path)
-            (base_runs if side == "base" else head_runs).append(run)
-            print(f"round {i + 1} {side}: {json.dumps(run)}", file=sys.stderr)
+        for scenario in args.scenarios:
+            order = [("base", args.base_python), ("head", args.head_python)]
+            for side, python in order if i % 2 == 0 else order[::-1]:
+                run = await _run_server(python, scenario, args.extensions_path)
+                runs[scenario][side].append(run)
+                print(f"round {i + 1} {side}: {json.dumps(run)}", file=sys.stderr)
     meta = {
         "base_ref": args.base_ref,
         "head_ref": args.head_ref,
         "rounds": args.rounds,
-        "creates": args.creates,
         "runner": os.environ.get("RUNNER_NAME", socket.gethostname()),
         "env_vars": len(os.environ),
     }
-    report = render_report(base_runs, head_runs, meta)
+    report = render_report(runs, meta)
     Path(args.report).write_text(report + "\n")
     Path(args.report).with_suffix(".json").write_text(
-        json.dumps({"base": base_runs, "head": head_runs, "meta": meta}, indent=1)
+        json.dumps({"runs": runs, "meta": meta}, indent=1)
     )
     print(report)
 
@@ -400,10 +508,13 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--creates", type=int, default=8, help="creates per server start"
+        "--rounds", type=int, default=3, help="server starts per side and scenario"
     )
     common.add_argument(
-        "--rounds", type=int, default=3, help="server starts (per side)"
+        "--scenarios",
+        type=_scenarios,
+        default=list(SCENARIOS),
+        help=f"comma-separated subset of {','.join(SCENARIOS)}",
     )
     common.add_argument(
         "--extensions-path",

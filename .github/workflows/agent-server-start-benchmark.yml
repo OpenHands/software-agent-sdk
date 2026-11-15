@@ -63,7 +63,7 @@ jobs:
                     --head-python head/.venv/bin/python \
                     --base-ref "${BASE_REF:0:60}" --head-ref "${HEAD_REF:0:10}" \
                     --extensions-path "$PWD/extensions" \
-                    --rounds 3 --creates 8 \
+                    --rounds 3 \
                     --report report.md
                   cat report.md >> "$GITHUB_STEP_SUMMARY"
 
