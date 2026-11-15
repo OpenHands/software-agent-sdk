@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENROUTER_PROVIDER_PREFIX,
+    litellm_call_kwargs,
+)
 from openhands.sdk.llm.utils.runtime_metadata import (
     RUNTIME_METADATA_TIMEOUT_SECONDS,
     ModelRuntimeMetadata,
@@ -31,16 +35,12 @@ OPENROUTER_ENDPOINTS_BASE = "https://openrouter.ai/api/v1/models"
 def _openrouter_model_id(llm: LLM) -> str | None:
     """Return the OpenRouter model id for the endpoints API, or None.
 
-    Prefers the ``openrouter/<id>`` prefix form. When the base URL identifies
-    OpenRouter and the model already looks like an OpenRouter id
-    (``provider/model``), it is used as-is.
+    Derived from the LiteLLM route, so an ``openrouter/<id>`` model and an
+    OpenRouter-native id sent to an ``openrouter.ai`` base URL agree.
     """
-    model = llm.model or ""
-    base_url = llm.base_url or ""
-    if model.startswith("openrouter/"):
-        return model[len("openrouter/") :]
-    if "openrouter.ai" in base_url and "/" in model:
-        return model
+    model = litellm_call_kwargs(llm.model, llm.base_url)["model"]
+    if model.startswith(OPENROUTER_PROVIDER_PREFIX):
+        return model.removeprefix(OPENROUTER_PROVIDER_PREFIX)
     return None
 
 

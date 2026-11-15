@@ -217,13 +217,16 @@ def _load_public_skill_names(
 
 
 def _load_llm(stores: LaunchStores, name: str) -> LLM | None:
-    from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+    from openhands.sdk.llm.provider_connection_store import (
+        ProviderConnectionModelConflict,
+        ProviderConnectionNotFound,
+    )
 
     try:
         return stores.llm_profiles.load(name, cipher=stores.cipher)
     except FileNotFoundError:
         return None
-    except ProviderConnectionNotFound as exc:
+    except (ProviderConnectionNotFound, ProviderConnectionModelConflict) as exc:
         raise AgentLaunchError(f"LLM profile {name!r}: {exc}") from exc
     except TimeoutError as exc:
         raise LaunchStoreError("LLM profile store is busy", retryable=True) from exc

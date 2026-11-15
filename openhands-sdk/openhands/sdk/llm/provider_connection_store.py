@@ -16,6 +16,24 @@ into a runnable :class:`~openhands.sdk.llm.llm.LLM` — named-profile activation
 The credential is encrypted at rest with the same cipher machinery LLM profiles
 use, so the connection file never holds a plaintext key when ``OH_SECRET_KEY``
 is configured.
+
+A connection's ``provider`` also decides routing when it names a provider the
+SDK recognizes (see :meth:`ProviderConnection.route_model`). For a profile
+linked to a connection, precedence is:
+
+1. A recognized connection ``provider`` (currently ``openrouter``). The
+   profile's model is read as that provider's own model id and qualified for
+   LiteLLM (``thinkingmachines/inkling-small:free`` ->
+   ``openrouter/thinkingmachines/inkling-small:free``). An id that already
+   carries the prefix is kept. The connection's ``base_url`` may be a proxy;
+   the host is not consulted.
+2. Any other label (``custom``, ``anthropic``, or any free-text value saved
+   before this rule existed) leaves the model as stored, so routing follows
+   the model's own LiteLLM prefix and then the endpoint, exactly as before.
+
+A model whose prefix names an SDK route that is not the connection's provider
+(for example ``openhands/...`` under an OpenRouter connection) is rejected with
+:class:`ProviderConnectionModelConflict` rather than routed elsewhere.
 """
 
 from __future__ import annotations
@@ -23,7 +41,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -40,6 +58,12 @@ from pydantic import (
 )
 
 from openhands.sdk.errors import Invalid, LockTimeout, Unprocessable
+from openhands.sdk.llm.utils.openhands_provider import (
+    DIGITALOCEAN_PROVIDER_PREFIX,
+    LITELLM_PROXY_PREFIX,
+    OPENHANDS_PROVIDER_PREFIX,
+    OPENROUTER_PROVIDER_PREFIX,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret, serialize_secret
 
@@ -84,6 +108,40 @@ class ProviderConnectionNotFound(Unprocessable):
     dangling reference, since deleting a referenced connection is blocked while
     any profile points at it.
     """
+
+
+class ProviderConnectionModelConflict(Unprocessable):
+    """A linked profile's model names a route other than its connection's.
+
+    Like :class:`ProviderConnectionNotFound`, an ``Unprocessable`` (422 in the
+    agent server, ``ValueError`` for generic handlers).
+    """
+
+
+# Prefixes that select an SDK or LiteLLM-proxy route rather than an OpenRouter
+# vendor namespace, so an OpenRouter connection cannot honour them.
+_NON_OPENROUTER_ROUTE_PREFIXES: Final[tuple[str, ...]] = (
+    OPENHANDS_PROVIDER_PREFIX,
+    DIGITALOCEAN_PROVIDER_PREFIX,
+    LITELLM_PROXY_PREFIX,
+)
+
+
+def _route_openrouter_model(model: str) -> str | None:
+    if model.startswith(OPENROUTER_PROVIDER_PREFIX):
+        return model
+    if model.startswith(_NON_OPENROUTER_ROUTE_PREFIXES):
+        return None
+    # OpenRouter ids are namespaced by upstream vendor (``anthropic/...``), so a
+    # vendor prefix here is part of the id, not a request to bypass OpenRouter.
+    return f"{OPENROUTER_PROVIDER_PREFIX}{model}"
+
+
+# Recognized connection providers -> model router. A router returns the
+# LiteLLM model id for the provider, or ``None`` when the model conflicts.
+_MODEL_ROUTERS: Final[dict[str, Callable[[str], str | None]]] = {
+    "openrouter": _route_openrouter_model,
+}
 
 
 class ProviderConnection(BaseModel):
@@ -139,6 +197,29 @@ class ProviderConnection(BaseModel):
             return None
         value = self.api_key.get_secret_value()
         return value if value.strip() else None
+
+    def route_model(self, model: str) -> str:
+        """Return the LiteLLM model id that sends ``model`` through this connection.
+
+        Idempotent. Unrecognized providers return ``model`` unchanged; see the
+        module docstring for the precedence rules.
+
+        Raises:
+            ProviderConnectionModelConflict: If ``model`` selects a route this
+                connection's provider cannot serve.
+        """
+        router = _MODEL_ROUTERS.get(self.provider.strip().lower())
+        if router is None:
+            return model
+        routed = router(model)
+        if routed is None:
+            raise ProviderConnectionModelConflict(
+                f"Model {model!r} selects a different route than provider "
+                f"connection {self.id!r} (provider {self.provider!r}). Enter the "
+                f"model id as {self.provider} lists it, or link the profile to a "
+                "connection for that route."
+            )
+        return routed
 
 
 class PersistedProviderConnections(BaseModel):
