@@ -1,11 +1,14 @@
 import os
 import shlex
 import time
+import uuid
 
+import libtmux
 import libtmux.common
 import pytest
 
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+from openhands.tools.terminal.terminal.tmux_terminal import run_tmux_commands
 
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
@@ -80,3 +83,22 @@ def test_pool_shells_see_tricky_values(tmp_path):
         if name != "E_TRAILING_SEMICOLON":
             assert seen[name] == value
     assert "E_TRAILING_SEMICOLON" in seen
+
+
+def test_batches_are_sized_in_utf8_bytes():
+    server = libtmux.Server(socket_name=f"batch-test-{uuid.uuid4().hex[:8]}")
+    session = server.new_session(window_command="sleep 60")
+    # 2,500 characters but 7,500 bytes each: together under 8,000 characters
+    # but over tmux's ~16 KiB message limit.
+    values = {f"WIDE_{i}": "€" * 2500 for i in range(3)}
+    target = str(session.session_id)
+    try:
+        run_tmux_commands(
+            server,
+            [["set-environment", "-t", target, k, v] for k, v in values.items()],
+        )
+        environment = session.show_environment()
+    finally:
+        server.kill()
+
+    assert {name: environment[name] for name in values} == values
