@@ -7,6 +7,7 @@ tools within the parent's.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
@@ -93,7 +94,12 @@ def inherit_mcp_config[AgentT: AgentBase](
             ", ".join(sorted(declared)),
             ", ".join(sorted(parent.mcp_config)) or "none",
         )
-    return sub_agent.model_copy(update={"mcp_config": dict(parent.mcp_config)})
+    from openhands.sdk.agent.agent import Agent
+
+    updates: dict[str, object] = {"mcp_config": dict(parent.mcp_config)}
+    if isinstance(parent, Agent) and isinstance(sub_agent, Agent):
+        updates["mcp_tool_policy"] = copy.deepcopy(parent.mcp_tool_policy)
+    return sub_agent.model_copy(update=updates)
 
 
 def scope_delegation_tools(tools: Sequence[Tool], scope: SubAgentScope) -> list[Tool]:

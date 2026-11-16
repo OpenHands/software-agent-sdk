@@ -24,6 +24,15 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillObservation,
     InvokeSkillTool,
 )
+from openhands.sdk.tool.builtins.mcp_gateway import (
+    CallMCPToolAction,
+    CallMCPToolExecutor,
+    CallMCPToolTool,
+    ListMCPToolsAction,
+    ListMCPToolsExecutor,
+    ListMCPToolsTool,
+    MCPGatewayObservation,
+)
 from openhands.sdk.tool.builtins.switch_llm import (
     SwitchLLMAction,
     SwitchLLMExecutor,
@@ -61,6 +70,8 @@ BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
     ThinkTool.__name__: ThinkTool,
     InvokeSkillTool.__name__: InvokeSkillTool,
+    ListMCPToolsTool.__name__: ListMCPToolsTool,
+    CallMCPToolTool.__name__: CallMCPToolTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
     ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
@@ -95,6 +106,13 @@ __all__ = [
     "InvokeSkillAction",
     "InvokeSkillObservation",
     "InvokeSkillExecutor",
+    "ListMCPToolsTool",
+    "ListMCPToolsAction",
+    "ListMCPToolsExecutor",
+    "CallMCPToolTool",
+    "CallMCPToolAction",
+    "CallMCPToolExecutor",
+    "MCPGatewayObservation",
     "SwitchLLMTool",
     "SwitchLLMAction",
     "SwitchLLMObservation",

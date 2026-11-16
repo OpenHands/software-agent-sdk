@@ -54,6 +54,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     drop_mcp_servers_without_endpoint,
 )
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
@@ -1628,6 +1629,10 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    mcp_tool_policy: dict[str, MCPToolPolicy] = Field(
+        default_factory=dict,
+        description="Per-server MCP tool include/exclude rules for gateway mode.",
+    )
     persona: str | None = Field(
         default=None,
         min_length=1,
@@ -1739,6 +1744,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             llm=llm,
             tools=tools,
             mcp_config=self.mcp_config,
+            mcp_tool_policy=self.mcp_tool_policy,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
             persona=self.persona,

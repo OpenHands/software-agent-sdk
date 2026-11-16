@@ -25,6 +25,7 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.settings.model import (
     ACPServerKind,
     AgentKind,
@@ -200,6 +201,13 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "Name of the saved LLM profile to resolve for this agent. The "
             "profile itself stores no LLM credential — it lives on the "
             "referenced LLM profile."
+        ),
+    )
+    mcp_tool_policy: dict[str, MCPToolPolicy] = Field(
+        default_factory=dict,
+        description=(
+            "Per-server MCP tool names to include or exclude. Unlisted servers "
+            "expose all their tools; include=[] exposes none. Denials take precedence."
         ),
     )
     agent: str = Field(

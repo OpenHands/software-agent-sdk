@@ -20,6 +20,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.tool_policy import MCPToolPolicy
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
@@ -61,6 +62,22 @@ class RecordingLLM(TestLLM):
                 ],
             }
         )
+        next_response = self._scripted_responses[0]
+        if (
+            isinstance(next_response, Message)
+            and next_response.tool_calls
+            and next_response.tool_calls[0].name == "call_mcp_tool"
+        ):
+            call = next_response.tool_calls[0]
+            arguments = json.loads(call.arguments)
+            arguments["revision"] = _catalog(self._requests[-1])["revision"]
+            self._scripted_responses[0] = next_response.model_copy(
+                update={
+                    "tool_calls": [
+                        call.model_copy(update={"arguments": json.dumps(arguments)})
+                    ]
+                }
+            )
         return super().completion(
             messages,
             tools=tools,
@@ -108,6 +125,22 @@ def _call(tool: str, **arguments: Any) -> Message:
     )
 
 
+def _mcp_call(name: str, **arguments: Any) -> Message:
+    return _call("call_mcp_tool", name=name, arguments=arguments, revision="")
+
+
+def _catalog(request: dict[str, list[str]]) -> dict[str, Any]:
+    for result in reversed(request["tool_results"]):
+        if result.startswith('{"revision":'):
+            return json.loads(result)
+    raise AssertionError("The agent must list MCP tools before calling one")
+
+
+def _assert_catalog(request: dict[str, list[str]], names: set[str]) -> None:
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(request["tools"])
+    assert {tool["name"] for tool in _catalog(request)["tools"]} == names
+
+
 def _done() -> Message:
     return Message(role="assistant", content=[TextContent(text="done")])
 
@@ -140,12 +173,18 @@ def _run(
     llm: RecordingLLM,
     tools: list[Tool],
     mcp_config: dict[str, MCPServer],
+    mcp_tool_policy: dict[str, MCPToolPolicy] | None = None,
     **conversation_kwargs: Any,
 ) -> LocalConversation:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     conversation = LocalConversation(
-        agent=Agent(llm=llm, tools=tools, mcp_config=mcp_config),
+        agent=Agent(
+            llm=llm,
+            tools=tools,
+            mcp_config=mcp_config,
+            mcp_tool_policy=mcp_tool_policy or {},
+        ),
         workspace=str(workspace),
         visualizer=None,
         **conversation_kwargs,
@@ -176,17 +215,56 @@ def test_a_sub_agent_uses_exactly_the_parent_mcp_tools(
     tmp_path: Path, delegation_tool: str, delegate: Message
 ) -> None:
     _register_declarer(tmp_path)
-    llm = _llm([delegate, _call("echo", text="hi"), _done(), _done()])
+    llm = _llm(
+        [
+            delegate,
+            _call("list_mcp_tools"),
+            _mcp_call("parent.echo", text="hi"),
+            _done(),
+            _call("list_mcp_tools"),
+            _done(),
+        ]
+    )
     parent_mcp = {"parent": _server("echo", env={"MCP_TOKEN": SecretStr(TOKEN)})}
 
     _run(tmp_path, llm, [Tool(name=delegation_tool)], parent_mcp)
 
-    parent, child, child_after_call, parent_after = llm.requests
-    assert "echo" in parent["tools"]
-    assert "echo" in child["tools"]
-    assert not {"rogue_extra", "rogue_same_name"} & set(child["tools"])
+    parent, child, child_listing, child_after_call, parent_after, parent_listing = (
+        llm.requests
+    )
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(parent["tools"])
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(child["tools"])
+    _assert_catalog(child_listing, {"parent.echo"})
     assert f"echo:hi:token={TOKEN}" in child_after_call["tool_results"]
-    assert "echo" in parent_after["tools"]
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(parent_after["tools"])
+    _assert_catalog(parent_listing, {"parent.echo"})
+    _assert_no_rogue_server_started(tmp_path)
+
+
+def test_a_sub_agent_cannot_see_tools_denied_by_its_parent_policy(
+    tmp_path: Path,
+) -> None:
+    _register_declarer(tmp_path)
+    llm = _llm(
+        [
+            _call("task", prompt="go", subagent_type="declarer"),
+            _call("list_mcp_tools"),
+            _done(),
+            _call("list_mcp_tools"),
+            _done(),
+        ]
+    )
+    _run(
+        tmp_path,
+        llm,
+        [Tool(name=TaskToolSet.name)],
+        {"parent": _server("echo")},
+        mcp_tool_policy={"parent": MCPToolPolicy(include=[])},
+    )
+
+    _, _, child_listing, _, parent_listing = llm.requests
+    _assert_catalog(child_listing, set())
+    _assert_catalog(parent_listing, set())
     _assert_no_rogue_server_started(tmp_path)
 
 
@@ -194,7 +272,7 @@ def test_a_delegate_tool_sub_agent_uses_exactly_the_parent_mcp_tools(
     tmp_path: Path,
 ) -> None:
     _register_declarer(tmp_path)
-    llm = _llm([_call("echo", text="hi"), _done()])
+    llm = _llm([_call("list_mcp_tools"), _mcp_call("parent.echo", text="hi"), _done()])
     parent_mcp = {"parent": _server("echo", env={"MCP_TOKEN": SecretStr(TOKEN)})}
     parent = LocalConversation(
         agent=Agent(llm=llm, mcp_config=parent_mcp),
@@ -210,9 +288,9 @@ def test_a_delegate_tool_sub_agent_uses_exactly_the_parent_mcp_tools(
     executor.close()
     parent.close()
 
-    child, child_after_call = llm.requests
-    assert "echo" in child["tools"]
-    assert not {"rogue_extra", "rogue_same_name"} & set(child["tools"])
+    child, child_listing, child_after_call = llm.requests
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(child["tools"])
+    _assert_catalog(child_listing, {"parent.echo"})
     assert f"echo:hi:token={TOKEN}" in child_after_call["tool_results"]
     _assert_no_rogue_server_started(tmp_path)
 
@@ -222,8 +300,10 @@ def test_a_grandchild_inherits_the_same_mcp_tools(tmp_path: Path) -> None:
     llm = _llm(
         [
             _call("task", prompt="delegate", subagent_type="declarer"),
+            _call("list_mcp_tools"),
             _call("task", prompt="call echo", subagent_type="declarer"),
-            _call("echo", text="deep"),
+            _call("list_mcp_tools"),
+            _mcp_call("parent.echo", text="deep"),
             _done(),
             _done(),
             _done(),
@@ -233,10 +313,12 @@ def test_a_grandchild_inherits_the_same_mcp_tools(tmp_path: Path) -> None:
 
     _run(tmp_path, llm, [Tool(name=TaskToolSet.name)], parent_mcp)
 
-    child, grandchild = llm.requests[1], llm.requests[2]
-    assert "echo" in child["tools"] and "task" in child["tools"]
-    assert "echo" in grandchild["tools"]
-    assert f"echo:deep:token={TOKEN}" in llm.requests[3]["tool_results"]
+    child, grandchild = llm.requests[1], llm.requests[3]
+    assert "task" in child["tools"]
+    _assert_catalog(llm.requests[2], {"parent.echo"})
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(grandchild["tools"])
+    _assert_catalog(llm.requests[4], {"parent.echo"})
+    assert f"echo:deep:token={TOKEN}" in llm.requests[5]["tool_results"]
     _assert_no_rogue_server_started(tmp_path)
 
 
@@ -262,7 +344,8 @@ def test_a_resumed_sub_agent_keeps_the_parent_mcp_tools(tmp_path: Path) -> None:
             _call(
                 "task", prompt="again", subagent_type="declarer", resume="task_00000001"
             ),
-            _call("echo", text="resumed"),
+            _call("list_mcp_tools"),
+            _mcp_call("parent.echo", text="resumed"),
             _done(),
             _done(),
         ]
@@ -278,8 +361,9 @@ def test_a_resumed_sub_agent_keeps_the_parent_mcp_tools(tmp_path: Path) -> None:
     )
 
     resumed = llm.requests[3]
-    assert "echo" in resumed["tools"]
-    assert f"echo:resumed:token={TOKEN}" in llm.requests[4]["tool_results"]
+    assert {"list_mcp_tools", "call_mcp_tool"} <= set(resumed["tools"])
+    _assert_catalog(llm.requests[4], {"parent.echo"})
+    assert f"echo:resumed:token={TOKEN}" in llm.requests[5]["tool_results"]
     _assert_no_rogue_server_started(tmp_path)
     states = list((tmp_path / "persist").rglob("base_state.json"))
     assert len(states) == 2
@@ -315,8 +399,10 @@ def test_a_sub_agent_inherits_plugin_mcp_servers_with_their_secrets(
     )
     llm = _llm(
         [
+            _call("list_mcp_tools"),
             _call("task", prompt="go", subagent_type="declarer"),
-            _call("plugin_plugged", text="hi"),
+            _call("list_mcp_tools"),
+            _mcp_call("plugin.plugged", text="hi"),
             _done(),
             _done(),
         ]
@@ -331,9 +417,8 @@ def test_a_sub_agent_inherits_plugin_mcp_servers_with_their_secrets(
         secrets={"MCP_TOKEN": TOKEN},
     )
 
-    parent, child = llm.requests[0], llm.requests[1]
-    mcp_tools = {"parent_echo", "plugin_plugged"}
-    assert mcp_tools <= set(parent["tools"])
-    assert mcp_tools <= set(child["tools"])
-    assert "plugged:hi:token=<secret-hidden>" in llm.requests[2]["tool_results"]
+    mcp_tools = {"parent.echo", "plugin.plugged"}
+    _assert_catalog(llm.requests[1], mcp_tools)
+    _assert_catalog(llm.requests[3], mcp_tools)
+    assert "plugged:hi:token=<secret-hidden>" in llm.requests[4]["tool_results"]
     _assert_no_rogue_server_started(tmp_path)

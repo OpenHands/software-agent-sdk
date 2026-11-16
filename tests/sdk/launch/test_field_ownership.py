@@ -117,6 +117,7 @@ OPENHANDS_FIELDS: dict[str, Any] = {
     "tool_concurrency_limit": PROFILE,
     "persona": PROFILE,
     "mcp_config": Reference("mcp_server_refs"),
+    "mcp_tool_policy": PROFILE,
     "agent_context": Nested(OPENHANDS_CONTEXT),
     "condenser": PROFILE,
     "verification": Nested(
@@ -239,6 +240,7 @@ def _non_default_openhands_profile() -> OpenHandsAgentProfile:
         llm_profile_ref="default",
         agent="PlanningAgent",
         tools=[Tool(name="terminal")],
+        mcp_tool_policy={"srv": {"include": ["get"]}},
         persona="persona",
         system_message_suffix="suffix",
         disabled_skills=["beta"],

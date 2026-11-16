@@ -265,6 +265,7 @@ def test_runtime_mcp_tools_apply_filter_tools_regex(tmp_path):
     agent = _make_agent(
         filter_tools_regex=r"^allowed$",
         mcp_config={"fake": {"command": "true", "args": []}},
+        mcp_gateway=False,
     )
     conversation = LocalConversation(
         agent=agent,
