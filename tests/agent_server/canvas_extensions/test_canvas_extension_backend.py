@@ -969,6 +969,7 @@ def test_backend_http_lifecycle_and_data_deletion(
         assert not (manager.data_dir / "my-extension").exists()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_revision_bound_store_secret_lifecycle(tmp_path: Path, monkeypatch):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
@@ -1064,6 +1065,7 @@ async def test_backend_redacts_split_process_output(tmp_path: Path):
     assert "prefix" in logs and "suffix" in logs
 
 
+@requires_linux_backend
 def test_secret_grant_api_requires_exact_names_and_revokes(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
     path = source / MANIFEST_FILENAME
@@ -1154,6 +1156,7 @@ def test_backend_rejects_reserved_or_duplicate_secret_refs(tmp_path: Path, refs)
         CanvasExtensionBackend.model_validate(backend)
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 @pytest.mark.parametrize("needs_secret", [False, True])
 async def test_enable_orchestrates_backend_and_retains_revision_consent(

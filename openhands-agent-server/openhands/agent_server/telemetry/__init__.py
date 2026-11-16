@@ -3,7 +3,7 @@
 This is **product analytics**, and is distinct from two other things in this
 repository that are easy to confuse it with:
 
-* **LLM completion logging** (``LLM.log_completions``) writes full prompts and
+* **LLM completion logging** (``LLM.log_completions_to_file``) writes full prompts and
   responses to disk for debugging. It is high-fidelity and privacy-sensitive by
   design, and nothing it produces is ever forwarded here.
 * **Laminar / OpenTelemetry tracing**
