@@ -75,6 +75,18 @@ def _finish(text: str) -> ActionEvent:
     )
 
 
+def _finished(answer: ActionEvent) -> ObservationEvent:
+    """The result that tells ``finish`` ran; until then it is not a message."""
+    from openhands.sdk.tool.builtins.finish import FinishObservation
+
+    return ObservationEvent(
+        observation=FinishObservation.from_text(""),
+        action_id=answer.id,
+        tool_name="finish",
+        tool_call_id=answer.tool_call_id,
+    )
+
+
 # The event and its helpers
 
 
@@ -91,9 +103,20 @@ def test_an_edit_replaces_text_in_the_agents_message():
 def test_the_agents_finish_can_be_edited():
     answer = _finish(f"Done. {QUESTION}")
 
-    edit = find_edit([answer], QUESTION, STRUCK)
+    edit = find_edit([answer, _finished(answer)], QUESTION, STRUCK)
 
     assert edit.target_event_id == answer.id
+
+
+def test_a_finish_in_the_response_being_run_is_not_an_earlier_message():
+    question = _message("agent", QUESTION)
+    # Same response: edit the question and finish quoting it. The finish has
+    # no result yet, so the edit is not ambiguous and cannot target it.
+    pending = _finish(f"Answered: {QUESTION}")
+
+    edit = find_edit([question, pending], QUESTION, STRUCK)
+
+    assert edit.target_event_id == question.id
 
 
 def test_user_messages_are_not_edited():

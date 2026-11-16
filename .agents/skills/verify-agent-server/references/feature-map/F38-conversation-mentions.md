@@ -13,7 +13,8 @@ OpenHands-agent conversation gets two read-only tools without naming them:
 every query word, newest activity first, each as a mention with its status and
 last activity; the conversation itself is left out) and `read_conversation`
 (the latest messages and `finish` texts of a conversation named by a mention or
-an id, oldest first, without tool calls). Both carry the same system-prompt
+an id, oldest first, without tool calls; an agent message edited with
+`edit_message` (F39) reads as its latest edit, marked `edited`). Both carry the same system-prompt
 guidance: when the agent refers to another conversation it writes its mention.
 The tools read this server's own REST API (`GET /api/conversations/search`,
 `GET /api/conversations/{id}`, `GET /api/conversations/{id}/events/search`)

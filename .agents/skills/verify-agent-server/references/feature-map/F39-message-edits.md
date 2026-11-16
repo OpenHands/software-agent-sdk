@@ -76,17 +76,21 @@ Preconditions:
   control-agent-server llm preset deepseek
   EC=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server conversation send "$EC" --wait --timeout 300 --text 'QA_F39_TOOL I need a port for the demo server. Ask me which port to use, in one short question, and wait for my answer.'
+  ASK=$(control-agent-server api GET "/api/conversations/$EC/events/search" --query kind=MessageEvent \
+    --query source=agent --query sort_order=TIMESTAMP_DESC --query limit=1 --field items.0.id)
+  ASKED=$(control-agent-server api GET "/api/conversations/$EC/events/$ASK" --field llm_message.content.0.text)
   control-agent-server conversation send "$EC" --wait --timeout 300 --text 'Use 8080. Your question is answered now, so edit it the way the edit_message tool describes, then reply ok.'
   control-agent-server api GET "/api/conversations/$EC/events/search" --query kind=MessageEditEvent \
-    --check items len-eq 1 --check items.0.source eq agent --check items.0.text contains '~~' \
-    --check items.0.text contains '[Edit:' --save F39.tool/edit
-  TARGET=$(control-agent-server api GET "/api/conversations/$EC/events/search" --query kind=MessageEditEvent --field items.0.target_event_id)
-  control-agent-server api GET "/api/conversations/$EC/events/$TARGET" --check source eq agent \
-    --save F39.tool/message-unchanged
+    --check items len-eq 1 --check items.0.source eq agent --check items.0.target_event_id eq "$ASK" \
+    --check items.0.text contains '~~' --check items.0.text contains '[Edit:' --save F39.tool/edit
+  control-agent-server api GET "/api/conversations/$EC/events/$ASK" \
+    --check llm_message.content.0.text eq "$ASKED" --save F39.tool/message-unchanged
   ```
-  The target is the agent's question (an agent `MessageEvent`, or its
-  `finish` when it asked that way), and its stored text has no `~~`: the edit
-  lives only in the new event.
+  The edit targets the agent's question, captured before the answer, and the
+  question's stored text is exactly what it was: the edit lives only in the
+  new event. deepseek asks with a plain message; if a model asks through its
+  `finish` instead, `ASK` is that `finish` `ActionEvent` (read `kind=ActionEvent`
+  and compare `action.message`).
 - **What the model sees (`F39.agent-sees`, `F39.miss`).** The prompt is
   observable only at the provider, so an `llm-stub` records it: the stub asks
   a question, then on the next turn edits a sentence it never wrote (a miss),

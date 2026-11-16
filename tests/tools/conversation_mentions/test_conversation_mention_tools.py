@@ -196,6 +196,35 @@ def test_read_gives_messages_and_finish_oldest_first():
     ]
 
 
+def test_read_shows_the_agents_messages_as_edited():
+    from openhands.sdk.event import MessageEditEvent
+
+    def edit(target: dict[str, Any], text: str) -> dict[str, Any]:
+        return MessageEditEvent(target_event_id=target["id"], text=text).model_dump(
+            mode="json"
+        )
+
+    # Created in order, so their timestamps are in order too.
+    events = [question := _message("agent", "Which port should I use?")]
+    events.append(_message("user", "8080"))
+    events.append(edit(question, "~~Which port should I use?~~ [Edit: 8080.]"))
+    events.append(answer := _finish("Using port 8080."))
+    events.append(_message("user", "8080 is taken, use 9090"))
+    events.append(edit(answer, "~~Using port 8080.~~ [Edit: 9090.]"))
+    events.append(edit(answer, "~~Using port 8080.~~ [Edit: 9090, 8080 is taken.]"))
+    executor, cid, _ = _read("Port", list(reversed(events)))
+
+    result = executor(ReadConversationAction(conversation=str(cid)))
+
+    body = result.text.split("\n\n", 1)[1].split("\n\n")
+    assert body == [
+        "[agent, edited] ~~Which port should I use?~~ [Edit: 8080.]",
+        "[the user] 8080",
+        "[agent (finish), edited] ~~Using port 8080.~~ [Edit: 9090, 8080 is taken.]",
+        "[the user] 8080 is taken, use 9090",
+    ]
+
+
 def test_read_keeps_the_latest_messages_within_the_limit():
     events = [_message("user", f"message {i}") for i in range(5)]
     executor, cid, _ = _read("T", events)
