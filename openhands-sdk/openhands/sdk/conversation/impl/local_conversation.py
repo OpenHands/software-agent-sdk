@@ -2419,7 +2419,7 @@ class LocalConversation(BaseConversation):
                 source="user",
             )
             ending, clipped = reaction_target_text(
-                message_text(self._state.active_branch(), target)
+                message_text(self._state.walk_back(until=target.id), target)
             )
             event = ReactionEvent(
                 source="user",

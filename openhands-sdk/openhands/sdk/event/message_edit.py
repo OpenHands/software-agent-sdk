@@ -5,7 +5,7 @@ event that names the message and carries its full new text. Clients show the
 latest edit in place of the message's text, marked as edited.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from pydantic import Field, field_validator
 from rich.text import Text
@@ -62,14 +62,14 @@ def is_editable(event: Event) -> bool:
     return is_reactable(event) and event.source == "agent"
 
 
-def message_text(events: Sequence[Event], message: Event) -> str:
+def message_text(newest_first: Iterable[Event], message: Event) -> str:
     """A message's text as the user sees it: after its latest edit, if any.
 
-    ``events`` is the conversation's active branch, with ``message`` on it.
-    An edit always comes after its message, so the scan walks back from the
-    end only as far as the message itself.
+    ``newest_first`` is the conversation's active branch from the end back
+    (``state.walk_back(until=message.id)``), with ``message`` on it. An edit
+    always comes after its message, so the scan stops at the message itself.
     """
-    for event in reversed(events):
+    for event in newest_first:
         if event.id == message.id:
             break
         if isinstance(event, MessageEditEvent) and event.target_event_id == message.id:
