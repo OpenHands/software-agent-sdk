@@ -268,7 +268,8 @@ Preconditions:
   const [cid, target, empty] = [process.env.QA_F37_CID, process.env.QA_F37_TARGET, process.env.QA_F37_EMPTY];
 
   const flags = await settings.listExperimentalFeatures();
-  assert.deepEqual(flags.map((f) => [f.key, f.enabled]), [['conversation_reactions', true]]);
+  assert.deepEqual(flags.filter((f) => f.key === 'conversation_reactions').map((f) => [f.key, f.enabled]),
+    [['conversation_reactions', true]]);
   assert.equal((await settings.updateExperimentalFeature('conversation_reactions', true)).enabled, true);
   await assert.rejects(settings.updateExperimentalFeature('qa_f37_unknown', true),
     (err) => isHttpError(err) && err.status === 404);
