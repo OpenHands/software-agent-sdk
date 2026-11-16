@@ -70,7 +70,6 @@ export {
   isCondensationEvent,
   isHookExecutionEvent,
   isReactionEvent,
-  isMessageEditEvent,
   isAskUserAnswerEvent,
   isMessageEditEvent,
 } from './events/types';
@@ -104,7 +103,6 @@ export type {
   ThinkEvent,
   ReactionEmoji,
   ReactionEvent,
-  MessageEditEvent,
   AskUserAction,
   AskUserObservation,
   AskUserAnswerEvent,
