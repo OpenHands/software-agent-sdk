@@ -161,20 +161,18 @@ MCP_STARTUP_DELAY_S = 3.0
 
 REPORT_ROWS = [
     ("default", "create_s", False, "Create conversation (warm)"),
-    (
-        "default",
-        "first_agent_event_s",
-        False,
-        "Create → first agent event on a new socket (warm)",
-    ),
+    ("default", "first_agent_event_s", False, "↳ first agent event"),
     ("default", "create_s", True, "First create right after server start"),
+    ("default", "first_agent_event_s", True, "↳ first agent event"),
     ("pause", "create_s", True, f"First create {PAUSE_S:g} s after server start"),
+    ("pause", "first_agent_event_s", True, "↳ first agent event"),
     (
         "worktree",
         "create_s",
         False,
         f"Create in a new git worktree (warm, {FETCH_DELAY_S:g} s `git fetch`)",
     ),
+    ("worktree", "first_agent_event_s", False, "↳ first agent event"),
     (
         "worktree",
         "max_alive_s",
@@ -187,6 +185,7 @@ REPORT_ROWS = [
         False,
         f"Create with one stdio MCP server (warm, {MCP_STARTUP_DELAY_S:g} s startup)",
     ),
+    ("mcp", "first_agent_event_s", False, "↳ first agent event"),
     ("default", "max_alive_s", False, "Creates that stalled the server > 20 ms"),
 ]
 
@@ -536,9 +535,11 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
             f"took over {STALL_THRESHOLD_S * 1000:g} ms; stall rows are flagged when "
             "the share of stalled creates moves by at least 20 points with a "
             "Fisher exact p below 0.01. The first-create rows have one sample per "
-            "server start, so they are flagged only on a clear change. The "
-            "first-event row opens the socket after the create returns, as Agent "
-            "Canvas does, so it includes the connect and replay. Runner: "
+            "server start, so they are flagged only on a clear change. A "
+            '"↳ first agent event" row times the create above it until the '
+            "agent's first event arrives on a socket opened after the create "
+            "returns, as Agent Canvas does, so it includes the connect and replay. "
+            "Runner: "
             f"`{meta['runner']}`, {meta['env_vars']} environment "
             "variables. Run it locally with `python scripts/agent_server_benchmarks/"
             "conversation_start.py --help`.",
