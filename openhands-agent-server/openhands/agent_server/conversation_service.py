@@ -793,6 +793,7 @@ class ConversationService:
         default_factory=dict, init=False
     )
     _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _worktree_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _lifecycle_condition: asyncio.Condition = field(
         default_factory=asyncio.Condition, init=False
     )
@@ -1738,6 +1739,13 @@ class ConversationService:
             )
         return conversation_info, False
 
+    async def _run_worktree_git[**P, T](
+        self, fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """Run a blocking worktree git step off the event loop, one at a time."""
+        async with self._worktree_lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
     async def start_conversation(
         self, request: StartConversationRequest, *, gateway_run: bool = False
     ) -> tuple[ConversationInfo, bool]:
@@ -1875,7 +1883,8 @@ class ConversationService:
         )
 
         worktree = (
-            _plan_conversation_worktree(
+            await self._run_worktree_git(
+                _plan_conversation_worktree,
                 request.workspace,
                 conversation_id,
                 self.conversation_worktree_root,
@@ -1919,7 +1928,7 @@ class ConversationService:
                 f"import: {', '.join(missing_tools)}"
             )
         workspace = (
-            _create_conversation_worktree(worktree)
+            await self._run_worktree_git(_create_conversation_worktree, worktree)
             if worktree is not None
             else request.workspace
         )
@@ -2896,7 +2905,8 @@ class ConversationService:
         # the parent workspace has a usable git base commit; otherwise
         # the child shares it.
         worktree = (
-            _plan_conversation_worktree(
+            await self._run_worktree_git(
+                _plan_conversation_worktree,
                 parent_stored.workspace,
                 child_id,
                 self.conversation_worktree_root,
@@ -2921,7 +2931,7 @@ class ConversationService:
             )
         )
         workspace = (
-            _create_conversation_worktree(worktree)
+            await self._run_worktree_git(_create_conversation_worktree, worktree)
             if worktree is not None
             else parent_stored.workspace
         )

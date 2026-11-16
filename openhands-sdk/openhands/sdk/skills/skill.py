@@ -1222,6 +1222,7 @@ _PUBLIC_SKILLS_CACHE: dict[
 ] = {}
 _PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
 _PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
+_PUBLIC_SKILLS_LOAD_LOCK = threading.Lock()
 
 
 def _invalidate_public_skills_cache() -> None:
@@ -1346,7 +1347,18 @@ def load_public_skills(
     if repo_url == PUBLIC_SKILLS_REPO and not public_skills_enabled():
         logger.info("Public skills are disabled by %s", PUBLIC_SKILLS_ENABLED_ENV)
         return []
+    if _local_public_skills_path(repo_url) is None:
+        return _load_public_skills(repo_url, ref, marketplace_path)
+    # A local copy is parsed once at a time, so a caller racing the startup
+    # warm-up reads its cache instead of parsing again. Clones are not
+    # serialized: a slow or failing one must not hold up other callers.
+    with _PUBLIC_SKILLS_LOAD_LOCK:
+        return _load_public_skills(repo_url, ref, marketplace_path)
 
+
+def _load_public_skills(
+    repo_url: str, ref: str, marketplace_path: str | None
+) -> list[Skill]:
     local_path = _local_public_skills_path(repo_url)
     cache_key = (str(local_path or repo_url), ref, marketplace_path)
     with _PUBLIC_SKILLS_CACHE_LOCK:

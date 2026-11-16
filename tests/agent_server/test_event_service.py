@@ -4036,6 +4036,63 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
+    tmp_path: Path,
+) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored, agent=_sample_agent(), conversations_dir=tmp_path
+    )
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_check = EventService._prepare_workspace_dir
+
+    def recording_check(working_dir: Path) -> None:
+        threads.append(threading.get_ident())
+        real_check(working_dir)
+
+    with (
+        patch(
+            "openhands.agent_server.event_service.LocalConversation",
+            return_value=_make_mock_conv(),
+        ),
+        patch.object(
+            EventService,
+            "_prepare_workspace_dir",
+            staticmethod(recording_check),
+        ),
+    ):
+        await service.start()
+
+    assert len(threads) == 1
+    assert threads[0] != loop_thread
+
+
+def test_concurrent_repo_checks_on_a_new_directory_all_succeed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    directories = [tmp_path / f"workspace-{i}" for i in range(10)]
+    for directory in directories:
+        directory.mkdir()
+
+    def check_all(barrier: threading.Barrier) -> None:
+        barrier.wait()
+        for directory in directories:
+            EventService._prepare_workspace_dir(directory)
+
+    barrier = threading.Barrier(8)
+    workers = [threading.Thread(target=check_all, args=(barrier,)) for _ in range(8)]
+    with caplog.at_level(logging.WARNING):
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+    assert "Failed to initialize git repository" not in caplog.text
+    assert all((directory / ".git").is_dir() for directory in directories)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("condenser", "message"),
     [
