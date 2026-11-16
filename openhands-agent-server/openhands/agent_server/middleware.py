@@ -25,12 +25,6 @@ _WORKSPACE_SESSION_PATH = "/api/auth/workspace-session"
 _WORKSPACE_STATIC_RE = re.compile(r"^/api/conversations/[^/]+/workspace(/|$)")
 
 
-def _is_workspace_cookie_path(path: str) -> bool:
-    if path == _WORKSPACE_SESSION_PATH:
-        return True
-    return bool(_WORKSPACE_STATIC_RE.match(path))
-
-
 class LocalhostCORSMiddleware(CORSMiddleware):
     """``CORSMiddleware`` that always allows localhost and ``DOCKER_HOST_ADDR``."""
 
@@ -103,7 +97,9 @@ class CORSDispatcher:
             root_path = scope.get("root_path", "")
             path = scope.get("path", "/")
             route_path = path.removeprefix(root_path) if root_path else path
-            if _is_workspace_cookie_path(route_path or "/"):
+            if route_path == _WORKSPACE_SESSION_PATH or _WORKSPACE_STATIC_RE.match(
+                route_path
+            ):
                 await self._workspace_cors(scope, receive, send)
                 return
         await self._default_cors(scope, receive, send)
