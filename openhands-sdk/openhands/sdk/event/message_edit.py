@@ -62,14 +62,14 @@ def is_editable(event: Event) -> bool:
     return is_reactable(event) and event.source == "agent"
 
 
-def message_text(events_newest_first: Iterable[Event], message: Event) -> str:
+def message_text(newest_first: Iterable[Event], message: Event) -> str:
     """A message's text as the user sees it: after its latest edit, if any.
 
-    ``events_newest_first`` is the conversation's active branch read back
-    from the end, such as ``state.walk_back(until=message.id)``. An edit
+    ``newest_first`` is the conversation's active branch from the end back
+    (``state.walk_back(until=message.id)``), with ``message`` on it. An edit
     always comes after its message, so the scan stops at the message itself.
     """
-    for event in events_newest_first:
+    for event in newest_first:
         if event.id == message.id:
             break
         if isinstance(event, MessageEditEvent) and event.target_event_id == message.id:

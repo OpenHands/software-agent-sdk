@@ -186,12 +186,13 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$WC/events/search" --query kind=ReactionEvent \
     --check items len-eq 1 --check items.0.emoji eq heart --save F37.rest-while-confirming/saved
   control-agent-server api GET "/api/conversations/$WC/events/search" --query kind=Condensation --check items len-eq 0
-  control-agent-server api GET "/api/conversations/$WC/events/search" --query kind=ObservationEvent --query limit=100 \
-    --check items len-eq 2 --save F37.rest-while-confirming/observations
+  control-agent-server conversation events "$WC" --kinds ObservationEvent --contains '"kind": "TerminalObservation"' \
+    --expect-count 2 --save F37.rest-while-confirming/observations
   ```
   The reaction is not in the log while the call waits; it is saved right
   after the call's result, and the run finishes with exactly the two commands
-  the user asked for and no condensation. A reaction between a call and
+  the user asked for and no condensation (only terminal results count: an
+  agent that answers with `finish` adds one `FinishObservation` per run). A reaction between a call and
   its result would make the model's API refuse the history. Held reactions
   live in memory: a server restart while the call waits drops them.
 - **What the model sees (`F37.agent-sees-user-reactions`).** The prompt
@@ -268,8 +269,7 @@ Preconditions:
   const [cid, target, empty] = [process.env.QA_F37_CID, process.env.QA_F37_TARGET, process.env.QA_F37_EMPTY];
 
   const flags = await settings.listExperimentalFeatures();
-  assert.deepEqual(flags.filter((f) => f.key === 'conversation_reactions').map((f) => [f.key, f.enabled]),
-    [['conversation_reactions', true]]);
+  assert.equal(flags.find((f) => f.key === 'conversation_reactions')?.enabled, true);
   assert.equal((await settings.updateExperimentalFeature('conversation_reactions', true)).enabled, true);
   await assert.rejects(settings.updateExperimentalFeature('qa_f37_unknown', true),
     (err) => isHttpError(err) && err.status === 404);

@@ -465,10 +465,10 @@ def test_the_users_reaction_reads_back_only_as_far_as_the_message(conversation):
 
     assert latest.target_event_id == messages[-1].id
     assert older.target_event_id == messages[-20].id
-    # One read for the latest; for the older one, the reaction just saved and
-    # the 20 messages back to it. Each is answered, so nothing is waiting:
-    # waiting_actions stops at the agent's latest message. Message edits
-    # walks back to the message once more for its latest edit, so twice that.
+    # For each reaction, one walk back to its message to find it and one to
+    # quote its latest text: a few reads for the latest, about 20 each for
+    # the older one. Nothing is waiting, so waiting_actions stops at the
+    # agent's latest message. Out of 400 events.
     assert len(reads) < 80
 
 
