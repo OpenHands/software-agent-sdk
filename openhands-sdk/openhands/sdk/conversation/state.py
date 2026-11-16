@@ -906,12 +906,38 @@ class ConversationState(OpenHandsModel):
         """Context manager exit — flushes any deferred save."""
         try:
             self._save_depth -= 1
-            if self._save_depth == 0 and self._dirty:
-                fs = self._fs
-                autosave_enabled = self._autosave_enabled
-                if autosave_enabled and fs is not None:
-                    self._save_base_state(fs)
-                self._dirty = False
+            self._flush_deferred_save()
+        finally:
+            self._lock.release()
+
+    def _flush_deferred_save(self) -> None:
+        if self._save_depth > 0 or not self._dirty:
+            return
+        # Cleared before the save: a change that save_soon() marks from another
+        # thread while this one serializes stays pending for the next flush.
+        self._dirty = False
+        fs = self._fs
+        if self._autosave_enabled and fs is not None:
+            try:
+                self._save_base_state(fs)
+            except Exception:
+                self._dirty = True
+                raise
+
+    def save_soon(self) -> None:
+        """Persist a change made inside a field, without waiting for the lock.
+
+        Assigning a field autosaves; changing a field's value in place (usage
+        recorded in ``stats``) does not. With the lock free the state is saved
+        now. Otherwise the change is marked pending and the lock holder's
+        ``with`` block saves it on exit, so a caller that must not wait for a
+        running step (``ask_agent``) never does.
+        """
+        self._dirty = True
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._flush_deferred_save()
         finally:
             self._lock.release()
 

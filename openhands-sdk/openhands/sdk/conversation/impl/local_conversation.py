@@ -20,7 +20,7 @@ from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretRegistry, SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -60,7 +60,12 @@ from openhands.sdk.event.reaction import (
     find_reaction_target,
     reaction_target_text,
 )
-from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookMatcher,
+    create_hook_callback,
+)
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
@@ -195,6 +200,24 @@ def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # event the source's own branch walk bridges to instead.
     bridged = source._effective_parent_id(source.get_index(event.id), event)
     return copied.model_copy(update={"parent_id": bridged})
+
+
+def _hooks_not_in(hooks: HookConfig, existing: HookConfig) -> HookConfig:
+    """Return the matchers of ``hooks`` that ``existing`` does not already hold."""
+
+    def unseen(added: list[HookMatcher], present: list[HookMatcher]):
+        return [matcher for matcher in added if matcher not in present]
+
+    return HookConfig(
+        pre_tool_use=unseen(hooks.pre_tool_use, existing.pre_tool_use),
+        post_tool_use=unseen(hooks.post_tool_use, existing.post_tool_use),
+        user_prompt_submit=unseen(
+            hooks.user_prompt_submit, existing.user_prompt_submit
+        ),
+        session_start=unseen(hooks.session_start, existing.session_start),
+        session_end=unseen(hooks.session_end, existing.session_end),
+        stop=unseen(hooks.stop, existing.stop),
+    )
 
 
 def _same_llm_config(a: LLM, b: LLM) -> bool:
@@ -994,6 +1017,9 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
+                # Same cipher as the source, so the fork's base_state.json keeps
+                # secrets encrypted rather than redacted (#5465).
+                cipher=self._cipher,
                 _parent_llm_call_context=self._llm_call_context,
             )
 
@@ -1040,6 +1066,19 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            # Conversation secrets (``secrets=`` / update_secrets) live in the
+            # registry, not the agent. Assigning the field (rather than
+            # mutating the registry) autosaves them, encrypted with the cipher.
+            source_secrets = self._state.secret_registry.secret_sources
+            fork_conv._state.secret_registry = SecretRegistry(
+                secret_sources={
+                    **fork_conv._state.secret_registry.secret_sources,
+                    **{
+                        name: source.model_copy(deep=True)
+                        for name, source in source_secrets.items()
+                    },
+                }
+            )
 
             # Reset or copy metrics
             if not reset_metrics:
@@ -1548,6 +1587,12 @@ class LocalConversation(BaseConversation):
 
     def _merge_runtime_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
         existing_config = self._state.hook_config
+        if existing_config is not None:
+            # Loading the same plugin again must not run its hooks twice, so
+            # keep only the matchers the live config does not already hold.
+            plugin_hooks = _hooks_not_in(plugin_hooks, existing_config)
+            if plugin_hooks.is_empty():
+                return
         merged_config = (
             HookConfig.merge([existing_config, plugin_hooks])
             if existing_config is not None
@@ -2267,12 +2312,20 @@ class LocalConversation(BaseConversation):
         responsive. No-op unless this thread holds the lock, so direct ``astep``
         calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
         an ``await``; every other holder takes it only briefly.
+
+        The state's deferred-save depth is released with the lock, so a change
+        made by another thread meanwhile (e.g. ``pause()``) is written to
+        ``base_state.json`` at once instead of at the end of the step.
         """
-        lock = self._state._lock
+        state = self._state
+        lock = state._lock
         if not lock.owned():
             yield
             return
         held_flag = self._step_holds_state_lock
+        # Only changed under the lock, so stash it here and restore it below.
+        save_depth = state._save_depth
+        state._save_depth = 0
         depth = lock.release_all()
         # Keep the flag honest while released so a concurrent switch_llm (on the
         # event-loop thread) takes the now-free lock instead of racing mutators.
@@ -2281,6 +2334,7 @@ class LocalConversation(BaseConversation):
             yield
         finally:
             lock.reacquire(depth)
+            state._save_depth = save_depth
             self._step_holds_state_lock = held_flag
 
     @observe(name="conversation.run")
@@ -3296,6 +3350,8 @@ class LocalConversation(BaseConversation):
         This bypasses the normal conversation flow and does **not** modify, persist,
         or become part of the conversation state. The request is not remembered by
         the main agent, no events are recorded, and execution status is untouched.
+        Only the usage of the call is kept: it is counted in the conversation's
+        stats under ``ask-agent-llm`` and saved with them.
         It is also thread-safe and may be called while `conversation.run()` is
         executing in another thread.
 
@@ -3355,6 +3411,9 @@ class LocalConversation(BaseConversation):
             store=False,
             call_context=self._llm_call_context,
         )
+        # The call recorded its usage inside ``state.stats``; nothing else
+        # changes here that would save it.
+        self._state.save_soon()
 
         message = response.message
 

@@ -20,6 +20,9 @@ Usage: condense.py MODE
   pipeline  PipelineCondenser and NoOpCondenser inside conversations.
   resume    a condensed conversation is reopened and keeps going from the
             summary.
+  dispositions  get_observation_dispositions over a real conversation's
+            events plus a recovery AgentErrorEvent (recovery_reason=
+            "server_restart") ahead of a call's late result, against View.
   live      the run's real model works through several commands with a
             real summarizing LLM (max_size=10), then is condensed on request.
 
@@ -467,6 +470,65 @@ elif mode == "resume":
     out["resumed_call_messages"] = len(after[0]["messages"]) if after else 0
     out["resumed_status"] = reopened.state.execution_status.value
     reopened.close()
+
+elif mode == "dispositions":
+    from openhands.sdk.context.view import get_observation_dispositions
+    from openhands.sdk.event import AgentErrorEvent, Event, ObservationBaseEvent
+    from openhands.sdk.event.error_classification import (
+        ErrorClassification,
+        FailureKind,
+    )
+
+    script = [parallel_step(), *echo_steps(1), {"finish": "done"}]
+    conversation = conversation_for(script, None)
+    run(conversation)
+    events = list(conversation.state.events)
+    conversation.close()
+    actions = [e for e in events if isinstance(e, ActionEvent)]
+    first = actions[0]
+    real = next(
+        e
+        for e in events
+        if isinstance(e, ObservationBaseEvent) and e.tool_call_id == first.tool_call_id
+    )
+    # What a restarted server persists for a call that was in flight: an
+    # outcome synthesized during recovery, ahead of the call's late result.
+    recovery = AgentErrorEvent(
+        error="A restart occurred while this tool was in progress.",
+        tool_name=first.tool_name,
+        tool_call_id=first.tool_call_id,
+        recovery_reason="server_restart",
+        classification=ErrorClassification(kind=FailureKind.INTERNAL, retryable=False),
+    )
+    reloaded = Event.model_validate_json(recovery.model_dump_json())
+    out["recovery_reason_roundtrip"] = getattr(reloaded, "recovery_reason", None)
+    out["recovery_reason_default"] = AgentErrorEvent(
+        error="x", tool_name="t", tool_call_id="c"
+    ).recovery_reason
+    at = events.index(real)
+    merged = [*events[:at], reloaded, *events[at:]]
+    before = [e.model_dump_json() for e in merged]
+    dispositions = get_observation_dispositions(iter(merged))
+    out["tool_calls"] = len(actions)
+    out["dispositions"] = len(dispositions)
+    by_call = {d.tool_call_id: d for d in dispositions}
+    d0 = by_call[first.tool_call_id]
+    out["first_canonical_is_recovery"] = d0.canonical_event_id == reloaded.id
+    out["first_out_of_view_is_real"] = d0.out_of_view_event_ids == (real.id,)
+    out["others_single"] = all(
+        not d.out_of_view_event_ids
+        for k, d in by_call.items()
+        if k != first.tool_call_id
+    )
+    out["order_follows_input"] = [d.tool_call_id for d in dispositions] == [
+        a.tool_call_id for a in actions
+    ]
+    view = View.from_events(merged)
+    out["view_observations_match"] = [
+        e.id for e in view.events if isinstance(e, ObservationBaseEvent)
+    ] == [d.canonical_event_id for d in dispositions]
+    out["events_unchanged"] = [e.model_dump_json() for e in merged] == before
+    out["actions_only"] = len(get_observation_dispositions(actions))
 
 elif mode == "live":
     condenser = LLMSummarizingCondenser(

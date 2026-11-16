@@ -102,7 +102,7 @@ Preconditions:
   control-sdk program S05/damaged_log --arg "$CID" --arg delete \
     --check reopen_error missing --check lost_beyond_damaged eq 0
   ```
-  Expected: the conversation reopens with every readable event, and the damaged file is reported once in the log. Before #6649, reopening over a corrupted file failed with a pydantic `ValidationError` ("Invalid JSON"), and over an empty file with `FileNotFoundError: Missing event file`; a deleted file has recovered since #6197. The event log now reads an unreadable file as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) with the same id and place, so the event count is unchanged.
+  Expected: the conversation reopens with every readable event, and the damaged file is reported once in the log. A corrupted, empty or deleted event file does not stop the reopen. The event log reads an unreadable file as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) with the same id and place, so the event count is unchanged.
 - **The same, live (`S05.json-roundtrip`, `S05.events-to-messages`, `S05.openai-format`).** A real model does the task its own way; the reload must hold for whatever it produced.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

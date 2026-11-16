@@ -3,7 +3,10 @@ OpenAI-compatible (or Anthropic) endpoint, and report what the SDK sent and
 recorded. The endpoint answers from a script, so the SDK's own provider path
 (LiteLLM request building, parsing, streaming, metrics, logs) is what runs.
 
-Usage: provider_run.py chat|responses|prompted|anthropic|stream
+Usage: provider_run.py chat|responses|prompted|anthropic|anthropic-text|stream
+
+`anthropic-text` is the Anthropic run with a text reply instead: one reply
+with a signed thinking block and text, then a second user turn.
 """
 
 import json
@@ -14,7 +17,7 @@ from S02.fake_provider import FakeProvider
 from sdk_verify import emit, run_paths
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
-from openhands.sdk.event import ActionEvent, ObservationEvent
+from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.tools.terminal import TerminalTool
 
 
@@ -43,6 +46,9 @@ if mode in ("stream", "chat"):
     first |= {"reasoning": "think about echo"}
 if mode == "anthropic":
     first |= {"thinking": "considering the echo"}
+if mode == "anthropic-text":
+    first = {"text": "Nothing to run.", "thinking": "considering the answer"}
+    second = {"text": "Still nothing."}
 
 common = {"api_key": SecretStr("sk-test"), "usage_id": "agent", "num_retries": 1}
 tokens: list = []
@@ -57,7 +63,7 @@ with FakeProvider([first, second]) as server:
             seed=7,
             extra_headers={"X-Verify": "1"},
             litellm_extra_body={"verify_extra": "yes"},
-            log_completions=True,
+            log_completions_to_file=True,
             log_completions_folder=str(log_dir),
             input_cost_per_token=0.001,
             output_cost_per_token=0.002,
@@ -79,7 +85,7 @@ with FakeProvider([first, second]) as server:
             native_tool_calling=False,
             **common,
         )
-    elif mode == "anthropic":
+    elif mode in ("anthropic", "anthropic-text"):
         llm = LLM(
             model="anthropic/claude-sonnet-4-5-20250929",
             base_url=server.root,
@@ -101,6 +107,9 @@ with FakeProvider([first, second]) as server:
     )
     conversation.send_message("Echo provider-run, then finish.")
     conversation.run()
+    if mode == "anthropic-text":
+        conversation.send_message("Anything else?")
+        conversation.run()
     events = list(conversation.state.events)
     stats = conversation.conversation_stats.usage_to_metrics
     requests = server.requests
@@ -212,6 +221,26 @@ if mode == "anthropic":
         "action_thinking_blocks": len(actions[0].thinking_blocks) if actions else 0,
         "cache_control_markers": text1.count("cache_control"),
         "anthropic_beta": requests[0]["headers"].get("anthropic-beta"),
+    }
+if mode == "anthropic-text":
+    replies = [
+        e.llm_message
+        for e in events
+        if isinstance(e, MessageEvent) and e.source == "agent"
+    ]
+    blocks = list(replies[0].thinking_blocks) if replies else []
+    assistant = [m for m in body2.get("messages", []) if m.get("role") == "assistant"]
+    sent_back = [
+        b
+        for m in assistant
+        for b in (m.get("content") or [])
+        if isinstance(b, dict) and b.get("type") == "thinking"
+    ]
+    result |= {
+        "agent_messages": len(replies),
+        "message_thinking": [getattr(b, "thinking", None) for b in blocks],
+        "message_signatures": [getattr(b, "signature", None) for b in blocks],
+        "thinking_sent_back": [b.get("signature") for b in sent_back],
     }
 if mode == "stream":
     result |= {
