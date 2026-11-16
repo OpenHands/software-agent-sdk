@@ -29,6 +29,7 @@ from openhands.sdk.tool import Tool
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.tools.message_edit import (
     EditMessageAction,
+    EditMessageObservation,
     EditMessageTool,
 )
 from openhands.tools.message_edit.impl import EditMessageExecutor
@@ -118,20 +119,42 @@ def test_empty_or_unchanged_edits_are_refused():
         find_edit(events, QUESTION, QUESTION)
 
 
+def _edit_result(edit: MessageEditEvent) -> ObservationEvent:
+    """The agent's edit_message result for ``edit``, as the view holds it."""
+    return ObservationEvent(
+        observation=EditMessageObservation.from_text(
+            "Edited.", target_event_id=edit.target_event_id, edited_text=edit.text
+        ),
+        action_id="call-action",
+        tool_name="edit_message",
+        tool_call_id="call-edit",
+    )
+
+
 def test_a_second_edit_works_on_the_edited_text():
     question = _message("agent", QUESTION)
     first = find_edit([question], QUESTION, STRUCK)
-    events: list[Event] = [question, first]
+    view: list[Event] = [question, _edit_result(first)]
 
-    second = find_edit(events, "Running it on windy.", "Ran it on windy: 3 hits.")
+    second = find_edit(view, "Running it on windy.", "Ran it on windy: 3 hits.")
 
     assert second.text == (
         "~~Should I run the lookup on windy?~~ [Edit: Ran it on windy: 3 hits.]"
     )
     # The first edit's text is gone once the second replaced it.
     with pytest.raises(ValueError, match="not in any"):
-        find_edit([*events, second], "Running it on windy.", "x")
-    assert message_text([*events, second], question) == second.text
+        find_edit([*view, _edit_result(second)], "Running it on windy.", "x")
+
+
+def test_message_text_follows_the_latest_edit_after_the_message():
+    question = _message("agent", QUESTION)
+    first = MessageEditEvent(target_event_id=question.id, text="one")
+    second = MessageEditEvent(target_event_id=question.id, text="two")
+
+    assert message_text([question], question) == QUESTION
+    assert message_text([question, first, second], question) == "two"
+    # The scan stops at the message: nothing before it is an edit of it.
+    assert message_text([first, question], question) == QUESTION
 
 
 def test_only_the_agent_edits():
@@ -281,3 +304,18 @@ def test_a_users_reaction_quotes_the_edited_text(conversation):
 
     assert isinstance(reaction, ReactionEvent)
     assert reaction.target_text_ending == STRUCK
+
+
+def test_only_messages_the_agent_still_sees_are_edited(conversation):
+    from openhands.sdk.event import Condensation
+
+    question = _agent_message(conversation)
+    conversation.state.append_event(
+        Condensation(forgotten_event_ids={question.id}, llm_response_id="resp-c")
+    )
+
+    observation = EditMessageExecutor()(
+        EditMessageAction(old_str=QUESTION, new_str=STRUCK), conversation
+    )
+
+    assert observation.is_error and observation.follow_up_events() == ()

@@ -11,7 +11,11 @@ from pydantic import Field, field_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.llm_convertible import ActionEvent, MessageEvent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
 from openhands.sdk.event.reaction import is_reactable
 from openhands.sdk.event.types import EventID, SourceType
 from openhands.sdk.llm import TextContent
@@ -61,9 +65,13 @@ def is_editable(event: Event) -> bool:
 def message_text(events: Sequence[Event], message: Event) -> str:
     """A message's text as the user sees it: after its latest edit, if any.
 
-    ``events`` is the conversation's active branch.
+    ``events`` is the conversation's active branch, with ``message`` on it.
+    An edit always comes after its message, so the scan walks back from the
+    end only as far as the message itself.
     """
     for event in reversed(events):
+        if event.id == message.id:
+            break
         if isinstance(event, MessageEditEvent) and event.target_event_id == message.id:
             return event.text
     return _written_text(message)
@@ -81,12 +89,28 @@ def _written_text(message: Event) -> str:
     return ""
 
 
-def find_edit(events: Sequence[Event], old_str: str, new_str: str) -> MessageEditEvent:
+def _edits_in(event: Event) -> list[MessageEditEvent]:
+    """The edits an ``edit_message`` result records (its follow-up events)."""
+    if not isinstance(event, ObservationEvent) or event.observation.is_error:
+        return []
+    return [
+        e
+        for e in event.observation.follow_up_events()
+        if isinstance(e, MessageEditEvent)
+    ]
+
+
+def find_edit(
+    view_events: Sequence[Event], old_str: str, new_str: str
+) -> MessageEditEvent:
     """The edit that replaces ``old_str`` with ``new_str`` in an agent message.
 
-    ``old_str`` must occur exactly once across the agent's messages on the
-    active branch (``events``), each taken as it reads after its latest edit,
-    like ``str_replace`` in a file.
+    ``view_events`` is what the agent sees (``state.view.events``), so the
+    cost follows the agent's context, not the size of the log: the agent can
+    only quote a message it sees. Each message is taken as it reads after its
+    latest edit, which the agent's own ``edit_message`` results in the view
+    carry. ``old_str`` must occur exactly once across those messages, like
+    ``str_replace`` in a file.
 
     Raises:
         ValueError: ``old_str`` is empty, unchanged, not found, or found more
@@ -98,15 +122,20 @@ def find_edit(events: Sequence[Event], old_str: str, new_str: str) -> MessageEdi
         )
     if old_str == new_str:
         raise ValueError("new_str is the same as old_str; nothing to edit.")
+    messages: list[Event] = []
+    edited: dict[EventID, str] = {}
+    for event in view_events:
+        if is_editable(event):
+            messages.append(event)
+        for edit in _edits_in(event):
+            edited[edit.target_event_id] = edit.text
     matches: list[tuple[Event, str]] = []
     count = 0
-    for event in events:
-        if not is_editable(event):
-            continue
-        text = message_text(events, event)
+    for message in messages:
+        text = edited[message.id] if message.id in edited else _written_text(message)
         occurrences = text.count(old_str)
         if occurrences:
-            matches.append((event, text))
+            matches.append((message, text))
             count += occurrences
     if count == 0:
         raise ValueError(

@@ -33,7 +33,7 @@ class EditMessageExecutor(ToolExecutor[EditMessageAction, EditMessageObservation
             )
         try:
             edit = find_edit(
-                conversation.state.active_branch(), action.old_str, action.new_str
+                conversation.state.view.events, action.old_str, action.new_str
             )
         except ValueError as exc:
             return EditMessageObservation.from_text(str(exc), is_error=True)
