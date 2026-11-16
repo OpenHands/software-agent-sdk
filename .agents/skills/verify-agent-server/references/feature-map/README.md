@@ -8,9 +8,9 @@ consumers). Read this
 index before driving the server, then use the matching family file as the
 recipe.
 
-Maintenance baseline: main@3c66af1d14d0a7fbe74b8dc4218412ec7a877b79 (2026-11-14). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@2aae48b67a57fa852ebca946ac64ee8b8500e889 (2026-11-15). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **1007 sub-features**.
+The map has **1012 sub-features**.
 
 ## Baseline preconditions
 
@@ -66,7 +66,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | ID | Family | What it covers | Entry points | Needs | Sub-features |
 |---|---|---|---|---|---|
 | F01 | [Server status, info and contract](F01-server-status.md) | liveness, health, readiness, server info and its `/` alias, uptime and idle time, OpenAPI document, the static-files mode, DEBUG tracebacks, tool preloading | `GET /alive`, `/health`, `/ready`, `/server_info`, `/`, `/openapi.json` | baseline | 11 |
-| F02 | [Authentication and workspace sessions](F02-auth-and-sessions.md) | session keys on HTTP and on WebSockets (first frame, deprecated query and header forms, close codes), several and rotated keys, no-auth and legacy modes, the default bind address, the workspace session cookie, CORS | `X-Session-API-Key`, `POST`/`DELETE /api/auth/workspace-session`, WebSocket auth on every socket | recipes: tmux | 21 |
+| F02 | [Authentication and workspace sessions](F02-auth-and-sessions.md) | session keys on HTTP and on WebSockets (first frame, deprecated query and header forms, close codes), several and rotated keys, no-auth and legacy modes, the default bind address, the workspace session cookie, CORS | `X-Session-API-Key`, `POST`/`DELETE /api/auth/workspace-session`, WebSocket auth on every socket | recipes: tmux | 22 |
 | F03 | [Deferred init (warm-pool dormant mode)](F03-deferred-init.md) | warm-pool dormant mode: the gate on `/api`, `/v1`, `/app-backends` and every socket (checked before auth), init key auth, validation and redaction, rollback, one-shot init, and every field the init body delivers (keys, secret key, paths, worktree root, run limit, CORS, webhooks, env, web URL) | `GET`/`POST /api/init`, `X-Init-API-Key` | git; launch `--no-auth --deferred-init` | 26 |
 | F04 | [Conversation lifecycle and catalog](F04-conversation-lifecycle.md) | create from settings, an agent profile or an inline agent; client ids, parents, worktrees, start-time secrets, 422 redaction; get, batch get, search, count; PATCH; final response; DELETE; restart | `POST`/`GET`/`PATCH`/`DELETE /api/conversations[/{id}]`, `/search`, `/count`, `/agent_final_response`, `/children` | llm, git | 36 |
 | F05 | [Run, pause, interrupt and status transitions](F05-run-pause-interrupt.md) | run, pause and interrupt during model and tool calls; status transitions on every view; stuck detection and max_iterations stops; 409 and 429; graceful and SIGKILL restarts | `POST /api/conversations/{id}/run`, `/pause`, `/interrupt` | llm, tmux; launch `--config-json '{"max_concurrent_runs": 1}'` | 32 |
@@ -83,7 +83,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F16 | [Workspace file serving and VS Code endpoints](F16-workspace-serving-and-vscode.md) | the per-conversation static workspace server (index, content types, ranges, traversal, cookie auth) and the VS Code status and URL routes | `GET /api/conversations/{id}/workspace[/{path}]`, `/api/vscode/*`, `/api/conversations/{id}/vscode/*` | llm, git | 27 |
 | F17 | [Workspace registry and parents](F17-workspaces-registry.md) | saved workspaces and parents: add, list, delete, validation, persistence, concurrent writers, corrupted files | `GET`/`POST`/`DELETE /api/workspaces`, `/api/workspaces/parents` | git, node | 24 |
 | F18 | [Server settings, settings schemas and the secrets store](F18-settings-and-secrets.md) | persisted settings with redacted, plaintext and encrypted exposure, sparse PATCH, settings schemas, the named secrets store, encryption at rest, cipher-key changes | `GET`/`PATCH /api/settings`, `/api/settings/agent-schema`, `/conversation-schema`, `/api/settings/secrets[/{name}]` | git, node | 32 |
-| F19 | [MCP server settings, connection test and OAuth](F19-mcp.md) | MCP server settings CRUD, connection tests (stdio and HTTP), install-time OAuth jobs and token refresh, a model-driven MCP tool call | `/api/settings/mcp/{key}`, `POST /api/mcp/test`, `/api/mcp/oauth/*` | llm; launch `--webhook-sink` | 30 |
+| F19 | [MCP server settings, connection test and OAuth](F19-mcp.md) | MCP server settings CRUD, connection tests (stdio and HTTP), install-time OAuth jobs and token refresh, a model-driven MCP tool call | `/api/settings/mcp/{key}`, `POST /api/mcp/test`, `/api/mcp/oauth/*` | llm; launch `--webhook-sink` | 34 |
 | F20 | [LLM profiles](F20-llm-profiles.md) | LLM profiles: save, read, validate against real and stubbed providers, activate, rename, delete, name rules, limits, store contention, restart | `/api/profiles[/{name}]`, `/validate`, `/activate`, `/rename` | llm, node | 37 |
 | F21 | [Agent profiles](F21-agent-profiles.md) | agent profiles (OpenHands and ACP kinds): CRUD, default seed, activation, rename, delete, materialize, conversations started from a profile, store contention | `/api/agent-profiles[/{name}]`, `/rename`, `/{id}/activate`, `/materialize` | llm | 32 |
 | F22 | [Meta-profiles (model router)](F22-meta-profiles.md) | meta-profiles (model router): save, read, activate, delete, settings reflection, routing in a conversation | `/api/meta-profiles[/{name}]`, `/activate` | llm, node | 24 |
@@ -101,6 +101,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F34 | [TypeScript client (@openhands/typescript-client)](F34-typescript-client.md) | the TypeScript client against this checkout: server and version gate, workspace, bash, conversation, state, events and socket clients, hooks and MCP clients, endpoint audit and drift | behavior only: `@openhands/typescript-client` (`clients/typescript`) | llm, node, uvx, git, tmux, network | 33 |
 | F37 | [Emoji reactions and feature flags](F37-reactions.md) | the `conversation_reactions` feature flag (stored and runtime env), the user's reactions over REST and the TypeScript client, validation, active-branch targets, the agent's `react`/`unreact` tools, what the model sees | `POST /api/conversations/{id}/reactions` (the flag's routes are F18's) | llm | 12 |
 | F38 | [Conversation mentions](F38-conversation-mentions.md) | the `conversation_mentions` feature flag, the agent's read-only `find_conversations` and `read_conversation` tools, mention links `[Title](conversation:<id>)` in its answers | behavior only: agent tools (the flag's routes are F18's) | llm | 5 |
+| F39 | [Message edits](F39-message-edits.md) | the `message_edits` feature flag, the agent's `edit_message` tool (`str_replace` on its own earlier messages), the `MessageEditEvent` clients show in place, what the model sees, reactions on an edited message | behavior only: `edit_message` tool, `MessageEditEvent` (the flag's routes are F18's) | llm | 5 |
 
 ## Not mapped
 

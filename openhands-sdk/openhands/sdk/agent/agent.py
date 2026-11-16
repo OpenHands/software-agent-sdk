@@ -40,6 +40,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     Event,
+    MessageEditEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -239,6 +240,12 @@ _ONE_TURN_ENDER = (
     "Ask one question at a time; ask this one after the user answers."
 )
 
+_ONE_EDIT_PER_MESSAGE = (
+    "Not edited: an earlier call in this response already edits this "
+    "message, and both edits started from the same text. Edit it again in "
+    "your next response, quoting it as it reads now:\n"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _ActionBatch:
@@ -323,6 +330,44 @@ class _ActionBatch:
             ]
         return ended
 
+    @staticmethod
+    def _one_edit_per_message(
+        executed: list[ActionEvent],
+        results_by_id: dict[str, list[Event]],
+        tools: dict[str, ToolDefinition] | None,
+    ) -> None:
+        """Refuse a second edit of the same message in one batch.
+
+        Every call in a batch reads the conversation before any result is
+        recorded, so two edits of one message both start from the same text
+        and the later one would silently undo the earlier. The first edit in
+        action order stands; a later one is replaced by an error that quotes
+        the message as the first edit left it.
+        """
+        edited: dict[EventID, str] = {}
+        for ae in executed:
+            results = results_by_id.get(ae.id, [])
+            edits = [e for e in results if isinstance(e, MessageEditEvent)]
+            if not edits:
+                continue
+            if all(e.target_event_id not in edited for e in edits):
+                edited.update((e.target_event_id, e.text) for e in edits)
+                continue
+            tool = (tools or {}).get(ae.tool_name)
+            current = next(
+                edited[e.target_event_id] for e in edits if e.target_event_id in edited
+            )
+            refused = (
+                (tool.observation_type if tool else None) or Observation
+            ).from_text(_ONE_EDIT_PER_MESSAGE + current, is_error=True)
+            results_by_id[ae.id] = [
+                event.model_copy(update={"observation": refused})
+                if isinstance(event, ObservationEvent)
+                else event
+                for event in results
+                if not isinstance(event, MessageEditEvent)
+            ]
+
     @classmethod
     def prepare(
         cls,
@@ -354,6 +399,7 @@ class _ActionBatch:
             span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+        cls._one_edit_per_message(executable, results_by_id, tools)
 
         return cls(
             action_events=action_events,
@@ -399,6 +445,7 @@ class _ActionBatch:
             span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+        cls._one_edit_per_message(executable, results_by_id, tools)
 
         return cls(
             action_events=action_events,

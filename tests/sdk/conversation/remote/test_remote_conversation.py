@@ -367,6 +367,41 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_create_restores_tools_the_server_added(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        """A tool the server adds (an experimental feature's) is registered
+        locally before the first sync, though the client never imported it."""
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                response.json.return_value.update(
+                    tool_module_qualnames={
+                        "edit_message": "openhands.tools.message_edit.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        restore_tool_registrations.assert_called_once_with(
+            {"edit_message": "openhands.tools.message_edit.definition"}
+        )
+        conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_create_from_profile_uses_resolved_agent(self, mock_ws_client):
         cid, profile_id = uuid.uuid4(), uuid.uuid4()
         hooks = HookConfig.model_validate({"stop": [{"hooks": [{"command": "true"}]}]})

@@ -985,12 +985,15 @@ class RemoteConversation(BaseConversation):
                     "Invalid response from server: missing conversation id"
                 )
             conversation_id = uuid.UUID(cid)
+            # The server may add tools the client never imported (for example
+            # an experimental feature's tool), so restore what it reports.
+            attached_tool_module_qualnames = info.get("tool_module_qualnames") or {}
 
             workspace.register_conversation(str(conversation_id))
 
         assert conversation_id is not None
-        # Register the persisted tools before connecting so that events synced
-        # during ``_initialize_connection`` can be deserialized. ``_from_info``
+        # Register the conversation's tools before connecting so that events
+        # synced during ``_initialize_connection`` can be deserialized. ``_from_info``
         # does the same for the ``attach``/``create`` entry points.
         _restore_tool_registrations(attached_tool_module_qualnames)
         self._initialize_connection(
