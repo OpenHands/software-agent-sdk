@@ -39,6 +39,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context import AgentContext
 from openhands.sdk.context.condenser import NoOpCondenser
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -70,6 +71,7 @@ from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -2840,6 +2842,31 @@ class TestEventServiceConcurrentSubscriptions:
         }
         assert snapshot.value["agent"]["llm"] == {"model": "gpt-4o-mini"}
         assert snapshot.value["execution_status"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_agent_update_leaves_out_skill_bodies(self, event_service):
+        agent = _sample_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="big", content="x" * 100_000)],
+                    system_message_suffix="kept",
+                )
+            }
+        )
+        received: list[Event] = []
+
+        class Recorder(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received.append(event)
+
+        event_service._pub_sub.subscribe(Recorder())
+        update = ConversationStateUpdateEvent(key="agent", value=agent)
+        await event_service._publish_to_subscribers(update)
+
+        sent = cast(ConversationStateUpdateEvent, received[0])
+        assert sent.value["agent_context"]["skills"] == []
+        assert sent.value["agent_context"]["system_message_suffix"] == "kept"
+        assert len(update.value.agent_context.skills) == 1
 
     @pytest.mark.asyncio
     async def test_concurrent_subscriptions_no_deadlock(

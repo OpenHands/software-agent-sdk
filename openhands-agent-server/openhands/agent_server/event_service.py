@@ -81,7 +81,10 @@ from openhands.sdk.event import (
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -109,6 +112,23 @@ MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 logger = get_logger(__name__)
 _GIT_INIT_LOCK = threading.Lock()
+
+
+def _without_skill_bodies(
+    event: ConversationStateUpdateEvent,
+) -> ConversationStateUpdateEvent:
+    """Leave skill bodies, most of the agent's size, out of the agent that
+    sockets and webhooks receive, as conversation responses do by default."""
+    if event.key == FULL_STATE_KEY:
+        agent = event.value.get("agent") or {}
+    elif event.key == "agent":
+        agent = event.value.model_dump(mode="json")
+        event = event.model_copy(update={"value": agent})
+    else:
+        return event
+    if agent.get("agent_context"):
+        agent["agent_context"]["skills"] = []
+    return event
 
 
 class ConversationRunLimitExceeded(RateLimited, RuntimeError):
@@ -848,13 +868,7 @@ class EventService:
         state = self._conversation._state
         with state:
             event = ConversationStateUpdateEvent.from_conversation_state(state)
-        # Like conversation responses (trim_conversation_response_skills), the
-        # snapshot pushed to sockets and webhooks leaves out skill bodies: they
-        # made it ~600 KB, and every known reader only uses status and stats.
-        agent_context = event.value.get("agent", {}).get("agent_context")
-        if isinstance(agent_context, dict) and agent_context.get("skills"):
-            agent_context["skills"] = []
-        return event
+        return _without_skill_bodies(event)
 
     def _create_initial_state_sync(
         self,
@@ -1332,7 +1346,7 @@ class EventService:
 
         # Create and store callback wrapper to allow flushing pending events
         self._callback_wrapper = AsyncCallbackWrapper(
-            self._pub_sub, loop=asyncio.get_running_loop()
+            self._publish_to_subscribers, loop=asyncio.get_running_loop()
         )
 
         # Token streaming is wired only for agents that can actually emit token
@@ -2498,6 +2512,11 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
         return self._conversation._state
+
+    async def _publish_to_subscribers(self, event: Event) -> None:
+        if isinstance(event, ConversationStateUpdateEvent):
+            event = _without_skill_bodies(event)
+        await self._pub_sub(event)
 
     async def _publish_state_update(self):
         """Publish a ConversationStateUpdateEvent with the current state."""
