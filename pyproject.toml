@@ -81,6 +81,9 @@ ignore = ["UP042"]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)
 # and poll or block on purpose while driving threads and subprocesses.
 "tests/**/*.py" = ["ARG", "ASYNC"]
+# Benchmark drivers start and probe an agent-server subprocess; their setup blocks
+# on purpose, outside the timed sections.
+"scripts/agent_server_benchmarks/*.py" = ["ASYNC"]
 
 
 # Allowlist safe default calls for flake8-bugbear rules (e.g., FastAPI Depends)
