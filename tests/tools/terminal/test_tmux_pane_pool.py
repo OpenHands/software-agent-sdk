@@ -341,7 +341,8 @@ def test_stale_terminal_cannot_access_restarted_server(
                 time.sleep(0.05)
 
             if operation == "read":
-                assert "SECOND_CONVERSATION_MARKER" not in stale.read_screen()
+                with pytest.raises(LibTmuxException):
+                    stale.read_screen()
             elif operation == "write":
                 marker = tmp_path / "wrong-conversation"
                 stale.send_keys(f"touch {marker}")

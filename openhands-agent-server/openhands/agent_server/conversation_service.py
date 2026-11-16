@@ -54,7 +54,11 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    ServerStores,
+    run_store,
+)
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -99,6 +103,7 @@ from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -610,6 +615,7 @@ class ConversationService:
         default_factory=dict, init=False
     )
     _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _worktree_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _lifecycle_condition: asyncio.Condition = field(
         default_factory=asyncio.Condition, init=False
     )
@@ -645,7 +651,9 @@ class ConversationService:
             try:
                 stored = StoredConversation.model_validate_json(
                     meta_file.read_text(),
-                    context={"cipher": self._cipher_for(UUID(conversation_dir.name))},
+                    context=cipher_context(
+                        self._cipher_for(UUID(conversation_dir.name))
+                    ),
                 )
                 execution_status = ConversationExecutionStatus.IDLE
                 base_state_file = conversation_dir / BASE_STATE
@@ -699,10 +707,9 @@ class ConversationService:
         base_state_file = self.conversations_dir / conversation_id.hex / BASE_STATE
         if not base_state_file.exists():
             return None
-        cipher = self._cipher_for(conversation_id)
-        context = {"cipher": cipher} if cipher else None
         return ConversationState.model_validate_json(
-            base_state_file.read_text(), context=context
+            base_state_file.read_text(),
+            context=cipher_context(self._cipher_for(conversation_id)),
         )
 
     def _agent_from_base_state(self, conversation_id: UUID) -> AgentBase | None:
@@ -810,10 +817,7 @@ class ConversationService:
     async def _has_local_codex_credential(self) -> bool:
         if self.stores is None:
             return False
-        value = await asyncio.to_thread(
-            self.stores.secrets.get_secret,
-            CODEX_AUTH_SECRET_NAME,
-        )
+        value = await run_store(self.stores.secrets.get_secret, CODEX_AUTH_SECRET_NAME)
         return value is not None
 
     async def _load_settings(self) -> PersistedSettings:
@@ -825,7 +829,7 @@ class ConversationService:
         # every launch reads it, so a bad file mode must not take down request
         # shapes that need nothing from settings.
         try:
-            settings = await asyncio.to_thread(stores.settings.load)
+            settings = await run_store(stores.settings.load)
         except (PermissionError, OSError):
             logger.warning(
                 "Cannot read settings; starting without the stored agent preferences",
@@ -1547,6 +1551,13 @@ class ConversationService:
             )
         return conversation_info, False
 
+    async def _run_worktree_git[**P, T](
+        self, fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """Run a blocking worktree git step off the event loop, one at a time."""
+        async with self._worktree_lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
     async def start_conversation(
         self, request: StartConversationRequest, *, gateway_run: bool = False
     ) -> tuple[ConversationInfo, bool]:
@@ -1673,7 +1684,8 @@ class ConversationService:
         )
 
         worktree = (
-            _plan_conversation_worktree(
+            await self._run_worktree_git(
+                _plan_conversation_worktree,
                 request.workspace,
                 conversation_id,
                 self.conversation_worktree_root,
@@ -1714,7 +1726,7 @@ class ConversationService:
                 f"import: {', '.join(missing_tools)}"
             )
         workspace = (
-            _create_conversation_worktree(worktree)
+            await self._run_worktree_git(_create_conversation_worktree, worktree)
             if worktree is not None
             else request.workspace
         )
@@ -1744,7 +1756,7 @@ class ConversationService:
         # and merges plugin skills/MCP/hooks into the agent.
         #
         # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers)
-        # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
+        # serialize to plain strings. Dump in plaintext so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
         request_data = request.model_copy(
@@ -1755,7 +1767,7 @@ class ConversationService:
             }
         ).model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={
                 "agent",
                 "agent_settings",
@@ -1776,7 +1788,7 @@ class ConversationService:
                         else None
                     ),
                 },
-                context={"cipher": self.cipher},
+                context=cipher_context(self.cipher),
             )
         else:
             stored = StoredConversation(
@@ -2230,7 +2242,8 @@ class ConversationService:
             # the parent workspace has a usable git base commit; otherwise
             # the child shares it.
             worktree = (
-                _plan_conversation_worktree(
+                await self._run_worktree_git(
+                    _plan_conversation_worktree,
                     parent_stored.workspace,
                     child_id,
                     self.conversation_worktree_root,
@@ -2249,7 +2262,7 @@ class ConversationService:
                 )
             )
             workspace = (
-                _create_conversation_worktree(worktree)
+                await self._run_worktree_git(_create_conversation_worktree, worktree)
                 if worktree is not None
                 else parent_stored.workspace
             )
@@ -2820,7 +2833,7 @@ class AutoTitleSubscriber(Subscriber):
         # truncation. This keeps auto-titling non-breaking for consumers who
         # don't configure title_llm_profile.
         conversation = self.service._conversation
-        title_llm = self._load_title_llm()
+        title_llm = await run_store(self._load_title_llm)
         if title_llm is None:
             title_llm = conversation.agent.llm if conversation else None
 

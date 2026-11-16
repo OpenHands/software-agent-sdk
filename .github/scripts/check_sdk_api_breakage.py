@@ -607,6 +607,124 @@ def _is_field_default_only_change(old_val: object, new_val: object) -> bool:
     )
 
 
+def _attribute_value_changed(old_value: object, new_value: object) -> bool:
+    """Return whether two griffe attribute values differ semantically."""
+    if old_value is None and new_value is None:
+        return False
+    if old_value is None or new_value is None:
+        return True
+    try:
+        return bool(old_value != new_value)
+    except Exception:
+        return str(old_value) != str(new_value)
+
+
+def _iter_attribute_value_changes(
+    old_obj: object,
+    new_obj: object,
+    kind: object,
+) -> list[object]:
+    """Collect public attribute-value changes for a pair of API objects.
+
+    Griffe 2.4.0 stopped reporting attribute value changes (griffe#506), but
+    this check relies on them to classify Pydantic ``Field(...)`` metadata and
+    default changes. Recompute the comparison over the griffe object model so
+    the release-note and SemVer policies keep working on newer griffe versions.
+    """
+    changes: list[object] = []
+    _walk_attribute_value_changes(old_obj, new_obj, kind, set(), changes)
+    return changes
+
+
+def _walk_attribute_value_changes(
+    old_obj: object,
+    new_obj: object,
+    kind: object,
+    seen_paths: set[str],
+    changes: list[object],
+) -> None:
+    path = getattr(old_obj, "path", None)
+    if isinstance(path, str):
+        if path in seen_paths:
+            return
+        seen_paths.add(path)
+
+    old_obj = _resolve_alias_target(old_obj)
+    new_obj = _resolve_alias_target(new_obj)
+    if old_obj is None or new_obj is None:
+        return
+
+    if getattr(old_obj, "kind", None) != getattr(new_obj, "kind", None):
+        return
+
+    if getattr(old_obj, "is_attribute", False):
+        old_value = getattr(old_obj, "value", None)
+        new_value = getattr(new_obj, "value", None)
+        if _attribute_value_changed(old_value, new_value):
+            changes.append(_AttributeValueChange(old_obj, old_value, new_value, kind))
+        return
+
+    if not getattr(old_obj, "is_module", False) and not getattr(
+        old_obj, "is_class", False
+    ):
+        return
+
+    try:
+        old_members = getattr(old_obj, "all_members", {}) or {}
+        new_members = getattr(new_obj, "all_members", {}) or {}
+    except Exception:
+        # Unresolvable bases/aliases can make member enumeration raise; skip the
+        # pair rather than aborting the whole breakage scan.
+        return
+
+    for name, old_member in old_members.items():
+        if not getattr(old_member, "is_public", False):
+            continue
+        new_member = new_members.get(name)
+        if new_member is None:
+            continue
+        _walk_attribute_value_changes(old_member, new_member, kind, seen_paths, changes)
+
+
+def _resolve_alias_target(obj: object) -> object | None:
+    """Resolve an alias to its target, returning ``None`` when unresolvable."""
+    if not getattr(obj, "is_alias", False):
+        return obj
+    try:
+        return obj.target
+    except Exception:
+        return None
+
+
+class _AttributeValueChange:
+    """Breakage describing a public attribute whose value changed.
+
+    Griffe 3 removes ``AttributeChangedValueBreakage`` (griffe#506), so this
+    check carries its own equivalent instead of relying on griffe to emit one.
+    """
+
+    def __init__(
+        self,
+        obj: object,
+        old_value: object,
+        new_value: object,
+        kind: object,
+    ) -> None:
+        self.obj = obj
+        self.old_value = old_value
+        self.new_value = new_value
+        self.kind = kind
+
+    def explain(self, **_kwargs: object) -> str:
+        path = _object_path(self.obj)
+        old = "unset" if self.old_value is None else str(self.old_value)
+        new = "unset" if self.new_value is None else str(self.new_value)
+        return (
+            f"::warning title=SDK API::Attribute value was changed: "
+            f"{path} `{old}` -> `{new}`"
+        )
+
+
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     """Check if the change is only in Field metadata (description, title, etc.).
 
@@ -726,7 +844,23 @@ def _collect_breakages_pairs(
 
     for old, new in objs:
         try:
-            for br in griffe.find_breaking_changes(old, new):
+            griffe_breakages = list(griffe.find_breaking_changes(old, new))
+            # Griffe 2.4.0 stopped reporting attribute value changes (griffe#506).
+            # Recompute them so Pydantic Field metadata/default classification and
+            # the release-note report keep working on newer griffe versions.
+            reported_paths = {
+                getattr(getattr(br, "obj", None), "path", None)
+                for br in griffe_breakages
+                if br.kind == BreakageKind.ATTRIBUTE_CHANGED_VALUE
+            }
+            extra_breakages = [
+                br
+                for br in _iter_attribute_value_changes(
+                    old, new, BreakageKind.ATTRIBUTE_CHANGED_VALUE
+                )
+                if getattr(br.obj, "path", None) not in reported_paths
+            ]
+            for br in [*griffe_breakages, *extra_breakages]:
                 obj = getattr(br, "obj", None)
                 if not getattr(obj, "is_public", True):
                     continue

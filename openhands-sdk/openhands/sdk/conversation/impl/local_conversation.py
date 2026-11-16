@@ -3,9 +3,10 @@ import atexit
 import contextlib
 import copy
 import json
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
@@ -52,6 +53,11 @@ from openhands.sdk.event import (
     PauseEvent,
     ReactionEvent,
     UserRejectObservation,
+)
+from openhands.sdk.event.ask_user import (
+    AskUserAnswerEvent,
+    answer_message_text,
+    find_pending_ask,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
@@ -127,6 +133,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -224,7 +231,7 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
     """Return whether two LLMs serialize to the same config, secrets included."""
     if a is b:
         return True
-    context = {"expose_secrets": True}
+    context = client_context("plaintext")
     return a.model_dump(mode="json", context=context) == b.model_dump(
         mode="json", context=context
     )
@@ -258,6 +265,9 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_startup_budget: float | None
+    _late_mcp_lock: threading.Lock
+    _late_mcp_ready: list[threading.Event]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
@@ -297,6 +307,7 @@ class LocalConversation(BaseConversation):
         mcp_tool_provider: MCPToolProvider | None = None,
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
+        mcp_startup_budget: float | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
         **_: object,
@@ -323,6 +334,10 @@ class LocalConversation(BaseConversation):
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             stream_callbacks: Optional list of callbacks invoked with the
                 stream-progress frames minted by ``StreamContext``.
+            mcp_startup_budget: Seconds agent startup waits for MCP servers.
+                Tools of servers still starting after that are added when they
+                are ready, and the agent's first step waits for them. None (the
+                default) waits for every server at startup.
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
@@ -374,6 +389,8 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+        self._late_mcp_lock = threading.Lock()
+        self._late_mcp_ready = []
         self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
@@ -387,6 +404,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_startup_budget = mcp_startup_budget
         self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -983,7 +1001,7 @@ class LocalConversation(BaseConversation):
         source_agent = agent if agent is not None else self.agent
         agent_cls = type(source_agent)
         fork_agent = agent_cls.model_validate(
-            source_agent.model_dump(context={"expose_secrets": True}),
+            source_agent.model_dump(context=client_context("plaintext")),
         )
 
         # Hold the state lock while reading mutable state from the source
@@ -1633,6 +1651,7 @@ class LocalConversation(BaseConversation):
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
+        startup_budget: float | None = None,
     ) -> list[ToolDefinition]:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
@@ -1653,21 +1672,37 @@ class LocalConversation(BaseConversation):
         # costs only its own tools. They start side by side: startup takes as
         # long as the slowest server, not all of them in a row.
         prefixed = len(mcp_config) > 1
-        with ThreadPoolExecutor(
+        pool = ThreadPoolExecutor(
             max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
-        ) as pool:
-            started = {
-                name: pool.submit(
-                    self._start_runtime_mcp_server,
-                    name,
-                    server,
-                    create_kwargs,
-                    prefixed,
-                )
-                for name, server in mcp_config.items()
-            }
+        )
+        started = {
+            name: pool.submit(
+                self._start_runtime_mcp_server,
+                name,
+                server,
+                create_kwargs,
+                prefixed,
+            )
+            for name, server in mcp_config.items()
+        }
+        pool.shutdown(wait=False)
+        _, still_starting = wait(started.values(), timeout=startup_budget)
         tools: list[ToolDefinition] = []
         for name, future in started.items():
+            if future in still_starting:
+                logger.info(
+                    "MCP server %s is still starting; its tools will be added "
+                    "when it is ready",
+                    name,
+                )
+                ready = threading.Event()
+                self._late_mcp_ready.append(ready)
+                future.add_done_callback(
+                    lambda done, name=name, ready=ready: self._add_late_mcp_tools(
+                        name, done, ready
+                    )
+                )
+                continue
             try:
                 tools.extend(future.result())
             except Exception as exc:
@@ -1707,6 +1742,46 @@ class LocalConversation(BaseConversation):
         )
         return named(client.tools)
 
+    def _add_late_mcp_tools(
+        self,
+        name: str,
+        started: Future[list[MCPToolDefinition]],
+        ready: threading.Event,
+    ) -> None:
+        """Register a server that finished starting after the startup budget."""
+        try:
+            try:
+                tools = started.result()
+            except Exception as exc:
+                logger.warning(
+                    "MCP server startup failed for %s; continuing without its "
+                    "tools: %s",
+                    name,
+                    exc,
+                )
+                return
+            # Under the lock, close() either sees these tools in the agent or
+            # this method sees the conversation closing; nothing is left running.
+            with self._late_mcp_lock:
+                if self._cleanup_initiated:
+                    self._close_runtime_tools(tools)
+                    return
+                try:
+                    self.agent._on_mcp_tools_changed(tools)
+                except Exception as exc:
+                    logger.warning("Could not add MCP tools of %s: %s", name, exc)
+                    self._close_runtime_tools(tools)
+                    return
+            logger.info("MCP server %s is ready; added %d tools", name, len(tools))
+        finally:
+            ready.set()
+
+    def _wait_for_late_mcp_tools(self) -> None:
+        """Let servers that missed the startup budget join before the agent's
+        first step, so its first LLM call already has their tools."""
+        for ready in self._late_mcp_ready:
+            ready.wait(_RUNTIME_MCP_TIMEOUT_SECS)
+
     def _on_mcp_tools_reconciled(
         self,
         client: MCPClient,
@@ -1721,6 +1796,7 @@ class LocalConversation(BaseConversation):
             self.agent.mcp_config,
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
             on_tools_reconciled=self._on_mcp_tools_reconciled,
+            startup_budget=self._mcp_startup_budget,
         )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
@@ -1942,12 +2018,12 @@ class LocalConversation(BaseConversation):
 
         current_config = current_llm.model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={"usage_id"},
         )
         condenser_config = condenser.llm.model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={"usage_id"},
         )
         if condenser_config != current_config:
@@ -2298,6 +2374,58 @@ class LocalConversation(BaseConversation):
                 self._on_event(event)
         return event
 
+    def answer_ask(
+        self,
+        ask_id: EventID,
+        option_index: int | None = None,
+        text: str | None = None,
+    ) -> tuple[AskUserAnswerEvent, Message]:
+        """Record the user's answer to the agent's pending ``ask_user`` question.
+
+        Saves an :class:`AskUserAnswerEvent` (what a client shows on the card)
+        and returns it with the message that carries the answer to the agent.
+        The caller sends that message (``send_message``) and runs the agent;
+        that message is what closes the question, so until it is saved the
+        question stays pending and an answer can be sent again. Writing in
+        the chat instead needs none of this: any message of the user's closes
+        the question.
+
+        Raises:
+            ValueError: ``ask_id`` is not the pending question, the option does
+                not exist, or the answer has neither an option nor text.
+        """
+        with self._state:
+            pending = find_pending_ask(self._state.active_branch())
+            if pending is None or pending.ask_id != ask_id:
+                raise ValueError("That question is not waiting for an answer.")
+            if option_index is not None and not (
+                0 <= option_index < len(pending.option_labels)
+            ):
+                raise ValueError(
+                    f"The question has {len(pending.option_labels)} options; "
+                    f"there is no option {option_index}."
+                )
+            words = (text or "").strip() or None
+            event = AskUserAnswerEvent(
+                ask_id=ask_id,
+                option_index=option_index,
+                option_label=(
+                    None
+                    if option_index is None
+                    else pending.option_labels[option_index]
+                ),
+                text=words,
+            )
+            event = cast(AskUserAnswerEvent, self._state._stamp_parent_id(event))
+            self._on_event(event)
+        message = Message(
+            role="user",
+            content=[
+                TextContent(text=answer_message_text(pending, option_index, words))
+            ],
+        )
+        return event, message
+
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
         with self._state:
@@ -2365,6 +2493,7 @@ class LocalConversation(BaseConversation):
         """Implement :meth:`run` inside the active LLM context scope."""
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
+        self._wait_for_late_mcp_tools()
         self._cancel_token = CancellationToken()
 
         with self._state:
@@ -2583,6 +2712,7 @@ class LocalConversation(BaseConversation):
         # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
         # _ensure_agent_ready is thread-safe and already runs off-loop in run().
         await asyncio.to_thread(self._ensure_agent_ready)
+        await asyncio.to_thread(self._wait_for_late_mcp_tools)
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -3294,7 +3424,8 @@ class LocalConversation(BaseConversation):
             return
         first_attempt = not self._cleanup_initiated
         if first_attempt:
-            self._cleanup_initiated = True
+            with self._late_mcp_lock:
+                self._cleanup_initiated = True
 
             # Best-effort: hand the accumulated LLM cost to the workspace so it
             # can be included in the automation completion callback. State is

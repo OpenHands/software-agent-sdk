@@ -19,6 +19,9 @@ logger = get_logger(__name__)
 LEASE_FILE_NAME = "owner_lease.json"
 LEASE_LOCK_FILE_NAME = ".owner_lease.lock"
 DEFAULT_LEASE_TTL_SECONDS = 45.0
+# The lock is held for a few milliseconds per write, so a waiter (including the
+# event loop) polls at that scale rather than filelock's default 50 ms.
+LEASE_LOCK_POLL_SECONDS = 0.002
 
 
 @dataclass(frozen=True)
@@ -155,10 +158,16 @@ class ConversationLease:
         self._lease_path = conversation_dir / LEASE_FILE_NAME
         self._lock_path = conversation_dir / LEASE_LOCK_FILE_NAME
 
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        lock = FileLock(str(self._lock_path))
+        with lock.acquire(poll_interval=LEASE_LOCK_POLL_SECONDS):
+            yield
+
     def claim(self) -> LeaseClaim:
         """Claim or renew ownership of the conversation directory."""
         self._conversation_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             now = time.time()
             payload = self._read_payload()
             if payload is not None:
@@ -226,7 +235,7 @@ class ConversationLease:
 
     def renew(self, generation: int) -> None:
         """Extend the current lease while keeping the same generation."""
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             self._assert_owner_locked(generation)
             self._write_payload(
                 generation=generation,
@@ -236,13 +245,13 @@ class ConversationLease:
     @contextmanager
     def guarded_write(self, generation: int) -> Iterator[None]:
         """Hold the lease lock while verifying ownership for a disk write."""
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             self._assert_owner_locked(generation)
             yield
 
     def release(self, generation: int) -> None:
         """Release the lease if this instance still owns the generation."""
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             payload = self._read_payload()
             if payload is None:
                 return
