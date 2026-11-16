@@ -541,7 +541,7 @@ class LocalConversation(BaseConversation):
         def _flush_pending_reactions(e):
             if not self._pending_reactions or not isinstance(e, ObservationBaseEvent):
                 return
-            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._state.waiting_actions():
                 return
             pending, self._pending_reactions = self._pending_reactions, []
             for reaction in pending:
@@ -2353,8 +2353,13 @@ class LocalConversation(BaseConversation):
         """
         checked = check_reaction_emoji(emoji)
         with self._state:
+            # The user may react to a message the agent no longer sees, so
+            # this walks the active branch back from the end, only as far as
+            # the message (or the agent's latest one), never the whole log.
             target = find_reaction_target(
-                self._state.active_branch(), target_event_id, source="user"
+                self._state.walk_back(until=target_event_id),
+                target_event_id,
+                source="user",
             )
             ending, clipped = reaction_target_text(target)
             event = ReactionEvent(
@@ -2365,7 +2370,7 @@ class LocalConversation(BaseConversation):
                 target_text_ending=ending,
                 target_text_clipped=clipped,
             )
-            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._state.waiting_actions():
                 self._pending_reactions.append(event)
             else:
                 # Stamp here, as the log will, so the caller gets the event as

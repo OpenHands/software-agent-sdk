@@ -79,9 +79,9 @@ def test_default_target_is_the_latest_message_from_the_other_side():
     )
     events = [first, answer, second]
 
-    assert find_reaction_target(events, None, source="agent") is second
-    assert find_reaction_target(events, None, source="user") is answer
-    assert find_reaction_target(events, first.id, source="agent") is first
+    assert find_reaction_target(reversed(events), None, source="agent") is second
+    assert find_reaction_target(reversed(events), None, source="user") is answer
+    assert find_reaction_target(reversed(events), first.id, source="agent") is first
 
 
 def test_the_agents_finish_counts_as_its_answer():
@@ -101,8 +101,14 @@ def test_the_agents_finish_counts_as_its_answer():
         llm_response_id="resp-1",
     )
 
-    assert find_reaction_target([question, finish], None, source="user") is finish
-    assert find_reaction_target([question, finish], finish.id, source="user") is finish
+    assert (
+        find_reaction_target(reversed([question, finish]), None, source="user")
+        is finish
+    )
+    assert (
+        find_reaction_target(reversed([question, finish]), finish.id, source="user")
+        is finish
+    )
 
 
 def test_target_must_be_a_message():
@@ -110,11 +116,11 @@ def test_target_must_be_a_message():
     events: list[Event] = [_message("agent", "hi"), other]
 
     with pytest.raises(ValueError, match="not a message"):
-        find_reaction_target(events, other.id, source="user")
+        find_reaction_target(reversed(events), other.id, source="user")
     with pytest.raises(ValueError, match="No message"):
-        find_reaction_target(events, "missing", source="user")
+        find_reaction_target(reversed(events), "missing", source="user")
     with pytest.raises(ValueError, match="no user message"):
-        find_reaction_target(events, None, source="agent")
+        find_reaction_target(reversed(events), None, source="agent")
 
 
 def test_reaction_round_trips_as_an_event():
@@ -413,3 +419,104 @@ def test_the_agents_own_reaction_is_not_repeated_to_it(conversation):
 
     assert not any("You reacted" in text for text in texts)
     assert any("Reacted :eyes:" in text for text in texts)
+
+
+# Lookups stay off the whole log (it can hold 60k+ events)
+
+
+def _long_history(conversation, n: int = 400) -> list[MessageEvent]:
+    messages = [
+        _message("agent" if i % 2 else "user", f"message {i}") for i in range(n)
+    ]
+    for message in messages:
+        conversation.state.append_event(message)
+    return messages
+
+
+def _count_reads(conversation) -> list[int]:
+    log = conversation.state._events
+    reads: list[int] = []
+    read = log._get_single_item
+
+    def counted(idx):
+        reads.append(int(idx))
+        return read(idx)
+
+    log._get_single_item = counted
+    return reads
+
+
+def _no_whole_branch():
+    return patch(
+        "openhands.sdk.conversation.state.ConversationState.active_branch",
+        side_effect=AssertionError("read the whole branch"),
+    )
+
+
+def test_the_users_reaction_reads_back_only_as_far_as_the_message(conversation):
+    messages = _long_history(conversation)
+    reads = _count_reads(conversation)
+
+    with _no_whole_branch():
+        latest = conversation.react("+1")
+        older = conversation.react("heart", messages[-20].id)
+
+    assert latest.target_event_id == messages[-1].id
+    assert older.target_event_id == messages[-20].id
+    # One read for the latest; for the older one, the reaction just saved and
+    # the 20 messages back to it. Each is answered, so nothing is waiting:
+    # waiting_actions stops at the agent's latest message.
+    assert len(reads) < 40
+
+
+def test_the_agents_reaction_looks_only_at_what_it_sees(conversation):
+    messages = _long_history(conversation)
+    conversation.state.view  # the agent's context, kept up to date as it goes
+
+    with _no_whole_branch():
+        latest = ReactionExecutor()(ReactAction(emoji="eyes"), conversation)
+        by_id = ReactionExecutor()(
+            ReactAction(emoji="eyes", message_id=messages[3].id), conversation
+        )
+
+    assert latest.target_event_id == messages[-2].id  # the latest user message
+    assert by_id.target_event_id == messages[3].id
+
+
+def test_a_reaction_condensed_out_of_view_is_not_the_agents_to_make(conversation):
+    question = _user_message(conversation)
+    conversation.state.append_event(_message("agent", "On it."))
+    conversation.state.view.events = [
+        e for e in conversation.state.view.events if e.id != question.id
+    ]
+
+    observation = ReactionExecutor()(
+        ReactAction(emoji="eyes", message_id=question.id), conversation
+    )
+
+    assert observation.is_error
+    assert "No message" in observation.text
+
+
+def test_a_held_reaction_reads_only_the_latest_batch(conversation):
+    _long_history(conversation)
+    emitted: list[Event] = []
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        side_effect=lambda messages, **kw: _react_call(),
+    ):
+        conversation.agent.step(conversation, on_event=emitted.append)
+    call = next(e for e in emitted if isinstance(e, ActionEvent))
+    result = next(e for e in emitted if isinstance(e, ObservationEvent))
+    conversation._on_event(call)
+    reads = _count_reads(conversation)
+
+    with _no_whole_branch():
+        held = conversation.react("heart")
+        assert [a.id for a in conversation.state.waiting_actions()] == [call.id]
+        conversation._on_event(result)
+        assert conversation.state.waiting_actions() == []
+
+    assert held.parent_id is None
+    assert conversation.state.events[-1].id == held.id
+    assert len(reads) < 20
