@@ -52,7 +52,9 @@ _TMUX_POOL_RECOVERY_MESSAGE = (
 
 _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "no server running",
+    "server exited unexpectedly",
     "can't find session",
+    "can't find pane",
     "could not find window_id",
     "could not find pane_id",
 )

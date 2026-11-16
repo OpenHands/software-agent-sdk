@@ -7,6 +7,8 @@ import libtmux
 import libtmux.common
 import pytest
 
+from openhands.tools.terminal.definition import TerminalAction
+from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 from openhands.tools.terminal.terminal.tmux_terminal import run_tmux_commands
 
@@ -109,3 +111,42 @@ def test_batches_are_sized_in_utf8_bytes():
         server.kill()
 
     assert {name: environment[name] for name in values} == values
+
+
+@pytest.fixture
+def executor(tmp_path):
+    executor = TerminalExecutor(working_dir=str(tmp_path))
+    yield executor
+    executor.close()
+
+
+def test_command_runs_in_few_tmux_processes(executor, monkeypatch):
+    executor(TerminalAction(command="echo warm"))
+    commands: list[str] = []
+    real_init = libtmux.common.tmux_cmd.__init__
+
+    def recording_init(self, *args, **kwargs):
+        commands.append(next(a for a in args if not str(a).startswith("-")))
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(libtmux.common.tmux_cmd, "__init__", recording_init)
+    observation = executor(TerminalAction(command="echo counted"))
+
+    assert "counted" in observation.text
+    # Each tmux process stalls the server's other threads while it is spawned;
+    # a command used to take 11. How often the screen is polled depends on
+    # timing, so only the rest is counted.
+    assert len([c for c in commands if c != "capture-pane"]) <= 3
+
+
+def test_command_starting_with_a_dash_runs(executor):
+    observation = executor(TerminalAction(command="-not-a-command", timeout=10))
+
+    assert observation.exit_code == 127
+
+
+def test_command_ending_in_semicolon_runs(executor):
+    observation = executor(TerminalAction(command="echo semicolon_end;"))
+
+    assert observation.exit_code == 0
+    assert "semicolon_end" in observation.text
