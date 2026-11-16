@@ -1,7 +1,7 @@
 # state.py
 import json
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
@@ -24,6 +24,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    MessageEvent,
     ObservationEvent,
     UserRejectObservation,
 )
@@ -410,6 +411,47 @@ class ConversationState(OpenHandsModel):
         ``limit`` returns just the last ``limit`` events, kept O(limit).
         """
         return self._events.path_to_root(self._resolve_active_leaf(), limit=limit)
+
+    def walk_back(self, until: EventID | None = None) -> Iterator[Event]:
+        """The active branch newest first, read only as far as the caller goes.
+
+        With ``until``, the walk ends at that event, or as soon as it is behind
+        it when it is not on the active branch (see ``EventLog.walk_back``).
+        """
+        return self._events.walk_back(self._resolve_active_leaf(), until=until)
+
+    def waiting_actions(self) -> list[ActionEvent]:
+        """The tool calls still waiting for their results, in order.
+
+        Like ``get_unmatched_actions`` on the active branch, but it reads back
+        only through the agent's latest batch of tool calls, never the whole
+        log: a step answers its calls before the agent samples again. The walk
+        ends after that batch, or at the agent's latest message (a step with
+        no tool calls) when no call came after it.
+        """
+        observed_action_ids: set[EventID] = set()
+        observed_tool_call_ids: set[str] = set()
+        waiting: list[ActionEvent] = []
+        in_batch = False
+        for event in self.walk_back():
+            if isinstance(event, ActionEvent):
+                in_batch = True
+                if (
+                    event.action is not None
+                    and event.id not in observed_action_ids
+                    and event.tool_call_id not in observed_tool_call_ids
+                ):
+                    waiting.append(event)
+                continue
+            if in_batch or (
+                isinstance(event, MessageEvent) and event.source == "agent"
+            ):
+                break
+            if isinstance(event, (ObservationEvent, UserRejectObservation)):
+                observed_action_ids.add(event.action_id)
+            elif isinstance(event, AgentErrorEvent):
+                observed_tool_call_ids.add(event.tool_call_id)
+        return waiting[::-1]
 
     def _stamp_parent_id(self, event: Event) -> Event:
         """Return ``event`` with ``parent_id`` set to the active leaf if unset."""

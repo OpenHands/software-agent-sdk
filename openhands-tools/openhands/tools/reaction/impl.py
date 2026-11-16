@@ -35,8 +35,9 @@ class ReactionExecutor(ToolExecutor[ReactAction | UnreactAction, ReactionObserva
         removed = isinstance(action, UnreactAction)
         message_id = (action.message_id or "").strip() or None
         try:
+            # The agent can only react to a message it sees.
             target = find_reaction_target(
-                conversation.state.active_branch(), message_id, source="agent"
+                reversed(conversation.state.view.events), message_id, source="agent"
             )
         except ValueError as exc:
             return ReactionObservation.from_text(str(exc), is_error=True)

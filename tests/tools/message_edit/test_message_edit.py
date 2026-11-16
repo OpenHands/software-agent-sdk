@@ -152,9 +152,9 @@ def test_message_text_follows_the_latest_edit_after_the_message():
     second = MessageEditEvent(target_event_id=question.id, text="two")
 
     assert message_text([question], question) == QUESTION
-    assert message_text([question, first, second], question) == "two"
+    assert message_text([second, first, question], question) == "two"
     # The scan stops at the message: nothing before it is an edit of it.
-    assert message_text([first, question], question) == QUESTION
+    assert message_text([question, first], question) == QUESTION
 
 
 def test_only_the_agent_edits():
