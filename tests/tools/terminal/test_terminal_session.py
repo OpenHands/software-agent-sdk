@@ -277,7 +277,9 @@ def test_polling_starts_fast_and_backs_off_to_poll_interval(monkeypatch, termina
         )
         session.initialize()
         sleeps.clear()
-        obs = session.execute(TerminalAction(command="sleep 2.5"))
+        # Backoff reaches POLL_INTERVAL at 2s elapsed; leave several capped polls
+        # of headroom so slow terminal reads cannot finish the command first.
+        obs = session.execute(TerminalAction(command="sleep 4"))
         session.close()
 
     assert obs.metadata.exit_code == 0
