@@ -195,10 +195,11 @@ export interface ReactionEvent extends BaseEvent {
 
 /** The `openhands.tools.ask_user` tool's question payload. */
 export interface AskUserAction {
-  kind: 'AskUserAction';
+  kind: 'AskUserAction' | 'AskUserForConversationAction';
   question: string;
   options: { label: string; consequence?: string }[];
   recommended?: number | null;
+  for_conversation?: string | null;
 }
 
 /** The tool result acknowledges display; the answer arrives separately. */

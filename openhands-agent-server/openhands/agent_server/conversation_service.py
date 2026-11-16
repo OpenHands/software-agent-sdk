@@ -2708,7 +2708,11 @@ class ConversationService:
             status=info.execution_status.value,
             title=info.title,
             workspace=str(stored.workspace.working_dir),
-            isolation="worktree" if stored.worktree else "shared",
+            isolation=(
+                "shared"
+                if _same_workspace(stored.workspace, parent_stored.workspace)
+                else "worktree"
+            ),
         )
 
     async def start_project_coordinator(
