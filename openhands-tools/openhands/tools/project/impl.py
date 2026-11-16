@@ -1,9 +1,10 @@
-"""Executors for the project coordinator tools.
+"""Executors for the project tools.
 
-Both executors talk to the agent-server that runs them, through the same
+The executors talk to the agent-server that runs them, through the same
 internal URL and session key as ``start_child_conversation``. The project is
 read from the calling conversation's ``project`` tag at call time, so a
-conversation can only see and message conversations of its own project.
+conversation reaches only its own project's conversations, artifacts and
+memory.
 """
 
 import json
@@ -17,7 +18,7 @@ import httpx
 from pydantic import ValidationError
 
 from openhands.sdk.conversation.types import (
-    HELD_FOR_PERSON_STATUSES,
+    HELD_FOR_USER_STATUSES,
     PROJECT_TAG_KEY,
     PROJECTS_OFF_DETAIL,
     conversation_mention,
@@ -398,7 +399,7 @@ class MessageProjectConversationExecutor(
                     f"{action.conversation_id} is not a conversation of this project. "
                     "Use list_project_conversations to find the right id."
                 )
-            if target.execution_status in HELD_FOR_PERSON_STATUSES:
+            if target.execution_status in HELD_FOR_USER_STATUSES:
                 raise ProjectToolError(
                     _held_refusal(target_id, target.execution_status)
                 )

@@ -717,7 +717,7 @@ def test_a_coordinators_system_prompt_states_its_role(tmp_path):
     agent._initialize(state)
 
     static = agent.static_system_message
-    for tag in ("ROLE", "ROUTING", "BRIEFS", "WHAT_YOU_HEAR", "TALKING_TO_THE_PERSON"):
+    for tag in ("ROLE", "ROUTING", "BRIEFS", "WHAT_YOU_HEAR", "TALKING_TO_THE_USER"):
         assert f"<{tag}>" in static
     assert "unless the user asks you to do it here" in static
     # It routes rather than codes: no coding-workflow sections.

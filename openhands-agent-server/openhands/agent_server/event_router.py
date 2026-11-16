@@ -53,7 +53,7 @@ from openhands.agent_server.server_context import ServerContext, get_server_cont
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
-    HELD_FOR_PERSON_STATUSES,
+    HELD_FOR_USER_STATUSES,
     conversation_sender,
 )
 from openhands.sdk.errors import (
@@ -338,7 +338,7 @@ async def send_message(
         state = await event_service.get_state()
         previous_status = state.execution_status
         refusal = admission_refusal(state, from_user=False)
-        if refusal in HELD_FOR_PERSON_STATUSES:
+        if refusal in HELD_FOR_USER_STATUSES:
             raise Conflict(_HELD_DETAIL[refusal])
     outcome: MessageRunOutcome | None
     # The inner gateway route holds the lock for its whole turn; refuse before
@@ -355,7 +355,7 @@ async def send_message(
             )
         except ValueError as e:
             held = str(e)
-            if not guarded or held not in HELD_FOR_PERSON_STATUSES:
+            if not guarded or held not in HELD_FOR_USER_STATUSES:
                 raise
             outcome = cast(MessageRunOutcome, held)
     if request.run and outcome is None:

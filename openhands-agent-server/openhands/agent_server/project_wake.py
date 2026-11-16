@@ -57,7 +57,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     CONVERSATION_SENDER_PREFIX,
-    HELD_FOR_PERSON_STATUSES,
+    HELD_FOR_USER_STATUSES,
     PROJECT_TAG_KEY,
     TURN_TAG_KEY,
     conversation_sender,
@@ -188,7 +188,7 @@ async def _deliver(
             _run_when_free(coordinator_id, coordinator)
             return
         except ValueError as exc:
-            if str(exc) in HELD_FOR_PERSON_STATUSES:
+            if str(exc) in HELD_FOR_USER_STATUSES:
                 return
             if str(exc) == "inactive_service" or last:
                 raise
@@ -211,7 +211,7 @@ def _run_when_free(coordinator_id: UUID, coordinator: "EventService") -> None:
         try:
             await coordinator.run_saved_message_when_free()
         except ValueError as exc:
-            if str(exc) not in HELD_FOR_PERSON_STATUSES:
+            if str(exc) not in HELD_FOR_USER_STATUSES:
                 logger.warning(
                     "Coordinator %s did not run for an update: %s",
                     coordinator_id,
@@ -302,7 +302,7 @@ async def notify_coordinator_of_stop(
     once the server is back (the shutdown itself sends nothing).
     Returns whether a message was saved.
     """
-    if status not in HELD_FOR_PERSON_STATUSES or turn_sender is None:
+    if status not in HELD_FOR_USER_STATUSES or turn_sender is None:
         return False
     found = await _coordinator(service, member_id, project_hex)
     if found is None:
@@ -465,7 +465,7 @@ def _matched_answer(
     return None, " — ".join(part for part in (picked, words) if part)
 
 
-_ENDED = HELD_FOR_PERSON_STATUSES | {ConversationExecutionStatus.FINISHED.value}
+_ENDED = HELD_FOR_USER_STATUSES | {ConversationExecutionStatus.FINISHED.value}
 
 
 def _first_turn_start(events: Iterator[Event]) -> MessageEvent | None:

@@ -31,7 +31,6 @@ from openhands.agent_server.models import (
     StartConversationRequest,
 )
 from openhands.agent_server.persistence import ServerStores
-from openhands.agent_server.project_prompts import WORKER_GUIDANCE_MARKER
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -419,13 +418,6 @@ def _first_message(launch: _ChildLaunch) -> list[str]:
     return [c.text for c in child_service.send_message.await_args.args[0].content]
 
 
-def _system_suffix(launch: _ChildLaunch) -> str:
-    assert launch.result is not None
-    agent = launch.services[launch.result.conversation_id].get_conversation().agent
-    context = agent.agent_context
-    return (context.system_message_suffix if context else None) or ""
-
-
 @pytest.mark.asyncio
 async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
     request = StartChildConversationRequest(task="Write the docs")
@@ -435,7 +427,6 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
     )
 
     assert _child_agent(launch).prompt_preset == "project_worker"
-    assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
     header, task = _first_message(launch)
     assert header.startswith(
         f"[Sent by [Coordinator](conversation:{launch.parent_id.hex}), "
@@ -468,7 +459,7 @@ async def test_child_outside_projects_gets_no_project_guidance(tmp_path, workspa
 
     launch = await _launch_child(tmp_path, workspace_dir, request)
 
-    assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
+    assert _child_agent(launch).prompt_preset != "project_worker"
 
 
 @pytest.mark.asyncio
@@ -778,7 +769,6 @@ async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
         *PROJECT_WORKER_TOOLS,
     ]
     assert agent.prompt_preset == "project_worker"
-    assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
     assert launch.child.parent_conversation_id == launch.parent_id
     assert launch.child.title == "Login fix"
     assert launch.result.isolation == ("worktree" if git_repo else "shared")
@@ -873,7 +863,6 @@ async def test_with_projects_off_a_members_child_is_an_ordinary_child(
 
     assert launch.child is not None
     assert "project" not in launch.child.tags
-    assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
 
 
 @pytest.mark.projects_off

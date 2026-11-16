@@ -4,51 +4,11 @@ from uuid import uuid4
 
 from openhands.agent_server.project_prompts import (
     PROJECT_MEMORY_PROMPT_MAX,
-    WORKER_GUIDANCE_MARKER,
     project_context,
     sender_header,
-    without_worker_guidance,
 )
 from openhands.sdk import LLM, Agent
-from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.presets import PromptPreset
-
-
-# What earlier versions appended to a worker's suffix; a child of a parent
-# started back then inherits it.
-_LEGACY_GUIDANCE = (
-    f"{WORKER_GUIDANCE_MARKER}\n"
-    "- A project groups the conversations that work toward one goal.\n"
-    "- Your final message is your report."
-)
-
-
-def _agent(suffix: str | None) -> Agent:
-    return Agent(
-        llm=LLM(model="gpt-4o", usage_id="test-llm"),
-        tools=[],
-        agent_context=AgentContext(system_message_suffix=suffix),
-    )
-
-
-def test_inherited_guidance_is_removed_and_the_rest_kept():
-    agent = _agent(f"Use the worktree.\n\n{_LEGACY_GUIDANCE}\n\nBe brief.")
-
-    suffix = without_worker_guidance(agent).agent_context.system_message_suffix  # type: ignore[union-attr]
-
-    assert suffix == "Use the worktree.\n\nBe brief."
-
-
-def test_guidance_only_suffix_becomes_empty():
-    agent = _agent(_LEGACY_GUIDANCE)
-
-    assert without_worker_guidance(agent).agent_context.system_message_suffix is None  # type: ignore[union-attr]
-
-
-def test_agents_without_guidance_are_unchanged():
-    agent = _agent("Be brief.")
-
-    assert without_worker_guidance(agent) is agent
 
 
 def test_a_title_cannot_break_out_of_the_header():

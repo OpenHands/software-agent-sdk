@@ -88,7 +88,7 @@ def test_the_coordinator_routes_and_keeps_no_coding_workflow() -> None:
         "BRIEFS",
         "COORDINATING_WORKFLOW",
         "WHAT_YOU_HEAR",
-        "TALKING_TO_THE_PERSON",
+        "TALKING_TO_THE_USER",
         "SELF_DOCUMENTATION",
         "SECURITY",
     } <= tags

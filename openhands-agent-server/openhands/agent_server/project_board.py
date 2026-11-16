@@ -38,7 +38,7 @@ from openhands.sdk.conversation.types import (
     BOARD_TAG_KEYS,
     CONVERSATION_SENDER_PREFIX,
     GOAL_LOOP_SENDER,
-    HELD_FOR_PERSON_STATUSES,
+    HELD_FOR_USER_STATUSES,
     PROJECT_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
@@ -92,6 +92,8 @@ user message that started the turn (None when the user sent it)."""
 
 
 OnUserMessage = Callable[[str, str], Awaitable[object]]
+"""Called when the user writes in a project member, with the project id
+(hex) and the message text."""
 
 OnUserAnswer = Callable[[str, str, str | None, str | None], Awaitable[object]]
 """``(project, event_id, picked, words)`` when the user's event may answer an
@@ -101,7 +103,7 @@ message of their own. Lets a coordinator's card pass the answer on."""
 OnStopped = Callable[[str, str, str | None, str | None], Awaitable[object]]
 """``(project, status, text, turn_sender)`` when a run stops on the user:
 waiting for confirmation, paused, error or stuck (see
-:data:`~openhands.sdk.conversation.types.HELD_FOR_PERSON_STATUSES`). ``text``
+:data:`~openhands.sdk.conversation.types.HELD_FOR_USER_STATUSES`). ``text``
 says what it waits on: the pending action, the error, or the last message."""
 
 ResolutionJudge = Callable[[ResolutionState], Awaitable[ResolutionVerdict | None]]
@@ -111,6 +113,8 @@ when no judge model is available or the call failed."""
 _TURN_ACTIONS_KEPT: Final[int] = 20
 
 TurnSenderLookup = Callable[[], Awaitable[str | None]]
+"""Reads who started the current turn from the event log, for a subscriber
+that did not see the turn's first message (a server restart in between)."""
 
 ProjectsEnabled = Callable[[], Awaitable[bool]]
 """Whether the user has the ``projects`` experimental feature on right now.
@@ -118,10 +122,6 @@ ProjectsEnabled = Callable[[], Awaitable[bool]]
 The subscriber is Projects' one hook into a conversation's events, so this is
 its one check: while it is off the board is left as it is (no outcome, judge or
 reopen) and the coordinator hears nothing."""
-"""Reads who started the current turn from the event log, for a subscriber
-that did not see the turn's first message (a server restart in between)."""
-"""Called when the user writes in a project member, with the project id
-(hex) and the message text."""
 
 
 def classify_turn(text: str | None) -> TurnOutcome:
@@ -432,7 +432,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if status == ConversationExecutionStatus.RUNNING.value:
                 # Resumed: a later stop in the same turn is news again.
                 self._reported_hold = None
-            elif status in HELD_FOR_PERSON_STATUSES:
+            elif status in HELD_FOR_USER_STATUSES:
                 self._stopped(status)
                 return
         if isinstance(event, ConversationStateUpdateEvent) and _finished(event):

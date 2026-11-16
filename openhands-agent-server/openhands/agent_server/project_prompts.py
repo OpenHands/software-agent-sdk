@@ -18,21 +18,10 @@ particular to one project and one conversation:
   its project's conversations finishes a run.
 """
 
-import re
 from typing import Literal
 from uuid import UUID
 
-from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.types import conversation_mention
-
-
-WORKER_GUIDANCE_MARKER = "You are working on a project with a coordinator."
-"""First line of the worker guidance that earlier versions appended to a
-worker's system-message suffix. Its other lines are bullets, so
-:func:`without_worker_guidance` can remove the copy a child would inherit from
-a parent started back then."""
-
-_GUIDANCE_BLOCK = re.compile(re.escape(WORKER_GUIDANCE_MARKER) + r"(?:\n- [^\n]*)*")
 
 
 def _name(title: str | None, conversation_id: UUID) -> str:
@@ -41,22 +30,6 @@ def _name(title: str | None, conversation_id: UUID) -> str:
     # sanitized there (one line, no brackets, parentheses or quotes), so it
     # cannot end the header or the guidance early.
     return conversation_mention(title, conversation_id)
-
-
-def without_worker_guidance[AgentT: AgentBase](agent: AgentT) -> AgentT:
-    """``agent`` without the legacy worker guidance its suffix may carry."""
-    context = agent.agent_context
-    suffix = context.system_message_suffix if context else None
-    if context is None or not suffix or WORKER_GUIDANCE_MARKER not in suffix:
-        return agent
-    remaining = re.sub(r"\n{3,}", "\n\n", _GUIDANCE_BLOCK.sub("", suffix)).strip()
-    return agent.model_copy(
-        update={
-            "agent_context": context.model_copy(
-                update={"system_message_suffix": remaining or None}
-            )
-        }
-    )
 
 
 SenderRole = Literal["coordinator", "member", "conversation"]
@@ -161,10 +134,10 @@ def stop_header(title: str | None, conversation_id: UUID, *, status: str) -> str
     )
 
 
-PERSON_MESSAGE_PREFIX = "[Message from the user in "
-PERSON_TURN_PREFIX = "[Reply in "
+USER_MESSAGE_PREFIX = "[Message from the user in "
+USER_TURN_PREFIX = "[Reply in "
 PAUSED_PREFIX = "[Paused by the user: "
-AWARENESS_PREFIXES = (PERSON_MESSAGE_PREFIX, PERSON_TURN_PREFIX, PAUSED_PREFIX)
+AWARENESS_PREFIXES = (USER_MESSAGE_PREFIX, USER_TURN_PREFIX, PAUSED_PREFIX)
 """How the copies a coordinator gets for its awareness begin. They are saved
 without a run and do not start a turn: the board ignores them."""
 
@@ -172,7 +145,7 @@ without a run and do not start a turn: the board ignores them."""
 def user_message_header(title: str | None, conversation_id: UUID) -> str:
     """First line of the copy a coordinator gets of the user's message to a member."""
     return (
-        f"{PERSON_MESSAGE_PREFIX}{_name(title, conversation_id)}, a "
+        f"{USER_MESSAGE_PREFIX}{_name(title, conversation_id)}, a "
         "conversation in your project. For your awareness: that conversation "
         "already has it and works on it, so do not forward or repeat it. The "
         "user's words follow.]"
@@ -183,7 +156,7 @@ def user_turn_header(title: str | None, conversation_id: UUID, *, asked: bool) -
     """First line of a member's final message on a turn the user started."""
     outcome = "with a question for the user" if asked else "of a turn"
     return (
-        f"{PERSON_TURN_PREFIX}{_name(title, conversation_id)}, a conversation in your "
+        f"{USER_TURN_PREFIX}{_name(title, conversation_id)}, a conversation in your "
         f"project, to the user, who talks to it directly: its final message "
         f"{outcome} follows. For your awareness; the user has already seen "
         "it.]"

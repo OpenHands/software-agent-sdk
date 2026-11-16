@@ -177,7 +177,7 @@ _OWED_BY_JUDGMENT: Final[dict[str, Owed]] = {
 
 # Hand-offs that wait on the user, so the conversation needs them. A report
 # of a problem alone does not ask anything of the user.
-_NEEDS_PERSON: Final[frozenset[str]] = frozenset(
+_NEEDS_USER: Final[frozenset[str]] = frozenset(
     {"asks_user", "hands_off_review", "offers_choice", "asks_to_check"}
 )
 
@@ -238,7 +238,7 @@ class ResolutionVerdict(BaseModel):
     def needs_user(self) -> bool:
         """The reply waits on the user: a question, a choice, a review or a
         check of theirs."""
-        return any(self.judgments.get(name, 0.0) >= LIKELY for name in _NEEDS_PERSON)
+        return any(self.judgments.get(name, 0.0) >= LIKELY for name in _NEEDS_USER)
 
     def note(self) -> str:
         """One short line for the board: ``0.93 nothing`` style."""

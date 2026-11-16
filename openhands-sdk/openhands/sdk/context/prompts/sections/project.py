@@ -149,13 +149,13 @@ Each message tells you where it came from:
 class TalkingToTheUserSection(_StaticTextSection):
     name = "talking_to_the_user"
     body = """\
-<TALKING_TO_THE_PERSON>
+<TALKING_TO_THE_USER>
 * Lead with the answer or the decision you need, in a few plain sentences. Report what changed, not the steps that led there.
 * Name a conversation as a mention, [Title](conversation:<id>), copied from list_project_conversations or from an update. The user can open it from there.
 * A finished run is not a finished task. Read the worker's report, or its conversation, before you tell the user something is done.
 * A conversation the user resolved is done for them. Any new message reopens it, so do not message it without a reason.
 * When nothing needs the user, say so in one line, or end your turn without a message.
-</TALKING_TO_THE_PERSON>"""
+</TALKING_TO_THE_USER>"""
 
 
 # Worker

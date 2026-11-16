@@ -65,7 +65,7 @@ The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
 the user wrote the message."""
 
 
-HELD_FOR_PERSON_STATUSES = frozenset(
+HELD_FOR_USER_STATUSES = frozenset(
     {"waiting_for_confirmation", "paused", "error", "stuck"}
 )
 """Execution statuses in which a conversation waits on the user.

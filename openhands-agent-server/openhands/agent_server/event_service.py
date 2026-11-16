@@ -70,7 +70,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.conversation.types import (
     GOAL_LOOP_SENDER,
-    HELD_FOR_PERSON_STATUSES,
+    HELD_FOR_USER_STATUSES,
     ConversationCallbackType,
 )
 from openhands.sdk.credential import (
@@ -1132,7 +1132,7 @@ class EventService:
                     self._acp_internal_rerun_requested = False
                     outcome = "started" if started else "not_run"
                 except ValueError as e:
-                    if str(e) in HELD_FOR_PERSON_STATUSES:
+                    if str(e) in HELD_FOR_USER_STATUSES:
                         raise
                     # run() refused. If a run is still wrapping up (its
                     # wait_for_pending tail), the message we just appended won't
@@ -1171,7 +1171,7 @@ class EventService:
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
                 except ValueError as e:
-                    if str(e) in HELD_FOR_PERSON_STATUSES:
+                    if str(e) in HELD_FOR_USER_STATUSES:
                         raise
                     if str(e) == "conversation_already_running":
                         outcome = "queued"
@@ -1812,7 +1812,7 @@ class EventService:
 
         Args:
             refuse_pending_confirmation: Refuse to run a conversation that
-                waits on the user (:data:`HELD_FOR_PERSON_STATUSES`: waiting
+                waits on the user (:data:`HELD_FOR_USER_STATUSES`: waiting
                 for confirmation, paused, error or stuck). Running it would
                 approve pending actions, resume work the user paused, or retry
                 a failure the user has not seen, so callers acting for someone

@@ -76,7 +76,6 @@ from openhands.agent_server.project_prompts import (
     SenderRole,
     project_context,
     sender_header,
-    without_worker_guidance,
 )
 from openhands.agent_server.project_wake import (
     conversation_context,
@@ -2920,12 +2919,9 @@ class ConversationService:
             else None
         )
         suffixes = [worktree.guidance] if worktree else []
-        # The child inherits the parent's agent, and with it any legacy
-        # guidance naming the conversation that started the parent.
-        child_agent = without_worker_guidance(parent_agent)
         launched = await asyncio.to_thread(
             lambda: finalize(
-                child_agent,
+                parent_agent,
                 live_launch_runtime(
                     self.acp_skill_sourcing, enable_browser=self.enable_browser
                 ),
