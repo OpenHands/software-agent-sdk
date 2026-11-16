@@ -563,11 +563,15 @@ class TerminalSession(TerminalSessionBase):
 
     def _closed_observation(self, command: str) -> TerminalObservation:
         self.prev_status = TerminalCommandStatus.INTERRUPTED
-        output = (
-            self._strip_boundary_wrapper(self.terminal.read_screen())
-            if not self._closed
-            else ""
-        )
+        output = ""
+        if not self._closed:
+            try:
+                output = self._strip_boundary_wrapper(self.terminal.read_screen())
+            except Exception:
+                logger.debug(
+                    "Closed terminal screen is unreadable; omitting its output",
+                    exc_info=True,
+                )
         return TerminalObservation.from_text(
             text=maybe_truncate(output, truncate_after=MAX_CMD_OUTPUT_SIZE)
             + "\n[The terminal was closed before command completion. "
