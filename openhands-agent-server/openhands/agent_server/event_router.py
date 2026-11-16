@@ -42,6 +42,7 @@ from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
     SettingsStore,
+    run_store,
 )
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -399,9 +400,7 @@ reaction_router = APIRouter(
 async def require_reactions_enabled(settings_store: SettingsStore) -> None:
     """Refuse with 409 unless the user has conversation reactions on."""
     try:
-        settings = await asyncio.to_thread(
-            lambda: settings_store.load() or PersistedSettings()
-        )
+        settings = await run_store(settings_store.load) or PersistedSettings()
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
     if not is_enabled(settings.experimental_features, "conversation_reactions"):
