@@ -4,11 +4,15 @@ The agent can edit one of its earlier messages when it got answered, was
 wrong, or became wrong: it strikes the outdated part and adds a short
 `[Edit: ...]` note. The event log is append-only, so an edit never changes the
 message: the `edit_message` tool records a `MessageEditEvent`
-(`target_event_id`, `text`, `source` always `agent`) right after its
-observation, and clients show the latest edit's `text` in place of the
-message's text, marked as edited. The tool works like `str_replace`:
+(`target_event_id`, `text`, `source` always `agent`) after the call's own
+observation (usually right after; a user reaction held back while tool calls
+were open can land between them), and clients show the latest edit's `text`
+in place of the message's text, marked as edited. The tool works like
+`str_replace` over what the agent sees (`state.view`, not the whole log):
 `old_str` must occur exactly once across the agent's messages and `finish`
-answers on the active branch, each read as it stands after its latest edit.
+answers still in its view, each read as it stands after its latest edit (taken
+from its own `edit_message` results in the view). A message condensed out of
+the view cannot be edited.
 The model keeps its message as first written and sees its own call and the
 `Edited. The message now reads:` result; the `MessageEditEvent` itself never
 reaches it. A user's reaction on an edited message quotes the edited text.

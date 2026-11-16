@@ -42,7 +42,7 @@ class EditMessageObservation(Observation):
     """The result of ``edit_message``.
 
     On success it carries the edit, which the agent records as a
-    :class:`MessageEditEvent` right after this observation.
+    :class:`MessageEditEvent` after this observation, in the same step.
     """
 
     target_event_id: EventID | None = None
