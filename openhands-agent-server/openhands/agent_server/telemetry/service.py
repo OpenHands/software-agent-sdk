@@ -1,7 +1,7 @@
 """Construction and lifecycle of the process-wide telemetry sink.
 
-Mirrors the singleton pattern used by ``persistence/store.py`` so tests can
-reset process state between cases.
+The sink is process state; ``reset_telemetry_sink`` lets tests drop it between
+cases.
 
 Everything here degrades rather than fails: a missing optional dependency, an
 unconfigured exporter, or a settings-store read error all resolve to the no-op
@@ -13,6 +13,7 @@ from functools import partial
 from typing import Any
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.persistence.store import SettingsStore
 from openhands.agent_server.telemetry.factory import (
     DiagnosticEventFactory,
     build_runtime_properties,
@@ -38,18 +39,14 @@ _event_factory: DiagnosticEventFactory | None = None
 _server_started_emitted = False
 
 
-def _read_misc_settings_sync(config: Config) -> dict[str, Any]:
-    from openhands.agent_server.persistence.store import get_settings_store
-
-    # Must pass config: the store singleton is fixed by the first call, and a
-    # no-arg call here would disable the cipher process-wide.
-    settings = get_settings_store(config).load()
+def _read_misc_settings_sync(settings_store: SettingsStore) -> dict[str, Any]:
+    settings = settings_store.load()
     return dict(settings.misc_settings) if settings is not None else {}
 
 
-async def _read_decision(config: Config) -> TelemetryDecision:
+async def _read_decision(settings_store: SettingsStore) -> TelemetryDecision:
     """Resolve consent from persisted settings, off the event loop."""
-    misc = await asyncio.to_thread(_read_misc_settings_sync, config)
+    misc = await asyncio.to_thread(_read_misc_settings_sync, settings_store)
     return resolve(misc)
 
 
@@ -98,8 +95,14 @@ def _build_exporter(config: Config) -> TelemetryExporter | None:
     return None
 
 
-async def build_telemetry_sink(config: Config) -> TelemetrySink:
-    """Build the sink for ``config``, or a no-op if telemetry cannot run."""
+async def build_telemetry_sink(
+    config: Config, settings_store: SettingsStore
+) -> TelemetrySink:
+    """Build the sink for ``config``, or a no-op if telemetry cannot run.
+
+    Consent is read from ``settings_store``, the settings store of the server
+    context ``config`` belongs to.
+    """
     global _telemetry_sink, _event_factory
 
     spec = config.telemetry
@@ -133,7 +136,7 @@ async def build_telemetry_sink(config: Config) -> TelemetrySink:
         return _telemetry_sink
 
     try:
-        decision = await _read_decision(config)
+        decision = await _read_decision(settings_store)
     except Exception as exc:
         # Unreadable settings fail closed.
         logger.debug("Could not read telemetry consent: %s", type(exc).__name__)
@@ -142,7 +145,7 @@ async def build_telemetry_sink(config: Config) -> TelemetrySink:
     sink = BufferedTelemetrySink(
         exporter,
         decision=decision,
-        decision_reader=partial(_read_decision, config),
+        decision_reader=partial(_read_decision, settings_store),
         max_queue_size=spec.max_queue_size,
         event_buffer_size=spec.event_buffer_size,
         flush_delay=spec.flush_delay,

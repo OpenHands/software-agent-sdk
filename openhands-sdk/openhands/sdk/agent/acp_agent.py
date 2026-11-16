@@ -2211,6 +2211,11 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # The conversation's session for the sentinel LLM: its registry opened
+        # it, so this resolves on the portal thread as well as on the caller's.
+        session = self.llm.session_for()
+        metrics = session.metrics
+
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
@@ -2219,7 +2224,7 @@ class ACPAgent(AgentBase):
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
-                self.llm.metrics.add_cost(delta)
+                metrics.add_cost(delta)
                 cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
@@ -2229,7 +2234,7 @@ class ACPAgent(AgentBase):
             _extract_token_usage(response)
         )
         if input_tokens or output_tokens:
-            self.llm.metrics.add_token_usage(
+            metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 cache_read_tokens=cache_read,
@@ -2250,7 +2255,7 @@ class ACPAgent(AgentBase):
                 self.acp_model, input_tokens, output_tokens
             )
             if cost > 0:
-                self.llm.metrics.add_cost(cost)
+                metrics.add_cost(cost)
 
         if not cost_recorded and not input_tokens and not output_tokens:
             # gemini-cli currently returns response.usage=None and
@@ -2262,13 +2267,9 @@ class ACPAgent(AgentBase):
             )
 
         if elapsed is not None:
-            self.llm.metrics.add_response_latency(elapsed, session_id)
+            metrics.add_response_latency(elapsed, session_id)
 
-        if self.llm.telemetry._stats_update_callback is not None:
-            try:
-                self.llm.telemetry._stats_update_callback()
-            except Exception:
-                logger.debug("Stats update callback failed", exc_info=True)
+        session.telemetry.notify_stats_update()
 
     # -- Capability helpers ------------------------------------------------
 
@@ -2505,7 +2506,9 @@ class ACPAgent(AgentBase):
             # exception, which still propagates to preserve the existing
             # cleanup/re-raise contract that run()/arun() rely on.
             try:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "ACP agent failed to start"
+                )
                 on_event(
                     ConversationErrorEvent(
                         source="agent",
@@ -4088,7 +4091,7 @@ class ACPAgent(AgentBase):
                 tool_call_id=tc_id,
             )
         )
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "ACP turn finished")
 
     def _emit_turn_timeout(
         self,
@@ -4122,7 +4125,7 @@ class ACPAgent(AgentBase):
         # Close any tool cards left in flight from the timed-out attempt.
         self._cancel_inflight_tool_calls()
         on_event(MessageEvent(source="agent", llm_message=error_message))
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP prompt timed out")
 
     def _emit_turn_error(
         self,
@@ -4167,7 +4170,7 @@ class ACPAgent(AgentBase):
                 detail=error_detail,
             )
         )
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP turn failed")
 
     def _finalize_successful_turn_guarded(
         self,
@@ -4273,7 +4276,9 @@ class ACPAgent(AgentBase):
                     break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4451,7 +4456,9 @@ class ACPAgent(AgentBase):
                         break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4813,9 +4820,12 @@ class ACPAgent(AgentBase):
         # authoritative current model is persisted by
         # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
         self.llm.model = model
-        self.llm.metrics.model_name = model
-        if self.llm.metrics.accumulated_token_usage is not None:
-            self.llm.metrics.accumulated_token_usage.model = model
+        # Both ledgers carry the model name: the LLM's own and the one the
+        # conversation keeps for it (the same object outside a conversation).
+        for metrics in (self.llm.metrics, self.llm.session_for().metrics):
+            metrics.model_name = model
+            if metrics.accumulated_token_usage is not None:
+                metrics.accumulated_token_usage.model = model
         # Refresh the surfaced model state so the chip/picker
         # (``ConversationInfo.current_model_id``) reflects the switch instead
         # of the stale session-start value. ``_current_model_id`` is a

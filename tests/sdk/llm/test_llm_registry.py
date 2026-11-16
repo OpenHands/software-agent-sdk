@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
+
+
+def _llm(usage_id: str) -> LLM:
+    return LLM(model="gpt-4o", usage_id=usage_id)
 
 
 class TestLLMRegistry(unittest.TestCase):
@@ -23,19 +27,17 @@ class TestLLMRegistry(unittest.TestCase):
         # Subscribe to events
         self.registry.subscribe(callback)
 
-        # Create a mock LLM and add it to trigger notification
-        mock_llm = Mock(spec=LLM)
-        mock_llm.usage_id = "notify-service"
+        # Add an LLM to trigger notification
+        llm = _llm("notify-service")
+        self.registry.add(llm)
 
-        # Mock the RegistryEvent to avoid LLM attribute access
-        with patch(
-            "openhands.sdk.llm.llm_registry.RegistryEvent"
-        ) as mock_registry_event:
-            mock_registry_event.return_value = Mock()
-            self.registry.add(mock_llm)
-
-        # Should receive notification for the newly added LLM
+        # Should receive notification for the newly added LLM, with the
+        # session the registry keeps for its usage ID
         self.assertEqual(len(events_received), 1)
+        self.assertIs(events_received[0].llm, llm)
+        self.assertIs(
+            events_received[0].session, self.registry.sessions["notify-service"]
+        )
 
         # Test that the subscriber is set correctly
         self.assertIsNotNone(self.registry.subscriber)
@@ -67,7 +69,7 @@ def test_llm_registry_notify_exception_handling():
     # Mock the logger to capture warning messages
     with patch("openhands.sdk.llm.llm_registry.logger") as mock_logger:
         # Create a mock event
-        mock_event = Mock()
+        mock_event = MagicMock()
 
         # This should handle the exception and log a warning (lines 146-147)
         registry.notify(mock_event)
@@ -82,26 +84,16 @@ def test_llm_registry_list_usage_ids():
 
     registry = LLMRegistry()
 
-    # Create mock LLM objects
-    mock_llm1 = Mock(spec=LLM)
-    mock_llm1.usage_id = "service1"
-    mock_llm2 = Mock(spec=LLM)
-    mock_llm2.usage_id = "service2"
+    # Add some LLMs using the new API
+    registry.add(_llm("service1"))
+    registry.add(_llm("service2"))
 
-    # Mock the RegistryEvent to avoid LLM attribute access
-    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
-        mock_registry_event.return_value = Mock()
+    # Test list_usage_ids
+    usage_ids = registry.list_usage_ids()
 
-        # Add some LLMs using the new API
-        registry.add(mock_llm1)
-        registry.add(mock_llm2)
-
-        # Test list_usage_ids
-        usage_ids = registry.list_usage_ids()
-
-        assert "service1" in usage_ids
-        assert "service2" in usage_ids
-        assert len(usage_ids) == 2
+    assert "service1" in usage_ids
+    assert "service2" in usage_ids
+    assert len(usage_ids) == 2
 
 
 def test_llm_registry_remove_method():
@@ -109,12 +101,7 @@ def test_llm_registry_remove_method():
 
     registry = LLMRegistry()
 
-    mock_llm = Mock(spec=LLM)
-    mock_llm.usage_id = "service1"
-
-    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
-        mock_registry_event.return_value = Mock()
-        registry.add(mock_llm)
+    registry.add(_llm("service1"))
 
     assert "service1" in registry.list_usage_ids()
 
@@ -144,28 +131,19 @@ def test_llm_registry_add_method():
     """Test the new add() method for LLMRegistry."""
     registry = LLMRegistry()
 
-    # Create a mock LLM
-    mock_llm = Mock(spec=LLM)
-    mock_llm.usage_id = "test-service"
-    service_id = mock_llm.usage_id
+    llm = _llm("test-service")
+    service_id = llm.usage_id
 
-    # Mock the RegistryEvent to avoid LLM attribute access
-    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
-        mock_registry_event.return_value = Mock()
+    # Test adding an LLM
+    registry.add(llm)
 
-        # Test adding an LLM
-        registry.add(mock_llm)
-
-        # Verify the LLM was added
-        assert service_id in registry.usage_to_llm
-        assert registry.usage_to_llm[service_id] is mock_llm
-
-        # Verify RegistryEvent was called
-        mock_registry_event.assert_called_once_with(llm=mock_llm)
+    # Verify the LLM was added
+    assert service_id in registry.usage_to_llm
+    assert registry.usage_to_llm[service_id] is llm
 
     # Test that adding the same usage_id raises ValueError
     with unittest.TestCase().assertRaises(ValueError) as context:
-        registry.add(mock_llm)
+        registry.add(llm)
 
     assert "already exists in registry" in str(context.exception)
 
@@ -174,21 +152,15 @@ def test_llm_registry_get_method():
     """Test the new get() method for LLMRegistry."""
     registry = LLMRegistry()
 
-    # Create a mock LLM
-    mock_llm = Mock(spec=LLM)
-    mock_llm.usage_id = "test-service"
-    service_id = mock_llm.usage_id
+    llm = _llm("test-service")
+    service_id = llm.usage_id
 
-    # Mock the RegistryEvent to avoid LLM attribute access
-    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
-        mock_registry_event.return_value = Mock()
+    # Add the LLM first
+    registry.add(llm)
 
-        # Add the LLM first
-        registry.add(mock_llm)
-
-        # Test getting the LLM
-        retrieved_llm = registry.get(service_id)
-        assert retrieved_llm is mock_llm
+    # Test getting the LLM
+    retrieved_llm = registry.get(service_id)
+    assert retrieved_llm is llm
 
     # Test getting non-existent service raises KeyError
     with unittest.TestCase().assertRaises(KeyError) as context:
@@ -201,33 +173,26 @@ def test_llm_registry_add_get_workflow():
     """Test the complete add/get workflow."""
     registry = LLMRegistry()
 
-    # Create mock LLMs
-    llm1 = Mock(spec=LLM)
-    llm1.usage_id = "service1"
-    llm2 = Mock(spec=LLM)
-    llm2.usage_id = "service2"
+    llm1 = _llm("service1")
+    llm2 = _llm("service2")
 
-    # Mock the RegistryEvent to avoid LLM attribute access
-    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
-        mock_registry_event.return_value = Mock()
+    # Add multiple LLMs
+    registry.add(llm1)
+    registry.add(llm2)
 
-        # Add multiple LLMs
-        registry.add(llm1)
-        registry.add(llm2)
+    # Verify we can retrieve them
+    assert registry.get("service1") is llm1
+    assert registry.get("service2") is llm2
 
-        # Verify we can retrieve them
-        assert registry.get("service1") is llm1
-        assert registry.get("service2") is llm2
+    # Verify list_usage_ids works
+    usage_ids = registry.list_usage_ids()
+    assert "service1" in usage_ids
+    assert "service2" in usage_ids
+    assert len(usage_ids) == 2
 
-        # Verify list_usage_ids works
-        usage_ids = registry.list_usage_ids()
-        assert "service1" in usage_ids
-        assert "service2" in usage_ids
-        assert len(usage_ids) == 2
-
-        # Verify usage_id is set correctly
-        assert llm1.usage_id == "service1"
-        assert llm2.usage_id == "service2"
+    # Verify usage_id is set correctly
+    assert llm1.usage_id == "service1"
+    assert llm2.usage_id == "service2"
 
 
 def test_llm_registry_ensures_independent_metrics_for_copied_llms():
@@ -251,21 +216,18 @@ def test_llm_registry_ensures_independent_metrics_for_copied_llms():
         usage_id="original-llm",
     )
 
-    # Copy with updated usage_id (simulates creating a condenser LLM)
-    # Note: model_copy() does a shallow copy of private attributes by default,
-    # so the copied LLM shares the same metrics object as the original
+    # Copy with updated usage_id (simulates creating a condenser LLM). A copy
+    # made for another usage ID starts its own session, so it never shares the
+    # original's metrics, registered or not.
     copied = original.model_copy(update={"usage_id": "copied-llm"})
+    assert original.metrics is not copied.metrics
 
-    # Before registering, they share the same metrics (this is the bug we're fixing)
-    assert original.metrics is copied.metrics
-
-    # Register both LLMs - the registry should detect and fix shared metrics
     registry.add(original)
     registry.add(copied)
 
-    # After registering, they should have different metrics objects
+    # They still have different metrics objects after registering
     assert original.metrics is not copied.metrics
-    assert id(original.metrics) != id(copied.metrics)
+    assert registry.sessions["original-llm"] is not registry.sessions["copied-llm"]
 
     # Verify metrics are independent - changes to one don't affect the other
     original.metrics.add_cost(1.0)
@@ -294,19 +256,37 @@ def test_llm_registry_ensures_independent_telemetry_for_copied_llms():
         usage_id="original-llm",
     )
 
-    # Copy with updated usage_id
+    # Copy with updated usage_id: its own session means its own telemetry
     copied = original.model_copy(update={"usage_id": "copied-llm"})
-
-    # Before registering, they share the same telemetry
-    assert original.telemetry is copied.telemetry
+    assert original.telemetry is not copied.telemetry
+    assert copied.telemetry.metrics is copied.metrics
 
     # Register both LLMs
     registry.add(original)
     registry.add(copied)
 
-    # After registering, they should have different telemetry objects
+    # They still have different telemetry objects after registering
     assert original.telemetry is not copied.telemetry
-    assert id(original.telemetry) != id(copied.telemetry)
+
+
+def test_llm_registry_separates_llms_that_share_a_session():
+    """Two usage IDs never get one session, however the LLMs came to share it.
+
+    A plain copy keeps the session of its source. Renaming it afterwards is
+    the one way left to bring a shared session to the registry under two IDs.
+    """
+    registry = LLMRegistry()
+    original = _llm("original-llm")
+    renamed = original.model_copy()
+    renamed.usage_id = "renamed-llm"
+    assert renamed.metrics is original.metrics
+
+    registry.add(original)
+    registry.add(renamed)
+
+    assert registry.sessions["original-llm"] is not registry.sessions["renamed-llm"]
+    original.metrics.add_cost(1.0)
+    assert renamed.metrics.accumulated_cost == 0.0
 
 
 def test_llm_registry_does_not_reset_metrics_for_independent_llms():

@@ -156,6 +156,10 @@ class AgentErrorEvent(ObservationBaseEvent):
         default=None,
         description="Safe structured error semantics for API consumers.",
     )
+    recovery_reason: Literal["server_restart"] | None = Field(
+        default=None,
+        description="Why this outcome was synthesized during recovery, when known.",
+    )
 
     validation_errors: list[ToolValidationError] | None = Field(
         default=None,

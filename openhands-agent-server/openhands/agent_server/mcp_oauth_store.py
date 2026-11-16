@@ -18,7 +18,7 @@ from typing import Any, NamedTuple, SupportsFloat
 import httpx
 
 from openhands.agent_server.config import Config, WebhookSpec
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings, SettingsStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
@@ -115,12 +115,14 @@ class MCPSettingsOAuthTokenStore:
 
     def __init__(
         self,
+        settings_store: SettingsStore,
         *,
         seed_mcp_config: Mapping[str, MCPServer] | None = None,
         cipher: Cipher | None = None,
         write_back_webhooks: Sequence[WebhookSpec] = (),
         session_api_key: str | None = None,
     ):
+        self._settings_store = settings_store
         self._seeded: dict[str, MCPOAuthState] = {}
         self._seeded_client_ids: dict[str, str | None] = {}
         self._seeded_lock = threading.Lock()
@@ -151,8 +153,7 @@ class MCPSettingsOAuthTokenStore:
         if field is None:
             return None, None
 
-        store = get_settings_store()
-        settings = store.load()
+        settings = self._settings_store.load()
         mcp_config = settings.agent_settings.mcp_config if settings else {}
         match = _find_matching_oauth_server(mcp_config, key)
         if match is None:
@@ -226,7 +227,7 @@ class MCPSettingsOAuthTokenStore:
             )
             return settings
 
-        get_settings_store().update(apply_update)
+        self._settings_store.update(apply_update)
         for server_url, state in seeded_updates:
             self._write_back_seeded_state(server_url, state)
 
@@ -330,7 +331,7 @@ class MCPSettingsOAuthTokenStore:
             )
             return settings
 
-        get_settings_store().update(apply_update)
+        self._settings_store.update(apply_update)
         return deleted
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
@@ -461,6 +462,7 @@ class SettingsBackedMCPToolProvider:
     the user.
     """
 
+    settings_store: SettingsStore
     cipher: Cipher | None = None
     webhooks: tuple[WebhookSpec, ...] = ()
     session_api_key: str | None = None
@@ -477,6 +479,7 @@ class SettingsBackedMCPToolProvider:
             mcp_config,
             timeout,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(
+                self.settings_store,
                 seed_mcp_config=mcp_config,
                 cipher=self.cipher,
                 write_back_webhooks=self.webhooks,
@@ -489,10 +492,9 @@ class SettingsBackedMCPToolProvider:
 
 
 def create_settings_backed_mcp_tool_provider(
-    config: Config,
+    config: Config, settings_store: SettingsStore
 ) -> SettingsBackedMCPToolProvider:
-    """Initialize settings storage and return the agent-server MCP provider."""
-    get_settings_store(config)
+    """Return the agent-server MCP provider that persists to ``settings_store``."""
     if config.secret_key is None:
         logger.warning(
             "Saving MCP OAuth state without encryption "
@@ -500,6 +502,7 @@ def create_settings_backed_mcp_tool_provider(
             "production deployments."
         )
     return SettingsBackedMCPToolProvider(
+        settings_store=settings_store,
         cipher=config.cipher,
         webhooks=tuple(config.webhooks),
         session_api_key=(

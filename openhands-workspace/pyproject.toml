@@ -8,7 +8,7 @@ dependencies = [
     "openhands-sdk",
     "openhands-agent-server",
     "certifi>=2026.10.19",  # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2
-    "pydantic>=2.13.5",
+    "pydantic>=2.14.3",
 ]
 
 [project.optional-dependencies]

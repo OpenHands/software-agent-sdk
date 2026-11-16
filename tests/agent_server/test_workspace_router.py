@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
@@ -28,6 +29,7 @@ def client_factory(tmp_path):
         workspace_dir=None,
     ) -> TestClient:
         app = FastAPI()
+        add_domain_error_handler(app)
         app.include_router(workspace_router, prefix="/api")
 
         ws = workspace_dir if workspace_dir is not None else tmp_path
@@ -206,6 +208,7 @@ def test_non_local_workspace_returns_404(tmp_path):
 
     cid = uuid4()
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(workspace_router, prefix="/api")
 
     event_service = AsyncMock(spec=EventService)

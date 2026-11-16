@@ -100,7 +100,7 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
     --check longdesc_full_in_prompt eq false --check longdesc_points_to_invoke_skill eq true \
     --check longdesc_leaks_location eq false
   ```
-  Expected: the description is cut at 1024 characters with `Call invoke_skill(name="longdesc") to load the full skill`, and no file location is shown (`to_prompt` omits `<location>` on purpose). `Skill` truncates a long description already when the `SKILL.md` is loaded; since #6644 that notice also points at `invoke_skill` and not at the file.
+  Expected: the description is cut at 1024 characters with `Call invoke_skill(name="longdesc") to load the full skill`, and no file location is shown (`to_prompt` omits `<location>` on purpose). `Skill` truncates a long description already when the `SKILL.md` is loaded, and that notice points at `invoke_skill`, not at the file.
 - **Path rules (`S07.path-rules`).** A `paths: [src/**/*.py]` AgentSkills rule and a nested `docs/AGENTS.md`; the scripted agent views `README.md`, `src/app/main.py`, `src/app/other.py` and `docs/guide.md` with `file_editor`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -185,7 +185,7 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk exec --expect-output "DEMO 1: Installing local skills" -- python examples/05_skills_and_plugins/03_managing_installed_skills/main.py
   ```
-  Known failure (reproduced 2026-11-03, not yet filed): the example stops in DEMO 3 with `KeyError: 'skills'`. It reads `.installed.json` as `metadata["skills"][name]`, but the install store now records every kind under `"extensions"` (`InstallationMetadata` in `openhands-sdk/openhands/sdk/extensions/installation/metadata.py` reads `skills` and `plugins` only as legacy keys). The SDK calls themselves work; the example's own asserts are stale, and no CI job runs it (see the gotcha below).
+  Known failure (reproduced 2026-11-12, [#6248](https://github.com/OpenHands/software-agent-sdk/issues/6248)): the example stops in DEMO 3 with `KeyError: 'skills'`. It reads `.installed.json` as `metadata["skills"][name]`, but the install store now records every kind under `"extensions"` (`InstallationMetadata` in `openhands-sdk/openhands/sdk/extensions/installation/metadata.py` reads `skills` and `plugins` only as legacy keys). The SDK calls themselves work; the example's own asserts are stale, and no CI job runs it (see the gotcha below).
 - **Mixed marketplace example (`S07.marketplace-install`).** Network; `--install` writes to the run's install store (its `HOME` and `OH_PERSISTENCE_DIR` are private).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

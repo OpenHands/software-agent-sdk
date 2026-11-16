@@ -3,17 +3,28 @@ from types import MappingProxyType
 from typing import ClassVar
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
 
+# (log file name, log data, usage ID, model name)
+LogCompletionsCallback = Callable[[str, str, str, str], None]
+
 
 class RegistryEvent(BaseModel):
     llm: LLM
+    session: LLMSession | None = Field(
+        default=None,
+        description=(
+            "The session the registry keeps for the LLM's usage ID. Without "
+            "one the event is about the LLM's own session."
+        ),
+    )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         arbitrary_types_allowed=True,
@@ -21,15 +32,16 @@ class RegistryEvent(BaseModel):
 
 
 class LLMRegistry:
-    """A minimal LLM registry for managing LLM instances by usage ID.
+    """The LLMs of one conversation and their sessions, by role (usage ID).
 
-    This registry provides a simple way to manage multiple LLM instances,
+    The registry maps each usage ID to the LLM that currently fills that role,
     avoiding the need to recreate LLMs with the same configuration.
 
-    The registry also ensures that each registered LLM has independent metrics,
-    preventing metrics from being shared between LLMs that were created via
-    model_copy(). This is important for scenarios like creating a condenser LLM
-    from an agent LLM, where each should track its own usage independently.
+    It also keeps one :class:`LLMSession` per usage ID. A session holds what the
+    role accumulates (usage metrics, telemetry callbacks), so it outlives the
+    LLM object in the slot: replacing or re-adding the LLM for a usage ID keeps
+    the usage recorded so far. Two LLMs under different usage IDs never share a
+    session, including when one was created from the other via model_copy().
     """
 
     registry_id: str
@@ -47,8 +59,9 @@ class LLMRegistry:
         self.registry_id = str(uuid4())
         self.retry_listener = retry_listener
         self._usage_to_llm: dict[str, LLM] = {}
-        # Track metrics object IDs to detect shared metrics
-        self._metrics_ids: set[int] = set()
+        self._sessions: dict[str, LLMSession] = {}
+        self._stats_update_callback: Callable[[], None] | None = None
+        self._log_completions_callback: LogCompletionsCallback | None = None
         self.subscriber: Callable[[RegistryEvent], None] | None = None
 
     def subscribe(self, callback: Callable[[RegistryEvent], None]) -> None:
@@ -77,41 +90,61 @@ class LLMRegistry:
 
         return MappingProxyType(self._usage_to_llm)
 
-    def _ensure_independent_metrics(self, llm: LLM) -> None:
-        """Ensure the LLM has independent metrics not shared with other LLMs.
+    @property
+    def sessions(self) -> MappingProxyType[str, LLMSession]:
+        """The sessions by usage ID (read-only live view).
 
-        When LLMs are created via model_copy(), Pydantic does a shallow copy of
-        private attributes by default, causing the original and copied LLM to
-        share the same Metrics object. This method detects such sharing and
-        resets the metrics to ensure each LLM tracks its own usage independently.
-
-        Args:
-            llm: The LLM instance to check and potentially reset metrics for.
+        A usage ID keeps its session for the life of the registry, also while
+        no LLM is registered under it.
         """
-        # Access the metrics to trigger lazy initialization if needed
-        metrics = llm.metrics
-        metrics_id = id(metrics)
+        return MappingProxyType(self._sessions)
 
-        # Check if this metrics object is already tracked by another LLM
-        if metrics_id in self._metrics_ids:
-            logger.debug(
-                f"[LLM registry {self.registry_id}]: Detected shared metrics for "
-                f"usage '{llm.usage_id}', resetting to independent metrics"
-            )
-            llm.reset_metrics()
-            # Get the new metrics ID after reset
-            metrics_id = id(llm.metrics)
+    def set_stats_update_callback(self, callback: Callable[[], None] | None) -> None:
+        """Call ``callback`` whenever any session of this registry records usage.
 
-        # Track this metrics object ID
-        self._metrics_ids.add(metrics_id)
+        It applies to the sessions the registry has now and to those it opens
+        later, so it does not need setting again when an LLM is switched.
+        """
+        self._stats_update_callback = callback
+        for session in self._sessions.values():
+            session.telemetry.set_stats_update_callback(callback)
+
+    def set_log_completions_callback(
+        self, callback: LogCompletionsCallback | None
+    ) -> None:
+        """Send completion logs to ``callback`` instead of writing them to disk.
+
+        ``callback`` receives the log file name, the log data, the usage ID and
+        the name of the model that was called. Like
+        :meth:`set_stats_update_callback`, it covers present and future
+        sessions; LLMs with ``log_completions`` off produce no logs.
+        """
+        self._log_completions_callback = callback
+        for usage_id, session in self._sessions.items():
+            self._apply_log_completions_callback(usage_id, session)
+
+    def _apply_log_completions_callback(
+        self, usage_id: str, session: LLMSession
+    ) -> None:
+        callback = self._log_completions_callback
+        telemetry = session.telemetry
+        if callback is None:
+            telemetry.set_log_completions_callback(None)
+            return
+
+        def log_completion(filename: str, log_data: str) -> None:
+            callback(filename, log_data, usage_id, telemetry.model_name)
+
+        telemetry.set_log_completions_callback(log_completion)
 
     def add(self, llm: LLM) -> None:
         """Add an LLM instance to the registry.
 
-        This method ensures that the LLM has independent metrics before
-        registering it. If the LLM's metrics are shared with another
-        registered LLM (e.g., due to model_copy()), fresh metrics will
-        be created automatically.
+        The LLM records in the session of its usage ID from then on. The first
+        LLM added for a usage ID brings its own session along (a new one if it
+        already serves another conversation). The registry keeps that session
+        afterwards, so an LLM added later for the same usage ID continues from
+        the metrics already recorded.
 
         Args:
             llm: The LLM instance to register.
@@ -128,11 +161,27 @@ class LLMRegistry:
             )
             raise ValueError(message)
 
-        # Ensure this LLM has independent metrics before registering
-        self._ensure_independent_metrics(llm)
+        session = self._sessions.get(usage_id)
+        if session is None:
+            session = llm.session
+            # One session per role: an LLM whose session is spoken for (it
+            # serves another conversation, or shares it with a registered LLM
+            # it was copied from) gets a new one here.
+            if llm._registered_session() is not None or any(
+                session is other for other in self._sessions.values()
+            ):
+                session = LLMSession(llm)
+            self._sessions[usage_id] = session
+            # Callbacks the LLM already carries stay unless the registry has
+            # its own to install.
+            if self._stats_update_callback is not None:
+                session.telemetry.set_stats_update_callback(self._stats_update_callback)
+            if self._log_completions_callback is not None:
+                self._apply_log_completions_callback(usage_id, session)
+        llm._join_registry_session(session)
 
         self._usage_to_llm[usage_id] = llm
-        self.notify(RegistryEvent(llm=llm))
+        self.notify(RegistryEvent(llm=llm, session=session))
         logger.debug(
             f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )
@@ -165,18 +214,14 @@ class LLMRegistry:
 
         Unlike :meth:`add` and :meth:`get`, this is a no-op when ``usage_id``
         is absent, so callers can invalidate a lazily-cached slot without
-        first checking for it.
+        first checking for it. The session of the usage ID stays, so the usage
+        it recorded is not lost.
 
         Args:
             usage_id: Usage slot to drop from the registry.
         """
         llm = self._usage_to_llm.pop(usage_id, None)
         if llm is not None:
-            # The slot no longer holds this instance, so its metrics are no
-            # longer shared with anyone here. Keeping the id would make a later
-            # add() mistake the same instance for a shared-metrics copy and
-            # reset the usage it has already accumulated.
-            self._metrics_ids.discard(id(llm.metrics))
             logger.debug(
                 f"[LLM registry {self.registry_id}]: Removed LLM for usage {usage_id}"
             )
