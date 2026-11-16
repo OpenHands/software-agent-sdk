@@ -117,6 +117,38 @@ def mark_socket_owner(server: libtmux.Server) -> None:
         )
 
 
+# tmux rejects a client message above ~16 KiB ("command too long").
+_TMUX_BATCH_BYTES = 8000
+
+
+def run_tmux_commands(server: libtmux.Server, commands: list[list[str]]) -> None:
+    """Run tmux commands in as few tmux processes as the size limit allows.
+
+    tmux reads an argument ending in ``;`` as a command separator, so a command
+    with such an argument runs on its own, exactly as a single call would.
+    """
+    batch: list[str] = []
+
+    def run(args: list[str]) -> None:
+        if args:
+            result = server.cmd(*args)
+            if result.stderr:
+                raise ValueError(f"tmux {args[0]} stderr: {result.stderr}")
+
+    for command in commands:
+        if any(arg.endswith(";") for arg in command):
+            run(batch[:-1])
+            batch = []
+            run(command)
+            continue
+        size = sum(len(os.fsencode(a)) + 1 for a in batch + command)
+        if batch and size > _TMUX_BATCH_BYTES:
+            run(batch[:-1])
+            batch = []
+        batch += [*command, ";"]
+    run(batch[:-1])
+
+
 def _new_owned_session(
     env: Mapping[str, str],
     *,
@@ -162,8 +194,13 @@ def _new_owned_session(
         mark_socket_owner(server)
     # A tmux server starts with this process's environment rather than *env*,
     # and new windows inherit it, so unset what sanitization removed.
-    for key in os.environ.keys() - env.keys():
-        server.unset_environment(key)
+    run_tmux_commands(
+        server,
+        [
+            ["set-environment", "-g", "-u", key]
+            for key in os.environ.keys() - env.keys()
+        ],
+    )
     return server, session
 
 
@@ -241,8 +278,13 @@ class TmuxTerminal(TerminalInterface):
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
-        for k, v in env.items():
-            self.session.set_environment(k, v)
+        run_tmux_commands(
+            self.server,
+            [
+                ["set-environment", "-t", str(self.session.session_id), k, v]
+                for k, v in env.items()
+            ],
+        )
 
         # Set history limit to a large number to avoid losing history
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
