@@ -26,7 +26,7 @@ a question: only the user can answer it. A ``/goal`` loop stops when the agent
 asks, rather than sending its next round over the question.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -151,12 +151,26 @@ def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
     Args:
         events: The conversation's events, oldest first (its active branch).
     """
+    return find_pending_ask_back(reversed(events))
+
+
+def find_pending_ask_back(events_newest_first: Iterable[Event]) -> PendingAsk | None:
+    """:func:`find_pending_ask` over the events newest first, in one pass.
+
+    It stops at the user's latest message or at the question, so a caller that
+    walks the log back lazily (``state.walk_back()``) reads only that far.
+    """
     asked_action_id: EventID | None = None
     # The message saved after a tap's answer closes the question, also when
     # the server delivers it for a project's coordinator, whose card the user
     # answered: that message carries the coordinator as its ``sender``.
     message_after = False
-    for event in reversed(events):
+    for event in events_newest_first:
+        if asked_action_id is not None:
+            # The question's call comes before its observation.
+            if isinstance(event, ActionEvent) and event.id == asked_action_id:
+                return _as_pending(event)
+            continue
         if is_from_user(event):
             return None
         if isinstance(event, MessageEvent) and event.source == "user":
@@ -169,12 +183,6 @@ def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
             and not event.observation.is_error
         ):
             asked_action_id = event.action_id
-            break
-    if asked_action_id is None:
-        return None
-    for event in reversed(events):
-        if isinstance(event, ActionEvent) and event.id == asked_action_id:
-            return _as_pending(event)
     return None
 
 

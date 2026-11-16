@@ -23,7 +23,8 @@ then, from its event log.
 
 import asyncio
 import weakref
-from datetime import datetime
+from collections.abc import Iterator
+from itertools import islice
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -32,7 +33,6 @@ from openhands.agent_server.event_service import (
     ConversationRunLimitExceeded,
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
-from openhands.agent_server.models import EventSortOrder
 from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_board import (
     TurnOutcome,
@@ -465,20 +465,17 @@ def _matched_answer(
     return None, " — ".join(part for part in (picked, words) if part)
 
 
-_TURN_LOOKBACK = 50
 _ENDED = HELD_FOR_PERSON_STATUSES | {ConversationExecutionStatus.FINISHED.value}
 
 
-async def latest_turn_start(event_service: "EventService") -> MessageEvent | None:
-    """The latest user message that started a turn, from the event log."""
-    page = await event_service.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP_DESC,
-        limit=_TURN_LOOKBACK,
-    )
-    start = next((e for e in page.items if starts_turn(e)), None)
+def _first_turn_start(events: Iterator[Event]) -> MessageEvent | None:
+    start = next((e for e in events if starts_turn(e)), None)
     return start if isinstance(start, MessageEvent) else None
+
+
+async def latest_turn_start(event_service: "EventService") -> MessageEvent | None:
+    """The latest user message that started a turn, read back only to it."""
+    return await event_service.scan_events(_first_turn_start)
 
 
 async def conversation_context(
@@ -486,42 +483,27 @@ async def conversation_context(
 ) -> tuple[str | None, list[str]]:
     """The conversation's first message and the requests between it and the
     current turn, oldest first, for the resolution judge."""
-    first = await event_service.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP,
-        limit=_TURN_LOOKBACK,
-    )
-    task_event = next((e for e in first.items if starts_turn(e)), None)
-    recent = await event_service.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP_DESC,
-        limit=_TURN_LOOKBACK,
-    )
-    # Newest first: the current turn's message, then the ones before it.
-    turns = [e for e in recent.items if starts_turn(e)][1:]
+    task_event = await event_service.scan_events(_first_turn_start, newest_first=False)
+
+    def latest_starts(events: Iterator[Event]) -> list[MessageEvent]:
+        # Newest first: the current turn's message, then the ones before it.
+        starts = (e for e in events if starts_turn(e))
+        return [
+            e
+            for e in islice(starts, EARLIER_REQUESTS_KEPT + 1)
+            if isinstance(e, MessageEvent)
+        ]
+
+    turns = (await event_service.scan_events(latest_starts))[1:]
     earlier = [
         text
-        for e in reversed(turns[:EARLIER_REQUESTS_KEPT])
-        if isinstance(e, MessageEvent)
-        and task_event is not None
+        for e in reversed(turns)
+        if task_event is not None
         and e.id != task_event.id
         and (text := extract_message_text(e))
     ]
-    task = (
-        extract_message_text(task_event)
-        if isinstance(task_event, MessageEvent)
-        else None
-    )
+    task = extract_message_text(task_event) if task_event is not None else None
     return task, earlier
-
-
-def _since(timestamp: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(timestamp)
-    except ValueError:
-        return None
 
 
 def _final_text(event: Event) -> str | None:
@@ -549,37 +531,43 @@ async def _reconcile_member(
     start = await latest_turn_start(member)
     if start is None or start.sender != conversation_sender(coordinator_id):
         return False
-    since = _since(start.timestamp)
-    output = await member.search_events(
-        source="agent",
-        sort_order=EventSortOrder.TIMESTAMP_DESC,
-        timestamp__gte=since,
-        limit=_TURN_LOOKBACK,
-    )
-    last = next(
-        (e for e in output.items if isinstance(e, (MessageEvent, ActionEvent))),
-        None,
-    )
+
+    def turn_output(events: Iterator[Event]) -> tuple[Event | None, str | None]:
+        """The agent's last message or action of this turn, and the latest
+        output with text, reading back no further than the turn's start."""
+        last: Event | None = None
+        for event in events:
+            if event.id == start.id:
+                break
+            if event.source != "agent" or not isinstance(
+                event, (MessageEvent, ActionEvent)
+            ):
+                continue
+            last = last or event
+            if text := _final_text(event):
+                return last, text
+        return last, None
+
+    last, text = await member.scan_events(turn_output)
     if last is None:
         return False
+
     # Delivered when the coordinator holds a message from the member saved
     # after the member's last output of this turn.
-    sent = await coordinator.search_events(
-        kind="MessageEvent",
-        source="user",
-        sort_order=EventSortOrder.TIMESTAMP_DESC,
-        timestamp__gte=_since(last.timestamp),
-        limit=_TURN_LOOKBACK,
-    )
-    if any(
-        isinstance(e, MessageEvent) and e.sender == conversation_sender(member_id)
-        for e in sent.items
-    ):
+    def delivered(events: Iterator[Event]) -> bool:
+        for event in events:
+            if event.timestamp < last.timestamp:
+                return False
+            if (
+                isinstance(event, MessageEvent)
+                and event.source == "user"
+                and event.sender == conversation_sender(member_id)
+            ):
+                return True
         return False
-    text = next(
-        (t for t in (_final_text(e) for e in output.items) if t),
-        None,
-    )
+
+    if await coordinator.scan_events(delivered):
+        return False
     logger.info(
         "Delivering a missed update from %s to coordinator %s",
         member_id,

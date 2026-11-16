@@ -3,14 +3,14 @@ import functools
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -89,7 +89,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.ask_user import (
     AskUserAnswerEvent,
     PendingAsk,
-    find_pending_ask,
+    find_pending_ask_back,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
@@ -125,6 +125,8 @@ MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 
 logger = get_logger(__name__)
+
+_T = TypeVar("_T")
 _GIT_INIT_LOCK = threading.Lock()
 
 SendMessageRunOutcome = Literal["started", "queued", "not_run"]
@@ -286,8 +288,9 @@ def admission_refusal(state: ConversationState, *, from_user: bool) -> str | Non
     status = state.execution_status
     if status == ConversationExecutionStatus.RUNNING:
         return "conversation_already_running"
-    if status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION or (
-        ConversationState.get_unmatched_actions(state.active_branch())
+    if (
+        status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        or state.waiting_actions()
     ):
         return ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value
     admitted = {ConversationExecutionStatus.IDLE, ConversationExecutionStatus.FINISHED}
@@ -792,6 +795,32 @@ class EventService:
             items.append(event)
 
         return EventPage(items=items, next_page_id=next_page_id)
+
+    def _scan_sync(
+        self, take: Callable[[Iterator[Event]], _T], newest_first: bool
+    ) -> _T:
+        events = self._events_for_read()
+        total = len(events)
+        indices = range(total - 1, -1, -1) if newest_first else range(total)
+        return take(
+            event
+            for i in indices
+            if (event := self._get_searchable_event(events, i)) is not None
+        )
+
+    async def scan_events(
+        self,
+        take: Callable[[Iterator[Event]], _T],
+        *,
+        newest_first: bool = True,
+    ) -> _T:
+        """``take`` applied to the event log, read lazily in log order.
+
+        Unlike :meth:`search_events`, whose page keeps reading until it has
+        ``limit + 1`` matches, the read ends when ``take`` stops iterating, so
+        a caller that wants the latest match reads only back to it.
+        """
+        return await asyncio.to_thread(self._scan_sync, take, newest_first)
 
     async def search_events(
         self,
@@ -2462,18 +2491,21 @@ class EventService:
         """The agent's unanswered ``ask_user`` question, from the event log.
 
         With ``before``, the question that was pending just before that event
-        (the user's message or answer that closed it). Reads the log without
-        the state lock, as :meth:`_get_agent_final_response_sync` does.
+        (the user's message or answer that closed it). Reads the log back
+        from the end only as far as the question or the user's latest message,
+        without the state lock, as :meth:`_get_agent_final_response_sync` does.
         """
         if not self._conversation:
             raise ValueError("inactive_service")
-        events = list(self._conversation._state.active_branch())
-        if before is not None:
-            index = next((i for i, e in enumerate(events) if e.id == before), None)
-            if index is None:
-                return None
-            events = events[:index]
-        return find_pending_ask(events)
+        state = self._conversation._state
+        if before is None:
+            return find_pending_ask_back(state.walk_back())
+        walk = state.walk_back(until=before)
+        if not any(event.id == before for event in walk):
+            return None  # not on the active branch
+        events = state.events.walk_back(before)
+        next(events)  # ``before`` itself
+        return find_pending_ask_back(events)
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""

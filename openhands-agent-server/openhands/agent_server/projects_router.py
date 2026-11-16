@@ -22,7 +22,7 @@ project and never lets one conversation approve or resume another's work.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -954,9 +954,11 @@ class ProjectTranscriptResponse(BaseModel):
 _TRANSCRIPT_TEXT_MAX = 4000
 
 
-def _transcript(events: list[Event], limit: int) -> list[ProjectTranscriptMessage]:
+def _transcript(
+    events_newest_first: Iterable[Event], limit: int
+) -> list[ProjectTranscriptMessage]:
     messages: list[ProjectTranscriptMessage] = []
-    for event in reversed(events):
+    for event in events_newest_first:
         if len(messages) >= limit:
             break
         if isinstance(event, MessageEvent):
@@ -1012,10 +1014,11 @@ async def read_project_conversation(
         raise NotFound("Conversation not in project")
     conversation = event_service.get_conversation()
     # Event log reads are safe without the state lock: events are append-only.
-    events = await asyncio.to_thread(conversation.state.active_branch)
-    return ProjectTranscriptResponse(
-        conversation_id=conversation_id, messages=_transcript(events, limit)
+    # The walk reads back from the end only until it has ``limit`` messages.
+    messages = await asyncio.to_thread(
+        lambda: _transcript(conversation.state.walk_back(), limit)
     )
+    return ProjectTranscriptResponse(conversation_id=conversation_id, messages=messages)
 
 
 # Artifacts

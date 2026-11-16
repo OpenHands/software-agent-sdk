@@ -10,6 +10,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import httpx
@@ -396,6 +397,40 @@ async def test_a_tap_on_the_coordinators_card_answers_the_member(
     )
     # Answered: a second answer has nothing left to close.
     assert not await pass_on_answer(service, cat, project, tap.id, "Postgres", None)
+
+
+def _no_whole_branch():
+    return patch(
+        "openhands.sdk.conversation.state.ConversationState.active_branch",
+        side_effect=AssertionError("read the whole branch"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_pending_question_is_read_back_only_to_the_question(
+    client, service, tmp_path
+):
+    project, cat, worker = await _project(client, service, tmp_path)
+    asked_id, passed_id = await _ask_through(service, cat, worker)
+    member = await service.get_event_service(worker)
+    coordinator = await service.get_event_service(cat)
+    assert member is not None and coordinator is not None
+
+    with _no_whole_branch():
+        waiting = member.pending_ask()
+    tap = AskUserAnswerEvent(ask_id=passed_id, option_index=0, option_label="Postgres")
+    await _record(service, cat, tap)
+    await _passed_on(service, cat, worker)
+    with _no_whole_branch():
+        answered = member.pending_ask()
+        closed = coordinator.pending_ask(tap.id)
+        unknown = coordinator.pending_ask("not-an-event")
+
+    assert waiting is not None and waiting.ask_id == asked_id
+    assert answered is None
+    # The question the tap answered, read from just before the tap.
+    assert closed is not None and closed.ask_id == passed_id
+    assert unknown is None
 
 
 @pytest.mark.asyncio

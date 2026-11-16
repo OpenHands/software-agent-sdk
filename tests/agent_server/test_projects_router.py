@@ -12,6 +12,7 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import httpx
@@ -1319,17 +1320,22 @@ async def test_transcript_lists_messages_with_their_senders(
         json=_send("And add a test"),
     )
 
-    body = (
-        await client.get(
-            f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
-            params={"limit": 1},
-        )
-    ).json()
-    full = (
-        await client.get(
-            f"/api/projects/{project['id']}/conversations/{worker.hex}/messages"
-        )
-    ).json()
+    # The transcript reads back from the end only until it has its messages.
+    with patch(
+        "openhands.sdk.conversation.state.ConversationState.active_branch",
+        side_effect=AssertionError("read the whole branch"),
+    ):
+        body = (
+            await client.get(
+                f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
+                params={"limit": 1},
+            )
+        ).json()
+        full = (
+            await client.get(
+                f"/api/projects/{project['id']}/conversations/{worker.hex}/messages"
+            )
+        ).json()
     missing = await client.get(
         f"/api/projects/{project['id']}/conversations/{outsider.hex}/messages"
     )
@@ -2157,7 +2163,13 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
             )
         )
 
-    assert admission_refusal(state, from_user=from_user) == refusal
+    # Only the agent's latest calls are read, never the whole branch.
+    with patch.object(
+        ConversationState,
+        "active_branch",
+        side_effect=AssertionError("read the whole branch"),
+    ):
+        assert admission_refusal(state, from_user=from_user) == refusal
 
 
 @pytest.mark.asyncio

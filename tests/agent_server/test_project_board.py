@@ -12,8 +12,6 @@ import pytest
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    EventPage,
-    EventSortOrder,
     StartConversationRequest,
 )
 from openhands.agent_server.project_board import (
@@ -997,16 +995,20 @@ async def test_a_user_message_clears_the_resolve_note():
 
 
 class _Log:
-    """The event search an EventService offers, over a fixed list."""
+    """The event scan an EventService offers, over a fixed list."""
 
     def __init__(self, events: list[Event]):
         self.events = events
+        self.read = 0
 
-    async def search_events(self, *, sort_order, limit, **_):
-        events = list(self.events)
-        if sort_order == EventSortOrder.TIMESTAMP_DESC:
-            events.reverse()
-        return EventPage(items=events[:limit])
+    def _counted(self, events):
+        for event in events:
+            self.read += 1
+            yield event
+
+    async def scan_events(self, take, *, newest_first=True):
+        events = reversed(self.events) if newest_first else iter(self.events)
+        return take(self._counted(events))
 
 
 @pytest.mark.asyncio
@@ -1034,6 +1036,23 @@ async def test_conversation_context_of_a_first_turn():
         "Only message",
         [],
     )
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_reads_only_the_ends_of_a_long_log():
+    events: list[Event] = []
+    for turn in range(10):
+        events.append(_message("user", f"request {turn}"))
+        events.extend(_message("agent", f"step {i}") for i in range(100))
+    log = _Log(events)
+
+    task, earlier = await conversation_context(cast(EventService, log))
+
+    assert task == "request 0"
+    assert earlier == [f"request {turn}" for turn in range(4, 9)]
+    # The task is the first event; from the end, the scan stops at the sixth
+    # turn back. The first four turns' work is never read.
+    assert log.read < 700
 
 
 @pytest.mark.parametrize(
