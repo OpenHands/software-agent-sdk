@@ -2584,6 +2584,8 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        if find_pending_ask(self._state.active_branch()) is not None:
+                            break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"
@@ -2818,6 +2820,8 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        if find_pending_ask(self._state.active_branch()) is not None:
+                            break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"

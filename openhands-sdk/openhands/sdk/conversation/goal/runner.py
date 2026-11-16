@@ -21,6 +21,7 @@ from openhands.sdk.conversation.goal.controller import (
     GoalDone,
     GoalOutcome,
 )
+from openhands.sdk.event.ask_user import find_pending_ask
 
 
 if TYPE_CHECKING:
@@ -50,7 +51,10 @@ def run_goal(
         max_iterations: Hard cap on audit rounds before giving up.
     """
     controller = GoalController(objective, judge_llm, max_iterations=max_iterations)
-    conversation.send_message(controller.start())
+    pending = find_pending_ask(conversation.state.events)
+    if pending is not None:
+        return GoalAsked(ask_id=pending.ask_id, question=pending.question)
+    conversation.send_message(controller.start(), sender="goal")
     while True:
         conversation.run()
         step = controller.on_run_finished(conversation.state.events)
@@ -58,4 +62,4 @@ def run_goal(
             return step.outcome
         if isinstance(step, GoalAsked):
             return step
-        conversation.send_message(step.followup)
+        conversation.send_message(step.followup, sender="goal")

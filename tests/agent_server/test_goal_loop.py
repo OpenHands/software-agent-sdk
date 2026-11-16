@@ -5,6 +5,7 @@ agent (each run finishes on a content-only reply) and a separate scripted judge.
 """
 
 import asyncio
+import json
 from threading import Event
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -19,10 +20,14 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.goal import GoalAsked, GoalController
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.ask_user import find_pending_ask
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.ask_user import AskUserTool
+from tests.tools.ask_user.test_ask_user import QUESTION
 
 
 def _scripted(*texts: str, usage_id: str) -> TestLLM:
@@ -839,5 +844,63 @@ async def test_goal_loop_stops_on_a_question_for_the_user(event_service, tmp_pat
             if isinstance(e, MessageEvent) and e.source == "user"
         ]
         assert len(user_messages) == 1  # only the objective
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer_in_chat", [False, True], ids=["card", "chat"])
+async def test_goal_resume_waits_for_a_real_answer(
+    event_service, tmp_path, answer_in_chat
+):
+    assert isinstance(event_service.agent, Agent)
+    event_service.agent.tools.append(Tool(name=AskUserTool.name))
+    await _start(event_service, tmp_path)
+    conversation = event_service.get_conversation()
+    conversation.switch_llm(
+        TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    tool_calls=[
+                        MessageToolCall(
+                            id="ask",
+                            name="ask_user",
+                            arguments=json.dumps(QUESTION),
+                            origin="completion",
+                        )
+                    ],
+                ),
+                Message(role="assistant", content=[TextContent(text="Shipped")]),
+            ],
+            usage_id="asking-agent",
+        )
+    )
+    judge = _scripted(_DONE, usage_id="judge")
+    try:
+        await event_service.start_goal_loop("Ship the fix", judge_llm=judge)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        pending = find_pending_ask(conversation.state.events)
+        assert pending is not None
+        with pytest.raises(ValueError, match="pending_ask"):
+            await event_service.resume_goal_loop(judge_llm=judge)
+        assert find_pending_ask(conversation.state.events) == pending
+
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text="Synthetic goal nudge")]),
+            _from_goal_loop=True,
+        )
+        assert find_pending_ask(conversation.state.events) == pending
+
+        if answer_in_chat:
+            message = Message(role="user", content=[TextContent(text="Use the flag")])
+        else:
+            _, message = conversation.answer_ask(pending.ask_id, option_index=0)
+        await event_service.send_message(message)
+        await event_service.resume_goal_loop(judge_llm=judge)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        assert find_pending_ask(conversation.state.events) is None
+        assert event_service._goal_loop_outcome is not None
+        assert event_service._goal_loop_outcome.status == "complete"
     finally:
         await event_service.close()
