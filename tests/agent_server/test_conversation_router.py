@@ -1703,6 +1703,130 @@ def test_run_conversation_other_error(
         client.app.dependency_overrides.clear()
 
 
+def test_add_conversation_mcp_servers_success(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"docs": {"command": "true"}}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        mock_event_service.add_mcp_servers.assert_called_once()
+        servers = mock_event_service.add_mcp_servers.call_args.args[0]
+        assert set(servers) == {"docs"}
+        assert servers["docs"].command == "true"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"docs": {"command": "true"}}},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_decrypts_oauth_state(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    from base64 import urlsafe_b64encode
+
+    from openhands.sdk.utils.cipher import Cipher
+
+    secret_key = urlsafe_b64encode(b"m" * 32).decode("ascii")
+    cipher = Cipher(secret_key)
+    encrypted_access_token = cipher.encrypt(SecretStr("linear-access-token"))
+    assert encrypted_access_token is not None
+    install_test_context(
+        client.app,
+        Config(
+            static_files_path=None,
+            session_api_keys=[],
+            secret_key=SecretStr(secret_key),
+        ),
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={
+                "mcp_servers": {
+                    "linear": {
+                        "transport": "http",
+                        "url": "https://mcp.linear.app/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "state": {
+                                "tokens": {"access_token": encrypted_access_token}
+                            },
+                        },
+                    }
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        servers = mock_event_service.add_mcp_servers.call_args.args[0]
+        auth = servers["linear"].auth
+        assert auth is not None
+        state = auth.state
+        assert state is not None
+        tokens = state.tokens
+        assert tokens is not None
+        access_token = tokens.access_token
+        assert access_token is not None
+        assert access_token.get_secret_value() == "linear-access-token"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.side_effect = ValueError("legacy protocol")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"old": {"command": "true"}}},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "legacy protocol"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_update_conversation_secrets_success(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):

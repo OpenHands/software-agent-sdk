@@ -1,5 +1,6 @@
 """Unified terminal session using TerminalInterface backends."""
 
+import math
 import re
 import time
 import uuid
@@ -140,18 +141,28 @@ class TerminalSession(TerminalSessionBase):
         self,
         terminal: TerminalInterface,
         no_change_timeout_seconds: int | None = None,
+        max_observation_wait_seconds: float | None = None,
     ):
         """Initialize the unified session with a terminal backend.
 
         Args:
             terminal: The terminal backend to use
             no_change_timeout_seconds: Timeout for no output change
+            max_observation_wait_seconds: Optional finite positive execution wait
+                cap per call, independent of output activity and action.timeout.
+                Excludes setup, pool queuing and blocking backend I/O.
         """
         super().__init__(
             terminal.work_dir,
             terminal.username,
             no_change_timeout_seconds,
         )
+        if max_observation_wait_seconds is not None and (
+            not math.isfinite(max_observation_wait_seconds)
+            or max_observation_wait_seconds <= 0
+        ):
+            raise ValueError("max_observation_wait_seconds must be finite and positive")
+        self.max_observation_wait_seconds = max_observation_wait_seconds
         self.terminal = terminal
         self.no_change_timeout_seconds: int = (
             no_change_timeout_seconds or NO_CHANGE_TIMEOUT_SECONDS
@@ -172,6 +183,7 @@ class TerminalSession(TerminalSessionBase):
         cls,
         terminal: TerminalInterface,
         no_change_timeout_seconds: int | None = None,
+        max_observation_wait_seconds: float | None = None,
     ) -> "TerminalSession":
         """Create a TerminalSession for an already-initialized terminal.
 
@@ -179,7 +191,7 @@ class TerminalSession(TerminalSessionBase):
         terminal has already been set up (e.g. by a pane pool) and
         calling ``initialize()`` again would create a duplicate session.
         """
-        session = cls(terminal, no_change_timeout_seconds)
+        session = cls(terminal, no_change_timeout_seconds, max_observation_wait_seconds)
         session._initialized = True
         return session
 
@@ -549,6 +561,27 @@ class TerminalSession(TerminalSessionBase):
         )
         return combined_output
 
+    def _closed_observation(self, command: str) -> TerminalObservation:
+        self.prev_status = TerminalCommandStatus.INTERRUPTED
+        output = ""
+        if not self._closed:
+            try:
+                output = self._strip_boundary_wrapper(self.terminal.read_screen())
+            except Exception:
+                logger.debug(
+                    "Closed terminal screen is unreadable; omitting its output",
+                    exc_info=True,
+                )
+        return TerminalObservation.from_text(
+            text=maybe_truncate(output, truncate_after=MAX_CMD_OUTPUT_SIZE)
+            + "\n[The terminal was closed before command completion. "
+            "The result is unknown. "
+            "Use reset=True to start a new session; the command was not retried.]",
+            command=command,
+            exit_code=-1,
+            is_error=True,
+        )
+
     def execute(self, action: TerminalAction) -> TerminalObservation:
         """Execute a command using the terminal backend."""
         if not self._initialized:
@@ -574,6 +607,9 @@ class TerminalSession(TerminalSessionBase):
                 command=command,
                 is_error=True,
             )
+
+        if self._closed or self.terminal.closed:
+            return self._closed_observation(action.command)
 
         if not self.terminal.is_alive():
             return self._handle_unresponsive_terminal(
@@ -632,6 +668,9 @@ class TerminalSession(TerminalSessionBase):
             len(initial_terminal_output),
         )
 
+        observation_start = (
+            time.monotonic() if self.max_observation_wait_seconds is not None else None
+        )
         start_time = time.time()
         last_change_time = start_time
         last_terminal_output = initial_terminal_output
@@ -766,12 +805,7 @@ class TerminalSession(TerminalSessionBase):
             # A closed terminal never shows the command finishing, and a command with
             # a timeout skips the no-change timeout, so stop waiting on it here.
             if self._closed or self.terminal.closed:
-                return TerminalObservation.from_text(
-                    text="[The terminal was closed while the command was running.]",
-                    command=command,
-                    exit_code=-1,
-                    is_error=True,
-                )
+                return self._closed_observation(command)
             _start_time = time.time()
             logger.debug(f"GETTING TERMINAL CONTENT at {_start_time}")
             cur_terminal_output = self.terminal.read_screen()
@@ -892,6 +926,31 @@ class TerminalSession(TerminalSessionBase):
                     )
                     return obs
 
+            observation_remaining = None
+            if self.max_observation_wait_seconds is not None:
+                assert observation_start is not None
+                observation_remaining = self.max_observation_wait_seconds - (
+                    time.monotonic() - observation_start
+                )
+                if observation_remaining <= 0:
+                    stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
+                    return self._handle_hard_timeout_command(
+                        command,
+                        terminal_content=stripped_output,
+                        ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                            stripped_output
+                        ),
+                        timeout=self.max_observation_wait_seconds,
+                        echoed_command=(
+                            command_to_send
+                            if command_boundary_marker is not None
+                            else None
+                        ),
+                    )
+
             # Poll in proportion to the command's run time so a short command is
             # noticed within milliseconds, not at the next POLL_INTERVAL tick.
-            time.sleep(min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4)))
+            sleep_seconds = min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4))
+            if observation_remaining is not None:
+                sleep_seconds = min(sleep_seconds, observation_remaining)
+            time.sleep(sleep_seconds)
