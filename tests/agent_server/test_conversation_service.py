@@ -21,14 +21,14 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
-    UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
     _create_conversation_worktree,
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
-from openhands.agent_server.event_service import EventService, ServiceInactive
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive, UnavailableAgentTool
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,

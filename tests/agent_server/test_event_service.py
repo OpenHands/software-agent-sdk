@@ -24,12 +24,11 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.errors import status_for
 from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import (
-    CondensationUnavailable,
     EventService,
     RunSlot,
-    ServiceInactive,
     _log_emit_failure,
 )
+from openhands.agent_server.exceptions import CondensationUnavailable, ServiceInactive
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,

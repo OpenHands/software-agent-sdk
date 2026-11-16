@@ -24,7 +24,12 @@ from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
     RunSlot,
+)
+from openhands.agent_server.exceptions import (
+    CredentialBindingActivationRequired,
+    InvalidParentConversation,
     ServiceInactive,
+    UnavailableAgentTool,
 )
 from openhands.agent_server.experimental_features import (
     experimental_feature_tools,
@@ -91,7 +96,6 @@ from openhands.sdk.credential import (
     CredentialBindingError,
     VersionedCredentialBinding,
 )
-from openhands.sdk.errors import Conflict
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -118,13 +122,6 @@ _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
 # before the sandbox freezes.
 CONVERSATION_DELETED_WS_CLOSE = (4004, "Conversation deleted")
 SERVER_SHUTDOWN_WS_CLOSE = (1012, "Server shutting down")
-
-
-class CredentialBindingActivationRequired(Conflict, RuntimeError):
-    """A runtime credential binding must be activated first; retry after it."""
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail, extra={"retryable": True})
 
 
 def _build_worktree_guidance(
@@ -333,16 +330,6 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 
 
 logger = logging.getLogger(__name__)
-
-
-class InvalidParentConversation(ValueError):
-    """``parent_conversation_id`` is unknown, self-referential, or in
-    a different workspace."""
-
-
-class UnavailableAgentTool(ValueError):
-    """The agent names a tool whose ``tool_module_qualnames`` module the server
-    cannot import, so the agent could never be built."""
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:

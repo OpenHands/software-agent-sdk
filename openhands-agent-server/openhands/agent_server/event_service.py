@@ -20,6 +20,12 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
 )
+from openhands.agent_server.exceptions import (
+    CondensationUnavailable,
+    ConversationRunLimitExceeded,
+    CredentialBindingActivationTooLate,
+    ServiceInactive,
+)
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -74,7 +80,6 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
     VersionedCredentialBinding,
 )
-from openhands.sdk.errors import RateLimited
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
@@ -132,25 +137,6 @@ def _without_skill_bodies(
     if agent.get("agent_context"):
         agent["agent_context"]["skills"] = []
     return event
-
-
-class ConversationRunLimitExceeded(RateLimited, RuntimeError):
-    """The server has no capacity to start another conversation run."""
-
-
-class CondensationUnavailable(ValueError):
-    """The conversation's agent has no condenser that handles requests."""
-
-
-class ServiceInactive(ValueError):
-    """The service is not running: not started yet, or closing or closed.
-
-    It stays a ``ValueError`` with the message ``"inactive_service"``, so
-    routes and clients see the same error as before; callers catch the type.
-    """
-
-    def __init__(self) -> None:
-        super().__init__("inactive_service")
 
 
 class _RunPermit:
@@ -230,10 +216,6 @@ class RunSlot:
 
     def __exit__(self, *_exc) -> None:
         self.release()
-
-
-class CredentialBindingActivationTooLate(RuntimeError):
-    pass
 
 
 def _log_emit_failure(event_kind: str, future: "asyncio.Future[None]") -> None:

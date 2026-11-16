@@ -31,16 +31,14 @@ from starlette.websockets import WebSocketState
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    CredentialBindingActivationRequired,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_config,
     get_conversation_service,
     get_server_bash_event_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
+from openhands.agent_server.exceptions import CredentialBindingActivationRequired
 from openhands.agent_server.models import (
     BashError,
     BashEventBase,

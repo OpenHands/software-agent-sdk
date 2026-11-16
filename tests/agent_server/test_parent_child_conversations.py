@@ -13,15 +13,12 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    InvalidParentConversation,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import (
+from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.exceptions import (
     ConversationRunLimitExceeded,
-    EventService,
-    RunSlot,
+    InvalidParentConversation,
 )
 from openhands.agent_server.models import (
     ConversationInfo,
