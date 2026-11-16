@@ -668,3 +668,21 @@ def build_session_model_meta(
     if not options:
         return {}
     return {provider.session_meta_key: {"options": options}}
+
+
+def build_fork_no_tools_meta(agent_name: str) -> dict[str, Any]:
+    """Build ACP ``session/fork`` ``_meta`` content that disables built-in tools.
+
+    Returns the dict to spread into ``fork_session()`` kwargs. Only
+    claude-agent-acp accepts a fork-time tool list, so every other harness gets
+    an empty dict; those forks are still restricted by the answer-only prompt
+    and closed by the caller.
+    """
+    provider = detect_acp_provider_by_agent_name(agent_name)
+    if (
+        provider is None
+        or provider.key != "claude-code"
+        or provider.session_meta_key is None
+    ):
+        return {}
+    return {provider.session_meta_key: {"options": {"tools": []}}}
