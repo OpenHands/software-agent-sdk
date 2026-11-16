@@ -104,6 +104,8 @@ export type {
   ReactionEmoji,
   ReactionEvent,
   MessageEditEvent,
+  AskUserAction,
+  AskUserObservation,
   AskUserAnswerEvent,
   HookExecutionEvent,
   HookExecutionEventType,

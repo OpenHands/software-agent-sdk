@@ -577,7 +577,7 @@ async def answer_ask_user(
     is saved as an `AskUserAnswerEvent`, which clients use to show the card as
     answered, followed by a user message the agent reads; then the agent runs.
     `ask_id` must be the pending question: one the user already answered,
-    by a tap or by writing in the chat, is refused (422). There is no field
+    by a tap or by writing in the chat, is refused (400). There is no field
     for another conversation to answer on the user's behalf. Needs the
     `ask_user` feature on; this check follows the switch at once.
     """

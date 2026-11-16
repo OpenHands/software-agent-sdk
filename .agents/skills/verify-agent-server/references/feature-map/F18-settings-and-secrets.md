@@ -685,7 +685,7 @@ Preconditions:
     --check 1.key eq conversation_mentions --check 1.enabled eq false \
     --check 2.key eq message_edits --check 2.enabled eq false \
     --check 3.key eq projects --check 3.enabled eq false \
-    --check 4.key eq ask_user --check 4.enabled eq false --save F18.experimental-features/list
+    --check 4.key eq ask_user --check 4.label eq 'Decision cards' --check 4.enabled eq false --save F18.experimental-features/list
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{"enabled": true}' --expect 404 \
     --check detail eq 'Unknown experimental feature: qa_f18_unknown' --save F18.experimental-features/unknown
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{}' --expect 422

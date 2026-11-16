@@ -17,6 +17,7 @@ import type {
   ErrorClassification as AgentServerErrorClassification,
   Event as AgentServerEvent,
   HookExecutionEvent as AgentServerHookExecutionEvent,
+  ImageContent as AgentServerImageContent,
   LlmCompletionLogEvent as AgentServerLlmCompletionLogEvent,
   MessageEvent as AgentServerMessageEvent,
   MessageToolCall as AgentServerMessageToolCall,
@@ -25,6 +26,7 @@ import type {
   SecurityRisk as AgentServerSecurityRisk,
   StreamingDeltaEvent as AgentServerStreamingDeltaEvent,
   SystemPromptEvent as AgentServerSystemPromptEvent,
+  TextContent as AgentServerTextContent,
   TokenEvent as AgentServerTokenEvent,
   ToolDefinition as AgentServerToolDefinition,
   UserRejectObservation as AgentServerUserRejectObservation,
@@ -189,6 +191,21 @@ export interface ReactionEvent extends BaseEvent {
   target_text_ending?: string | null;
   /** True when the message is longer than `target_text_ending` */
   target_text_clipped?: boolean;
+}
+
+/** The `openhands.tools.ask_user` tool's question payload. */
+export interface AskUserAction {
+  kind: 'AskUserAction';
+  question: string;
+  options: { label: string; consequence?: string }[];
+  recommended?: number | null;
+}
+
+/** The tool result acknowledges display; the answer arrives separately. */
+export interface AskUserObservation {
+  kind: 'AskUserObservation';
+  content: (AgentServerTextContent | AgentServerImageContent)[];
+  is_error: boolean;
 }
 
 /**

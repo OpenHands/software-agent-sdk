@@ -17,6 +17,7 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.goal import GoalAsked, GoalController
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.event.ask_user import (
@@ -24,9 +25,15 @@ from openhands.sdk.event.ask_user import (
     AskUserAnswerEvent,
     find_pending_ask,
 )
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.tool import Tool
-from openhands.tools.ask_user import AskUserAction, AskUserOption, AskUserTool
+from openhands.tools.ask_user import (
+    AskUserAction,
+    AskUserObservation,
+    AskUserOption,
+    AskUserTool,
+)
 
 
 QUESTION = {
@@ -211,6 +218,9 @@ def test_a_tap_records_the_answer_and_the_message_the_agent_reads(tmp_path):
         "today",
     )
     assert conversation.state.events[-1].id == answer.id
+    # The message the agent reads is what closes the question.
+    assert find_pending_ask(conversation.state.events) is not None
+    conversation.send_message(message)
     assert find_pending_ask(conversation.state.events) is None
     text = message.content[0].text  # type: ignore[union-attr]
     assert text.startswith(ANSWER_HEADER_PREFIX)
@@ -275,10 +285,23 @@ def test_an_answer_is_refused_for_another_question_or_option(tmp_path):
 def test_a_second_tap_is_refused(tmp_path):
     conversation, _ = _asked(tmp_path)
     ask_id = _ask_event(conversation).id
-    conversation.answer_ask(ask_id, option_index=0)
+    _, message = conversation.answer_ask(ask_id, option_index=0)
+    conversation.send_message(message)
 
     with pytest.raises(ValueError, match="not waiting"):
         conversation.answer_ask(ask_id, option_index=1)
+
+
+def test_a_tap_whose_message_was_lost_can_be_sent_again(tmp_path):
+    # The process died after saving the answer event, before the message.
+    conversation, _ = _asked(tmp_path)
+    ask_id = _ask_event(conversation).id
+    conversation.answer_ask(ask_id, option_index=0)
+
+    assert find_pending_ask(conversation.state.events) is not None
+    _, message = conversation.answer_ask(ask_id, option_index=1)
+    conversation.send_message(message)
+    assert find_pending_ask(conversation.state.events) is None
 
 
 def test_the_question_survives_a_restart(tmp_path):
@@ -296,7 +319,8 @@ def test_the_question_survives_a_restart(tmp_path):
     pending = find_pending_ask(reopened.state.events)
     assert pending is not None and pending.ask_id == ask_id
 
-    reopened.answer_ask(ask_id, option_index=0)
+    _, message = reopened.answer_ask(ask_id, option_index=0)
+    reopened.send_message(message)
     assert find_pending_ask(reopened.state.events) is None
 
 
@@ -313,3 +337,79 @@ def test_the_user_s_own_message_is_what_closes_it():
         llm_message=Message(role="user", content=[TextContent(text="hi")]),
     )
     assert find_pending_ask([user]) is None
+
+
+def test_an_out_of_range_recommendation_is_dropped():
+    action = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=AskUserAction.model_construct(
+            question="Q?",
+            options=[AskUserOption(label="A"), AskUserOption(label="B")],
+            recommended=7,
+        ),
+        tool_name="ask_user",
+        tool_call_id="c",
+        tool_call=MessageToolCall(
+            id="c", name="ask_user", arguments="{}", origin="completion"
+        ),
+        llm_response_id="r",
+    )
+    shown = ObservationEvent(
+        source="environment",
+        observation=AskUserObservation.from_text("shown"),
+        action_id=action.id,
+        tool_name="ask_user",
+        tool_call_id="c",
+    )
+    pending = find_pending_ask([action, shown])
+    assert pending is not None and pending.recommended is None
+
+
+# One question per response, and no confirmation for it
+
+
+def test_only_the_first_question_in_a_response_is_asked(tmp_path):
+    conversation = _conversation(tmp_path)
+    conversation.send_message("Fix the login bug")
+    second = {**QUESTION, "question": "Which region?"}
+    _run(
+        conversation,
+        _Model(_tool_calls(("ask_user", QUESTION), ("ask_user", second))),
+    )
+
+    results = [
+        e.observation.is_error
+        for e in conversation.state.events
+        if isinstance(e, ObservationEvent)
+    ]
+    assert results == [False, True]
+    pending = find_pending_ask(conversation.state.events)
+    assert pending is not None and pending.question == QUESTION["question"]
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_asking_needs_no_confirmation_even_when_every_action_does(tmp_path):
+    conversation = _conversation(tmp_path)
+    conversation.set_confirmation_policy(AlwaysConfirm())
+    conversation.send_message("Fix the login bug")
+    _run(conversation, _Model(_tool_calls(("ask_user", QUESTION))))
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert find_pending_ask(conversation.state.events) is not None
+
+
+# /goal
+
+
+def test_a_goal_stops_on_a_question_without_judging(tmp_path):
+    conversation, _ = _asked(tmp_path)
+    controller = GoalController("Fix the login bug", _llm())
+
+    with patch("openhands.sdk.conversation.goal.controller.judge_goal") as judge:
+        step = controller.on_run_finished(list(conversation.state.events))
+
+    judge.assert_not_called()
+    assert isinstance(step, GoalAsked)
+    assert step.ask_id == _ask_event(conversation).id
+    assert controller.iteration == 0

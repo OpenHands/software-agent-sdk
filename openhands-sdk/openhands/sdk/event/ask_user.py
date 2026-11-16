@@ -5,10 +5,12 @@ call (an :class:`ActionEvent` whose action holds the question and its
 options), and the call's result says it was shown. The call ends the agent's
 turn, so a question is never waiting inside a run.
 
-A question is *pending* while nothing from the user came after it: no
-:class:`AskUserAnswerEvent` (a tap on one of its options) and no message of
-their own. Because that is read from the event log, a restart cannot lose a
-question or leave it half-answered.
+A question is *pending* until a message of the user's own comes after it.
+Because that is read from the event log, a restart cannot lose a question or
+leave it half-answered: a tap saves an :class:`AskUserAnswerEvent` and then
+the message the agent reads, and only that message closes the question, so a
+process that dies between the two leaves it pending and the tap can be sent
+again.
 
 The user answers either way:
 
@@ -19,8 +21,9 @@ The user answers either way:
 - by writing in the chat. That is an ordinary message; it closes the question
   as answered in words.
 
-Messages from other conversations or a ``/goal`` loop carry a ``sender`` and
-do not close a question: only the user can answer it.
+Messages relayed from other conversations carry a ``sender`` and do not close
+a question: only the user can answer it. A ``/goal`` loop stops when the agent
+asks, rather than sending its next round over the question.
 """
 
 from collections.abc import Sequence
@@ -94,13 +97,13 @@ class PendingAsk:
 
 
 def is_from_user(event: Event) -> bool:
-    """Whether an event is the user's own message or answer.
+    """Whether an event is the user's own message, the only thing that closes
+    a question.
 
-    Messages relayed from another conversation or sent by a ``/goal`` loop
-    carry a ``sender``; the user's own messages have none.
+    Messages relayed from another conversation carry a ``sender``; the user's
+    own messages have none. An :class:`AskUserAnswerEvent` does not close the
+    question by itself: the message saved right after it does.
     """
-    if isinstance(event, AskUserAnswerEvent):
-        return True
     return (
         isinstance(event, MessageEvent)
         and event.source == "user"
@@ -121,12 +124,14 @@ def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
         for o in data.get("options") or ()
     )
     recommended = data.get("recommended")
+    if not isinstance(recommended, int) or not 0 <= recommended < len(labels):
+        recommended = None
     for_conversation = data.get("for_conversation")
     return PendingAsk(
         ask_id=action_event.id,
         question=question,
         option_labels=labels,
-        recommended=recommended if isinstance(recommended, int) else None,
+        recommended=recommended,
         for_conversation=for_conversation
         if isinstance(for_conversation, str) and for_conversation.strip()
         else None,
