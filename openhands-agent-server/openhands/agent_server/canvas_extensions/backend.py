@@ -1025,7 +1025,7 @@ class CanvasExtensionBackendManager:
     ) -> None:
         # Process.wait() also waits for pipe EOF, which surviving children can
         # hold open. Observe the leader's exit independently of its pipes.
-        while process.returncode is None:
+        while process.returncode is None:  # noqa: ASYNC110 - poll child exit status
             await asyncio.sleep(0.05)
         async with self._lock(name):
             if runtime.process is not process:
