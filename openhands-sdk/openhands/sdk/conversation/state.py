@@ -426,10 +426,11 @@ class ConversationState(OpenHandsModel):
         Like ``get_unmatched_actions`` on the active branch, but it reads back
         only through the agent's latest batch of tool calls, never the whole
         log: a step answers its calls before the agent samples again. A batch
-        is the calls of one LLM response (one ``llm_response_id``), with the
-        errors of its malformed calls in between. The walk ends before the
-        batch, or at the agent's latest message (a step with no tool calls)
-        when no call came after it.
+        is the calls of one LLM response (one ``llm_response_id``); other
+        events can sit between its calls (a malformed call's error, a hook's
+        record). The walk ends before the batch, at a message or a result, or
+        at the agent's latest message (a step with no tool calls) when no
+        call came after it.
         """
         observed_action_ids: set[EventID] = set()
         observed_tool_call_ids: set[str] = set()
@@ -454,8 +455,8 @@ class ConversationState(OpenHandsModel):
             elif isinstance(event, AgentErrorEvent):
                 # A malformed call's error sits inside its batch.
                 observed_tool_call_ids.add(event.tool_call_id)
-            elif batch is not None or (
-                isinstance(event, MessageEvent) and event.source == "agent"
+            elif isinstance(event, MessageEvent) and (
+                batch is not None or event.source == "agent"
             ):
                 break
         return waiting[::-1]
