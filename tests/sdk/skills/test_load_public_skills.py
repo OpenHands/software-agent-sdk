@@ -206,29 +206,24 @@ def test_load_public_skills_success(mock_repo_dir, tmp_path):
         assert testing_skill.trigger is None
 
 
-def test_concurrent_loads_share_one_load(mock_repo_dir, tmp_path):
-    updates = 0
+def test_concurrent_loads_of_a_local_copy_share_one_load(mock_repo_dir, monkeypatch):
+    monkeypatch.setenv("EXTENSIONS_PATH", str(mock_repo_dir))
+    loads = 0
 
-    def slow_update_repo(repo_url, branch, cache_dir):
-        nonlocal updates
-        updates += 1
+    def slow_marketplace_names(repo_path, marketplace_path):
+        nonlocal loads
+        loads += 1
         time.sleep(0.3)
-        return mock_repo_dir
+        return load_marketplace_skill_names(repo_path, marketplace_path)
 
     results: list[set[str]] = []
 
     def load() -> None:
         results.append({skill.name for skill in load_public_skills()})
 
-    with (
-        patch(
-            "openhands.sdk.skills.skill.update_skills_repository",
-            side_effect=slow_update_repo,
-        ),
-        patch(
-            "openhands.sdk.skills.skill.get_skills_cache_dir",
-            return_value=tmp_path,
-        ),
+    with patch(
+        "openhands.sdk.skills.skill.load_marketplace_skill_names",
+        side_effect=slow_marketplace_names,
     ):
         threads = [threading.Thread(target=load) for _ in range(2)]
         for thread in threads:
@@ -236,7 +231,7 @@ def test_concurrent_loads_share_one_load(mock_repo_dir, tmp_path):
         for thread in threads:
             thread.join()
 
-    assert updates == 1
+    assert loads == 1
     assert results == [{"git", "docker", "testing"}] * 2
 
 

@@ -165,6 +165,11 @@ def _local_branch_exists(repo_root: Path, branch: str) -> bool:
     return True
 
 
+_DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS = 300
+# Not FETCH_HEAD's mtime: a fetch of any other remote or ref rewrites it.
+_origin_fetched_at: dict[Path, float] = {}
+
+
 def _fetch_origin(repo_root: Path) -> None:
     """Refresh ``origin``'s refs for a worktree start point; keep cached ones on
     failure."""
@@ -179,11 +184,6 @@ def _fetch_origin(repo_root: Path) -> None:
         )
         return
     _origin_fetched_at[repo_root] = time.monotonic()
-
-
-_DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS = 300
-# Not FETCH_HEAD's mtime: a fetch of any other remote or ref rewrites it.
-_origin_fetched_at: dict[Path, float] = {}
 
 
 def _fetched_recently(repo_root: Path) -> bool:

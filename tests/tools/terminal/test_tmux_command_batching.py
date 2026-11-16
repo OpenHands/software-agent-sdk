@@ -30,15 +30,12 @@ def _initialize_counting_tmux_calls(tmp_path, monkeypatch) -> tuple[TmuxPanePool
     return pool, calls
 
 
-@pytest.mark.parametrize("extra_vars", [0, 300])
-def test_pool_startup_tmux_calls_do_not_grow_with_environment(
-    tmp_path, monkeypatch, extra_vars
-):
+def test_pool_startup_tmux_calls_do_not_grow_with_environment(tmp_path, monkeypatch):
     baseline_pool, baseline = _initialize_counting_tmux_calls(tmp_path, monkeypatch)
     baseline_pool.close()
-    for i in range(extra_vars):
-        # OH_* names are sanitized away (unset in tmux); the others are set.
-        prefix = "OH_" if i % 2 else ""
+    for i in range(300):
+        # Credential slots are sanitized away (unset in tmux); the others are set.
+        prefix = "OH_SESSION_API_KEYS_" if i % 2 else ""
         monkeypatch.setenv(f"{prefix}TEST_BATCH_VAR_{i}", f"value {i} " + "x" * 40)
 
     pool, calls = _initialize_counting_tmux_calls(tmp_path, monkeypatch)
@@ -46,7 +43,17 @@ def test_pool_startup_tmux_calls_do_not_grow_with_environment(
 
     # Batches are size-bounded, so a large environment adds a few calls, not one
     # per variable.
-    assert calls - baseline <= extra_vars // 50
+    assert calls - baseline <= 6
+
+
+def test_pool_starts_with_undecodable_environment_value(tmp_path, monkeypatch):
+    # Python keeps environment bytes that are not UTF-8 as surrogates.
+    monkeypatch.setenv("TEST_UNDECODABLE", os.fsdecode(b"caf\xe9"))
+    pool = TmuxPanePool(work_dir=str(tmp_path), username=None, max_panes=1)
+    try:
+        pool.initialize()
+    finally:
+        pool.close()
 
 
 def test_pool_shells_see_tricky_values(tmp_path):

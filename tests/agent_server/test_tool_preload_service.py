@@ -13,7 +13,7 @@ def test_warm_up_discovers_skills_only_from_a_local_extensions_copy(
         monkeypatch.delenv("EXTENSIONS_PATH", raising=False)
     else:
         monkeypatch.setenv("EXTENSIONS_PATH", extensions_path)
-    service = "openhands.agent_server.skills_service"
+    service = "openhands.agent_server.tool_preload_service"
 
     with (
         patch(f"{service}.discover_profile_skills") as profile_skills,

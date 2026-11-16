@@ -154,7 +154,7 @@ async def _first_agent_event(url: str, timeout: float = 120) -> float:
 
 
 # Creates per server start, by scenario.
-SCENARIOS: dict[str, int] = {"default": 8, "pause": 2, "worktree": 5, "mcp": 5}
+SCENARIOS: dict[str, int] = {"default": 8, "pause": 1, "worktree": 5, "mcp": 5}
 PAUSE_S = 3.0
 FETCH_DELAY_S = 0.5
 MCP_STARTUP_DELAY_S = 3.0
@@ -254,6 +254,7 @@ async def _run_server(python: str, scenario: str, extensions_path: str | None) -
             "OH_SESSION_API_KEYS_0": SESSION_KEY,
             "OH_VSCODE_PORT": str(_free_port()),
             "TMUX_TMPDIR": str(root / "tmux"),
+            "OH_CONVERSATION_WORKTREE_ROOT": str(root / "worktrees"),
         }
     )
     if extensions_path:
@@ -465,7 +466,7 @@ def _stall_row(label: str, b: list[float], h: list[float]) -> str:
     """Flag a change of at least 20 points in the share of stalled creates."""
     a, n1 = sum(v > STALL_THRESHOLD_S for v in b), len(b)
     c, n2 = sum(v > STALL_THRESHOLD_S for v in h), len(h)
-    shift = c / n2 - a / n1 if n1 and n2 else 0.0
+    shift = c / n2 - a / n1
     verdict = "≈ same"
     if abs(shift) >= 0.2 and _fisher_p(a, n1, c, n2) < 0.01:
         verdict = "⚠️ slower" if shift > 0 else "✅ faster"

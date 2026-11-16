@@ -5,7 +5,12 @@ from __future__ import annotations
 import os
 import threading
 
+from openhands.agent_server.skills_service import (
+    discover_profile_skills,
+    discover_public_skill_names,
+)
 from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.skill import PUBLIC_SKILLS_PATH_ENV
 from openhands.sdk.tool.schema import Action
 from openhands.sdk.tool.tool import create_action_type_with_risk
 from openhands.sdk.utils.models import get_known_concrete_subclasses
@@ -22,12 +27,7 @@ def _warm_first_conversation() -> None:
         import openai.resources.chat  # noqa: F401
 
         # Only a local extensions copy: never add a clone to every startup.
-        if os.environ.get("EXTENSIONS_PATH"):
-            from openhands.agent_server.skills_service import (
-                discover_profile_skills,
-                discover_public_skill_names,
-            )
-
+        if os.environ.get(PUBLIC_SKILLS_PATH_ENV):
             discover_profile_skills()
             discover_public_skill_names()
     except Exception:

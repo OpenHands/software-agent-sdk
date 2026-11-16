@@ -1190,7 +1190,7 @@ _PUBLIC_SKILLS_CACHE: dict[
 ] = {}
 _PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
 _PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
-_PUBLIC_SKILLS_LOAD_LOCK = threading.RLock()
+_PUBLIC_SKILLS_LOAD_LOCK = threading.Lock()
 
 
 def _invalidate_public_skills_cache() -> None:
@@ -1311,8 +1311,11 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
-    # One load at a time: a concurrent caller waits and then reads the cache
-    # instead of loading the same skills again.
+    if _local_public_skills_path(repo_url) is None:
+        return _load_public_skills(repo_url, ref, marketplace_path)
+    # A local copy is parsed once at a time, so a caller racing the startup
+    # warm-up reads its cache instead of parsing again. Clones are not
+    # serialized: a slow or failing one must not hold up other callers.
     with _PUBLIC_SKILLS_LOAD_LOCK:
         return _load_public_skills(repo_url, ref, marketplace_path)
 
