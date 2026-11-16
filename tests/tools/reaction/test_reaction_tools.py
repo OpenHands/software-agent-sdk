@@ -20,6 +20,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     Event,
+    HookExecutionEvent,
     MessageEvent,
     ObservationEvent,
     ReactionEvent,
@@ -553,3 +554,44 @@ def test_a_call_still_waits_behind_its_batchs_malformed_calls(conversation):
     assert [e.id for e in conversation.state.waiting_actions()] == [a.id]
     held = conversation.react("heart")
     assert held.parent_id is None
+
+
+def test_a_batchs_calls_wait_behind_their_hook_records(conversation):
+    """With PreToolUse hooks, one response's two calls are logged as hook-A, A,
+    hook-B, B. Both still wait."""
+    conversation.state.append_event(_message("agent", "Shall I go on?"))
+    calls = []
+    for call_id in ("call-a", "call-b"):
+        conversation.state.append_event(
+            HookExecutionEvent(
+                hook_event_type="PreToolUse",
+                hook_command="true",
+                tool_name="finish",
+                success=True,
+                exit_code=0,
+            )
+        )
+        calls.append(_call(call_id, valid=True))
+        conversation.state.append_event(calls[-1])
+
+    assert [e.id for e in conversation.state.waiting_actions()] == [c.id for c in calls]
+
+
+def test_the_agents_reaction_without_an_id_means_the_latest_user_message(
+    conversation,
+):
+    """Condensation dropped the latest user message but kept an earlier one:
+    a reaction without an id still means the latest."""
+    earlier = _user_message(conversation)
+    conversation.state.append_event(_message("agent", "Done."))
+    latest = _message("user", "One more thing.")
+    conversation.state.append_event(latest)
+    conversation.state.append_event(_message("agent", "On it."))
+    conversation.state.view.events = [
+        e for e in conversation.state.view.events if e.id != latest.id
+    ]
+    assert any(e.id == earlier.id for e in conversation.state.view.events)
+
+    observation = ReactionExecutor()(ReactAction(emoji="eyes"), conversation)
+
+    assert observation.target_event_id == latest.id
