@@ -239,6 +239,7 @@ Preconditions:
 - **Coordinator (`F36.coordinator`).**
   ```sh
   CAT=$(control-agent-server conversation start --no-run --title qa-f36-cat --tag insidercat=self \
+    --body-json '{"agent_launch_additions": {"prompt_preset": "project_coordinator"}}' \
     --tools start_child_conversation,list_project_conversations,message_project_conversation,read_project_conversation --print-id)
   P2=$(control-agent-server api POST /api/projects --json "{\"name\": \"qa-f36-two\", \"coordinator_conversation_id\": \"$CAT\"}" \
     --expect 201 --field id)
@@ -248,7 +249,9 @@ Preconditions:
     --save F36.coordinator/conversations
   ```
   The coordinator carries `project=<P2>` next to `insidercat`, and the conversations
-  endpoint reports it as the coordinator with no conversations yet.
+  endpoint reports it as the coordinator with no conversations yet. Attaching an
+  existing conversation does not replace its prompt: this fixture requests the
+  built-in coordinator preset at launch, as a server-created coordinator does.
 - **Missing coordinator (`F36.coordinator-missing`).**
   Requires: `F36.coordinator`
   ```sh
@@ -604,16 +607,19 @@ Preconditions:
   Needs: `llm`
   ```sh
   CHILD_HEX=$(printf %s "$CHILD" | tr -d -)
+  control-agent-server conversation events "$CAT" --kinds SystemPromptEvent \
+    --contains 'Name a conversation as a mention' --expect-count 1 --save F36.mention/guidance
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains "[qa-f36-child](conversation:$CHILD_HEX)" --expect-min 1 \
     --save F36.mention/list
   control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Which conversation did you start for the qa-f36-child task? Answer in one sentence that names it for me. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ActionEvent,MessageEvent --show 1 --full --save F36.mention/answer \
     | jq -r '.events[-1] | select(.source == "agent") | (.llm_message.content[0].text // .action.message // "")' \
-    | grep -F "](conversation:$CHILD_HEX)"
+    | grep -Fi -e "](conversation:$CHILD_HEX)" -e "](conversation:$CHILD)"
   ```
   The list observation names the child as a mention, and the coordinator's
   last message, its answer, carries the same link although the prompt does not
-  say how to write it (the routing guidance does). Needs `jq`.
+  say how to write it (the routing guidance does). Canvas accepts the target
+  UUID with or without dashes, case-insensitively. Needs `jq`.
 - **Model-backed: no approval by message (`F36.tool-message-refuses-confirmation`).**
   Requires: `F36.attention`, `F36.tool-start-and-list`
   Needs: `llm`, `tmux`
