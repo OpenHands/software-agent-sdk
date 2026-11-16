@@ -5,11 +5,13 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import FileSecretsStore, run_store
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
@@ -56,7 +58,7 @@ class LocalVersionedCredentialBinding:
 
     async def load(self) -> ResolvedCredential:
         try:
-            value, version = await asyncio.to_thread(
+            value, version = await run_store(
                 self.store.load_versioned_secret,
                 self.secret_name,
             )
@@ -70,7 +72,7 @@ class LocalVersionedCredentialBinding:
 
     async def replace(self, expected_version: str, value: str) -> str:
         try:
-            return await asyncio.to_thread(
+            return await run_store(
                 self.store.replace_versioned_secret,
                 self.secret_name,
                 expected_version,
@@ -113,8 +115,10 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
 
 
 @router.post("/prepare-for-sandbox-pause", include_in_schema=False)
-async def prepare_for_sandbox_pause(request: Request) -> Response:
-    await request.app.state.conversation_service.prepare_for_sandbox_pause()
+async def prepare_for_sandbox_pause(
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    await conversation_service.prepare_for_sandbox_pause()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -126,7 +130,7 @@ async def activate_credential_binding(
     conversation_id: UUID,
     secret_name: str,
     activation: CredentialBindingActivation,
-    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Response:
     if not supports_file_credential_binding(secret_name):
         raise NotFound()
@@ -136,7 +140,7 @@ async def activate_credential_binding(
     )
     try:
         await _probe_binding(binding)
-        await request.app.state.conversation_service.activate_credential_binding(
+        await conversation_service.activate_credential_binding(
             conversation_id,
             secret_name,
             binding,

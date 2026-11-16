@@ -22,21 +22,23 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     Query,
     WebSocket,
     WebSocketDisconnect,
 )
 from starlette.websockets import WebSocketState
 
-from openhands.agent_server.bash_service import (
-    BashEventService,
-    get_default_bash_event_service,
-)
-from openhands.agent_server.config import Config, get_default_config
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import (
     ConversationService,
     CredentialBindingActivationRequired,
-    get_default_conversation_service,
+)
+from openhands.agent_server.dependencies import (
+    get_config,
+    get_conversation_service,
+    get_server_bash_event_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
@@ -58,54 +60,7 @@ from openhands.sdk.utils.paging import page_iterator
 
 conversation_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 bash_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
-conversation_service = get_default_conversation_service()
-bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
-
-
-def _get_config(websocket: WebSocket) -> Config:
-    """Return the Config associated with this FastAPI app instance.
-
-    This ensures WebSocket auth follows the same configuration as the REST API
-    when the agent server is used as a library (e.g., tests or when mounted into
-    another FastAPI app), rather than always reading environment defaults.
-    """
-    config = getattr(websocket.app.state, "config", None)
-    if isinstance(config, Config):
-        return config
-    return get_default_config()
-
-
-def _get_conversation_service(websocket: WebSocket) -> ConversationService:
-    """Return the ConversationService for this FastAPI app instance.
-
-    Looks up ``app.state.conversation_service`` at request time so that the
-    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
-    is used instead of the module-level default captured at import. When
-    ``app.state`` is not configured (e.g. when sockets.py is imported as a
-    library without a lifespan), falls back to the module-level singleton,
-    which keeps the behaviour of existing tests that patch the module-level
-    variable.
-    """
-    service = getattr(websocket.app.state, "conversation_service", None)
-    if isinstance(service, ConversationService):
-        return service
-    return conversation_service
-
-
-def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
-    """Return the BashEventService for this FastAPI app instance.
-
-    Looks up ``app.state.bash_event_service`` at request time so that the
-    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
-    is used instead of the module-level default captured at import. When
-    ``app.state`` is not configured (e.g. when sockets.py is imported as a
-    library without a lifespan), falls back to the module-level singleton.
-    """
-    service = getattr(websocket.app.state, "bash_event_service", None)
-    if isinstance(service, BashEventService):
-        return service
-    return bash_event_service
 
 
 def _resolve_websocket_session_api_key(
@@ -139,6 +94,7 @@ _FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
 async def _accept_authenticated_websocket(
     websocket: WebSocket,
     session_api_key: str | None,
+    config: Config,
 ) -> bool:
     """Authenticate and accept the socket, or close with an auth error.
 
@@ -151,7 +107,6 @@ async def _accept_authenticated_websocket(
     The WebSocket is always *accepted* before first-message auth is attempted
     because raw WebSocket requires ``accept()`` before any frames can be read.
     """
-    config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
 
     # No auth configured — accept unconditionally.
@@ -263,6 +218,8 @@ async def events_socket(
             deprecated=True,
         ),
     ] = False,
+    config: Config = Depends(get_config),
+    conv_service: ConversationService = Depends(get_conversation_service),
 ):
     """WebSocket endpoint for conversation events.
 
@@ -283,11 +240,10 @@ async def events_socket(
             backward compatibility - if True and resend_mode is None, behaves
             as resend_mode='all'.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    conv_service = _get_conversation_service(websocket)
     try:
         event_service = await conv_service.get_event_service(conversation_id)
     except CredentialBindingActivationRequired:
@@ -413,6 +369,8 @@ async def bash_events_socket(
             deprecated=True,
         ),
     ] = False,
+    config: Config = Depends(get_config),
+    bash_service: BashEventService = Depends(get_server_bash_event_service),
 ):
     """WebSocket endpoint for bash events.
 
@@ -424,10 +382,9 @@ async def bash_events_socket(
             - None: Don't resend, just subscribe to new events
         resend_all: DEPRECATED. Use resend_mode='all' instead.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
-    bash_service = _get_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
     try:
         subscriber_id = await bash_service.subscribe_to_events(

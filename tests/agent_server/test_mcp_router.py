@@ -30,7 +30,9 @@ from openhands.agent_server.mcp_router import (
     _oauth_probe_jobs_lock,
     _register_oauth_job,
 )
-from openhands.agent_server.persistence import get_secrets_store, reset_stores
+from openhands.agent_server.persistence import (
+    ServerStores,
+)
 from openhands.agent_server.persistence.store import FileSecretsStore
 from openhands.sdk.mcp.config import to_fastmcp_mcp_config
 from tests.agent_server.conftest import FakeMCPTools
@@ -48,11 +50,9 @@ from tests.sdk.mcp.test_create_mcp_tool import (  # noqa: E402
 
 @pytest.fixture
 def client() -> Generator[TestClient]:
-    reset_stores()
     config = Config(session_api_keys=[])  # Disable authentication.
     with TestClient(create_app(config), raise_server_exceptions=False) as test_client:
         yield test_client
-    reset_stores()
 
 
 @pytest.fixture
@@ -357,7 +357,9 @@ def test_mcp_test_expands_remote_secret_reference_from_saved_secrets(
     """A remote server saved with ``Bearer ${NAME}`` connects with the saved
     secret, as a conversation would, instead of sending the placeholder."""
     config = Config(session_api_keys=[])
-    get_secrets_store(config).set_secret("SONAR_TOKEN", "sonar-saved-token")
+    ServerStores.from_config(config).secrets.set_secret(
+        "SONAR_TOKEN", "sonar-saved-token"
+    )
     client = TestClient(create_app(config), raise_server_exceptions=False)
 
     response = client.post(
@@ -388,7 +390,9 @@ def test_mcp_test_expands_references_like_a_conversation(
     secret is masked in the returned tool output; the short environment
     value is not."""
     config = Config(session_api_keys=[])
-    get_secrets_store(config).set_secret("HF_BOT_TOKEN", "xoxb-saved-secret")
+    ServerStores.from_config(config).secrets.set_secret(
+        "HF_BOT_TOKEN", "xoxb-saved-secret"
+    )
     monkeypatch.setenv("HF_TEAM_ID", "T0123")
     monkeypatch.delenv("HF_CHANNEL", raising=False)
     client = TestClient(create_app(config), raise_server_exceptions=False)
@@ -465,7 +469,7 @@ def test_mcp_test_masks_substituted_secrets_in_errors_and_logs(
     url: str,
 ):
     config = Config(session_api_keys=[])
-    get_secrets_store(config).set_secret("URL_TOKEN", secret)
+    ServerStores.from_config(config).secrets.set_secret("URL_TOKEN", secret)
     client = TestClient(create_app(config), raise_server_exceptions=False)
     _fail_with_expanded_url(fake_mcp_tools)
 
@@ -552,7 +556,7 @@ def test_mcp_test_masks_an_expanded_basic_credential(
     """Basic auth goes out as ``base64(user:password)``; that form is masked
     too, not only the substituted password."""
     config = Config(session_api_keys=[])
-    get_secrets_store(config).set_secret("HF_DB_PASS", "s3cret-pw")
+    ServerStores.from_config(config).secrets.set_secret("HF_DB_PASS", "s3cret-pw")
     client = TestClient(create_app(config), raise_server_exceptions=False)
     token = base64.b64encode(b"user:s3cret-pw").decode()
 
@@ -647,7 +651,7 @@ def test_mcp_test_keeps_brace_text_that_expansion_leaves_literal(
     """``${...}`` text from a secret's value or a default is not a reference
     the user wrote: like a conversation, pass it on instead of failing."""
     config = Config(session_api_keys=[])
-    store = get_secrets_store(config)
+    store = ServerStores.from_config(config).secrets
     store.set_secret("PASSWORD", "a-${OTHER}-b")
     store.set_secret("ENDPOINT", "https://h/${path}/mcp")
     store.set_secret("B", "set")
@@ -713,7 +717,7 @@ def test_mcp_test_expands_an_oauth_server_but_sends_its_auth_as_written(
     """The OAuth client copies a configured client secret into the state the
     caller saves, so ``auth`` goes out as written while the rest expands."""
     config = Config(session_api_keys=[])
-    store = get_secrets_store(config)
+    store = ServerStores.from_config(config).secrets
     store.set_secret("HF_TEAM", "team-42")
     store.set_secret("HF_CLIENT_SECRET", "oauth-client-secret")
     client = TestClient(create_app(config), raise_server_exceptions=False)
@@ -810,7 +814,9 @@ def test_mcp_test_keeps_the_secret_out_of_a_post_expansion_validation_error(
     """A substituted header name of ``Authorization`` next to ``auth`` fails
     validation; pydantic's own message would echo the expanded config."""
     config = Config(session_api_keys=[])
-    get_secrets_store(config).set_secret("HF_TOKEN", "REAL-SECRET-VALUE-123")
+    ServerStores.from_config(config).secrets.set_secret(
+        "HF_TOKEN", "REAL-SECRET-VALUE-123"
+    )
     monkeypatch.setenv("HF_HEADER", "Authorization")
     client = TestClient(create_app(config), raise_server_exceptions=False)
 
@@ -867,7 +873,7 @@ def test_mcp_test_reads_the_secrets_file_once_per_name(
     monkeypatch: pytest.MonkeyPatch, fake_mcp_tools: FakeMCPTools
 ):
     config = Config(session_api_keys=[])
-    get_secrets_store(config).set_secret("HF_TOKEN", "tok-value")
+    ServerStores.from_config(config).secrets.set_secret("HF_TOKEN", "tok-value")
     client = TestClient(create_app(config), raise_server_exceptions=False)
     loads: list[str] = []
     real_load = FileSecretsStore.load

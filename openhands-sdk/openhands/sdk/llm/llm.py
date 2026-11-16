@@ -18,6 +18,7 @@ from collections.abc import (
 from contextvars import ContextVar
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Literal,
@@ -33,9 +34,8 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    TypeAdapter,
     computed_field,
-    field_serializer,
-    field_validator,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -53,7 +53,9 @@ from openhands.sdk.llm._tokenizer import (
     count_tokenized_output,
     load_chat_template_tokenizer,
 )
+from openhands.sdk.llm.exceptions import LLMBadRequestError
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
+from openhands.sdk.llm.utils.image_delivery import image_delivery_client
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
     ModelRuntimeMetadata,
@@ -66,7 +68,7 @@ from openhands.sdk.llm.utils.runtime_metadata import (
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
@@ -219,9 +221,8 @@ JOINT_BUDGET_MIN_OUTPUT_TOKENS: Final[int] = 1024
 # registry) for the same underlying API.
 _JOINT_BUDGET_PROVIDER_PREFIXES: Final[tuple[str, ...]] = ("bedrock",)
 
-# Secret-bearing fields on LLM. Kept as a single source of truth so callers that
-# need to walk secrets (e.g. cipher-aware decryption on the save path) stay in
-# sync with the serializer below.
+# The ``SecretField`` fields of LLM, for callers that walk secrets (e.g.
+# cipher-aware decryption on the save path).
 LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "api_key",
     "aws_access_key_id",
@@ -292,7 +293,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Model name.",
         json_schema_extra=field_meta(SettingProminence.CRITICAL),
     )
-    api_key: str | SecretStr | None = Field(
+    api_key: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         description="API key.",
         json_schema_extra=field_meta(
@@ -338,15 +339,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
 
-    aws_access_key_id: str | SecretStr | None = Field(
+    aws_access_key_id: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
-    aws_secret_access_key: str | SecretStr | None = Field(
+    aws_secret_access_key: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
-    aws_session_token: str | SecretStr | None = Field(
+    aws_session_token: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
@@ -542,15 +543,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Enable caching of prompts.",
         json_schema_extra=field_meta(),
     )
+    log_completions_to_file: bool = Field(
+        default=False,
+        description="Enable completion JSON logging to log_completions_folder or a "
+        "configured completion-log callback. OpenTelemetry tracing is configured "
+        "separately and can export LLM message content while completion logging "
+        "is disabled.",
+        json_schema_extra=field_meta(),
+    )
     log_completions: bool = Field(
         default=False,
-        description="Enable logging of completions.",
+        description="Deprecated alias for log_completions_to_file. "
+        "Deprecated since v1.63.0 and scheduled for removal in v1.68.0.",
+        deprecated=True,
         json_schema_extra=field_meta(),
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
         description="The folder to log LLM completions to. "
-        "Required if log_completions is True.",
+        "Required if log_completions_to_file is True.",
         json_schema_extra=field_meta(),
     )
     custom_tokenizer: str | None = Field(
@@ -745,13 +756,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             _serialized_is_subscription.set(bool(data.get("is_subscription")))
         return data
 
-    @field_validator(
-        "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
-    )
-    @classmethod
-    def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
-        return validate_secret(v, info)
-
     @model_validator(mode="before")
     @classmethod
     def _coerce_inputs(cls, data):
@@ -765,6 +769,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         if "stream_idle_timeout" not in d:
             d["stream_idle_timeout"] = d.get("timeout", 300)
+
+        if "log_completions" in d:
+            old_val = TypeAdapter(bool).validate_python(d.pop("log_completions"))
+            if "log_completions_to_file" in d:
+                new_val = TypeAdapter(bool).validate_python(
+                    d["log_completions_to_file"]
+                )
+                if new_val != old_val:
+                    raise ValueError(
+                        "Conflicting values for log_completions (deprecated) and "
+                        "log_completions_to_file: pass only log_completions_to_file."
+                    )
+            else:
+                d["log_completions_to_file"] = old_val
+                warn_deprecated(
+                    "LLM(log_completions=...)",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=4,
+                )
+
+        if "log_completions_to_file" in d:
+            d["log_completions"] = d["log_completions_to_file"]
 
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
@@ -829,6 +857,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         self._init_model_info_and_caps()
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("log_completions", "log_completions_to_file"):
+            if name == "log_completions":
+                warn_deprecated(
+                    "LLM.log_completions assignment",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
+            super().__setattr__("log_completions_to_file", value)
+            super().__setattr__("log_completions", value)
+            return
+        super().__setattr__(name, value)
+
     def model_copy(
         self,
         *,
@@ -837,6 +880,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> Self:
         # Pydantic copies private attrs without re-running validators, even for
         # deep copies, so routing-field updates must rebuild derived metadata.
+        if update is not None and "log_completions" in update:
+            update = dict(update)
+            old_val = TypeAdapter(bool).validate_python(update.pop("log_completions"))
+            if "log_completions_to_file" in update:
+                new_val = TypeAdapter(bool).validate_python(
+                    update["log_completions_to_file"]
+                )
+                if new_val != old_val:
+                    raise ValueError(
+                        "Conflicting values for log_completions (deprecated) and "
+                        "log_completions_to_file: pass only log_completions_to_file."
+                    )
+            else:
+                update["log_completions_to_file"] = old_val
+                warn_deprecated(
+                    "LLM.model_copy(update={'log_completions': ...})",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
+        if update is not None and "log_completions_to_file" in update:
+            update = dict(update)
+            update["log_completions"] = update["log_completions_to_file"]
         copied = super().model_copy(update=update, deep=deep)
         route_changed = update is not None and any(
             k in update for k in ("model", "base_url", "litellm_extra_body")
@@ -848,10 +915,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Sessions follow the role. A copy made for another role is a
             # different user of the model, so it starts its own accounting.
             copied.reset_metrics()
-        elif not deep:
-            # Same role, same sessions: the shallow copy shares ``_session``
-            # already, and stays with the conversation the original is in.
-            copied._registry_session = self._registered_session()
+        else:
+            if not deep:
+                # Same role, same session: the shallow copy shares
+                # ``_session`` already, and stays with the conversation the
+                # original is in.
+                copied._registry_session = self._registered_session()
+            # A deep copy never shares ``_registry_session``: it is a raw
+            # slot, not a ``PrivateAttr``, so pydantic's deepcopy leaves it
+            # unset on the copy (``_registered_session()`` below returns
+            # ``None`` for it via the ``AttributeError`` fallback).
+            logging_changed = update is not None and (
+                "log_completions_to_file" in update
+                or "log_completions_folder" in update
+            )
+            if logging_changed and copied._registered_session() is None:
+                # Not part of a conversation: ``session_for`` won't run
+                # ``LLMSession.follow`` to resync these settings before the
+                # next call, so give the copy its own ``Telemetry`` now.
+                # For a shallow copy this starts from ``self``'s telemetry
+                # (shared ``_session`` otherwise), carrying over ``metrics``
+                # and attached callbacks by reference. For a deep copy,
+                # ``copied.session.telemetry`` is already an independent
+                # deep copy (own ``Metrics``); rebuilding from ``self``'s
+                # telemetry instead would silently re-merge the two copies'
+                # usage into one shared ``Metrics`` instance.
+                source_telemetry = (
+                    copied.session.telemetry if deep else self.session.telemetry
+                )
+                copied._session = LLMSession._wrapping(
+                    source_telemetry.model_copy(
+                        update={
+                            "completion_logging_enabled": (
+                                copied.log_completions_to_file
+                            ),
+                            "log_dir": copied.log_completions_folder
+                            if copied.log_completions_to_file
+                            else None,
+                        }
+                    )
+                )
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
@@ -903,13 +1006,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # which would create noisy duplicate error logs.
         # The completion()/responses() exception handlers call Telemetry.on_error
         # after retries are exhausted (final failure), which is what we want to log.
-
-    # =========================================================================
-    # Serializers
-    # =========================================================================
-    @field_serializer(*LLM_SECRET_FIELDS, when_used="always")
-    def _serialize_secrets(self, v: SecretStr | None, info):
-        return serialize_secret(v, info)
 
     # =========================================================================
     # Public API
@@ -1219,6 +1315,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
             retry_listener=self._retry_listener_fn,
+            timeout=self.timeout,
         )
 
     def _timeout_error(self, detail: str, seconds: float) -> LiteLLMTimeout:
@@ -1251,7 +1348,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return decorate
 
     async def _anext_with_idle_timeout(
-        self, iterator: AsyncIterator[_T], timeout: float
+        self,
+        iterator: AsyncIterator[_T],
+        timeout: float,  # noqa: ASYNC109 - this function is the cancel scope
     ) -> _T:
         """Await one chunk, converting only this idle timer's own expiry.
 
@@ -1446,6 +1545,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             (formatted_messages, cc_tools, use_mock_tools, call_kwargs,
              telemetry_ctx)
         """
+        self._validate_image_request(messages)
         formatted_messages = self.format_messages_for_llm(messages)
         return self._finalize_completion_params(
             formatted_messages,
@@ -1475,6 +1575,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         image-inlining pass is offloaded to a worker thread instead of running
         on the event loop.
         """
+        self._validate_image_request(messages)
         formatted_messages = await self.aformat_messages_for_llm(messages)
         return self._finalize_completion_params(
             formatted_messages,
@@ -1556,12 +1657,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "messages": formatted_messages[:],  # already simple dicts
         }
-        if telemetry.log_enabled:
+        if telemetry.completion_logging_enabled:
             telemetry_ctx.update(
                 {
-                    "messages": formatted_messages[:],  # already simple dicts
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -1599,6 +1700,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             (instructions, input_items, resp_tools, call_kwargs,
              telemetry_ctx)
         """
+        self._validate_image_request(messages)
         instructions, input_items = self.format_messages_for_responses(messages)
         return self._finalize_responses_params(
             instructions,
@@ -1632,6 +1734,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses :meth:`aformat_messages_for_responses` so the image-inlining
         pass runs off the event loop.
         """
+        self._validate_image_request(messages)
         instructions, input_items = await self.aformat_messages_for_responses(messages)
         return self._finalize_responses_params(
             instructions,
@@ -1692,14 +1795,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "instructions": instructions,
+            "input": input_items[:],
         }
-        if telemetry.log_enabled:
+        if telemetry.completion_logging_enabled:
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
-                    "instructions": instructions,
-                    "input": input_items[:],
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -1723,9 +1826,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ``Telemetry.on_response`` and is not returned to the caller.
 
         Raises:
-            LLMNoResponseError: If the response has no choices
-                (Gemini sometimes returns empty choices; raising here
-                inside the retry boundary ensures it is retried).
+            LLMNoResponseError: If the response has no choices, or its only
+                choice carries no text content, no tool calls, and no
+                reasoning. Raising here, inside the retry boundary, ensures
+                both cases are retried.
         """
         raw_resp: ModelResponse | None = None
         if use_mock_tools:
@@ -1752,6 +1856,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not resp.get("choices") or len(resp["choices"]) < 1:
             raise LLMNoResponseError(
                 "Response choices is less than 1. Response: " + str(resp)
+            )
+
+        # A content-free completion is a provider failure, not agent behaviour
+        # (#6085): returning it would persist an empty agent message whose
+        # corrective nudge does not break the stuck detector's agent streak.
+        # A completion cut off by the output-token cap (e.g. the profile
+        # pre-flight ping with max_tokens=1) is deterministic, so retrying it
+        # would only repeat the same empty answer.
+        choice = resp["choices"][0]
+        message = Message.from_llm_chat_message(choice["message"])
+        has_content = any(
+            isinstance(c, TextContent) and bool(c.text.strip()) for c in message.content
+        )
+        if not (
+            choice.get("finish_reason") == "length"
+            or has_content
+            or message.tool_calls
+            or message.reasoning_content
+            or message.thinking_blocks
+        ):
+            raise LLMNoResponseError(
+                "Response choices[0] message has no content, tool calls, or "
+                "reasoning. Response: " + str(resp)
             )
         return resp
 
@@ -2610,23 +2737,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        ret = litellm_completion(
-            **self._prepare_transport_kwargs(
-                messages=messages, enable_streaming=enable_streaming, **kwargs
+        provider = self._provider_info
+        with image_delivery_client(
+            provider.name if provider else None,
+            messages,
+            self.timeout,
+            asynchronous=False,
+        ) as guarded:
+            ret = litellm_completion(
+                **self._prepare_transport_kwargs(
+                    messages=messages,
+                    enable_streaming=enable_streaming,
+                    **{**kwargs, **guarded},
+                )
             )
-        )
-        if enable_streaming and on_token is not None:
-            chunks: list[ModelResponseStream] = []
-            stream = cast(Iterable[ModelResponseStream], ret)
-            for chunk in stream:
-                on_token(chunk)
-                chunks.append(chunk)
-            ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            if enable_streaming and on_token is not None:
+                chunks: list[ModelResponseStream] = []
+                stream = cast(Iterable[ModelResponseStream], ret)
+                for chunk in stream:
+                    on_token(chunk)
+                    chunks.append(chunk)
+                ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-        assert isinstance(ret, ModelResponse), (
-            f"Expected ModelResponse, got {type(ret)}"
-        )
-        return ret
+            assert isinstance(ret, ModelResponse), (
+                f"Expected ModelResponse, got {type(ret)}"
+            )
+            return ret
 
     async def _atransport_call(
         self,
@@ -2638,41 +2774,79 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        ret = await litellm_acompletion(
-            **self._prepare_transport_kwargs(
-                messages=messages,
-                enable_streaming=enable_streaming,
-                auth_values=auth_values,
-                **kwargs,
-            )
-        )
-        if enable_streaming and on_token is not None:
-            chunks: list[ModelResponseStream] = []
-            # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
-            # back a plain sync generator from ``litellm_acompletion``
-            if isinstance(ret, AsyncIterable):
-                stream = cast(AsyncIterable[ModelResponseStream], ret)
-                async for chunk in self._aiter_with_idle_timeout(stream):
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
-            else:
-                loop = asyncio.get_running_loop()
-                synced_chunks: list[ModelResponseStream] = await loop.run_in_executor(
-                    None, list, cast(Iterable[ModelResponseStream], ret)
+        provider = self._provider_info
+        with image_delivery_client(
+            provider.name if provider else None,
+            messages,
+            self.timeout,
+            asynchronous=True,
+        ) as guarded:
+            try:
+                ret = await litellm_acompletion(
+                    **self._prepare_transport_kwargs(
+                        messages=messages,
+                        enable_streaming=enable_streaming,
+                        auth_values=auth_values,
+                        **{**kwargs, **guarded},
+                    )
                 )
-                for chunk in synced_chunks:
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
-            ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-        assert isinstance(ret, ModelResponse), (
-            f"Expected ModelResponse, got {type(ret)}"
-        )
-        return ret
+                if enable_streaming and on_token is not None:
+                    chunks: list[ModelResponseStream] = []
+                    # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+                    # back a plain sync generator from ``litellm_acompletion``
+                    if isinstance(ret, AsyncIterable):
+                        stream = cast(AsyncIterable[ModelResponseStream], ret)
+                        async for chunk in self._aiter_with_idle_timeout(stream):
+                            await _invoke_token_callback(on_token, chunk)
+                            chunks.append(chunk)
+                    else:
+                        loop = asyncio.get_running_loop()
+                        synced_chunks: list[
+                            ModelResponseStream
+                        ] = await loop.run_in_executor(
+                            None, list, cast(Iterable[ModelResponseStream], ret)
+                        )
+                        for chunk in synced_chunks:
+                            await _invoke_token_callback(on_token, chunk)
+                            chunks.append(chunk)
+                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+
+                assert isinstance(ret, ModelResponse), (
+                    f"Expected ModelResponse, got {type(ret)}"
+                )
+                return ret
+
+            finally:
+                if guarded:
+                    await guarded["client"].close()
 
     # =========================================================================
     # Capabilities, formatting, and info
     # =========================================================================
+    def _validate_image_request(self, messages: list[Message]) -> None:
+        # Token counting shares the formatters and must still work before an
+        # agent delegates images to a vision tool. Reject only actual requests.
+        # Only the latest user message is rejected: the agent can delegate
+        # those images (or explain the capability gap). Images in tool
+        # observations or older messages cannot be delegated after the fact,
+        # so rejecting them would hard-fail previously working flows; the
+        # formatter drops those pixels for text-only models instead.
+        latest_user = next(
+            (message for message in reversed(messages) if message.role == "user"),
+            None,
+        )
+        if (
+            latest_user is not None
+            and latest_user.contains_image
+            and not self.vision_is_active()
+        ):
+            raise LLMBadRequestError(
+                f"Image-bearing request cannot be sent to {self.model!r}: vision "
+                "is disabled or unsupported. Configure a vision-capable model, "
+                "an explicit capability override, or delegate the images first."
+            )
+
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
         return self.model_canonical_name or self.model
@@ -2799,102 +2973,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Validate context window size
         self._validate_context_window_size()
 
-        effective_max_output_tokens = self.max_output_tokens
-        if effective_max_output_tokens is None:
-            if any(
-                m in self.model
-                for m in [
-                    "claude-3-7-sonnet",
-                    "claude-sonnet-4",
-                    "kimi-k2-thinking",
-                ]
-            ):
-                effective_max_output_tokens = (
-                    64000  # practical cap (litellm may allow 128k with header)
-                )
-                logger.debug(
-                    f"Setting effective max_output_tokens to "
-                    f"{effective_max_output_tokens} "
-                    f"for {self.model}"
-                )
-            elif self._model_info is not None:
-                if isinstance(self._model_info.get("max_output_tokens"), int):
-                    effective_max_output_tokens = self._model_info.get(
-                        "max_output_tokens"
-                    )
-                    # Guard: if max_output_tokens >= the context window,
-                    # requesting that many output tokens would leave zero
-                    # room for input and strict providers (e.g. AWS Bedrock)
-                    # will reject every call. Halve it so input has
-                    # headroom. We check both max_input_tokens and
-                    # max_tokens since either may represent the context
-                    # window depending on the provider.
-                    context_window = (
-                        self.effective_max_input_tokens
-                        or self._model_info.get("max_tokens")
-                    )
-                    if (
-                        context_window is not None
-                        and effective_max_output_tokens is not None
-                        and effective_max_output_tokens >= context_window
-                    ):
-                        capped = effective_max_output_tokens // 2
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s "
-                            "for %s (max_output_tokens >= context "
-                            "window %s)",
-                            effective_max_output_tokens,
-                            capped,
-                            self.model,
-                            context_window,
-                        )
-                        effective_max_output_tokens = capped
-                    if (
-                        self.base_url is not None
-                        and not self.model.startswith("litellm_proxy/")
-                        and effective_max_output_tokens is not None
-                        and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                    ):
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s for %s "
-                            "(model metadata may exceed provider limit)",
-                            effective_max_output_tokens,
-                            DEFAULT_MAX_OUTPUT_TOKENS_CAP,
-                            self.model,
-                        )
-                        effective_max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                elif isinstance(self._model_info.get("max_tokens"), int):
-                    # 'max_tokens' is ambiguous: some providers use it for total
-                    # context window, not output limit. Cap it to avoid requesting
-                    # output that exceeds the context window.
-                    max_tokens_value = self._model_info.get("max_tokens")
-                    assert isinstance(max_tokens_value, int)  # for type checker
-                    effective_max_output_tokens = min(
-                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                    )
-                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s for %s "
-                            "(max_tokens may be context window, not output)",
-                            max_tokens_value,
-                            effective_max_output_tokens,
-                            self.model,
-                        )
-
-        if "o3" in self.model:
-            o3_limit = 100000
-            if (
-                effective_max_output_tokens is None
-                or effective_max_output_tokens > o3_limit
-            ):
-                effective_max_output_tokens = o3_limit
-                logger.debug(
-                    "Clamping effective max_output_tokens to %s for %s",
-                    effective_max_output_tokens,
-                    self.model,
-                )
-
-        self._effective_max_output_tokens = effective_max_output_tokens
+        # Advertised maximums constrain a request; they are not a requested
+        # generation budget. In particular, requesting the largest proxy limit
+        # can exclude otherwise valid lower-limit upstream routes (#5181).
+        self._effective_max_output_tokens = self.max_output_tokens
+        if self._effective_max_output_tokens is None:
+            advertised_limit = (self._model_info or {}).get("max_output_tokens")
+            self._effective_max_output_tokens = min(
+                DEFAULT_MAX_OUTPUT_TOKENS_CAP,
+                advertised_limit
+                if isinstance(advertised_limit, int) and advertised_limit > 0
+                else DEFAULT_MAX_OUTPUT_TOKENS_CAP,
+            )
 
     def _validate_context_window_size(self) -> None:
         """Validate that the context window is large enough for OpenHands."""
@@ -3442,7 +3532,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return template_messages
 
     @classmethod
-    def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
+    def from_persisted(
+        cls, data: Any, *, context: Mapping[str, Any] | None = None
+    ) -> LLM:
         """Load a persisted LLM profile payload, applying schema migrations."""
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -3469,7 +3561,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return create_subscription_llm_from_config(llm)
         return llm
 
-    def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def to_persisted(
+        self, *, context: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Serialize this LLM for profile persistence."""
         data = self.model_dump(mode="json", exclude_none=True, context=context)
         if data.get("auth_type") == "subscription":
@@ -3484,13 +3578,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     @classmethod
     def load_from_json(
-        cls, json_path: str, *, context: dict[str, Any] | None = None
+        cls, json_path: str, *, context: Mapping[str, Any] | None = None
     ) -> LLM:
         """Load an LLM instance from a JSON file.
 
         Args:
             json_path: Path to the JSON file containing LLM configuration.
-            context: Optional validation context (e.g., ``{"cipher": cipher}``
+            context: Optional validation context (e.g., ``cipher_context(cipher)``
                 for decrypting secrets stored at rest).
 
         Returns:

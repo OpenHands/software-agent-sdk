@@ -18,6 +18,7 @@ from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+from openhands.sdk.utils.pydantic_secrets import client_context
 
 
 if TYPE_CHECKING:
@@ -919,7 +920,7 @@ class RemoteConversation(BaseConversation):
 
             payload = {
                 "agent": agent.model_dump(
-                    mode="json", context={"expose_secrets": True}
+                    mode="json", context=client_context("plaintext")
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
@@ -1062,7 +1063,7 @@ class RemoteConversation(BaseConversation):
             "POST",
             CONVERSATIONS_PATH,
             json=request.model_dump(
-                mode="json", exclude_none=True, context={"expose_secrets": True}
+                mode="json", exclude_none=True, context=client_context("plaintext")
             ),
         )
         info = response.json()
@@ -1182,8 +1183,8 @@ class RemoteConversation(BaseConversation):
         self._callbacks.append(state_update_callback)
 
         # Add callback to handle LLM completion logs
-        # Register callback if any LLM has log_completions enabled
-        if any(llm.log_completions for llm in agent.get_all_llms()):
+        # Register callback if any LLM has log_completions_to_file enabled
+        if any(llm.log_completions_to_file for llm in agent.get_all_llms()):
             llm_log_callback = self._create_llm_completion_log_callback()
             self._callbacks.append(llm_log_callback)
 
@@ -1343,9 +1344,9 @@ class RemoteConversation(BaseConversation):
                     target_llm = llm
                     break
 
-            if not target_llm or not target_llm.log_completions:
+            if not target_llm or not target_llm.log_completions_to_file:
                 logger.debug(
-                    f"No LLM with log_completions enabled found "
+                    f"No LLM with log_completions_to_file enabled found "
                     f"for usage_id={event.usage_id}"
                 )
                 return
@@ -1693,6 +1694,7 @@ class RemoteConversation(BaseConversation):
             f"{CONVERSATIONS_PATH}/{self._id}/confirmation_policy",
             json=payload,
         )
+        self._state.refresh_from_server()
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the remote conversation."""
@@ -1730,6 +1732,7 @@ class RemoteConversation(BaseConversation):
             "POST",
             f"{CONVERSATIONS_PATH}/{self._id}/interrupt",
         )
+        self._state.refresh_from_server()
 
     def load_plugin(self, plugin_ref: str) -> None:
         _send_request(
@@ -1746,10 +1749,10 @@ class RemoteConversation(BaseConversation):
         for key, value in secrets.items():
             if isinstance(value, SecretSource):
                 # Pydantic model → dict with "kind" discriminator for server.
-                # expose_secrets=True prevents SecretStr fields (e.g. header
-                # values) from being redacted during serialization.
+                # A plaintext dump keeps SecretStr fields (e.g. header
+                # values) from being redacted.
                 serializable_secrets[key] = value.model_dump(
-                    mode="json", context={"expose_secrets": True}
+                    mode="json", context=client_context("plaintext")
                 )
             elif callable(value):
                 serializable_secrets[key] = value()
@@ -1916,7 +1919,7 @@ class RemoteConversation(BaseConversation):
 
         agent_cls = type(self.agent)
         fork_agent = agent_cls.model_validate(
-            self.agent.model_dump(context={"expose_secrets": True}),
+            self.agent.model_dump(context=client_context("plaintext")),
         )
 
         server_tags: dict[str, str] | None = fork_info.get("tags") or None

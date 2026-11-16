@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.goal.controller import (
+    GoalAsked,
     GoalController,
     GoalDone,
     GoalOutcome,
@@ -33,13 +34,14 @@ def run_goal(
     judge_llm: LLM,
     *,
     max_iterations: int = 10,
-) -> GoalOutcome:
+) -> GoalOutcome | GoalAsked:
     """Drive ``conversation`` toward ``objective``, judging completion each round.
 
     Sends the objective, runs the agent to a finish, and lets a
     :class:`GoalController` decide whether to re-prompt with the judge's feedback
     or stop. Returns a :class:`GoalOutcome` whose ``status`` is ``"complete"`` or
-    ``"capped"``.
+    ``"capped"``, or :class:`GoalAsked` when the agent asked the user a
+    question (``ask_user``): answer it, then call ``run_goal`` again.
 
     Args:
         conversation: The conversation to drive (any agent/critic config).
@@ -54,4 +56,6 @@ def run_goal(
         step = controller.on_run_finished(conversation.state.events)
         if isinstance(step, GoalDone):
             return step.outcome
+        if isinstance(step, GoalAsked):
+            return step
         conversation.send_message(step.followup)

@@ -40,6 +40,9 @@ Routes: `POST /api/conversations/{conversation_id}/events/respond_to_confirmatio
 - `F08.secrets-errors`: a missing or non-object `secrets`, an unknown secret kind and a `LookupSecret` without `url` are 422; an unknown conversation is 404; no key is 401; nothing is stored.
 - `F08.secrets-bad-value`: a number, `null` or a boolean as a secret value is refused with 422, not a 500.
 - `F08.secrets-terminal`: a terminal command that names a runtime secret receives its value, while the observation and the next request to the model show `<secret-hidden>` and the plaintext is stored nowhere.
+- `F08.secrets-task-delegate`: a runtime secret of the conversation reaches the terminal of a sub-agent its task tool delegates to; the delegate's observation and its next model request show `<secret-hidden>`, and the plaintext is stored nowhere.
+- `F08.secrets-agent-message`: a registered secret value in the model's text reply is stored and returned as `<secret-hidden>` in the agent's `MessageEvent`, and the plaintext is stored nowhere.
+- `F08.secrets-git-provider`: a `GITHUB_TOKEN` runtime secret is what the agent's `git` uses for `https://github.com`, without the command naming the secret.
 - `F08.secrets-override`: a runtime secret replaces a start-time secret of the same name for the next command.
 - `F08.secrets-lookup`: a runtime `LookupSecret` is fetched from its URL with its headers only when a command names it; the command gets the fetched text, the observation and the model see `<secret-hidden>`, and GET hides the `Authorization` header that `base_state.json` keeps encrypted.
 - `F08.secrets-lookup-self`: a runtime `LookupSecret` whose URL is the server's own `/api/settings/secrets/<name>` (hostless, made absolute from `OH_INTERNAL_SERVER_URL`, or absolute on the run's address) is answered in process from the secrets store with no HTTP request and no session key; a name the store lacks falls through to HTTP (401 without a key) and the command gets no value.
@@ -112,7 +115,14 @@ Preconditions:
   `$ACCEPT_AGENT` (write `qa-f08-accepted.txt`, finish), `$REJECT_AGENT`
   (`rm -rf qa-f08-victim`, finish), `$RISKY_AGENT` (a low-risk `echo`,
   `rm -rf qa-f08-victim`, an `echo`, finish), `$SECRET_AGENT` (write
-  `$QA_F08_TOKEN` to a file and echo it, finish, twice), `$ROTATE_AGENT`
+  `$QA_F08_TOKEN` to a file and echo it, finish, twice), `$GITPROV_AGENT`
+  (ask `git credential fill` for `https://github.com` credentials without
+  naming a secret, write `$GITHUB_TOKEN` to a file, finish), `$DELEGATE_AGENT` (the task tool
+  instead of the terminal: delegate to the sub-agent `qa-f08-delegate`,
+  whose model calls are the next steps of the same stub, write
+  `$QA_F08_DELEGATED` to a file and echo it, finish the delegate, finish),
+  `$MESSAGE_AGENT` (a text reply that contains a secret's value),
+  `$ROTATE_AGENT`
   (write `$QA_F08_ROT` to a file, finish), `$LOOKUP_AGENT` (write
   `$QA_F08_LOOKUP` to a file and echo it, finish) and `$SELF_AGENT` (write
   `$QA_F08_HOSTLESS`, `$QA_F08_ABSOLUTE` and `$QA_F08_ABSENT` to three files
@@ -129,7 +139,8 @@ Preconditions:
 control-agent-server llm preset deepseek
 W="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f08"
 mkdir -p "$W/knobs" "$W/accept" "$W/reject/qa-f08-victim" "$W/risky/qa-f08-victim" "$W/secret" "$W/rotate" \
-  "$W/lookup" "$W/self" "$W/scoped" "$W/nocipher" "$W/real"
+  "$W/lookup" "$W/self" "$W/scoped" "$W/nocipher" "$W/real" "$W/gitprov" \
+  "$W/delegate" "$W/message"
 NOPE=$(python3 -c 'import uuid; print(uuid.uuid4())')
 OFFLINE_AGENT='{"llm": {"model": "openai/qa-offline", "api_key": "qa-offline-key", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "tools": []}'
 MSG='{"role": "user", "content": [{"type": "text", "text": "Run the command."}]}'
@@ -144,6 +155,14 @@ RISKY_AGENT=$(stub_agent qa-f08-risky --step 'tool:terminal:{"command":"echo qa-
   --step 'tool:terminal:{"command":"rm -rf qa-f08-victim"}' --step 'tool:terminal:{"command":"echo qa-unrated > qa-f08-unrated.txt"}' --step "$FINISH")
 SECRET_STEP='tool:terminal:{"command":"printf %s \"$QA_F08_TOKEN\" > qa-f08-token.txt; echo \"token=$QA_F08_TOKEN\""}'
 SECRET_AGENT=$(stub_agent qa-f08-secret --step "$SECRET_STEP" --step "$FINISH" --step "$SECRET_STEP" --step "$FINISH")
+GITPROV_AGENT=$(stub_agent qa-f08-gitprov \
+  --step 'tool:terminal:{"command":"printf \"protocol=https\\nhost=github.com\\n\\n\" | GIT_TERMINAL_PROMPT=0 git credential fill > qa-f08-cred.txt 2>&1; echo cred-done"}' \
+  --step 'tool:terminal:{"command":"printf %s \"$GITHUB_TOKEN\" > qa-f08-named.txt"}' --step "$FINISH")
+DELEGATE_AGENT=$(stub_agent qa-f08-delegate \
+  --step 'tool:task:{"subagent_type":"qa-f08-delegate","prompt":"Run the command.","description":"qa delegate"}' \
+  --step 'tool:terminal:{"command":"printf %s \"$QA_F08_DELEGATED\" > qa-f08-delegated.txt; echo \"delegated=$QA_F08_DELEGATED\""}' \
+  --step 'tool:finish:{"message":"QA_F08_DELEGATE_DONE"}' --step "$FINISH" | jq -c '.tools = [{"name": "task_tool_set"}]')
+MESSAGE_AGENT=$(stub_agent qa-f08-message --step 'reply:QA_F08_SAYS qa-f08-message-value END')
 ROTATE_STEP='tool:terminal:{"command":"printf %s \"$QA_F08_ROT\" > qa-f08-rot.txt"}'
 ROTATE_AGENT=$(stub_agent qa-f08-rotate --step "$ROTATE_STEP" --step "$FINISH")
 LOOKUP_STEP='tool:terminal:{"command":"printf %s \"$QA_F08_LOOKUP\" > qa-f08-lookup.txt; echo \"lookup=$QA_F08_LOOKUP\""}'
@@ -501,6 +520,78 @@ KID=$(control-agent-server api POST /api/conversations \
   recorded model requests carry the masked text and never the value, and no
   server file holds the plaintext although the name is stored (the positive
   control for the glob). The run saved the state, so GET lists the name.
+- **Secrets in a delegated task (`F08.secrets-task-delegate`).** The
+  conversation's agent has only the task tool; its create request defines
+  the sub-agent `qa-f08-delegate` with the terminal. The stub delegates,
+  and the delegate's command writes `$QA_F08_DELEGATED` to a file and echoes
+  it.
+  ```sh
+  DID=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/delegate\"}, \"agent\": $DELEGATE_AGENT, \"autotitle\": false, \"agent_definitions\": [{\"name\": \"qa-f08-delegate\", \"description\": \"QA delegate.\", \"tools\": [\"terminal\"], \"system_prompt\": \"You are the QA delegate.\"}]}" \
+    --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$DID/secrets" --json '{"secrets": {"QA_F08_DELEGATED": "qa-f08-delegated-value"}}' \
+    --expect 200 --save F08.secrets-task-delegate/post
+  control-agent-server conversation send "$DID" --text 'Run the command.' --wait --until finished --timeout 120
+  control-agent-server conversation events "$DID" --kinds ObservationEvent --contains '"subagent": "qa-f08-delegate"' \
+    --expect-kind ObservationEvent --save F08.secrets-task-delegate/task
+  test "$(cat "$W/delegate/qa-f08-delegated.txt")" = qa-f08-delegated-value
+  control-agent-server state grep 'delegated=<secret-hidden>' --glob "server/workspace/conversations/${DID//-/}/subagents/*/events/*"
+  control-agent-server sink read --name qa-f08-delegate --contains 'delegated=<secret-hidden>' --expect-min 1 \
+    --save F08.secrets-task-delegate/model-request
+  control-agent-server sink read --name qa-f08-delegate --contains qa-f08-delegated-value --expect-max 0
+  control-agent-server state grep qa-f08-delegated-value --glob 'server/**/*' --expect-none
+  ```
+  The task observation names `qa-f08-delegate`, and the file the delegate's
+  command wrote holds the real value: the secret posted to the conversation
+  was an environment variable in the sub-agent's terminal. The delegate's
+  own event log (under the conversation's `subagents/` folder) and the
+  model request that followed its command read `delegated=<secret-hidden>`;
+  no model request and no server file holds the plaintext.
+- **Secret in the agent's reply (`F08.secrets-agent-message`).** The stub
+  answers with a text that contains the value of a secret posted to the
+  conversation.
+  ```sh
+  MID=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/message\"}, \"agent\": $MESSAGE_AGENT, \"autotitle\": false}" --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$MID/secrets" --json '{"secrets": {"QA_F08_MSG": "qa-f08-message-value"}}' --expect 200
+  control-agent-server conversation send "$MID" --text 'Say it.' --wait --until finished --timeout 120
+  control-agent-server sink read --name qa-f08-message --expect-min 1 --expect-max 1
+  control-agent-server api GET "/api/conversations/$MID/events/search" --query source=agent --query kind=MessageEvent \
+    --check items len-eq 1 --check items.0.llm_message.content.0.text eq 'QA_F08_SAYS <secret-hidden> END' \
+    --save F08.secrets-agent-message/message
+  control-agent-server api GET "/api/conversations/$MID/agent_final_response" --check response eq 'QA_F08_SAYS <secret-hidden> END'
+  control-agent-server state grep QA_F08_SAYS --glob "server/workspace/conversations/${MID//-/}/events/*"
+  control-agent-server state grep qa-f08-message-value --glob 'server/**/*' --expect-none
+  ```
+  The model was called once and answered `QA_F08_SAYS qa-f08-message-value
+  END`; the agent's `MessageEvent` and the final response read `QA_F08_SAYS
+  <secret-hidden> END`, and the stored event carries the reply's marker (the
+  positive control for the search) while no server file holds the value.
+- **Git uses a provider token secret (`F08.secrets-git-provider`), known bug #6814.**
+  A `GITHUB_TOKEN` runtime secret (a fake value), then a command that asks
+  git which credentials it would send to `https://github.com`
+  (`git credential fill`, no network) and never names the secret. The
+  stub's second command names it, as the positive control.
+
+  Needs: `git`
+  ```sh
+  GID=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/gitprov\"}, \"agent\": $GITPROV_AGENT, \"autotitle\": false}" --expect 201 --field id)
+  control-agent-server api POST "/api/conversations/$GID/secrets" --json '{"secrets": {"GITHUB_TOKEN": "qa-6814-token"}}' --expect 200
+  control-agent-server conversation send "$GID" --text 'Run the command.' --wait --until finished --timeout 120
+  control-agent-server conversation events "$GID" --kinds ObservationEvent --contains cred-done
+  test "$(cat "$W/gitprov/qa-f08-named.txt")" = qa-6814-token
+  control-agent-server state cat fixtures/qa-f08/gitprov/qa-f08-cred.txt --contains 'password=qa-6814-token'  # bug: content contains 'could not read Username'
+  ```
+  Expected: git's answer holds `password=qa-6814-token`, so an HTTPS
+  `git push`, `fetch` or `clone` against `github.com` authenticates with the
+  saved token although the command does not name it
+  ([#6814](https://github.com/OpenHands/software-agent-sdk/issues/6814)).
+  The file reads `fatal: could not read Username for
+  'https://github.com': terminal prompts disabled`: the terminal exports a
+  secret only into a command whose text names it (the second command, which
+  does, wrote the token to `qa-f08-named.txt`), and nothing tells git to use
+  the token.
 - **Override a start-time secret (`F08.secrets-override`).** A conversation
   created with `QA_F08_ROT` = `qa-f08-rot-old`, then a runtime POST of a new
   value.
@@ -731,7 +822,10 @@ KID=$(control-agent-server api POST /api/conversations \
   without a key.
 - A command receives a secret only when its text mentions the secret's name
   (case-insensitive substring match); masking applies to every registered
-  secret's last resolved value, wherever it appears in terminal output.
+  secret's last resolved value, wherever it appears in terminal output or
+  in the text of the model's reply (`F08.secrets-agent-message`). A
+  sub-agent started by the task tool gets the conversation's secrets under
+  the same rules (`F08.secrets-task-delegate`).
 - Runtime secret changes made through `POST .../secrets` live only in
   `base_state.json` and are never written to `meta.json`, so a runtime secret
   survives a reload (restart, idle eviction, sandbox pause) only once a state
