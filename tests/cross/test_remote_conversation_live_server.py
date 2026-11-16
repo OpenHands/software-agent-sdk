@@ -86,16 +86,15 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value == expected
 
 
-@pytest.mark.parametrize("skill_mib", [2, 17])
-def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, skill_mib):
+@pytest.mark.parametrize("context_mib", [2, 17])
+def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, context_mib):
     monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "5")
+    # Skill bodies are left out of the snapshot, so grow a field that is sent.
     agent = Agent(
         llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
         tools=[],
         agent_context=AgentContext(
-            skills=[
-                Skill(name="large-context", content="x" * (skill_mib * 1024 * 1024))
-            ]
+            system_message_suffix="x" * (context_mib * 1024 * 1024)
         ),
     )
     received = []
@@ -122,7 +121,7 @@ def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, skill_
         response.raise_for_status()
         conversation_id = UUID(response.json()["id"])
         try:
-            if skill_mib == 17:
+            if context_mib == 17:
                 with pytest.raises(
                     WebSocketConnectionError, match="message too big.*1009"
                 ):
