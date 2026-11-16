@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, Final, Self, SupportsIndex, overload
 from urllib.parse import urlparse
@@ -375,6 +376,7 @@ class RemoteEventsList(EventsListBase):
         self._events_base_path = events_base_path
         self._cached_events: list[Event] = []
         self._cached_event_ids: set[str] = set()
+        self._timestamp_awareness: set[bool] = set()
         self._acp_tool_call_id_to_event_id: dict[str, str] = {}
         self._lock = threading.RLock()
         # Initial fetch to sync existing events
@@ -408,6 +410,9 @@ class RemoteEventsList(EventsListBase):
 
         self._cached_events = events
         self._cached_event_ids.update(e.id for e in events)
+        self._timestamp_awareness.update(
+            datetime.fromisoformat(e.timestamp).tzinfo is not None for e in events
+        )
         logger.debug(f"Full sync completed, {len(events)} events cached")
 
     def reconcile(self) -> int:
@@ -451,13 +456,24 @@ class RemoteEventsList(EventsListBase):
                 break
             page_id = data["next_page_id"]
 
-        # Merge events into cache, acquiring lock once for all events
         added_count = 0
         with self._lock:
             for event in events:
                 if event.id not in self._cached_event_ids:
-                    self._add_event_unsafe(event)
+                    self._add_event_unsafe(event, server_order=True)
                     added_count += 1
+            positions = {event.id: index for index, event in enumerate(events)}
+            tool_positions: dict[str, int] = {}
+            for index, event in enumerate(events):
+                if isinstance(event, ACPToolCallEvent):
+                    tool_positions.setdefault(event.tool_call_id, index)
+
+            def position(event: Event) -> int:
+                if isinstance(event, ACPToolCallEvent):
+                    return tool_positions.get(event.tool_call_id, len(events))
+                return positions.get(event.id, len(events))
+
+            self._cached_events.sort(key=position)
 
         logger.debug(
             f"Reconciliation completed, {added_count} new events added "
@@ -465,7 +481,7 @@ class RemoteEventsList(EventsListBase):
         )
         return added_count
 
-    def _add_event_unsafe(self, event: Event) -> None:
+    def _add_event_unsafe(self, event: Event, *, server_order: bool = False) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
         # ACP emits two ACPToolCallEvents per call — an early ``started`` event
         # and one terminal (``completed`` / ``failed``) event — the
@@ -483,6 +499,9 @@ class RemoteEventsList(EventsListBase):
                         self._cached_events[i] = event
                         self._cached_event_ids.discard(existing_id)
                         self._cached_event_ids.add(event.id)
+                        self._timestamp_awareness.add(
+                            datetime.fromisoformat(event.timestamp).tzinfo is not None
+                        )
                         self._acp_tool_call_id_to_event_id[event.tool_call_id] = (
                             event.id
                         )
@@ -502,14 +521,18 @@ class RemoteEventsList(EventsListBase):
                 self._cached_event_ids.discard(existing_id)
                 del self._acp_tool_call_id_to_event_id[event.tool_call_id]
 
-        # Use bisect with key function for O(log N) insertion
-        # This ensures events are always ordered correctly even if
-        # WebSocket delivers them out of order
-        insert_pos = bisect.bisect_right(
-            self._cached_events, event.timestamp, key=lambda e: e.timestamp
-        )
+        timestamp = datetime.fromisoformat(event.timestamp)
+        if server_order or self._has_mixed_timestamps(event):
+            insert_pos = len(self._cached_events)
+        else:
+            insert_pos = bisect.bisect_right(
+                self._cached_events,
+                timestamp,
+                key=lambda e: datetime.fromisoformat(e.timestamp),
+            )
         self._cached_events.insert(insert_pos, event)
         self._cached_event_ids.add(event.id)
+        self._timestamp_awareness.add(timestamp.tzinfo is not None)
         if isinstance(event, ACPToolCallEvent):
             self._acp_tool_call_id_to_event_id[event.tool_call_id] = event.id
         logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
@@ -517,13 +540,33 @@ class RemoteEventsList(EventsListBase):
     def add_event(self, event: Event) -> None:
         """Add a new event to the local cache (called by WebSocket callback).
 
-        Events are inserted in sorted order by timestamp to maintain correct
-        temporal ordering regardless of WebSocket delivery order.
+        Comparable timestamps are ordered locally. Mixed legacy-naive and
+        aware timestamps use server log order when insertion is ambiguous.
         """
         with self._lock:
-            # Check if event already exists to avoid duplicates
-            if event.id not in self._cached_event_ids:
-                self._add_event_unsafe(event)
+            if event.id in self._cached_event_ids:
+                return
+            mixed = self._has_mixed_timestamps(event)
+            timestamp = datetime.fromisoformat(event.timestamp)
+            last = (
+                datetime.fromisoformat(self._cached_events[-1].timestamp)
+                if self._cached_events
+                else None
+            )
+            needs_reconcile = mixed and not (
+                timestamp.tzinfo is not None
+                and last is not None
+                and last.tzinfo is not None
+                and timestamp >= last
+            )
+            self._add_event_unsafe(event)
+        if needs_reconcile:
+            # Legacy timestamps name the server's local time, not this client's.
+            self.reconcile()
+
+    def _has_mixed_timestamps(self, event: Event) -> bool:
+        aware = datetime.fromisoformat(event.timestamp).tzinfo is not None
+        return (not aware) in self._timestamp_awareness
 
     def append(self, event: Event) -> int:
         """Add a new event to the list (for compatibility with EventLog interface).

@@ -2,17 +2,21 @@
 
 import asyncio
 import json
+import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import SecretStr
 from starlette.websockets import WebSocketState
 
 from openhands.agent_server import session_socket, sockets
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import PubSub, Subscriber
@@ -341,3 +345,34 @@ async def test_session_newer_snapshot_follows_connect_snapshot(svc, monkeypatch)
         if f.get("type") == "transient" and f["event"].get("key") == "full_state"
     ]
     assert snapshots[-1]["activated_knowledge_skills"] == ["python_tips"]
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires time.tzset")
+async def test_since_replay_preserves_dst_fold(svc, monkeypatch):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        for text, timestamp in [
+            ("first-hour", "2025-11-02T05:45:00+00:00"),
+            ("second-hour", "2025-11-02T06:45:00+00:00"),
+        ]:
+            await _emit(svc, _msg(text).model_copy(update={"timestamp": timestamp}))
+        ws = _FakeWS()
+        ws.disconnect.set()
+        await sockets.events_socket(
+            svc.stored.id,
+            cast(WebSocket, ws),
+            session_api_key=None,
+            resend_mode="since",
+            after_timestamp=datetime(2025, 11, 2, 6, 30, tzinfo=UTC),
+            resend_all=False,
+            config=ws.app.state.server_context.config,
+            conv_service=cast(
+                ConversationService,
+                SimpleNamespace(get_event_service=AsyncMock(return_value=svc)),
+            ),
+        )
+        assert _texts(ws.sent) == ["second-hour"]
+    finally:
+        monkeypatch.undo()
+        time.tzset()

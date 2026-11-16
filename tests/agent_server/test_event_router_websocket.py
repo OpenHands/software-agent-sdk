@@ -470,10 +470,10 @@ async def test_resend_mode_since_without_timestamp_logs_warning(
 
 
 @pytest.mark.asyncio
-async def test_resend_mode_since_timezone_aware_is_normalized(
+async def test_resend_mode_since_preserves_aware_timestamp(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
-    """Test that timezone-aware timestamps are normalized to naive server time."""
+    """Keep aware bounds intact until the service compares instants."""
     mock_events = [
         MessageEvent(
             id="event1",
@@ -508,12 +508,9 @@ async def test_resend_mode_since_timezone_aware_is_normalized(
     mock_event_service.search_events.assert_called_once()
     call_args = mock_event_service.search_events.call_args
     passed_timestamp = call_args.kwargs["timestamp__gte"]
-    # The timestamp should be naive (no tzinfo)
     assert passed_timestamp is not None
-    assert passed_timestamp.tzinfo is None
-    # It should represent the same instant in time (converted to local)
-    expected = test_timestamp.astimezone(None).replace(tzinfo=None)
-    assert passed_timestamp == expected
+    assert passed_timestamp.tzinfo is not None
+    assert passed_timestamp == test_timestamp
 
 
 # Backward compatibility tests for deprecated resend_all parameter

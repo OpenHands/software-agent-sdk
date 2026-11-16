@@ -206,6 +206,46 @@ def mock_conversation_with_timestamped_events():
     return conversation
 
 
+@pytest.fixture
+def new_york_server_tz(monkeypatch):
+    """Run the test with the server's local time zone set to America/New_York."""
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.fixture
+def mock_conversation_with_mixed_timestamps():
+    """A log that mixes legacy naive (server-local) and new UTC timestamps.
+
+    In America/New_York (UTC-5 in January) the instants are, in log order,
+    12:00Z, 12:30Z, 12:45Z and 13:00Z, but as strings the naive ones sort first.
+    """
+    conversation = MagicMock(spec=Conversation)
+    state = MagicMock(spec=ConversationState)
+    timestamps = [
+        "2025-01-01T07:00:00.000000",
+        "2025-01-01T12:30:00.000000+00:00",
+        "2025-01-01T07:45:00.000000",
+        "2025-01-01T13:00:00.000000+00:00",
+    ]
+    state.events = [
+        MessageEvent(
+            id=f"event{index}",
+            source="user",
+            llm_message=Message(role="user"),
+            timestamp=timestamp,
+        )
+        for index, timestamp in enumerate(timestamps, 1)
+    ]
+    state.__enter__ = MagicMock(return_value=state)
+    state.__exit__ = MagicMock(return_value=None)
+    conversation._state = state
+    return conversation
+
+
 def _message_event(event_id: str, text: str, timestamp: str) -> MessageEvent:
     return MessageEvent(
         id=event_id,
@@ -731,6 +771,44 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 5
         assert result.items[0].id == "event1"
         assert result.items[4].id == "event5"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("gte", "lt", "expected"),
+        [
+            # Naive bounds are server local time: 07:50 EST is 12:50Z.
+            (datetime(2025, 1, 1, 7, 50), None, ["event4"]),
+            (None, datetime(2025, 1, 1, 7, 40), ["event1", "event2"]),
+            (
+                datetime(2025, 1, 1, 7, 15),
+                datetime(2025, 1, 1, 7, 50),
+                ["event2", "event3"],
+            ),
+            # Aware bounds are the instant they denote.
+            (datetime(2025, 1, 1, 12, 50, tzinfo=UTC), None, ["event4"]),
+            (None, datetime(2025, 1, 1, 12, 40, tzinfo=UTC), ["event1", "event2"]),
+        ],
+    )
+    async def test_search_events_timestamp_filter_mixed_naive_and_utc_log(
+        self,
+        event_service,
+        mock_conversation_with_mixed_timestamps,
+        new_york_server_tz,
+        gte,
+        lt,
+        expected,
+    ):
+        """Filters compare instants, so legacy naive and new UTC events mix safely.
+
+        Naive bounds are server local time; aware bounds are the instant given.
+        """
+        event_service._conversation = mock_conversation_with_mixed_timestamps
+
+        result = await event_service.search_events(timestamp__gte=gte, timestamp__lt=lt)
+        count = await event_service.count_events(timestamp__gte=gte, timestamp__lt=lt)
+
+        assert [event.id for event in result.items] == expected
+        assert count == len(expected)
 
 
 class TestEventServiceCountEvents:
@@ -3897,7 +3975,7 @@ async def test_emit_event_from_thread_stamps_event_when_persisted(
         event_service._emit_event_from_thread(event)
         await asyncio.sleep(0.01)
         # Stands in for the step's action/observation appended under the lock.
-        step_end = datetime.now().isoformat()
+        step_end = datetime.now(UTC)
         await asyncio.sleep(0.01)
 
     for _ in range(200):
@@ -3907,7 +3985,10 @@ async def test_emit_event_from_thread_stamps_event_when_persisted(
     assert len(appended) == 1
     persisted = appended[0]
     assert persisted.id == event.id
-    assert persisted.timestamp > step_end > event.timestamp
+    persisted_timestamp = datetime.fromisoformat(persisted.timestamp)
+    event_timestamp = datetime.fromisoformat(event.timestamp)
+    assert persisted_timestamp > step_end > event_timestamp
+    assert persisted_timestamp.tzinfo is not None
 
 
 def test_llm_log_callback_swallows_emit_failures(

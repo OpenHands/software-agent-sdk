@@ -1,6 +1,7 @@
 """Comprehensive tests for event serialization and deserialization."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,12 @@ from openhands.sdk.tool import Action, Observation
 
 class EventSerializationMockEvent(Event):
     test_field: str = "test_value"
+
+
+def test_event_default_timestamp_is_timezone_aware() -> None:
+    event = EventSerializationMockEvent(source="agent")
+
+    assert datetime.fromisoformat(event.timestamp).tzinfo is not None
 
 
 class EventsSerializationMockAction(Action):

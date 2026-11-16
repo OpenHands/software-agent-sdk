@@ -1,6 +1,7 @@
 """Tests for event_router.py endpoints."""
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -842,6 +843,51 @@ class TestSearchEventsEndpoint:
 
         finally:
             client.app.dependency_overrides.clear()
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires time.tzset")
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({"timestamp__gte": "2025-11-02T06:30:00Z"}, ["second"]),
+        ({"timestamp__lt": "2025-11-02T06:30:00Z"}, ["first"]),
+    ],
+)
+@pytest.mark.parametrize("operation", ["search", "count"])
+def test_timestamp_filters_preserve_dst_fold(
+    client, sample_conversation_id, tmp_path, monkeypatch, params, expected, operation
+):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        event_log = EventLog(InMemoryFileStore())
+        for event_id, timestamp in [
+            ("first", "2025-11-02T05:45:00+00:00"),
+            ("second", "2025-11-02T06:45:00+00:00"),
+        ]:
+            event_log.append(
+                MessageEvent(
+                    id=event_id,
+                    source="user",
+                    timestamp=timestamp,
+                    llm_message=Message(role="user"),
+                )
+            )
+        service = EventService(stored=MagicMock(), conversations_dir=tmp_path)
+        service._persisted_events = event_log
+        client.app.dependency_overrides[get_event_service] = lambda: service
+        endpoint = f"/api/conversations/{sample_conversation_id}/events"
+
+        response = client.get(f"{endpoint}/{operation}", params=params)
+        assert response.status_code == 200
+        if operation == "search":
+            assert [event["id"] for event in response.json()["items"]] == expected
+        else:
+            assert response.json() == len(expected)
+    finally:
+        client.app.dependency_overrides.clear()
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):

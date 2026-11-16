@@ -92,6 +92,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.datetime import timestamp_instant, utc_now
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -585,8 +586,8 @@ class EventService:
         kind: str | None,
         source: str | None,
         body: str | None,
-        timestamp_gte_str: str | None,
-        timestamp_lt_str: str | None,
+        timestamp_gte: datetime | None,
+        timestamp_lt: datetime | None,
     ) -> bool:
         """Return True if ``event`` matches all of the provided filters."""
         if kind is not None:
@@ -597,10 +598,14 @@ class EventService:
                 return False
         if source is not None and event.source != source:
             return False
-        if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
-            return False
-        if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-            return False
+        if timestamp_gte is not None or timestamp_lt is not None:
+            # Compare instants, not strings: the log can mix legacy naive
+            # server-local timestamps with offset-bearing UTC ones.
+            instant = timestamp_instant(event.timestamp)
+            if timestamp_gte is not None and instant < timestamp_gte:
+                return False
+            if timestamp_lt is not None and instant >= timestamp_lt:
+                return False
         # ``body`` is the most expensive filter (deserializes message content),
         # so evaluate it last.
         if body is not None and not self._event_matches_body(event, body):
@@ -657,9 +662,8 @@ class EventService:
         events = self._events_for_read()
         total = len(events)
 
-        # Convert datetime to ISO string for comparison (ISO strings are comparable)
-        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
-        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
+        timestamp_gte = timestamp_instant(timestamp__gte) if timestamp__gte else None
+        timestamp_lt = timestamp_instant(timestamp__lt) if timestamp__lt else None
 
         reverse = sort_order == EventSortOrder.TIMESTAMP_DESC
 
@@ -696,7 +700,7 @@ class EventService:
             if event is None:
                 continue
             if not self._event_matches_filters(
-                event, kind, source, body, timestamp_gte_str, timestamp_lt_str
+                event, kind, source, body, timestamp_gte, timestamp_lt
             ):
                 continue
             if len(items) >= limit:
@@ -758,9 +762,8 @@ class EventService:
         ):
             return len(events)
 
-        # Convert datetime to ISO string for comparison (ISO strings are comparable)
-        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
-        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
+        timestamp_gte = timestamp_instant(timestamp__gte) if timestamp__gte else None
+        timestamp_lt = timestamp_instant(timestamp__lt) if timestamp__lt else None
 
         count = 0
         for i in range(len(events)):
@@ -768,7 +771,7 @@ class EventService:
             if event is None:
                 continue
             if self._event_matches_filters(
-                event, kind, source, body, timestamp_gte_str, timestamp_lt_str
+                event, kind, source, body, timestamp_gte, timestamp_lt
             ):
                 count += 1
         return count
@@ -1111,9 +1114,7 @@ class EventService:
             def locked_on_event():
                 with conversation._state:
                     conversation._on_event(
-                        event.model_copy(
-                            update={"timestamp": datetime.now().isoformat()}
-                        )
+                        event.model_copy(update={"timestamp": utc_now().isoformat()})
                     )
 
             # Run the locked callback in an executor to ensure the event is
