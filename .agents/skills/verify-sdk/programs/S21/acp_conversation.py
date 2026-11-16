@@ -562,7 +562,8 @@ elif mode == "cancel":
         conversation.send_message("[cancel] build everything")
         task = asyncio.create_task(conversation.arun())
         deadline = time.monotonic() + 30
-        while not journal("cancel_waiting") and time.monotonic() < deadline:
+        # The fake ACP server only writes a journal file; nothing to await.
+        while not journal("cancel_waiting") and time.monotonic() < deadline:  # noqa: ASYNC110
             await asyncio.sleep(0.1)
         await asyncio.sleep(0.3)
         task.cancel()

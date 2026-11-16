@@ -55,6 +55,7 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
+from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -645,7 +646,9 @@ async def switch_conversation_llm(
     # reference or missing credential surfaces as 422 before the working LLM
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
-    llm = llm_profile_store.resolve_provider_connection(llm, cipher=cipher)
+    llm = await run_store(
+        llm_profile_store.resolve_provider_connection, llm, cipher=cipher
+    )
     try:
         conversation.switch_llm(llm)
     except ValueError as e:
