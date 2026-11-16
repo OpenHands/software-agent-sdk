@@ -1,5 +1,7 @@
+import time
 from collections.abc import Callable, Iterable
 from typing import Any, NoReturn, Protocol, cast, runtime_checkable
+from weakref import WeakKeyDictionary
 
 from litellm.exceptions import Timeout as LiteLLMTimeout
 from tenacity import (
@@ -33,6 +35,10 @@ TIMEOUT_RETRY_BUDGET_MULTIPLIER = 2
 
 # Error classification keys on this phrase to point users at their settings.
 TIMEOUT_EXHAUSTED_PHRASE = "did not return a complete response within the LLM timeout"
+
+# Timers can fire up to one clock tick early (about 16 ms on Windows), so an
+# attempt this close to the timeout counts as having reached it.
+_TIMEOUT_CLOCK_SLACK_SECONDS = 0.05
 
 
 @runtime_checkable
@@ -75,16 +81,41 @@ class _StopAfterTimeoutBudget(stop_base):
         )
 
 
+class _AttemptClock:
+    """Track when each retry call's current attempt started."""
+
+    def __init__(self) -> None:
+        self._starts: WeakKeyDictionary[RetryCallState, float] = WeakKeyDictionary()
+
+    def start(self, retry_state: RetryCallState) -> None:
+        self._starts[retry_state] = time.monotonic()
+
+    def last_attempt_seconds(self, retry_state: RetryCallState) -> float:
+        start = self._starts.get(retry_state, retry_state.start_time)
+        end = retry_state.outcome_timestamp or time.monotonic()
+        return end - start
+
+
 def _raise_with_timeout_summary(
-    timeout: float,
+    timeout: float, clock: _AttemptClock
 ) -> Callable[[RetryCallState], NoReturn]:
-    """Re-raise the final error; a timeout gets an actionable summary."""
+    """Re-raise the final error.
+
+    A timeout whose attempt ran for the whole per-attempt ``timeout`` gets an
+    actionable summary. A quicker timeout (stream idle, connect) is re-raised
+    unchanged: its message already names the limit it hit, and raising
+    ``timeout`` would not help.
+    """
 
     def callback(retry_state: RetryCallState) -> NoReturn:
         assert retry_state.outcome is not None
         error = retry_state.outcome.exception()
         assert error is not None
-        if isinstance(error, LiteLLMTimeout):
+        if (
+            isinstance(error, LiteLLMTimeout)
+            and clock.last_attempt_seconds(retry_state)
+            >= timeout - _TIMEOUT_CLOCK_SLACK_SECONDS
+        ):
             attempts = retry_state.attempt_number
             elapsed = retry_state.seconds_since_start or 0.0
             error.message = error.message.rstrip(". ") + (
@@ -176,7 +207,8 @@ class RetryMixin:
 
         ``timeout`` is the per-attempt timeout. When set, timeouts stop being
         retried once the call has spent ``TIMEOUT_RETRY_BUDGET_MULTIPLIER``
-        timeouts in total, and a final timeout says which limit it hit.
+        timeouts in total, and a final timeout whose attempt used the whole
+        ``timeout`` says so and points at the settings.
         """
         before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
@@ -222,14 +254,16 @@ class RetryMixin:
             error = retry_state.outcome.exception() if retry_state.outcome else None
             return max(exponential_wait(retry_state), retry_after_seconds(error))
 
+        clock = _AttemptClock()
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
+            before=clock.start,
             before_sleep=before_sleep,
             stop=stop,
             reraise=True,
             retry=diagnosed_retry,
             wait=wait,
             retry_error_callback=(
-                _raise_with_timeout_summary(timeout) if timeout else None
+                _raise_with_timeout_summary(timeout, clock) if timeout else None
             ),
         )
         return retry_decorator
