@@ -18,7 +18,7 @@ definitions (`agent_definitions`), and custom Python tool modules
 (`tool_module_qualnames`, `OH_EXTRA_PYTHON_PATH`, `--import-modules`), and
 the internal `start_child_conversation` tool, when a host attaches it.
 
-Source: `openhands-agent-server/openhands/agent_server/tool_router.py`, `openhands-agent-server/openhands/agent_server/hooks_router.py`, `openhands-agent-server/openhands/agent_server/hooks_service.py`, `openhands-agent-server/openhands/agent_server/sub_agents_router.py`, `openhands-agent-server/openhands/agent_server/launch.py`, `openhands-agent-server/openhands/agent_server/__main__.py`, `openhands-sdk/openhands/sdk/tool/registry.py`, `openhands-sdk/openhands/sdk/tool/client_tool.py`, `openhands-sdk/openhands/sdk/hooks/`, `openhands-sdk/openhands/sdk/subagent/`, `openhands-tools/openhands/tools/preset/`, `openhands-tools/openhands/tools/task/`, `openhands-tools/openhands/tools/child_conversation/`, `openhands-tools/openhands/tools/browser_use/`, `clients/typescript/src/client/tool-client.ts`, `clients/typescript/src/client/hooks-client.ts`, `clients/typescript/src/client/sub-agents-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/tool_router.py`, `openhands-agent-server/openhands/agent_server/hooks_router.py`, `openhands-agent-server/openhands/agent_server/hooks_service.py`, `openhands-agent-server/openhands/agent_server/sub_agents_router.py`, `openhands-agent-server/openhands/agent_server/launch.py`, `openhands-agent-server/openhands/agent_server/__main__.py`, `openhands-sdk/openhands/sdk/tool/registry.py`, `openhands-sdk/openhands/sdk/tool/schema.py`, `openhands-sdk/openhands/sdk/tool/client_tool.py`, `openhands-sdk/openhands/sdk/hooks/`, `openhands-sdk/openhands/sdk/subagent/`, `openhands-tools/openhands/tools/preset/`, `openhands-tools/openhands/tools/task/`, `openhands-tools/openhands/tools/child_conversation/`, `openhands-tools/openhands/tools/browser_use/`, `clients/typescript/src/client/tool-client.ts`, `clients/typescript/src/client/hooks-client.ts`, `clients/typescript/src/client/sub-agents-client.ts`
 
 Needs: `llm`, `git`, `tmux`, `chromium`
 
@@ -50,8 +50,9 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.client-tool-call`: when the agent calls a client tool, the events socket delivers a `ClientAction_<name>` `ActionEvent` with the model's arguments, the server answers it with the `Tool call dispatched to client.` acknowledgment and the run finishes; the tool is registered again when the conversation resumes after a restart; a duplicate name in one request, a name that collides with `terminal` and a reused name with a different schema are each 422 and create nothing, while the same name with the same schema is accepted.
 - `F27.agent-definitions`: `agent_definitions` in the create request make that sub-agent available to the conversation's task tool, which delegates to it by name (the delegate runs the command, the `TaskObservation` names it); the definition is stored with the conversation and is not listed by `POST /api/sub-agents`.
 - `F27.custom-tool-modules`: with `OH_EXTRA_PYTHON_PATH` naming a directory, `tool_module_qualnames` imports a module from it at create, the agent runs its tool, the conversation reports the mapping and `GET /api/tools/` lists the tool (the sealed catalog does not); after a restart the tool is gone until the conversation is loaded again, and a new message runs it again; an unimportable module is a logged warning and the create still succeeds.
+- `F27.tool-schema-keywords`: the tool `parameters` a custom tool module's `Action` produces in the model request keep its `pattern`, `const` and `additionalProperties: false`; today they are dropped (#6766).
 - `F27.import-modules`: a server started with `--import-modules` (and `OH_EXTRA_PYTHON_PATH`) lists the module's tool in `GET /api/tools/` and offers it in the catalog before any conversation exists; a module that cannot be imported stops the server before it binds its port.
-- `F27.custom-tool-missing-on-resume`: when a conversation's tool module can no longer be imported after a restart, the server should drop the tool with its warning and keep the conversation readable; today its event search and a new message are 500 (`Unknown kind`).
+- `F27.custom-tool-missing-on-resume`: when a conversation's tool module can no longer be imported after a restart, the server drops the tool with its warning, keeps the conversation readable, and answers a new message without a 500; today the message is 500 (`ToolDefinition ... is not registered`).
 - `F27.browser-playwright-path`: the browser probe finds a Playwright Chromium in `$PLAYWRIGHT_BROWSERS_PATH` as well as in standard paths, `~/.cache/ms-playwright` and `PATH`, and reports `browser_tool_set` usable.
 - `F27.browser-probe`: without a Chromium the server can find, the catalog reports `browser_tool_set` unusable and `/server_info` `usable_tools` leaves it out; with a Playwright Chromium in the server's `~/.cache/ms-playwright` and a restart, the catalog reports it usable and `usable_tools` lists it.
 - `F27.browser-disabled-launch`: a conversation started from the saved settings (default tools) gets `browser_tool_set` while the server finds Chromium, and leaves it out after a restart with `enable_browser: false`; a conversation created before keeps its stored tools.
@@ -729,6 +730,65 @@ Preconditions:
   `F33.custom-tool-module-unimportable`). After a restart the registry no longer has the tool; loading the
   conversation for the next message imports the module again and the tool
   runs.
+- **Tool schema keywords (`F27.tool-schema-keywords`), known bug #6766.**
+  A second custom tool module whose `Action` declares a `pattern`, a
+  one-value `Literal` and `extra="forbid"`; a conversation on an `llm-stub`
+  (it answers `finish`, so no real model is needed) offers the tool, and
+  the stub records the request's `tools`.
+
+  Requires: `F27.custom-tool-modules`
+  ```sh
+  cat > "$F/pytools/qa_f27_strict_tools.py" <<'EOF'
+  from typing import Literal
+
+  from pydantic import ConfigDict, Field
+
+  from openhands.sdk import Action, Observation, ToolDefinition
+  from openhands.sdk.tool import ToolExecutor, register_tool
+
+
+  class QaF27StrictAction(Action):
+      model_config = ConfigDict(extra="forbid")
+      order_id: str = Field(pattern=r"^QAORD-[0-9]{6}$", description="Order id.")
+      currency: Literal["USD"] = Field(description="Currency.")
+
+
+  class QaF27StrictObservation(Observation):
+      pass
+
+
+  class QaF27StrictExecutor(ToolExecutor):
+      def __call__(self, action, conversation=None):
+          return QaF27StrictObservation.from_text(text=f"QA_F27_STRICT_RAN {action.order_id}")
+
+
+  class QaF27StrictTool(ToolDefinition[QaF27StrictAction, QaF27StrictObservation]):
+      @classmethod
+      def create(cls, conv_state=None, **params):
+          return [cls(description="QA strict tool.", action_type=QaF27StrictAction,
+                      observation_type=QaF27StrictObservation, executor=QaF27StrictExecutor())]
+
+
+  register_tool("qa_f27_strict", QaF27StrictTool)
+  EOF
+  SST=$(control-agent-server fixture llm-stub --name qa-f27-schema --step 'tool:finish:{"message":"QA_F27_SCHEMA"}' --print-path)
+  SAG="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$SST/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"qa_f27_strict\"}]}"
+  SCHEMA_CID=$(control-agent-server conversation start --workspace "$MW" --no-autotitle \
+    --body-json "{\"agent\": $SAG, \"tool_module_qualnames\": {\"qa_f27_strict\": \"qa_f27_strict_tools\"}}" \
+    --prompt 'qa-f27-schema' --wait --timeout 120 --print-id)
+  control-agent-server api GET "/api/conversations/$SCHEMA_CID" --expect 200 --check execution_status eq finished --quiet
+  control-agent-server sink read --name qa-f27-schema --contains '"name": "qa_f27_strict"' --expect-min 1 --save F27.tool-schema-keywords/request
+  control-agent-server sink read --name qa-f27-schema --contains 'QAORD-[0-9]{6}' --expect-min 1  # bug: ok eq false && requests eq 0
+  ```
+  The model request offers `qa_f27_strict` (the first read). Expected: its
+  `parameters` keep the model's constraints (`"pattern":
+  "^QAORD-[0-9]{6}$"` on `order_id`, `const`/one-value `enum` on
+  `currency`, top-level `additionalProperties: false`). The marked check
+  reads the pattern; when it passes, look for the other two in the saved
+  request before the marker goes. Today `Schema.to_mcp_schema()` keeps only
+  `type`, `description`, `properties`, `required`, `items` and `enum`, so
+  none of the three reaches the provider (#6766). The agent still validates a
+  call against the `Action` model locally.
 - **Startup imports (`F27.import-modules`).** `--import-modules` is a
   server argument passed by the owned shell-and-attach workflow: the bullet
   starts this checkout's server in plain shell with a private `HOME`, state
@@ -740,7 +800,7 @@ Preconditions:
   mkdir -p "$IMP/home" "$F/import-missing/home"
   IPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd "$IMP" && exec env -i PATH="$PATH" HOME="$IMP/home" OH_PERSISTENCE_DIR="$IMP/persist" TMUX_TMPDIR="$IMP/tmux" \
-    OH_SESSION_API_KEYS_0=qa-f27-import-key OH_EXTRA_PYTHON_PATH="$F/pytools" NO_PROXY=127.0.0.1,localhost COLUMNS=400 \
+    OH_SESSION_API_KEYS_0=qa-f27-import-key OH_EXTRA_PYTHON_PATH="$F/pytools" NO_PROXY=127.0.0.1,localhost COLUMNS=400 LITELLM_LOCAL_MODEL_COST_MAP=True \
     timeout 300 "$QA_PY" -m openhands.agent_server --host 127.0.0.1 --port "$IPORT" --import-modules qa_f27_tools) > "$IMP/server.log" 2>&1 &
   IPID=$!
   IRUN=""
@@ -760,7 +820,7 @@ Preconditions:
   wait "$IPID" || true
   MPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   if (cd "$F/import-missing" && exec env -i PATH="$PATH" HOME="$F/import-missing/home" OH_PERSISTENCE_DIR="$F/import-missing/persist" \
-    OH_SESSION_API_KEYS_0=qa-f27-import-key OH_EXTRA_PYTHON_PATH="$F/pytools" NO_PROXY=127.0.0.1,localhost COLUMNS=400 \
+    OH_SESSION_API_KEYS_0=qa-f27-import-key OH_EXTRA_PYTHON_PATH="$F/pytools" NO_PROXY=127.0.0.1,localhost COLUMNS=400 LITELLM_LOCAL_MODEL_COST_MAP=True \
     timeout 120 "$QA_PY" -m openhands.agent_server --host 127.0.0.1 --port "$MPORT" --import-modules qa_f27_missing_module) > "$F/import-missing/server.log" 2>&1; then false; fi
   grep -q "ModuleNotFoundError: No module named 'qa_f27_missing_module'" "$F/import-missing/server.log"
   if grep -q 'Uvicorn running' "$F/import-missing/server.log"; then false; fi
@@ -774,27 +834,34 @@ Preconditions:
   non-zero with the `ModuleNotFoundError` before uvicorn starts, so nothing
   is served and no state is written. `api --until-ok` gives up on a refused connection,
   hence the `curl --retry-connrefused` wait.
-- **Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug.**
+  Both `env -i` launches set `LITELLM_LOCAL_MODEL_COST_MAP=True`: they
+  drop the proxy variables, so litellm's remote cost-map fetch fails, and its
+  background retry can crash the import with a circular import of
+  `litellm.rust_bridge.catalog` before the module is ever imported
+  (#6749).
+- **Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug #6746.**
   Restart the run without `OH_EXTRA_PYTHON_PATH` and use the conversation of
   `F27.custom-tool-modules`, whose events include `qa_f27_echo` calls.
 
   Requires: `F27.custom-tool-modules`
   ```sh
-  W0=$(control-agent-server logs --grep 'Failed to import module' | jq -r .total_matching)
+  W0=$(control-agent-server logs --grep 'Failed to import' | jq -r .total_matching)
   control-agent-server restart --reset-config
   control-agent-server api GET "/api/conversations/$MCID" --expect 200 --check tool_module_qualnames.qa_f27_echo eq qa_f27_tools --quiet
-  control-agent-server api POST "/api/conversations/$MCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok."}], "run": false}' --expect 2xx,4xx --save F27.custom-tool-missing-on-resume/send  # bug: status eq 500 && response.body.exception contains "Unknown kind 'QaF27EchoObservation'"
-  control-agent-server logs --grep 'Failed to import module' --expect-min "$((W0 + 1))"
-  control-agent-server api GET "/api/conversations/$MCID/events/search" --expect 200 --check items len-ge 1 --quiet  # bug: status eq 500
+  control-agent-server api POST "/api/conversations/$MCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok."}], "run": false}' --expect 2xx,4xx --save F27.custom-tool-missing-on-resume/send  # bug: status eq 500 && response.body.exception contains "ToolDefinition 'qa_f27_echo' is not registered"
+  control-agent-server logs --grep 'Failed to import' --expect-min "$((W0 + 1))"
+  control-agent-server api GET "/api/conversations/$MCID/events/search" --expect 200 --check items len-ge 1 --quiet
   ```
   `_prepare_persisted_runtime` logs `Failed to import module 'qa_f27_tools'
   ... Tool will not be available.` and promises to go on without the tool.
-  Today the conversation cannot be loaded at all: its stored events hold a
-  `QaF27EchoObservation`, whose class only that module defines, so the
-  message `POST` and `GET .../events/search` are `500` with `Unknown kind
-  'QaF27EchoObservation'`. Only `GET /api/conversations/{id}`, which reads
-  the metadata without loading, still answers. A deployment that drops or
-  renames a custom tool module loses every conversation that used it.
+  The conversation still loads: `GET /api/conversations/{id}` answers and
+  `GET .../events/search` lists its stored events. Expected: a message is accepted, or refused with a
+  client error naming the missing tool. Today every message `POST` is an
+  unhandled `500` whose `exception` is `"ToolDefinition 'qa_f27_echo' is not
+  registered"`: the agent is built from the stored tool list on the first
+  message, and `resolve_tool` raises. A deployment that drops or renames a
+  custom tool module can read but no longer continue every conversation
+  that used it (#6746).
 - **Playwright browsers directory (`F27.browser-playwright-path`), blocked on a machine with Chromium at a standard path (needs Chromium only in a Playwright directory).**
   Point the server at the run-owned Playwright directory through
   `PLAYWRIGHT_BROWSERS_PATH` only.
@@ -990,10 +1057,10 @@ Preconditions:
   a run. A model may retry a blocked call; the recipes allow several blocked
   attempts (`--expect-min`).
 - `tool_module_qualnames` changes process-wide registries, and a custom
-  tool's events need its module to deserialize
+  tool needs its module to continue a conversation
   (`F27.custom-tool-missing-on-resume`). The server
   log wraps long lines, so the recipes grep for short phrases
-  (`Extended sys.path with 1 directory`, `Failed to import module`).
+  (`Extended sys.path with 1 directory`, `Failed to import`).
 - `OH_EXTRA_PYTHON_PATH` only extends `sys.path`; nothing is imported until a
   create names the module or `--import-modules` does at startup. A
   launched run gets the variable with `restart --env`, but `--import-modules`

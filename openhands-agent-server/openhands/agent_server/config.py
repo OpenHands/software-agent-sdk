@@ -381,7 +381,9 @@ class Config(BaseModel):
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
-            "The URL where this agent server instance is available externally"
+            "The URL where this agent server instance is available externally. "
+            "Its path becomes the root path, and install-time MCP OAuth uses "
+            "{web_url}/api/mcp/oauth/redirect as the provider redirect URI."
         ),
     )
     app_backend_public_url: str | None = Field(
@@ -590,9 +592,6 @@ class Config(BaseModel):
         return cipher
 
 
-_default_config: Config | None = None
-
-
 def _read_config_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -641,12 +640,3 @@ def load_config(config_path: Path | None = None) -> Config:
     if not data:
         return Config()
     return Config.model_validate(data)
-
-
-def get_default_config() -> Config:
-    """Get the default local server config shared across the server"""
-    global _default_config
-    if _default_config is None:
-        _default_config = load_config()
-        assert _default_config is not None
-    return _default_config

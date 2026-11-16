@@ -8,17 +8,18 @@ agent-server sees the same list.
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.dependencies import get_workspaces_store
 from openhands.agent_server.persistence import (
+    FileWorkspacesStore,
     PersistedWorkspaces,
     WorkspaceItem,
     WorkspaceParentItem,
-    get_workspaces_store,
     run_store,
 )
+from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.logger import get_logger
 
 
@@ -61,10 +62,10 @@ def _to_response(persisted: PersistedWorkspaces) -> WorkspacesListResponse:
     response_model=WorkspacesListResponse,
     response_model_exclude_none=True,
 )
-async def list_workspaces(request: Request) -> WorkspacesListResponse:
+async def list_workspaces(
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
+) -> WorkspacesListResponse:
     """Return the saved workspaces and workspace parents."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     def read() -> tuple[PersistedWorkspaces | None, bool]:
         persisted = store.load()
@@ -78,13 +79,10 @@ async def list_workspaces(request: Request) -> WorkspacesListResponse:
         persisted, corrupted = await run_store(read)
     except (OSError, PermissionError):
         logger.error("Workspaces list failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to read workspaces")
+        raise OperationFailed("Failed to read workspaces")
     if persisted is None:
         if corrupted:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Workspaces file is corrupted",
-            )
+            raise Conflict("Workspaces file is corrupted")
         persisted = PersistedWorkspaces()
     return _to_response(persisted)
 
@@ -95,11 +93,10 @@ async def list_workspaces(request: Request) -> WorkspacesListResponse:
     response_model_exclude_none=True,
 )
 async def add_workspaces(
-    request: Request, payload: AddWorkspacesRequest
+    payload: AddWorkspacesRequest,
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> WorkspacesListResponse:
     """Append workspaces to the saved list. Idempotent — dedupes by ``path``."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
         # Dedupe against the existing list AND within the incoming payload,
@@ -122,25 +119,20 @@ async def add_workspaces(
         updated = await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspaces add blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspaces add failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to save workspaces")
+        raise OperationFailed("Failed to save workspaces")
 
     return _to_response(updated)
 
 
 @workspaces_router.delete("", response_model=DeleteResponse)
 async def delete_workspace(
-    request: Request,
     path: Annotated[str, Query(description="Absolute workspace path to remove")],
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> DeleteResponse:
     """Remove a workspace by its absolute path."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     removed = False
 
@@ -156,16 +148,13 @@ async def delete_workspace(
         await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspaces delete blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspaces delete failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to update workspaces")
+        raise OperationFailed("Failed to update workspaces")
 
     if not removed:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise NotFound("Workspace not found")
     return DeleteResponse()
 
 
@@ -175,11 +164,10 @@ async def delete_workspace(
     response_model_exclude_none=True,
 )
 async def add_workspace_parents(
-    request: Request, payload: AddWorkspaceParentsRequest
+    payload: AddWorkspaceParentsRequest,
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> WorkspacesListResponse:
     """Append workspace parents. Idempotent — dedupes by ``path``."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
         # Dedupe against the existing list AND within the incoming payload —
@@ -203,25 +191,20 @@ async def add_workspace_parents(
         updated = await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspace parents add blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspace parents add failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to save workspaces")
+        raise OperationFailed("Failed to save workspaces")
 
     return _to_response(updated)
 
 
 @workspaces_router.delete("/parents", response_model=DeleteResponse)
 async def delete_workspace_parent(
-    request: Request,
     path: Annotated[str, Query(description="Absolute workspace parent path to remove")],
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> DeleteResponse:
     """Remove a workspace parent by its absolute path."""
-    config = get_config(request)
-    store = get_workspaces_store(config)
 
     removed = False
 
@@ -237,14 +220,11 @@ async def delete_workspace_parent(
         await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspace parents delete blocked: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workspaces file is corrupted",
-        )
+        raise Conflict("Workspaces file is corrupted")
     except (OSError, PermissionError):
         logger.error("Workspace parents delete failed - file I/O error")
-        raise HTTPException(status_code=500, detail="Failed to update workspaces")
+        raise OperationFailed("Failed to update workspaces")
 
     if not removed:
-        raise HTTPException(status_code=404, detail="Workspace parent not found")
+        raise NotFound("Workspace parent not found")
     return DeleteResponse()

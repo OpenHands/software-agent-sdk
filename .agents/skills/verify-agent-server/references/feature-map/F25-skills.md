@@ -59,6 +59,7 @@ Routes: `POST /api/skills`, `GET /api/skills/catalog`, `POST /api/skills/sync`, 
 - `F25.ts-client`: the TypeScript `SkillsClient` installs a skill from a git source, lists, reads, disables and re-enables it (`toggleSkill`, with `getSkills` following the flag), refreshes, syncs, reads the marketplace and uninstalls it; an unknown skill is a 404 `HttpError` and a client without a key gets 401.
 - `F25.marketplace-stale-cache`: after a sync brings a new entry into the public repository, the catalog lists it: a successful sync clears the catalog's 5-minute cache, which never keeps an empty result.
 - `F25.uninstall`: uninstall deletes the directory and the metadata entry, the single view and a second uninstall are 404, the catalog drops the skill and the marketplace entry reads `installed: false` again.
+- `F25.long-description`: a skill description over 1024 characters is cut to 1024 in the project catalog, the installed view and the profile catalog, with a notice that names `invoke_skill(name=...)` and not the `SKILL.md` path.
 
 ## How to get to it (agent POV)
 
@@ -860,6 +861,34 @@ Preconditions:
   the marketplace entry reads `installed: false` again, and the user tier no
   longer has `qa-f25-skill`. `qa-f25-src-skill` and `qa-f25-gone` stay
   installed in this run.
+- **Long description (`F25.long-description`).** A project skill whose
+  description is longer than 1024 characters, read through the project
+  catalog, then installed and read through the installed view and the
+  profile launch catalog, then uninstalled. The bullet arranges everything
+  itself, so it also runs alone (`map run --only`).
+  ```sh
+  LD="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f25-long"
+  mkdir -p "$LD/.agents/skills/qa-f25-long"
+  printf -- '---\nname: qa-f25-long\ndescription: QA_LONG_DESC %s\n---\nQA_LONG_BODY\n' "$(printf 'x%.0s' $(seq 1500))" \
+    > "$LD/.agents/skills/qa-f25-long/SKILL.md"
+  control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": false, "load_project": true, "load_org": false, "project_dir": "'"$LD"'"}' \
+    --expect 200 --check skills contains '"name": "qa-f25-long"' --check skills contains 'to load the full skill.</NOTE>' \
+    --check skills not-contains 'complete skill content at' --save F25.long-description/project
+  control-agent-server api POST /api/skills/install --json '{"source": "'"$LD/.agents/skills/qa-f25-long"'"}' --expect 200 \
+    --check name eq qa-f25-long --check description len-eq 1024
+  control-agent-server api GET /api/skills/installed/qa-f25-long --expect 200 --check description len-eq 1024 \
+    --check description contains 'QA_LONG_DESC x' --check description contains 'Call invoke_skill(name="qa-f25-long") to load the full skill.' \
+    --check description not-contains SKILL.md --save F25.long-description/installed
+  control-agent-server api GET /api/skills/catalog --expect 200 --check skills contains '"name": "qa-f25-long"' \
+    --check skills contains 'to load the full skill.</NOTE>' --check skills not-contains 'complete skill content at' --save F25.long-description/catalog
+  control-agent-server api DELETE /api/skills/installed/qa-f25-long --expect 200
+  ```
+  Every view cuts the description to 1024 characters when the `SKILL.md`
+  is loaded: it keeps the head and the tail and puts in the middle
+  `<response clipped><NOTE>Due to the max output limit, only part of the
+  full description is shown. Call invoke_skill(name="qa-f25-long") to load
+  the full skill.</NOTE>`, naming the skill and never its file (the
+  agent's prompt omits skill locations on purpose).
 
 ## Gotchas
 

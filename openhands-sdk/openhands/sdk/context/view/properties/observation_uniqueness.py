@@ -2,6 +2,9 @@ from collections.abc import Sequence
 from logging import getLogger
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
+from openhands.sdk.context.view.observation_disposition import (
+    get_observation_dispositions,
+)
 from openhands.sdk.context.view.properties.base import ViewPropertyBase
 from openhands.sdk.event import (
     Event,
@@ -35,21 +38,12 @@ class ObservationUniquenessProperty(ViewPropertyBase):
         current_view_events: list[LLMConvertibleEvent],
         all_events: Sequence[Event],  # noqa: ARG002
     ) -> set[EventID]:
-        """Drop any observation-like event whose ``tool_call_id`` has already
-        been observed earlier in the view. The first occurrence wins because
-        the agent has likely already seen it.
-        """
-        events_to_remove: set[EventID] = set()
-        seen_tool_call_ids: set[ToolCallID] = set()
-
-        for event in current_view_events:
-            if isinstance(event, ObservationBaseEvent):
-                if event.tool_call_id in seen_tool_call_ids:
-                    events_to_remove.add(event.id)
-                else:
-                    seen_tool_call_ids.add(event.tool_call_id)
-
-        return events_to_remove
+        """Drop observation-like events after the first outcome per tool call."""
+        return {
+            event_id
+            for disposition in get_observation_dispositions(current_view_events)
+            for event_id in disposition.out_of_view_event_ids
+        }
 
     def manipulation_indices(
         self,

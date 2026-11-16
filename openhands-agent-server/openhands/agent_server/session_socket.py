@@ -15,12 +15,16 @@ from dataclasses import dataclass, field
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from openhands.agent_server import sockets
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
 )
+from openhands.agent_server.dependencies import get_config, get_conversation_service
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
@@ -36,7 +40,7 @@ from openhands.agent_server.session_protocol import (
 )
 from openhands.agent_server.sockets import (
     _accept_authenticated_websocket,
-    _get_conversation_service,
+    _close_subscribed_websocket,
     _is_auth_control_message,
     _is_websocket_connected,
     _safe_close_websocket,
@@ -82,6 +86,8 @@ class _ConnectionWriter:
 
     _queue: deque[tuple[str, int]] = field(default_factory=deque, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+    # Set while nothing is queued or being sent (or the writer is done).
+    _idle: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     _pending_bytes: int = field(default=0, init=False)
     _task: asyncio.Task | None = field(default=None, init=False)
 
@@ -90,7 +96,12 @@ class _ConnectionWriter:
         return self.closed_event.is_set()
 
     def start(self) -> None:
+        self._idle.set()
         self._task = asyncio.create_task(self._run())
+
+    async def wait_idle(self) -> None:
+        """Return once every admitted frame was sent or the writer is done."""
+        await self._idle.wait()
 
     def send(self, frame: SessionFrameBase) -> bool:
         """Admit one frame, never blocking. False if the connection is done."""
@@ -122,6 +133,7 @@ class _ConnectionWriter:
 
         self._queue.append((payload, size))
         self._pending_bytes += size
+        self._idle.clear()
         self._wake.set()
         return True
 
@@ -129,6 +141,7 @@ class _ConnectionWriter:
         if not self.closed:
             self.drop_reason = reason
             self.closed_event.set()
+        self._idle.set()
         self._wake.set()
 
     async def _run(self) -> None:
@@ -145,6 +158,7 @@ class _ConnectionWriter:
                         self._fail("disconnected")
                         return
                     await self.websocket.send_text(payload)
+                self._idle.set()
         except asyncio.CancelledError:
             raise
         except (RuntimeError, WebSocketDisconnect):
@@ -195,6 +209,18 @@ class _SessionSubscriber(Subscriber[Event]):
             self._buffer.append(event)
             return
         self._emit(event)
+
+    async def close_connection(self, code: int, reason: str) -> None:
+        # Send what is already queued, then the close code; the writer then
+        # stops, which also ends the handler's inbound loop. A peer that stopped
+        # reading gets the same bound as the close itself.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                self.writer.wait_idle(),
+                timeout=sockets.SUBSCRIBER_CLOSE_TIMEOUT_SECONDS,
+            )
+        await _close_subscribed_websocket(self.writer.websocket, code, reason)
+        await self.writer.aclose()
 
     def _emit(self, event: Event) -> None:
         seq = self._seq_of(event)
@@ -366,13 +392,14 @@ async def session_socket(
             )
         ),
     ] = None,
+    config: Config = Depends(get_config),
+    conv_service: ConversationService = Depends(get_conversation_service),
 ):
     """Session socket: durable events in an envelope, on one ordered channel."""
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
 
     logger.info("session_socket_connected: %s after_seq=%s", conversation_id, after_seq)
-    conv_service = _get_conversation_service(websocket)
     try:
         event_service = await conv_service.get_event_service(conversation_id)
     except CredentialBindingActivationRequired:

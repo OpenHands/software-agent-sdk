@@ -504,7 +504,7 @@ Preconditions:
   the header's identity, the route template, method, status and
   `NoCondensationAvailableException`; neither the conversation id nor the exception text (which
   the server log shows) reached the endpoint. If the condense route stops answering 500, find another
-  unhandled exception: an `HTTPException` 5xx is not reported.
+  unhandled exception: a deliberate 5xx domain error is not reported.
 - **Token and cost buckets from real usage (`F32.telemetry-usage-buckets`).**
   The run above used tokens; its outcome event should say so.
 
@@ -812,7 +812,7 @@ Preconditions:
   deferred" is the reading this bullet assumes. Low severity (analytics
   quality).
 - `request_failed` is emitted only for unhandled exceptions; a route that
-  raises `HTTPException(500)` (for example the workspaces registry on an
+  raises `OperationFailed` (500) (for example the workspaces registry on an
   unreadable file) is not reported. `F32.telemetry-request-failed` borrows
   the condense route's unhandled `NoCondensationAvailableException` (the
   summarizer failing against an unreachable model).

@@ -1,7 +1,9 @@
 """Tests for ask_agent functionality in conversation classes."""
 
 import json
+import threading
 from collections.abc import Sequence
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -299,6 +301,87 @@ def test_ask_agent_during_in_flight_llm_call(mock_transport, tmp_path, agent):
 
     assert answers == ["answer"]
     assert conv.llm_registry.get("ask-agent-llm").telemetry is not agent.llm.telemetry
+
+
+def saved_prompt_tokens(conv, usage_id: str = "ask-agent-llm") -> int | None:
+    """Prompt tokens ``base_state.json`` holds for a usage id right now."""
+    saved = json.loads(
+        (Path(conv.state.persistence_dir) / "base_state.json").read_text()
+    )
+    metrics = saved["stats"]["usage_to_metrics"].get(usage_id)
+    return metrics["accumulated_token_usage"]["prompt_tokens"] if metrics else None
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_usage_is_saved_with_the_conversation(mock_transport, tmp_path):
+    """The usage of a side question is on disk when the call returns and is
+    still counted by a conversation resumed from that state.
+    """
+    mock_transport.return_value = create_mock_model_response("answer")
+    conv = Conversation(
+        agent=create_test_agent(),
+        persistence_dir=str(tmp_path / "persist"),
+        workspace=str(tmp_path),
+    )
+
+    conv.ask_agent("How's the progress?")
+
+    assert saved_prompt_tokens(conv) == 10
+
+    resumed = Conversation(
+        agent=create_test_agent(),
+        persistence_dir=str(tmp_path / "persist"),
+        workspace=str(tmp_path),
+        conversation_id=conv.id,
+    )
+    usage = resumed.conversation_stats.usage_to_metrics[
+        "ask-agent-llm"
+    ].accumulated_token_usage
+    assert usage is not None
+    assert usage.prompt_tokens == 10
+
+    resumed.ask_agent("And now?")
+
+    assert saved_prompt_tokens(resumed) == 20
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_does_not_wait_for_the_state_lock_to_save_usage(
+    mock_transport, tmp_path
+):
+    """While another thread holds the state lock (a running step), ask_agent
+    still answers at once; its usage is saved when that thread lets go.
+    """
+    mock_transport.return_value = create_mock_model_response("answer")
+    conv = Conversation(
+        agent=create_test_agent(),
+        persistence_dir=str(tmp_path / "persist"),
+        workspace=str(tmp_path),
+    )
+    conv.ask_agent("first")  # initializes the agent, which takes the lock
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_state_lock() -> None:
+        with conv.state:
+            locked.set()
+            release.wait(timeout=30)
+
+    holder = threading.Thread(target=hold_state_lock)
+    holder.start()
+    assert locked.wait(timeout=10)
+    answers: list[str] = []
+    asker = threading.Thread(target=lambda: answers.append(conv.ask_agent("second")))
+    asker.start()
+    asker.join(timeout=10)
+    answered_while_locked = not asker.is_alive()
+    release.set()
+    holder.join(timeout=10)
+    asker.join(timeout=10)
+
+    assert answered_while_locked
+    assert answers == ["answer"]
+    assert saved_prompt_tokens(conv) == 20
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")

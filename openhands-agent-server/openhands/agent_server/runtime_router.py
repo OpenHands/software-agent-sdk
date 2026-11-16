@@ -11,14 +11,18 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 
 from openhands.agent_server.bash_router import bash_router
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
+    get_conversation_registry,
     get_conversation_service,
     get_event_service,
+    get_vscode_service,
 )
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import runtime_git_router
@@ -27,17 +31,21 @@ from openhands.agent_server.vscode_router import (
     get_vscode_url,
     vscode_router,
 )
+from openhands.agent_server.vscode_service import VSCodeService
+from openhands.sdk.errors import NotFound, Unprocessable
 
 
 async def bind_local_conversation_runtime(
-    runtime_conversation_id: UUID, request: Request
+    runtime_conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> None:
-    conversation_service = get_conversation_service(request)
     event_service = await get_event_service(
-        runtime_conversation_id, request, conversation_service
+        runtime_conversation_id, conversation_service, registry
     )
     if event_service is None:
-        raise HTTPException(404, "Conversation not found")
+        raise NotFound("Conversation not found")
     request.state.runtime_event_service = event_service
     workspace_dir = event_service.get_conversation().workspace.working_dir
     for name in ("path", "workspace_dir"):
@@ -45,19 +53,15 @@ async def bind_local_conversation_runtime(
         if requested_path is not None and not await asyncio.to_thread(
             _is_inside, Path(requested_path), Path(workspace_dir)
         ):
-            raise HTTPException(
-                422, f"{name} must be inside the conversation workspace"
-            )
+            raise Unprocessable(f"{name} must be inside the conversation workspace")
     trajectory_id = request.path_params.get("conversation_id")
     if trajectory_id is not None:
         try:
             matches = UUID(trajectory_id) == runtime_conversation_id
         except ValueError as exc:
-            raise HTTPException(422, "Invalid trajectory conversation id") from exc
+            raise Unprocessable("Invalid trajectory conversation id") from exc
         if not matches:
-            raise HTTPException(
-                422, "Trajectory must belong to the selected conversation"
-            )
+            raise Unprocessable("Trajectory must belong to the selected conversation")
 
 
 def _is_inside(path: Path, workspace_dir: Path) -> bool:
@@ -102,9 +106,11 @@ async def get_runtime_vscode_url(
     request: Request,
     base_url: str | None = None,
     workspace_dir: str | None = None,
+    vscode_service: VSCodeService | None = Depends(get_vscode_service),
 ) -> VSCodeUrlResponse:
     event_service = request.state.runtime_event_service
     return await get_vscode_url(
         base_url,
         workspace_dir or event_service.get_conversation().workspace.working_dir,
+        vscode_service,
     )

@@ -132,7 +132,7 @@ Preconditions:
   control-sdk program S14/terminal --arg auto \
     --check escape_filtered eq true --check dsr_reply_visible eq false --check after_dsr_clean eq true
   ```
-  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-10-13, still failing 2026-11-09, [#6652](https://github.com/OpenHands/software-agent-sdk/issues/6652)): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
+  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-11-12, [#6652](https://github.com/OpenHands/software-agent-sdk/issues/6652)): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
 - **A reset keeps the configured backend (`S14.terminal-reset`, `S14.terminal-backend-select`).** The subprocess run's `echo shell=$0` after `reset=True`, and the session type at the end.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -140,7 +140,7 @@ Preconditions:
     --check steps.shell.text contains my-shell \
     --check steps.shell_after_reset.text contains my-shell --check backend_at_end eq SubprocessTerminal
   ```
-  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-10-13, still failing 2026-11-09, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-12, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
 - **Windows PowerShell backend (`S14.terminal-windows`), blocked.** Needs a Windows host; on Linux `terminal_type="powershell"` has no PowerShell to start.
 - **The file editor over a small repository (`S14.file-editor-view`, `S14.file-editor-edit`, `S14.file-editor-validation`, `S14.tool-output-masking`).** The program lays out a nested tree, a hidden file, a PNG, an ASCII PDF, a binary blob, an 11 MB log, a Latin-1 file and a file holding a registered secret; a scripted agent views and edits them.
   ```sh
@@ -186,7 +186,7 @@ Preconditions:
     --check same_files eq true --check rg.glob_in_path.count eq 100 --check same_truncated eq true \
     --check rg.glob_in_path.truncated eq false
   ```
-  Expected: both backends report 100 files and `truncated` false. Fixed: a known failure on 2026-10-13 (ripgrep `glob` reported `truncated: true` for exactly 100 matches); it passes since #6342, re-verified 2026-11-03.
+  Expected: both backends report 100 files and `truncated` false.
 - **Tool presets build working agents (`S14.preset-default`, `S14.preset-gpt5-gemini`, `S14.gemini-file-tools`, `S14.apply-patch`).** Each preset's agent does a scripted task with its own file tools; the default preset also reports the tool lists of all three and the SDK's `default_tool_specs()`, and builds a structured finish tool.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -256,4 +256,4 @@ Preconditions:
 - `glob` with the Python fallback uses a process-wide `os.chdir`, so it declares itself not parallel-safe; with ripgrep it is.
 - The subprocess backend leaks bracketed-paste switches (`\x1b[?2004l`, `\x1b[?2004h`) into observation text; the tmux backend does not.
 - `TerminalObservation.timeout` stays `false` even when a hard `timeout` fires; read `exit_code` (-1) and the "[The command timed out after ...]" note instead.
-- With the tmux pane pool, checking a pane out interrupts whatever is still running in it, so a command left running by a no-change timeout cannot be continued with `""`, `is_input` or `C-c` (see the known failure in Driving it).
+- With the tmux pane pool, a follow-up (`is_input`, an empty command or a `C-x` key) reaches a command left running by a no-change timeout, but a plain command does not: the pool sends that command Ctrl+C and types `clear` before running the new command, so a REPL that ignores Ctrl+C sees `KeyboardInterrupt` and `NameError: name 'clear' is not defined` ([#6752](https://github.com/OpenHands/software-agent-sdk/issues/6752), open, waiting on a decision of which behavior is intended; `S04.interactive-terminal` carries the known failure). The subprocess backend refuses the plain command instead and tells the model to use `is_input`.

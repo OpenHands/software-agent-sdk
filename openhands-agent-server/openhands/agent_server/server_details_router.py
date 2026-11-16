@@ -5,10 +5,14 @@ import time
 from importlib.metadata import version
 from typing import Literal
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.launch import configured_browser_available
+from openhands.agent_server.server_context import (
+    ServerContext,
+    get_server_context,
+)
 from openhands.sdk.settings.model import ConversationRuntime
 from openhands.sdk.tool import BROWSER_TOOL_NAME
 from openhands.sdk.tool.registry import list_registered_tools, list_usable_tools
@@ -182,8 +186,10 @@ def build_server_info(
 
 
 @server_details_router.get("/server_info")
-async def get_server_info(request: Request) -> ServerInfo:
-    config = request.app.state.config
+async def get_server_info(
+    context: ServerContext = Depends(get_server_context),
+) -> ServerInfo:
+    config = context.config
     return build_server_info(
         config.conversation_runtime,
         app_backend_ingress_url=config.app_backend_public_url,

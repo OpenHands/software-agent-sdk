@@ -1,8 +1,9 @@
 """Routes for user-facing experimental features (see :mod:`.experimental_features`)."""
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends
 
-from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.dependencies import get_settings_store
+from openhands.agent_server.errors import error_responses
 from openhands.agent_server.experimental_features import (
     ExperimentalFeature,
     ExperimentalFeatureUpdate,
@@ -11,10 +12,11 @@ from openhands.agent_server.experimental_features import (
     is_enabled,
 )
 from openhands.agent_server.persistence import (
+    FileSettingsStore,
     PersistedSettings,
-    get_settings_store,
     run_store,
 )
+from openhands.sdk.errors import Conflict, NotFound
 
 
 experimental_features_router = APIRouter(
@@ -23,9 +25,10 @@ experimental_features_router = APIRouter(
 
 
 @experimental_features_router.get("", response_model=list[ExperimentalFeature])
-async def list_experimental_features(request: Request) -> list[ExperimentalFeature]:
+async def list_experimental_features(
+    store: FileSettingsStore = Depends(get_settings_store),
+) -> list[ExperimentalFeature]:
     """List the features the user can turn on or off, and whether each is on."""
-    store = get_settings_store(get_config(request))
     settings = await run_store(store.load) or PersistedSettings()
     return experimental_feature_flags(settings.experimental_features)
 
@@ -33,21 +36,22 @@ async def list_experimental_features(request: Request) -> list[ExperimentalFeatu
 @experimental_features_router.patch(
     "/{key}",
     response_model=ExperimentalFeature,
-    responses={
-        404: {"description": "There is no feature with this key"},
-        409: {"description": "The settings file cannot be read"},
-    },
+    responses=error_responses(
+        {
+            NotFound: "There is no feature with this key",
+            Conflict: "The settings file cannot be read",
+        }
+    ),
 )
 def update_experimental_feature(
-    request: Request, key: str, payload: ExperimentalFeatureUpdate
+    key: str,
+    payload: ExperimentalFeatureUpdate,
+    store: FileSettingsStore = Depends(get_settings_store),
 ) -> ExperimentalFeature:
     """Turn a feature on or off."""
     feature = find_experimental_feature(key)
     if feature is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown experimental feature: {key}",
-        )
+        raise NotFound(f"Unknown experimental feature: {key}")
 
     def apply(settings: PersistedSettings) -> PersistedSettings:
         settings.experimental_features = {
@@ -56,14 +60,10 @@ def update_experimental_feature(
         }
         return settings
 
-    store = get_settings_store(get_config(request))
     try:
         settings = store.update(apply)
     except RuntimeError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
-        )
+        raise Conflict("Settings file is corrupted or encrypted with a different key")
     return ExperimentalFeature(
         key=feature.key,
         label=feature.label,
