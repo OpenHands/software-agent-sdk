@@ -1,6 +1,6 @@
 """Emoji reactions on messages."""
 
-from collections.abc import Sequence
+from collections.abc import Iterable
 from typing import Final, Literal, get_args
 
 from pydantic import Field, field_validator
@@ -140,12 +140,18 @@ def reaction_target_text(text: str) -> tuple[str, bool]:
 
 
 def find_reaction_target(
-    events: Sequence[Event], target_event_id: EventID | None, *, source: SourceType
+    newest_first: Iterable[Event],
+    target_event_id: EventID | None,
+    *,
+    source: SourceType,
 ) -> Event:
     """The message a reaction from ``source`` is about.
 
-    ``events`` is the conversation's active branch (``state.active_branch()``),
-    so a message on a branch the conversation navigated away from is never a
+    ``newest_first`` is where to look, from the end back; the search stops at
+    the message. The agent looks in what it sees (``state.view.events``,
+    reversed); the user, who may react to a message the agent no longer sees,
+    in the active branch (``state.walk_back(until=target_event_id)``), so a
+    message on a branch the conversation navigated away from is never a
     target. Without ``target_event_id``, the latest message from the other
     side: the latest user message for the agent (the user's, or a
     coordinator's), and for the user the agent's latest message or
@@ -154,23 +160,18 @@ def find_reaction_target(
     Raises:
         ValueError: There is no such message.
     """
-    if target_event_id is None:
-        wanted = "user" if source == "agent" else "agent"
-        for index in range(len(events) - 1, -1, -1):
-            event = events[index]
+    wanted = "user" if source == "agent" else "agent"
+    for event in newest_first:
+        if target_event_id is None:
             if is_reactable(event) and event.source == wanted:
                 return event
+        elif event.id == target_event_id:
+            if not is_reactable(event):
+                raise ValueError(f"Event {target_event_id} is not a message.")
+            return event
+    if target_event_id is None:
         raise ValueError(f"There is no {wanted} message to react to.")
-    event = _find_event(events, target_event_id)
-    if event is None:
-        raise ValueError(f"No message with id {target_event_id}.")
-    if not is_reactable(event):
-        raise ValueError(f"Event {target_event_id} is not a message.")
-    return event
-
-
-def _find_event(events: Sequence[Event], event_id: EventID) -> Event | None:
-    return next((e for e in reversed(events) if e.id == event_id), None)
+    raise ValueError(f"No message with id {target_event_id}.")
 
 
 def check_reaction_emoji(emoji: str) -> ReactionEmoji:
