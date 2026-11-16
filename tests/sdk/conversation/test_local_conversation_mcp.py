@@ -1,5 +1,6 @@
 """Tests for how LocalConversation wires MCP servers into a running agent."""
 
+import asyncio
 import logging
 import sys
 import threading
@@ -12,6 +13,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ObservationEvent
@@ -351,6 +353,43 @@ def test_late_mcp_tools_are_closed_when_the_conversation_closed_first(
 
     assert [tool.name for tool in closed] == ["late_tool"]
     assert _mcp_tool_names(conversation) == set()
+
+
+@pytest.mark.parametrize("use_arun", [False, True])
+def test_first_step_waits_for_mcp_servers_that_missed_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_arun: bool
+) -> None:
+    provider = BlockedMCPToolProvider()
+    conversation = _mcp_conversation(
+        tmp_path,
+        {"blocked": {"command": "unused"}},
+        mcp_startup_budget=0.1,
+        mcp_tool_provider=cast(MCPToolProvider, provider),
+    )
+    tools_at_first_step: list[set[str]] = []
+
+    def step(self, conversation, *args, **kwargs) -> None:
+        tools_at_first_step.append(_mcp_tool_names(conversation))
+        conversation.state.transition(
+            ConversationExecutionStatus.FINISHED, reason="test"
+        )
+
+    async def astep(self, conversation, *args, **kwargs) -> None:
+        step(self, conversation)
+
+    monkeypatch.setattr(Agent, "step", step)
+    monkeypatch.setattr(Agent, "astep", astep)
+    conversation.send_message("hello")
+    threading.Timer(0.5, provider.release.set).start()
+    try:
+        if use_arun:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+    finally:
+        conversation.close()
+
+    assert tools_at_first_step == [{"late_tool"}]
 
 
 def _mcp_tool_names(conversation: LocalConversation) -> set[str]:
