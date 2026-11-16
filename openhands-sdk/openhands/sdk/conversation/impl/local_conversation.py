@@ -128,6 +128,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -225,7 +226,7 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
     """Return whether two LLMs serialize to the same config, secrets included."""
     if a is b:
         return True
-    context = {"expose_secrets": True}
+    context = client_context("plaintext")
     return a.model_dump(mode="json", context=context) == b.model_dump(
         mode="json", context=context
     )
@@ -995,7 +996,7 @@ class LocalConversation(BaseConversation):
         source_agent = agent if agent is not None else self.agent
         agent_cls = type(source_agent)
         fork_agent = agent_cls.model_validate(
-            source_agent.model_dump(context={"expose_secrets": True}),
+            source_agent.model_dump(context=client_context("plaintext")),
         )
 
         # Hold the state lock while reading mutable state from the source
@@ -2012,12 +2013,12 @@ class LocalConversation(BaseConversation):
 
         current_config = current_llm.model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={"usage_id"},
         )
         condenser_config = condenser.llm.model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={"usage_id"},
         )
         if condenser_config != current_config:
