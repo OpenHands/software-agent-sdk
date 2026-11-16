@@ -71,9 +71,20 @@ ASK_USER = ExperimentalFeatureDefinition(
     ),
 )
 
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
     ASK_USER,
+    CONVERSATION_MENTIONS,
 ]
 
 
@@ -108,6 +119,9 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     if is_enabled(features, ASK_USER.key):
         # Registered by openhands.tools.ask_user.
         tools.append(Tool(name=ASK_USER_TOOL_NAME))
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
     return tools
 
 
