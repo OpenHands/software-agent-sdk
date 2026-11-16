@@ -3794,3 +3794,15 @@ def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
             assert llm_calls == 18
     finally:
         conv.close()
+
+
+def test_storage_status_local_live_endpoint(tmp_path, monkeypatch):
+    """Read-only status works over HTTP without a conversation or LLM call."""
+    with live_server_env(tmp_path, monkeypatch) as env:
+        with httpx.Client(base_url=env["host"]) as client:
+            before = client.get("/server_info").json()["idle_time"]
+            response = client.get("/api/storage")
+            assert response.status_code == 200
+            assert response.json() == {"managed_storage": None}
+            after = client.get("/server_info").json()["idle_time"]
+            assert after >= before

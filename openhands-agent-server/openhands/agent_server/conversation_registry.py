@@ -13,6 +13,7 @@ from openhands.agent_server.models import (
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.storage.status import StorageStatus
 
 
 if TYPE_CHECKING:
@@ -25,6 +26,10 @@ class ConversationRegistry:
     def __init__(self, config: Config, stores: ServerStores) -> None:
         self.config = config
         self.stores = stores
+
+    async def storage_status(self) -> StorageStatus:
+        """Caller-owned local workspaces are not managed runtime storage."""
+        return StorageStatus()
 
     def configure_service(self, service: ConversationService) -> None:
         """Connect runtime-specific persistence to the shared catalog."""

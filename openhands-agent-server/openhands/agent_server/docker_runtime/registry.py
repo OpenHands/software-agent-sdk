@@ -32,6 +32,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.storage import Reclaimer
+from openhands.agent_server.storage.status import StorageStatus, read_storage_usage
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
@@ -149,6 +150,14 @@ class DockerConversationRegistry(ConversationRegistry):
             DockerRuntimeStorage(self),
             disk_budget=config.conversation_storage_disk_budget,
             retention_days=config.conversation_storage_retention_days,
+        )
+
+    async def storage_status(self) -> StorageStatus:
+        return await asyncio.to_thread(
+            read_storage_usage,
+            self.reclaimer.storage.root,
+            self.reclaimer.disk_budget,
+            self.reclaimer.retention_days,
         )
 
     def configure_service(self, service: ConversationService) -> None:
