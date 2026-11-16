@@ -18,6 +18,7 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.event import (
     REACTION_EMOJI,
     ActionEvent,
+    AgentErrorEvent,
     Event,
     MessageEvent,
     ObservationEvent,
@@ -520,3 +521,34 @@ def test_a_held_reaction_reads_only_the_latest_batch(conversation):
     assert held.parent_id is None
     assert conversation.state.events[-1].id == held.id
     assert len(reads) < 20
+
+
+def _call(call_id: str, *, valid: bool) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=FinishAction(message="Done.") if valid else None,
+        tool_name="finish",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall(
+            id=call_id, name="finish", arguments="{}", origin="completion"
+        ),
+        llm_response_id="resp-batch",
+    )
+
+
+def test_a_call_still_waits_behind_its_batchs_malformed_calls(conversation):
+    """One response: valid call A, then malformed B and C, each followed by
+    its error. A still waits (a confirmation), so a reaction is held."""
+    conversation.state.append_event(_message("agent", "Shall I go on?"))
+    a = _call("call-a", valid=True)
+    conversation.state.append_event(a)
+    for call_id in ("call-b", "call-c"):
+        conversation.state.append_event(_call(call_id, valid=False))
+        conversation.state.append_event(
+            AgentErrorEvent(error="bad", tool_name="finish", tool_call_id=call_id)
+        )
+
+    assert [e.id for e in conversation.state.waiting_actions()] == [a.id]
+    held = conversation.react("heart")
+    assert held.parent_id is None

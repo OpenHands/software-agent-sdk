@@ -425,32 +425,39 @@ class ConversationState(OpenHandsModel):
 
         Like ``get_unmatched_actions`` on the active branch, but it reads back
         only through the agent's latest batch of tool calls, never the whole
-        log: a step answers its calls before the agent samples again. The walk
-        ends after that batch, or at the agent's latest message (a step with
-        no tool calls) when no call came after it.
+        log: a step answers its calls before the agent samples again. A batch
+        is the calls of one LLM response (one ``llm_response_id``), with the
+        errors of its malformed calls in between. The walk ends before the
+        batch, or at the agent's latest message (a step with no tool calls)
+        when no call came after it.
         """
         observed_action_ids: set[EventID] = set()
         observed_tool_call_ids: set[str] = set()
         waiting: list[ActionEvent] = []
-        in_batch = False
+        batch: str | None = None
         for event in self.walk_back():
             if isinstance(event, ActionEvent):
-                in_batch = True
+                if batch is None:
+                    batch = event.llm_response_id
+                elif event.llm_response_id != batch:
+                    break
                 if (
                     event.action is not None
                     and event.id not in observed_action_ids
                     and event.tool_call_id not in observed_tool_call_ids
                 ):
                     waiting.append(event)
-                continue
-            if in_batch or (
+            elif isinstance(event, (ObservationEvent, UserRejectObservation)):
+                if batch is not None:
+                    break
+                observed_action_ids.add(event.action_id)
+            elif isinstance(event, AgentErrorEvent):
+                # A malformed call's error sits inside its batch.
+                observed_tool_call_ids.add(event.tool_call_id)
+            elif batch is not None or (
                 isinstance(event, MessageEvent) and event.source == "agent"
             ):
                 break
-            if isinstance(event, (ObservationEvent, UserRejectObservation)):
-                observed_action_ids.add(event.action_id)
-            elif isinstance(event, AgentErrorEvent):
-                observed_tool_call_ids.add(event.tool_call_id)
         return waiting[::-1]
 
     def _stamp_parent_id(self, event: Event) -> Event:
