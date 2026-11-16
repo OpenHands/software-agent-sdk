@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import traceback
 from collections.abc import Mapping
@@ -107,6 +108,7 @@ MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 
 logger = get_logger(__name__)
+_GIT_INIT_LOCK = threading.Lock()
 
 
 class ConversationRunLimitExceeded(RateLimited, RuntimeError):
@@ -1262,7 +1264,10 @@ class EventService:
             )
 
         try:
-            run_git_command(["git", "init"], working_dir)
+            # Conversations starting on the same new directory would otherwise
+            # race on .git/config.lock; a repeated `git init` is harmless.
+            with _GIT_INIT_LOCK:
+                run_git_command(["git", "init"], working_dir)
         except GitCommandError as e:
             # Don't block conversation startup if git is missing or init
             # fails — the git router is defensive and will return [] anyway.
