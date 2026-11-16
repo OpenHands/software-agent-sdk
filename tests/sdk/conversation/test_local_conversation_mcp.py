@@ -317,7 +317,12 @@ class BlockedMCPToolProvider:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.client = EmptyMCPClient()
-        self.client.tools = [cast(MCPToolDefinition, "late-tool")]
+        self.client.tools = list(
+            MCPToolDefinition.create(
+                mcp_types.Tool(name="late_tool", input_schema={"type": "object"}),
+                cast(MCPClient, self.client),
+            )
+        )
 
     def create_tools(self, mcp_config, timeout=30.0, **kwargs) -> MCPClient:
         self.release.wait(10)
@@ -344,7 +349,7 @@ def test_late_mcp_tools_are_closed_when_the_conversation_closed_first(
     provider.release.set()
     _wait_until(lambda: closed)
 
-    assert closed == ["late-tool"]
+    assert [tool.name for tool in closed] == ["late_tool"]
     assert _mcp_tool_names(conversation) == set()
 
 

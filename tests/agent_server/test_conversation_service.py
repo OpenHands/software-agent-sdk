@@ -2405,6 +2405,21 @@ class TestConversationServiceStartConversation:
                 _get_worktree_start_point(repo_dir)
             assert fetch.call_count == 2
 
+    def test_get_worktree_start_point_fetches_again_after_a_failed_fetch(
+        self, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        missing = tmp_path / "missing.git"
+        run_git_command(["git", "remote", "add", "origin", str(missing)], repo_dir)
+
+        module = "openhands.agent_server.conversation_service"
+        with patch(f"{module}._fetch_origin", wraps=_fetch_origin) as fetch:
+            _get_worktree_start_point(repo_dir)
+            _get_worktree_start_point(repo_dir)
+
+        assert fetch.call_count == 2
+
     def test_get_worktree_start_point_fetches_origin_after_another_remote(
         self, tmp_path
     ):
