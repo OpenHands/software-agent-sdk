@@ -90,7 +90,9 @@ class CanvasExtensionContributes(BaseModel):
         return v
 
 
-BackendPlatform = Literal["linux-amd64", "linux-arm64"]
+BackendPlatform = Literal[
+    "linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"
+]
 
 
 class CanvasExtensionBackendArtifact(BaseModel):
@@ -163,8 +165,12 @@ class CanvasExtensionBackend(BaseModel):
     """Optional trusted backend declaration for schema-1 Canvas Apps."""
 
     schema_version: Literal[1]
-    artifacts: dict[BackendPlatform, CanvasExtensionBackendArtifact] = Field(
-        min_length=1
+    artifacts: dict[
+        Literal["linux-amd64", "linux-arm64"], CanvasExtensionBackendArtifact
+    ] = Field(min_length=1)
+    additional_artifacts: dict[str, CanvasExtensionBackendArtifact] = Field(
+        default_factory=dict,
+        description="Additional platform artifacts; unknown platforms are ignored.",
     )
     argv: list[str] = Field(min_length=1)
     health: CanvasExtensionBackendHealth = Field(

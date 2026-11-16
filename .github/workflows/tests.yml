@@ -267,8 +267,11 @@ jobs:
               uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
+                      openhands-sdk/**
+                      openhands-agent-server/**
                       openhands-tools/**
                       tests/tools/**
+                      tests/agent_server/canvas_extensions/**
                       pyproject.toml
                       uv.lock
                       .github/workflows/tests.yml
@@ -317,6 +320,14 @@ jobs:
                     Move-Item .coverage coverage-windows.dat
                     Write-Host 'Windows coverage file prepared for upload'
                   }
+
+            - name: Run Windows Agent Server backend tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: >-
+                  uv run --frozen python -m pytest -v
+                  --timeout=120 --timeout-method=thread
+                  tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py
+                  tests/agent_server/canvas_extensions/test_canvas_extensions_manifest.py
 
             - name: Upload Windows coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
