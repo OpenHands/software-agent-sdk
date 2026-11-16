@@ -172,6 +172,7 @@ async def test_features_are_listed_and_off(client):
         ("conversation_reactions", False),
         ("ask_user", False),
         ("conversation_mentions", False),
+        ("message_edits", False),
     ]
 
 
@@ -196,6 +197,9 @@ def test_feature_tools_follow_the_flags():
             {"conversation_reactions": True, "conversation_mentions": True}
         )
     ] == ["react", "unreact", "find_conversations", "read_conversation"]
+    assert [t.name for t in experimental_feature_tools({"message_edits": True})] == [
+        "edit_message"
+    ]
 
 
 def _runtime() -> LaunchRuntime:

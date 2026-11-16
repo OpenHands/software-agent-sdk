@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@2aae48b67a57fa852ebca946ac64ee8b8500e889 (2026-11-15). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **1007 sub-features**.
+The map has **1012 sub-features**.
 
 ## Baseline preconditions
 
@@ -101,6 +101,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F34 | [TypeScript client (@openhands/typescript-client)](F34-typescript-client.md) | the TypeScript client against this checkout: server and version gate, workspace, bash, conversation, state, events and socket clients, hooks and MCP clients, endpoint audit and drift | behavior only: `@openhands/typescript-client` (`clients/typescript`) | llm, node, uvx, git, tmux, network | 33 |
 | F37 | [Emoji reactions and feature flags](F37-reactions.md) | the `conversation_reactions` feature flag (stored and runtime env), the user's reactions over REST and the TypeScript client, validation, active-branch targets, the agent's `react`/`unreact` tools, what the model sees | `POST /api/conversations/{id}/reactions` (the flag's routes are F18's) | llm | 12 |
 | F38 | [Conversation mentions](F38-conversation-mentions.md) | the `conversation_mentions` feature flag, the agent's read-only `find_conversations` and `read_conversation` tools, mention links `[Title](conversation:<id>)` in its answers | behavior only: agent tools (the flag's routes are F18's) | llm | 5 |
+| F39 | [Message edits](F39-message-edits.md) | the `message_edits` feature flag, the agent's `edit_message` tool (`str_replace` on its own earlier messages), the `MessageEditEvent` clients show in place, what the model sees, reactions on an edited message | behavior only: `edit_message` tool, `MessageEditEvent` (the flag's routes are F18's) | llm | 5 |
 
 ## Not mapped
 
