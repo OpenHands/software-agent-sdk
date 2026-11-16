@@ -4053,6 +4053,30 @@ async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
     assert threads[0] != loop_thread
 
 
+def test_concurrent_repo_checks_on_a_new_directory_all_succeed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    directories = [tmp_path / f"workspace-{i}" for i in range(10)]
+    for directory in directories:
+        directory.mkdir()
+
+    def check_all(barrier: threading.Barrier) -> None:
+        barrier.wait()
+        for directory in directories:
+            EventService._ensure_workspace_is_git_repo(directory)
+
+    barrier = threading.Barrier(8)
+    workers = [threading.Thread(target=check_all, args=(barrier,)) for _ in range(8)]
+    with caplog.at_level(logging.WARNING):
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+    assert "Failed to initialize git repository" not in caplog.text
+    assert all((directory / ".git").is_dir() for directory in directories)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("condenser", "message"),
