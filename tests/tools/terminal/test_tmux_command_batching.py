@@ -7,6 +7,8 @@ import libtmux
 import libtmux.common
 import pytest
 
+from openhands.tools.terminal.definition import TerminalAction
+from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 from openhands.tools.terminal.terminal.tmux_terminal import run_tmux_commands
 
@@ -109,3 +111,36 @@ def test_batches_are_sized_in_utf8_bytes():
         server.kill()
 
     assert {name: environment[name] for name in values} == values
+
+
+@pytest.fixture
+def executor(tmp_path):
+    executor = TerminalExecutor(working_dir=str(tmp_path))
+    yield executor
+    executor.close()
+
+
+def test_command_runs_in_few_tmux_processes(executor, monkeypatch):
+    executor(TerminalAction(command="echo warm"))
+    calls = 0
+    real_init = libtmux.common.tmux_cmd.__init__
+
+    def counting_init(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(libtmux.common.tmux_cmd, "__init__", counting_init)
+    observation = executor(TerminalAction(command="echo counted"))
+
+    assert "counted" in observation.text
+    # Each tmux process stalls the server's other threads while it is spawned;
+    # a command used to take 11.
+    assert calls <= 6
+
+
+def test_command_ending_in_semicolon_runs(executor):
+    observation = executor(TerminalAction(command="echo semicolon_end;"))
+
+    assert observation.exit_code == 0
+    assert "semicolon_end" in observation.text

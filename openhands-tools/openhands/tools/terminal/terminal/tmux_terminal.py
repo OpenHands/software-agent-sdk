@@ -12,6 +12,7 @@ from pathlib import Path
 
 import libtmux
 from filelock import FileLock
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
@@ -391,15 +392,39 @@ class TmuxTerminal(TerminalInterface):
 
         # 3) Plain text — use literal=True so tmux doesn't split on
         #    whitespace or interpret special tokens.
-        self.pane.send_keys(text, enter=False, literal=True)
         if enter and not text.endswith("\n"):
-            self.pane.send_keys("Enter", enter=False)
+            self._send_then_enter("-l", text)
+        else:
+            self.pane.send_keys(text, enter=False, literal=True)
+
+    def _send_then_enter(self, *send_keys_args: str) -> None:
+        """Send keys and then Enter in one tmux process.
+
+        tmux would read a last argument ending in ``;`` as a command separator,
+        so such text takes two processes, as ``pane.send_keys`` does.
+        """
+        assert isinstance(self.pane, libtmux.Pane)
+        if send_keys_args[-1].endswith(";"):
+            self.pane.cmd("send-keys", *send_keys_args)
+            self.pane.enter()
+            return
+        self.pane.cmd(
+            "send-keys",
+            *send_keys_args,
+            ";",
+            "send-keys",
+            "-t",
+            str(self.pane.pane_id),
+            "Enter",
+        )
 
     @staticmethod
     def _capture_pane(pane: libtmux.Pane) -> str:
-        return "\n".join(
-            line.rstrip() for line in pane.cmd("capture-pane", "-J", "-pS", "-").stdout
-        )
+        result = pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.stderr:
+            # E.g. the shell exited and took the pane (or the server) with it.
+            raise LibTmuxException(*result.stderr)
+        return "\n".join(line.rstrip() for line in result.stdout)
 
     def read_screen(self) -> str:
         """Read the current tmux pane content.
@@ -425,7 +450,7 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("clear", enter=True)
+        self._send_then_enter("clear")
         time.sleep(0.1)
         self.pane.cmd("clear-history")
 
