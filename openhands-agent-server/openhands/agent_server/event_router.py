@@ -46,6 +46,7 @@ from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
     SettingsStore,
+    run_store,
 )
 from openhands.agent_server.project_wake import SenderError, sender_message_header
 from openhands.agent_server.server_context import ServerContext, get_server_context
@@ -501,9 +502,7 @@ async def require_feature_enabled(
     if host_experimental_features() is not None:
         return
     try:
-        settings = await asyncio.to_thread(
-            lambda: settings_store.load() or PersistedSettings()
-        )
+        settings = await run_store(settings_store.load) or PersistedSettings()
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
     if not is_enabled(settings.experimental_features, key):

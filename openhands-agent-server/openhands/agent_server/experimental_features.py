@@ -19,7 +19,6 @@ user's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
 ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 
-import asyncio
 import json
 import os
 from collections.abc import Mapping
@@ -189,12 +188,10 @@ async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") 
         return is_enabled(host_features, key)
     if settings_store is None:
         return False
-    from openhands.agent_server.persistence import PersistedSettings
+    from openhands.agent_server.persistence import PersistedSettings, run_store
 
     try:
-        settings = await asyncio.to_thread(
-            lambda: settings_store.load() or PersistedSettings()
-        )
+        settings = await run_store(settings_store.load) or PersistedSettings()
     except (PermissionError, OSError):
         return False
     return is_enabled(settings.experimental_features, key)
