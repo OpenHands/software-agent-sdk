@@ -752,12 +752,16 @@ async def _launch_worker(tmp_path, workspace_dir, monkeypatch, profile_id):
     return launch, sources
 
 
+@pytest.mark.parametrize("git_repo", [False, True])
 @pytest.mark.asyncio
 async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
-    tmp_path, workspace_dir, monkeypatch
+    tmp_path, workspace_dir, monkeypatch, git_repo
 ):
     from openhands.agent_server.conversation_service import PROJECT_WORKER_TOOLS
 
+    if git_repo:
+        workspace_dir = tmp_path / "repo"
+        _init_git_repo(workspace_dir)
     profile_id = uuid4()
     launch, sources = await _launch_worker(
         tmp_path, workspace_dir, monkeypatch, profile_id
@@ -777,6 +781,11 @@ async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
     assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
     assert launch.child.parent_conversation_id == launch.parent_id
     assert launch.child.title == "Login fix"
+    assert launch.result.isolation == ("worktree" if git_repo else "shared")
+    assert launch.result.workspace is not None
+    assert (
+        Path(launch.result.workspace).resolve() != workspace_dir.resolve()
+    ) == git_repo
     # Only the project tag: the parent's app markers describe the parent.
     assert set(launch.child.tags) == {"project"}
     sent = launch.services[child_id].send_message.await_args
