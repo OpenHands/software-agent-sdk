@@ -83,6 +83,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
@@ -918,16 +919,30 @@ class EventService:
         _from_goal_loop: bool = False,
         *,
         run_slot: RunSlot | None = None,
+        sender: str | None = None,
+        event_id: EventID | None = None,
+        preserve_goal_loop: bool = False,
     ):
         if not self._conversation:
             raise ValueError("inactive_service")
         # A normal user message supersedes any active /goal loop in this
         # conversation. The goal loop's own messages pass _from_goal_loop=True.
-        if not _from_goal_loop:
+        if not _from_goal_loop and not preserve_goal_loop:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.send_message, message)
+        send_kwargs: dict[str, str] = {}
+        if sender is not None:
+            send_kwargs["sender"] = sender
+        if event_id is not None:
+            send_kwargs["event_id"] = event_id
+        if send_kwargs:
+            send_message = partial(
+                self._conversation.send_message, message, **send_kwargs
+            )
+            await loop.run_in_executor(None, send_message)
+        else:
+            await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
             if self._explicit_interrupt_generation != explicit_interrupt_generation:
                 return

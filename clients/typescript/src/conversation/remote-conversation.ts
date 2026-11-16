@@ -253,22 +253,20 @@ export class RemoteConversation implements IConversation {
     return stats;
   }
 
-  async sendMessage(message: string | Message): Promise<void> {
-    let messageContent: SendMessageRequest;
-
-    if (typeof message === 'string') {
-      messageContent = {
-        role: 'user',
-        content: [{ type: 'text', text: message }],
-        run: false,
-      };
-    } else {
-      messageContent = {
-        role: 'user',
-        content: message.content,
-        run: false,
-      };
-    }
+  async sendMessage(
+    message: string | Message,
+    options: { sender?: string; eventId?: string } = {}
+  ): Promise<void> {
+    const metadata = {
+      ...(options.sender === undefined ? {} : { sender: options.sender }),
+      ...(options.eventId === undefined ? {} : { event_id: options.eventId }),
+    };
+    const messageContent: SendMessageRequest = {
+      role: 'user',
+      content: typeof message === 'string' ? [{ type: 'text', text: message }] : message.content,
+      run: false,
+      ...metadata,
+    };
 
     await this.client.post(`/api/conversations/${this.id}/events`, messageContent);
   }

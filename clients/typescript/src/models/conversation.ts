@@ -112,6 +112,8 @@ export interface SendMessageRequest {
     image_urls?: string[];
   }>;
   run: boolean;
+  sender?: string;
+  event_id?: string;
 }
 
 export interface ConfirmationResponseRequest {

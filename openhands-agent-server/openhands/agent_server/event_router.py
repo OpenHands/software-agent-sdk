@@ -264,7 +264,15 @@ async def send_message(
     _refuse_during_gateway_run(event_service)
     async with event_service._gateway_run_lock:
         _refuse_during_gateway_run(event_service)
-        await event_service.send_message(message, request.run)
+        if request.sender is None and request.event_id is None:
+            await event_service.send_message(message, request.run)
+        else:
+            await event_service.send_message(
+                message,
+                request.run,
+                sender=request.sender,
+                event_id=request.event_id,
+            )
     return Success()
 
 

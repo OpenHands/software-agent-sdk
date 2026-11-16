@@ -1786,6 +1786,40 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation.sendMessage sends sender and stable event ID metadata', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.sendMessage('Child result', {
+      sender: 'subagent:child-123',
+      eventId: 'stable-message-id',
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/events',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          role: 'user',
+          content: [{ type: 'text', text: 'Child result' }],
+          run: false,
+          sender: 'subagent:child-123',
+          event_id: 'stable-message-id',
+        }),
+      })
+    );
+  });
+
   it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {

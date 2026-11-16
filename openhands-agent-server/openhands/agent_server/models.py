@@ -116,6 +116,8 @@ class StoredConversation(ConversationConfig):
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
+    notify_parent_on_completion: bool = False
+    parent_notification_sent_event_id: str | None = None
 
     id: OpenHandsUUID
     title: str | None = Field(

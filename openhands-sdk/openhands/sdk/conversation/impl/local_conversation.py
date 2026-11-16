@@ -2187,7 +2187,13 @@ class LocalConversation(BaseConversation):
         return new_agent
 
     @observe(name="conversation.send_message")
-    def send_message(self, message: str | Message, sender: str | None = None) -> None:
+    def send_message(
+        self,
+        message: str | Message,
+        sender: str | None = None,
+        *,
+        event_id: EventID | None = None,
+    ) -> None:
         """Send a message to the agent.
 
         Args:
@@ -2197,6 +2203,7 @@ class LocalConversation(BaseConversation):
                    message origin in multi-agent scenarios. For example, when
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
+            event_id: Optional stable ID for idempotent message delivery.
         """
         # ACPAgent startup can take much longer than a normal send_message()
         # round-trip because it launches and initializes a subprocess-backed
@@ -2212,6 +2219,10 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
+            if event_id is not None and any(
+                event.id == event_id for event in self._state.events
+            ):
+                return
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
                 ConversationExecutionStatus.STUCK,
@@ -2244,6 +2255,7 @@ class LocalConversation(BaseConversation):
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
 
             user_msg_event = MessageEvent(
+                **({"id": event_id} if event_id is not None else {}),
                 source="user",
                 llm_message=message,
                 activated_skills=activated_skill_names,

@@ -1,5 +1,6 @@
 """Tests for parent/child conversation relationships."""
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.workspace import LocalWorkspace
@@ -586,3 +588,258 @@ def test_router_rejects_child_with_empty_task():
 
     assert response.status_code == 422
     service.start_child_conversation.assert_not_awaited()
+
+
+class _SyncTestAgent(Agent):
+    astep = AgentBase.astep
+
+    def step(self, conversation: Any, on_event: Any, on_token: Any = None) -> None:
+        del on_token
+        user_message = next(
+            event
+            for event in reversed(conversation.state.events)
+            if isinstance(event, MessageEvent) and event.source == "user"
+        )
+        task_content = user_message.llm_message.content[0]
+        assert isinstance(task_content, TextContent)
+        task = task_content.text
+        if task == "Fail the work":
+            raise RuntimeError("Child failed")
+        response = "Child result" if task == "Do the work" else "Parent resumed"
+        on_event(
+            MessageEvent(
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text=response)]
+                ),
+            )
+        )
+        conversation.state.transition(
+            ConversationExecutionStatus.FINISHED, "test agent completed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_child_completion_is_delivered_to_parent(tmp_path, workspace_dir):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        parent_request = _start_request(workspace_dir)
+        parent_request.agent = _SyncTestAgent(
+            llm=parent_request.agent.llm,
+            tools=[],
+            system_prompt="Complete the task in the latest user message.",
+        )
+        parent, _ = await service.start_conversation(parent_request)
+        parent_service = await service.get_event_service(parent.id)
+        assert parent_service is not None
+
+        child = await service.start_child_conversation(
+            parent.id,
+            StartChildConversationRequest(task="Do the work", title="Worker"),
+        )
+        assert child is not None
+        child_service = await service.get_event_service(child.conversation_id)
+        assert child_service is not None
+        await child_service.wait_for_run_completion(timeout=5)
+
+        for _ in range(200):
+            if (
+                await parent_service._get_execution_status()
+                == ConversationExecutionStatus.FINISHED
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+        assert await parent_service._get_execution_status() == (
+            ConversationExecutionStatus.FINISHED
+        )
+        events = await parent_service.search_events(kind="MessageEvent")
+        reports = [
+            event
+            for event in events.items
+            if isinstance(event, MessageEvent)
+            and event.sender == f"subagent:{child.conversation_id}"
+        ]
+        assert len(reports) == 1
+        report = reports[0]
+        report_content = report.llm_message.content[0]
+        assert isinstance(report_content, TextContent)
+        assert "Worker" in report_content.text
+        assert "Do the work" in report_content.text
+        assert "Child result" in report_content.text
+        assert await parent_service.get_agent_final_response() == "Parent resumed"
+        assert child_service.stored.parent_notification_sent_event_id == report.id
+
+        child_service.stored = child_service.stored.model_copy(
+            update={"parent_notification_sent_event_id": None}
+        )
+        await child_service.save_meta()
+        await service._deliver_child_completion(child.conversation_id)
+
+        events = await parent_service.search_events(kind="MessageEvent")
+        assert (
+            sum(
+                isinstance(event, MessageEvent)
+                and event.sender == f"subagent:{child.conversation_id}"
+                for event in events.items
+            )
+            == 1
+        )
+        assert await parent_service._get_execution_status() == (
+            ConversationExecutionStatus.FINISHED
+        )
+        assert child_service.stored.parent_notification_sent_event_id == report.id
+
+
+@pytest.mark.asyncio
+async def test_child_completion_delivery_recovers_after_restart(
+    tmp_path, workspace_dir
+):
+    conversations_dir = tmp_path / "conversations"
+    parent_id = None
+    child_id = None
+    report_id = None
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        parent_request = _start_request(workspace_dir)
+        parent_request.agent = _SyncTestAgent(
+            llm=parent_request.agent.llm,
+            tools=[],
+            system_prompt="Complete the task in the latest user message.",
+        )
+        parent, _ = await service.start_conversation(parent_request)
+        child = await service.start_child_conversation(
+            parent.id,
+            StartChildConversationRequest(task="Do the work", title="Worker"),
+        )
+        assert child is not None
+        parent_id = parent.id
+        child_id = child.conversation_id
+        child_service = await service.get_event_service(child_id)
+        assert child_service is not None
+        await child_service.wait_for_run_completion(timeout=5)
+
+        for _ in range(200):
+            report_id = child_service.stored.parent_notification_sent_event_id
+            if report_id is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert report_id is not None
+        child_service.stored = child_service.stored.model_copy(
+            update={"parent_notification_sent_event_id": None}
+        )
+        await child_service.save_meta()
+
+    assert parent_id is not None
+    assert child_id is not None
+    assert report_id is not None
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        for _ in range(200):
+            child_service = await service.get_event_service(child_id)
+            assert child_service is not None
+            if child_service.stored.parent_notification_sent_event_id is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert child_service.stored.parent_notification_sent_event_id == report_id
+        parent_service = await service.get_event_service(parent_id)
+        assert parent_service is not None
+        events = await parent_service.search_events(kind="MessageEvent")
+        assert (
+            sum(
+                isinstance(event, MessageEvent)
+                and event.sender == f"subagent:{child_id}"
+                for event in events.items
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_child_completion_is_queued_without_waking_paused_parent(
+    tmp_path, workspace_dir
+):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        parent_request = _start_request(workspace_dir)
+        parent_request.agent = _SyncTestAgent(
+            llm=parent_request.agent.llm,
+            tools=[],
+            system_prompt="Complete the task in the latest user message.",
+        )
+        parent, _ = await service.start_conversation(parent_request)
+        await service.pause_conversation(parent.id)
+
+        child = await service.start_child_conversation(
+            parent.id,
+            StartChildConversationRequest(task="Do the work", title="Worker"),
+        )
+        assert child is not None
+        child_service = await service.get_event_service(child.conversation_id)
+        parent_service = await service.get_event_service(parent.id)
+        assert child_service is not None
+        assert parent_service is not None
+        await child_service.wait_for_run_completion(timeout=5)
+
+        for _ in range(200):
+            if child_service.stored.parent_notification_sent_event_id is not None:
+                break
+            await asyncio.sleep(0.01)
+
+        assert child_service.stored.parent_notification_sent_event_id is not None
+        assert await parent_service._get_execution_status() == (
+            ConversationExecutionStatus.PAUSED
+        )
+        events = await parent_service.search_events(kind="MessageEvent")
+        assert (
+            sum(
+                isinstance(event, MessageEvent)
+                and event.sender == f"subagent:{child.conversation_id}"
+                for event in events.items
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_failed_child_completion_is_reported_to_parent(tmp_path, workspace_dir):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        parent_request = _start_request(workspace_dir)
+        parent_request.agent = _SyncTestAgent(
+            llm=parent_request.agent.llm,
+            tools=[],
+            system_prompt="Complete the task in the latest user message.",
+        )
+        parent, _ = await service.start_conversation(parent_request)
+        child = await service.start_child_conversation(
+            parent.id,
+            StartChildConversationRequest(task="Fail the work", title="Worker"),
+        )
+        assert child is not None
+        child_service = await service.get_event_service(child.conversation_id)
+        parent_service = await service.get_event_service(parent.id)
+        assert child_service is not None
+        assert parent_service is not None
+        await child_service.wait_for_run_completion(timeout=5)
+
+        for _ in range(200):
+            if child_service.stored.parent_notification_sent_event_id is not None:
+                break
+            await asyncio.sleep(0.01)
+
+        assert child_service.stored.parent_notification_sent_event_id is not None
+        events = await parent_service.search_events(kind="MessageEvent")
+        reports = [
+            event
+            for event in events.items
+            if isinstance(event, MessageEvent)
+            and event.sender == f"subagent:{child.conversation_id}"
+        ]
+        assert len(reports) == 1
+        report_content = reports[0].llm_message.content[0]
+        assert isinstance(report_content, TextContent)
+        assert "ended with status error" in report_content.text
+        assert "Child failed" in report_content.text

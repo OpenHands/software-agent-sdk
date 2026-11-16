@@ -1086,6 +1086,36 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+def test_remote_send_message_event_id_is_idempotent(server_env):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    event_id = uuid4().hex
+    message = f"Stable message {event_id}"
+    try:
+        conversation.send_message(message, sender="subagent:child", event_id=event_id)
+        conversation.send_message(message, sender="subagent:child", event_id=event_id)
+
+        with httpx.Client(base_url=server_env["host"], trust_env=False) as client:
+            response = client.get(
+                f"/api/conversations/{conversation.id}/events/search",
+                params={"source": "user", "body": message},
+            )
+            response.raise_for_status()
+
+        events = [
+            MessageEvent.model_validate(item)
+            for item in response.json()["items"]
+            if item["id"] == event_id
+        ]
+        assert len(events) == 1
+        assert events[0].sender == "subagent:child"
+    finally:
+        conversation.close()
+
+
 @pytest.mark.parametrize(
     "tags", [None, {"purpose": "debugging"}, {"title": "user tag"}]
 )
