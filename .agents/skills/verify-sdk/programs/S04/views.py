@@ -295,7 +295,7 @@ elif mode == "branch":
     conversation.close()
 
 elif mode == "goal":
-    from openhands.sdk.conversation.goal import run_goal
+    from openhands.sdk.conversation.goal import GoalAsked, run_goal
 
     def judge(replies):
         return make_llm([{"text": r} for r in replies], usage_id="judge")
@@ -314,6 +314,7 @@ elif mode == "goal":
         ),
         max_iterations=4,
     )
+    assert not isinstance(outcome, GoalAsked)
     followups = [
         "".join(c.text for c in e.llm_message.content)
         for e in conversation.state.events
@@ -341,6 +342,7 @@ elif mode == "goal":
         ),
         max_iterations=2,
     )
+    assert not isinstance(outcome, GoalAsked)
     out["capped"] = {
         "status": outcome.status,
         "iterations": outcome.iterations,
