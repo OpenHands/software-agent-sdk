@@ -36,6 +36,7 @@ from openhands.tools.ask_user import (
     AskUserOption,
     AskUserTool,
 )
+from tests.command_utils import python_command
 from tests.sdk.agent.test_iterative_refinement import MockCritic
 
 
@@ -219,9 +220,11 @@ async def test_stop_hooks_wait_for_an_answer_but_still_check_completion(
     tmp_path, use_async
 ):
     marker = tmp_path / "stop-hook-ran"
-    command = (
-        f"if test -e '{marker}'; then exit 0; "
-        f"else touch '{marker}'; echo 'Keep working' >&2; exit 2; fi"
+    command = python_command(
+        "from pathlib import Path; import sys; "
+        f"marker = Path({str(marker)!r}); existed = marker.exists(); "
+        "marker.touch(); print('Keep working', file=sys.stderr); "
+        "sys.exit(0 if existed else 2)"
     )
     conversation = _conversation(
         tmp_path,

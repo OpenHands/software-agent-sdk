@@ -77,6 +77,7 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.ask_user import AskUserTool
 from openhands.tools.file_editor import FileEditorTool
+from tests.command_utils import python_command
 from tests.cross.conftest import live_server_env
 from tests.tools.ask_user.test_ask_user import QUESTION
 
@@ -385,9 +386,11 @@ def test_pending_question_blocks_goal_resume_over_http(
                 completed.set()
 
     marker = tmp_path / "stop-ran"
-    command = (
-        f"if test -e '{marker}'; then exit 0; "
-        f"else touch '{marker}'; echo 'Keep working' >&2; exit 2; fi"
+    command = python_command(
+        "from pathlib import Path; import sys; "
+        f"marker = Path({str(marker)!r}); existed = marker.exists(); "
+        "marker.touch(); print('Keep working', file=sys.stderr); "
+        "sys.exit(0 if existed else 2)"
     )
     workspace = RemoteWorkspace(
         host=server_env["host"], working_dir=str(server_env["workspace_path"])
