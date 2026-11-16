@@ -22,7 +22,7 @@ import type {
   UpdateSecretsRequest,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
-import type { ReactionEmoji, ReactionEvent } from '../events/types';
+import type { AskUserAnswerEvent, ReactionEmoji, ReactionEvent } from '../events/types';
 
 export interface ConversationClientOptions {
   host: string;
@@ -234,6 +234,28 @@ export class ConversationClient {
         emoji,
         ...(options.targetEventId === undefined ? {} : { target_event_id: options.targetEventId }),
         ...(options.removed === undefined ? {} : { removed: options.removed }),
+      }
+    );
+    return response.data;
+  }
+
+  /**
+   * Answer the agent's pending `ask_user` question and run the agent: pick an
+   * option (`optionIndex`, from 0), give words (`text`), or both. The server
+   * answers 400 when `askId` is not the pending question (already answered by
+   * a tap or a chat reply) and 409 while the `ask_user` feature is off.
+   */
+  async answerAskUser(
+    conversationId: string,
+    askId: string,
+    answer: { optionIndex?: number; text?: string }
+  ): Promise<AskUserAnswerEvent> {
+    const response = await this.client.post<AskUserAnswerEvent>(
+      `/api/conversations/${conversationId}/ask_user/answer`,
+      {
+        ask_id: askId,
+        ...(answer.optionIndex === undefined ? {} : { option_index: answer.optionIndex }),
+        ...(answer.text === undefined ? {} : { text: answer.text }),
       }
     );
     return response.data;

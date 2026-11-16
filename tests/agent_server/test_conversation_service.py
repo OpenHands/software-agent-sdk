@@ -2167,6 +2167,58 @@ class TestConversationServiceStartConversation:
         assert "Do all file and git work inside this worktree" in suffix
 
     @pytest.mark.asyncio
+    async def test_start_conversation_runs_worktree_git_off_the_event_loop(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=repo_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+        loop_thread = threading.get_ident()
+        threads: dict[str, int] = {}
+
+        def _recording(name, fn):
+            def wrapper(*args, **kwargs):
+                threads[name] = threading.get_ident()
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=cast(AgentBase, kwargs.get("agent")) or _sample_agent(),
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        module = "openhands.agent_server.conversation_service"
+        with (
+            patch(f"{module}.EventService", side_effect=_event_service_factory),
+            patch(
+                f"{module}._plan_conversation_worktree",
+                _recording("plan", _plan_conversation_worktree),
+            ),
+            patch(
+                f"{module}._create_conversation_worktree",
+                _recording("create", _create_conversation_worktree),
+            ),
+        ):
+            await conversation_service.start_conversation(request)
+
+        assert set(threads) == {"plan", "create"}
+        assert loop_thread not in threads.values()
+
+    @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_preserves_relative_workspace(
         self, conversation_service, tmp_path
     ):

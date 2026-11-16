@@ -37,6 +37,7 @@ from openhands.tools.terminal.terminal.process_priority import (
 from openhands.tools.terminal.terminal.tmux_terminal import (
     TmuxTerminal,
     _new_owned_session,
+    run_tmux_commands,
 )
 
 
@@ -138,9 +139,12 @@ class TmuxPanePool:
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
-        for k, v in env.items():
-            self._session.set_environment(k, v)
-        self._session.set_option("history-limit", str(HISTORY_LIMIT))
+        session_id = str(self._session.session_id)
+        run_tmux_commands(
+            self._server,
+            [["set-environment", "-t", session_id, k, v] for k, v in env.items()]
+            + [["set-option", "-t", session_id, "history-limit", str(HISTORY_LIMIT)]],
+        )
 
         # Keep a reference to the default window so we can kill it once
         # the first real pane window is created (tmux requires at least
@@ -229,7 +233,9 @@ class TmuxPanePool:
                 self._initial_window.kill()
             self._initial_window = None
 
-        logger.debug(f"Created pooled pane #{len(self._all_panes)}: {active_pane}")
+        logger.debug(
+            "Created pooled pane #%d: %s", len(self._all_panes), active_pane.pane_id
+        )
         return terminal
 
     def checkout(
@@ -265,17 +271,17 @@ class TmuxPanePool:
             with self._lock:
                 if prefer is not None and prefer in self._available:
                     self._available.remove(prefer)
-                    logger.debug(f"Checked out preferred pane: {prefer.pane}")
+                    logger.debug("Checked out preferred pane: %s", prefer.pane.pane_id)
                     return prefer
                 if self._available:
                     terminal = self._available.popleft()
-                    logger.debug(f"Checked out existing pane: {terminal.pane}")
+                    logger.debug("Checked out existing pane: %s", terminal.pane.pane_id)
                     return terminal
 
                 # Create a new pane (still under max_panes thanks to semaphore)
                 terminal = self._create_pane()
                 self._all_panes.append(terminal)
-                logger.debug(f"Checked out new pane: {terminal.pane}")
+                logger.debug("Checked out new pane: %s", terminal.pane.pane_id)
                 return terminal
         except Exception:
             self._semaphore.release()
@@ -291,7 +297,7 @@ class TmuxPanePool:
                 self._available.append(terminal)
 
         self._semaphore.release()
-        logger.debug(f"Checked in pane: {terminal.pane}")
+        logger.debug("Checked in pane: %s", terminal.pane.pane_id)
 
     def replace(self, old_terminal: PooledTmuxTerminal) -> PooledTmuxTerminal:
         """Replace a checked-out pane with a fresh one.

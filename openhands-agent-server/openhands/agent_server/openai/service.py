@@ -43,7 +43,11 @@ from openhands.agent_server.openai.models import (
     OpenAIResponseUsage,
     OpenAIUsage,
 )
-from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    ServerStores,
+    run_store,
+)
 from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
@@ -68,6 +72,7 @@ from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -507,7 +512,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models(stores: ServerStores) -> OpenAIModelListResponse:
     try:
-        profiles = await asyncio.to_thread(stores.llm_profiles.list_summaries)
+        profiles = await run_store(stores.llm_profiles.list_summaries)
     except TimeoutError:
         raise Unavailable("Profile store is busy. Please retry.")
     data = [
@@ -690,7 +695,7 @@ async def _run_docker_agent(
             }
         )
         status_code, _, conversation_id = await start_docker_conversation(
-            docker_request.model_dump(mode="json", context={"expose_secrets": True}),
+            docker_request.model_dump(mode="json", context=client_context("plaintext")),
             registry,
         )
         if status_code >= 400:
@@ -761,7 +766,9 @@ async def run_chat_completion(
         # SSE streaming needs incremental agent-event forwarding; add it separately.
         raise Invalid("Streaming chat completions are not supported yet")
 
-    start_request = _conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _conversation_request,
         request=request,
         config=config,
         stores=stores,
@@ -825,7 +832,9 @@ async def run_response(
         )
 
     user_content = _response_user_content(request)
-    start_request = _response_conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _response_conversation_request,
         request=request,
         user_content=user_content,
         config=config,

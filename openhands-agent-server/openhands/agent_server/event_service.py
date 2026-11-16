@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import traceback
 from collections.abc import Mapping
@@ -44,6 +45,7 @@ from openhands.sdk.conversation.event_store import (
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
+    GoalAsked,
     GoalController,
     GoalDone,
     GoalOutcome,
@@ -79,8 +81,12 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
+from openhands.sdk.event.ask_user import AskUserAnswerEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -93,6 +99,7 @@ from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
+from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -100,9 +107,30 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# How long a conversation start waits for MCP servers; slower servers' tools
+# join the agent once they are ready.
+MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 
 logger = get_logger(__name__)
+_GIT_INIT_LOCK = threading.Lock()
+
+
+def _without_skill_bodies(
+    event: ConversationStateUpdateEvent,
+) -> ConversationStateUpdateEvent:
+    """Leave skill bodies, most of the agent's size, out of the agent that
+    sockets and webhooks receive, as conversation responses do by default."""
+    if event.key == FULL_STATE_KEY:
+        agent = event.value.get("agent") or {}
+    elif event.key == "agent":
+        agent = event.value.model_dump(mode="json")
+        event = event.model_copy(update={"value": agent})
+    else:
+        return event
+    if agent.get("agent_context"):
+        agent["agent_context"]["skills"] = []
+    return event
 
 
 class ConversationRunLimitExceeded(RateLimited, RuntimeError):
@@ -307,9 +335,7 @@ class EventService:
         meta_file = self.conversation_dir / "meta.json"
         self.stored = StoredConversation.model_validate_json(
             meta_file.read_text(),
-            context={
-                "cipher": self.cipher,
-            },
+            context=cipher_context(self.cipher),
         )
 
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
@@ -323,11 +349,7 @@ class EventService:
             meta_file = self.conversation_dir / "meta.json"
             atomic_write_text(
                 meta_file,
-                new_stored.model_dump_json(
-                    context={
-                        "cipher": self.cipher,
-                    }
-                ),
+                new_stored.model_dump_json(context=cipher_context(self.cipher)),
             )
         self.stored = new_stored
 
@@ -368,7 +390,7 @@ class EventService:
                 }
             )
 
-        context = {"cipher": self.cipher}
+        context = cipher_context(self.cipher)
         base_state_file = self.conversation_dir / BASE_STATE
         meta_file = self.conversation_dir / "meta.json"
         legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
@@ -847,7 +869,8 @@ class EventService:
             raise ValueError("inactive_service")
         state = self._conversation._state
         with state:
-            return ConversationStateUpdateEvent.from_conversation_state(state)
+            event = ConversationStateUpdateEvent.from_conversation_state(state)
+        return _without_skill_bodies(event)
 
     def _create_initial_state_sync(
         self,
@@ -1244,8 +1267,8 @@ class EventService:
         conversation.llm_registry.set_stats_update_callback(stats_callback)
 
     @staticmethod
-    def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
-        """Initialize the workspace as a git repo if it isn't already one.
+    def _prepare_workspace_dir(working_dir: Path) -> None:
+        """Create the workspace and make it a git repo if it isn't already one.
 
         The /api/git/changes endpoint expects a real repository to compute
         changes against; without this, agent-created files never appear in
@@ -1253,6 +1276,7 @@ class EventService:
         are handled by `get_valid_ref()` via GIT_EMPTY_TREE_HASH, and
         untracked files surface through `git ls-files --others`.
         """
+        working_dir.mkdir(parents=True, exist_ok=True)
         try:
             validate_git_repository(working_dir)
             return  # already a repo
@@ -1263,7 +1287,10 @@ class EventService:
             )
 
         try:
-            run_git_command(["git", "init"], working_dir)
+            # Conversations starting on the same new directory would otherwise
+            # race on .git/config.lock; a repeated `git init` is harmless.
+            with _GIT_INIT_LOCK:
+                run_git_command(["git", "init"], working_dir)
         except GitCommandError as e:
             # Don't block conversation startup if git is missing or init
             # fails — the git router is defensive and will return [] anyway.
@@ -1290,9 +1317,9 @@ class EventService:
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
-        working_dir = Path(workspace.working_dir)
-        working_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_workspace_is_git_repo(working_dir)
+        await asyncio.to_thread(
+            self._prepare_workspace_dir, Path(workspace.working_dir)
+        )
         # base_state.json is the single source of truth for the agent. On resume
         # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
         # persisted agent. On a new conversation the creating caller supplied the
@@ -1311,7 +1338,7 @@ class EventService:
                 )
             agent_cls = type(self.agent)
             agent = agent_cls.model_validate(
-                self.agent.model_dump(context={"expose_secrets": True}),
+                self.agent.model_dump(context=client_context("plaintext")),
             )
 
         # Create LocalConversation with plugins and hook_config.
@@ -1321,7 +1348,7 @@ class EventService:
 
         # Create and store callback wrapper to allow flushing pending events
         self._callback_wrapper = AsyncCallbackWrapper(
-            self._pub_sub, loop=asyncio.get_running_loop()
+            self._publish_to_subscribers, loop=asyncio.get_running_loop()
         )
 
         # Token streaming is wired only for agents that can actually emit token
@@ -1408,6 +1435,7 @@ class EventService:
             observability_span_name=self.stored.observability_span_name,
             observability_parent_span_context=self.stored.observability_parent_span_context,
             mcp_tool_provider=self.mcp_tool_provider,
+            mcp_startup_budget=MCP_STARTUP_BUDGET_SECONDS,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
@@ -1810,8 +1838,11 @@ class EventService:
             # coroutine enters its own try/finally.
             self._run_task.add_done_callback(settle)
 
+    # ``timeout`` bounds only the wait for the run task, not the status read
+    # after it, which a caller-side ``asyncio.timeout`` would also cut off.
     async def wait_for_run_completion(
-        self, timeout: float | None = None
+        self,
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> ConversationExecutionStatus:
         """Wait for the active run task without cancelling it on timeout."""
         run_task = self._run_task
@@ -1980,6 +2011,13 @@ class EventService:
                     # PAUSED/ERROR (real stop signals) terminate the goal.
                     logger.info("Goal loop continuing past stuck run")
                 step = await loop.run_in_executor(None, _snapshot_and_judge)
+                if isinstance(step, GoalAsked):
+                    # The agent asked the user (ask_user). A followup would
+                    # land over the question, so stop here, resumable; the
+                    # user answers, then resumes the goal.
+                    logger.info("Goal loop stopped on a question for the user")
+                    await _emit_status(active=False, status="interrupted")
+                    return
                 if isinstance(step, GoalDone):
                     self._goal_loop_outcome = step.outcome
                     await _emit_status(
@@ -2164,6 +2202,27 @@ class EventService:
             None,
             partial(conversation.react, emoji, target_event_id, removed=removed),
         )
+
+    async def answer_ask(
+        self,
+        ask_id: str,
+        option_index: int | None = None,
+        text: str | None = None,
+    ) -> AskUserAnswerEvent:
+        """Record the user's answer to a pending ``ask_user`` question and run.
+
+        Raises:
+            ValueError: The question is not pending, or the answer is invalid.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        answer, message = await loop.run_in_executor(
+            None,
+            partial(self._conversation.answer_ask, ask_id, option_index, text),
+        )
+        await self.send_message(message, run=True)
+        return answer
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""
@@ -2483,6 +2542,11 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
         return self._conversation._state
+
+    async def _publish_to_subscribers(self, event: Event) -> None:
+        if isinstance(event, ConversationStateUpdateEvent):
+            event = _without_skill_bodies(event)
+        await self._pub_sub(event)
 
     async def _publish_state_update(self):
         """Publish a ConversationStateUpdateEvent with the current state."""
