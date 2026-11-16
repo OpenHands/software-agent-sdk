@@ -4030,7 +4030,7 @@ async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
     )
     loop_thread = threading.get_ident()
     threads: list[int] = []
-    real_check = EventService._ensure_workspace_is_git_repo
+    real_check = EventService._prepare_workspace_dir
 
     def recording_check(working_dir: Path) -> None:
         threads.append(threading.get_ident())
@@ -4043,7 +4043,7 @@ async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
         ),
         patch.object(
             EventService,
-            "_ensure_workspace_is_git_repo",
+            "_prepare_workspace_dir",
             staticmethod(recording_check),
         ),
     ):
@@ -4063,7 +4063,7 @@ def test_concurrent_repo_checks_on_a_new_directory_all_succeed(
     def check_all(barrier: threading.Barrier) -> None:
         barrier.wait()
         for directory in directories:
-            EventService._ensure_workspace_is_git_repo(directory)
+            EventService._prepare_workspace_dir(directory)
 
     barrier = threading.Barrier(8)
     workers = [threading.Thread(target=check_all, args=(barrier,)) for _ in range(8)]
