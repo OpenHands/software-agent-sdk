@@ -44,6 +44,7 @@ from openhands.sdk.conversation.event_store import (
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
+    GoalAsked,
     GoalController,
     GoalDone,
     GoalOutcome,
@@ -1981,6 +1982,13 @@ class EventService:
                     # PAUSED/ERROR (real stop signals) terminate the goal.
                     logger.info("Goal loop continuing past stuck run")
                 step = await loop.run_in_executor(None, _snapshot_and_judge)
+                if isinstance(step, GoalAsked):
+                    # The agent asked the user (ask_user). A followup would
+                    # land over the question, so stop here, resumable; the
+                    # user answers, then resumes the goal.
+                    logger.info("Goal loop stopped on a question for the user")
+                    await _emit_status(active=False, status="interrupted")
+                    return
                 if isinstance(step, GoalDone):
                     self._goal_loop_outcome = step.outcome
                     await _emit_status(

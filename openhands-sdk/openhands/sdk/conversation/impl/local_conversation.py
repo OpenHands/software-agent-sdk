@@ -2295,11 +2295,13 @@ class LocalConversation(BaseConversation):
     ) -> tuple[AskUserAnswerEvent, Message]:
         """Record the user's answer to the agent's pending ``ask_user`` question.
 
-        Saves an :class:`AskUserAnswerEvent`, which closes the question, and
-        returns it with the message that carries the answer to the agent. The
-        caller sends that message (``send_message``) and runs the agent.
-        Writing in the chat instead needs none of this: any message of the
-        user's closes the question.
+        Saves an :class:`AskUserAnswerEvent` (what a client shows on the card)
+        and returns it with the message that carries the answer to the agent.
+        The caller sends that message (``send_message``) and runs the agent;
+        that message is what closes the question, so until it is saved the
+        question stays pending and an answer can be sent again. Writing in
+        the chat instead needs none of this: any message of the user's closes
+        the question.
 
         Raises:
             ValueError: ``ask_id`` is not the pending question, the option does
