@@ -81,7 +81,7 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
-from openhands.sdk.event.ask_user import AskUserAnswerEvent
+from openhands.sdk.event.ask_user import AskUserAnswerEvent, find_pending_ask
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -950,7 +950,12 @@ class EventService:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.send_message, message)
+        send_message = (
+            partial(self._conversation.send_message, sender="goal")
+            if _from_goal_loop
+            else self._conversation.send_message
+        )
+        await loop.run_in_executor(None, send_message, message)
         if run:
             if self._explicit_interrupt_generation != explicit_interrupt_generation:
                 return
@@ -1908,6 +1913,16 @@ class EventService:
     async def _schedule_goal_loop(
         self, controller: GoalController, *, resume: bool = False
     ) -> None:
+        conversation = self.get_conversation()
+
+        def _require_answered() -> None:
+            with conversation._state:
+                if find_pending_ask(conversation._state.active_branch()) is not None:
+                    raise ValueError("pending_ask")
+
+        await asyncio.get_running_loop().run_in_executor(None, _require_answered)
+        if self._closing:
+            raise ValueError("inactive_service")
         # Reserve capacity before spawning the loop so a full server refuses
         # /goal with 429 up front (matching /run), rather than admitting the
         # request and failing mid-loop.
@@ -2127,7 +2142,8 @@ class EventService:
         Raises:
             ValueError: If the service is inactive, a goal loop is already
                 running, no judge LLM is available, or there is no resumable goal
-                loop because none was started or it already completed/capped.
+                loop because none was started or it already completed/capped,
+                or an ask_user question still awaits the user's answer.
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")

@@ -17,14 +17,16 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.goal import GoalAsked, GoalController
+from openhands.sdk.conversation.goal import GoalAsked, GoalController, run_goal
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.event.ask_user import (
     ANSWER_HEADER_PREFIX,
     AskUserAnswerEvent,
     find_pending_ask,
 )
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.tool import Tool
@@ -34,6 +36,7 @@ from openhands.tools.ask_user import (
     AskUserOption,
     AskUserTool,
 )
+from tests.sdk.agent.test_iterative_refinement import MockCritic
 
 
 QUESTION = {
@@ -115,8 +118,8 @@ def _run(conversation, model: Callable) -> None:
         conversation.run()
 
 
-def _conversation(tmp_path, **kwargs):
-    agent = Agent(llm=_llm(), tools=[Tool(name=AskUserTool.name)])
+def _conversation(tmp_path, *, critic=None, **kwargs):
+    agent = Agent(llm=_llm(), tools=[Tool(name=AskUserTool.name)], critic=critic)
     return Conversation(agent=agent, workspace=str(tmp_path), callbacks=[], **kwargs)
 
 
@@ -190,16 +193,101 @@ def test_other_calls_in_the_same_response_still_run(tmp_path):
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
-def test_an_invalid_question_does_not_end_the_turn(tmp_path):
+@pytest.mark.parametrize(
+    "invalid_fields",
+    [
+        {"recommended": 5},
+        {"options": [{"label": " \t"}, {"label": "Ship"}]},
+    ],
+    ids=["missing-recommendation", "blank-label"],
+)
+def test_an_invalid_question_does_not_end_the_turn(tmp_path, invalid_fields):
     conversation = _conversation(tmp_path)
     conversation.send_message("Fix the login bug")
-    bad = {**QUESTION, "recommended": 5}
+    bad = {**QUESTION, **invalid_fields}
     model = _Model(_tool_calls(("ask_user", bad)), _text("I fixed it."))
     _run(conversation, model)
 
     # The model saw the error and went on to answer in the same run.
     assert len(model.requests) == 2
     assert find_pending_ask(conversation.state.events) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_stop_hooks_wait_for_an_answer_but_still_check_completion(
+    tmp_path, use_async
+):
+    marker = tmp_path / "stop-hook-ran"
+    command = (
+        f"if test -e '{marker}'; then exit 0; "
+        f"else touch '{marker}'; echo 'Keep working' >&2; exit 2; fi"
+    )
+    conversation = _conversation(
+        tmp_path,
+        hook_config=HookConfig(
+            stop=[HookMatcher(hooks=[HookDefinition(command=command)])]
+        ),
+    )
+    model = _Model(_tool_calls(("ask_user", QUESTION)), _text("Premature completion"))
+    try:
+        conversation.send_message("Fix the login bug")
+        with (
+            patch("openhands.sdk.llm.llm.litellm_completion", side_effect=model),
+            patch("openhands.sdk.llm.llm.litellm_acompletion", side_effect=model),
+        ):
+            if use_async:
+                await conversation.arun()
+            else:
+                conversation.run()
+        assert find_pending_ask(conversation.state.events) is not None
+        assert len(model.requests) == 1
+        assert not marker.exists()
+
+        conversation.send_message("Use the flag")
+        completion = _Model(_text("Completed"), _text("Checked and completed"))
+        with (
+            patch("openhands.sdk.llm.llm.litellm_completion", side_effect=completion),
+            patch("openhands.sdk.llm.llm.litellm_acompletion", side_effect=completion),
+        ):
+            if use_async:
+                await conversation.arun()
+            else:
+                conversation.run()
+        assert find_pending_ask(conversation.state.events) is None
+        assert len(completion.requests) == 2
+        assert marker.exists()
+    finally:
+        conversation.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_a_question_takes_precedence_over_finish_refinement(tmp_path, use_async):
+    conversation = _conversation(
+        tmp_path,
+        critic=MockCritic(
+            iterative_refinement=IterativeRefinementConfig(max_iterations=1)
+        ),
+    )
+    model = _Model(
+        _tool_calls(("ask_user", QUESTION), ("finish", {"message": "Done"})),
+        _text("Premature refinement"),
+    )
+    try:
+        conversation.send_message("Fix the login bug")
+        with (
+            patch("openhands.sdk.llm.llm.litellm_completion", side_effect=model),
+            patch("openhands.sdk.llm.llm.litellm_acompletion", side_effect=model),
+        ):
+            if use_async:
+                await conversation.arun()
+            else:
+                conversation.run()
+        assert find_pending_ask(conversation.state.events) is not None
+        assert len(model.requests) == 1
+    finally:
+        conversation.close()
 
 
 # Answering
@@ -240,6 +328,37 @@ def test_the_answer_starts_the_next_turn_with_a_well_formed_history(tmp_path):
     # The tool call is followed by its result, then the user's answer.
     assert roles[-3:] == ["assistant", "tool", "user"]
     assert "Behind a flag" in json.dumps(request[-1])
+
+
+def test_equal_labels_preserve_which_option_the_user_selected(tmp_path):
+    conversation = _conversation(tmp_path)
+    question = {
+        "question": "Choose an environment?",
+        "options": [
+            {"label": "Default", "consequence": "Use production"},
+            {"label": "Default", "consequence": "Use staging"},
+        ],
+    }
+    try:
+        conversation.send_message("Choose an environment")
+        _run(conversation, _Model(_tool_calls(("ask_user", question))))
+        ask_id = _ask_event(conversation).id
+        _, production = conversation.answer_ask(ask_id, option_index=0)
+        _, staging = conversation.answer_ask(ask_id, option_index=1)
+        assert production.content == [
+            TextContent(
+                text='[Answer to your question: "Choose an environment?"]\n'
+                "Option 1: Default"
+            )
+        ]
+        assert staging.content == [
+            TextContent(
+                text='[Answer to your question: "Choose an environment?"]\n'
+                "Option 2: Default"
+            )
+        ]
+    finally:
+        conversation.close()
 
 
 def test_a_chat_reply_answers_the_question(tmp_path):
@@ -413,3 +532,8 @@ def test_a_goal_stops_on_a_question_without_judging(tmp_path):
     assert isinstance(step, GoalAsked)
     assert step.ask_id == _ask_event(conversation).id
     assert controller.iteration == 0
+
+    outcome = run_goal(conversation, "Fix the login bug", _llm())
+    assert isinstance(outcome, GoalAsked)
+    assert outcome.ask_id == step.ask_id
+    assert find_pending_ask(conversation.state.events) is not None

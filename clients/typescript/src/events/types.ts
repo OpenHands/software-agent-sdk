@@ -211,10 +211,12 @@ export interface AskUserObservation {
 /**
  * The user's answer to the agent's `ask_user` question, picked on its card.
  *
- * The question is the agent's `ask_user` ActionEvent (`ask_id`). It is pending
- * while neither this event nor a message of the user's came after it; a
- * chat reply answers it too. The agent reads the user message saved right
- * after this event, not the event. Needs the `ask_user` feature.
+ * The question is the agent's `ask_user` ActionEvent (`ask_id`). It stays
+ * pending until a genuine user MessageEvent (source='user', no sender)
+ * follows it; an ordinary chat reply counts too. This answer event alone
+ * does not close the question: a crash before its following user message
+ * is saved leaves it retryable. The agent reads that message, not this event.
+ * Needs the `ask_user` feature.
  */
 export interface AskUserAnswerEvent extends BaseEvent {
   kind: 'AskUserAnswerEvent';
