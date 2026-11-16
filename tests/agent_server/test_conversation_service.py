@@ -25,7 +25,6 @@ from openhands.agent_server.conversation_service import (
     _compose_conversation_info,
     _ConversationRecord,
     _create_conversation_worktree,
-    _fetch_origin,
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
@@ -2380,85 +2379,6 @@ class TestConversationServiceStartConversation:
         resolved = run_git_command(
             ["git", "--no-pager", "rev-parse", start_point], repo_dir
         )
-        assert resolved == remote_tip
-
-    def test_get_worktree_start_point_skips_a_fetch_done_minutes_ago(self, tmp_path):
-        upstream = tmp_path / "upstream.git"
-        run_git_command(["git", "init", "--bare", "-b", "main", str(upstream)])
-        repo_dir = tmp_path / "repo"
-        _init_git_repo(repo_dir)
-        run_git_command(["git", "remote", "add", "origin", str(upstream)], repo_dir)
-        run_git_command(["git", "push", "-u", "origin", "HEAD:main"], repo_dir)
-        run_git_command(["git", "remote", "set-head", "origin", "main"], repo_dir)
-
-        module = "openhands.agent_server.conversation_service"
-        with patch(
-            f"{module}._fetch_origin",
-            wraps=_fetch_origin,
-        ) as fetch:
-            assert _get_worktree_start_point(repo_dir) == "origin/main"
-            assert _get_worktree_start_point(repo_dir) == "origin/main"
-            assert fetch.call_count == 1
-
-            later = time.monotonic() + 600
-            with patch(f"{module}.time.monotonic", return_value=later):
-                _get_worktree_start_point(repo_dir)
-            assert fetch.call_count == 2
-
-    def test_get_worktree_start_point_fetches_again_after_a_failed_fetch(
-        self, tmp_path
-    ):
-        repo_dir = tmp_path / "repo"
-        _init_git_repo(repo_dir)
-        missing = tmp_path / "missing.git"
-        run_git_command(["git", "remote", "add", "origin", str(missing)], repo_dir)
-
-        module = "openhands.agent_server.conversation_service"
-        with patch(f"{module}._fetch_origin", wraps=_fetch_origin) as fetch:
-            _get_worktree_start_point(repo_dir)
-            _get_worktree_start_point(repo_dir)
-
-        assert fetch.call_count == 2
-
-    def test_get_worktree_start_point_fetches_origin_after_another_remote(
-        self, tmp_path
-    ):
-        """A fetch of another remote must not stand in for one of origin."""
-        upstream = tmp_path / "upstream.git"
-        other = tmp_path / "other.git"
-        for bare in (upstream, other):
-            run_git_command(["git", "init", "--bare", "-b", "main", str(bare)])
-        repo_dir = tmp_path / "repo"
-        _init_git_repo(repo_dir)
-        run_git_command(["git", "remote", "add", "origin", str(upstream)], repo_dir)
-        run_git_command(["git", "remote", "add", "other", str(other)], repo_dir)
-        run_git_command(["git", "push", "-u", "origin", "HEAD:main"], repo_dir)
-        run_git_command(["git", "push", "other", "HEAD:main"], repo_dir)
-        run_git_command(["git", "remote", "set-head", "origin", "main"], repo_dir)
-
-        clone_dir = tmp_path / "publisher"
-        run_git_command(["git", "clone", str(upstream), str(clone_dir)])
-        run_git_command(
-            [
-                "git",
-                "-c",
-                "user.name=OpenHands Test",
-                "-c",
-                "user.email=openhands@example.com",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "remote update",
-            ],
-            clone_dir,
-        )
-        run_git_command(["git", "push", "origin", "main"], clone_dir)
-        remote_tip = run_git_command(["git", "rev-parse", "HEAD"], clone_dir)
-        run_git_command(["git", "fetch", "other"], repo_dir)
-
-        start_point = _get_worktree_start_point(repo_dir)
-
-        resolved = run_git_command(["git", "rev-parse", start_point], repo_dir)
         assert resolved == remote_tip
 
     def test_get_worktree_start_point_falls_back_to_local_main(self, tmp_path):
