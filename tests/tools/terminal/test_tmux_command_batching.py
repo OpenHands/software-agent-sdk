@@ -122,21 +122,27 @@ def executor(tmp_path):
 
 def test_command_runs_in_few_tmux_processes(executor, monkeypatch):
     executor(TerminalAction(command="echo warm"))
-    calls = 0
+    commands: list[str] = []
     real_init = libtmux.common.tmux_cmd.__init__
 
-    def counting_init(self, *args, **kwargs):
-        nonlocal calls
-        calls += 1
+    def recording_init(self, *args, **kwargs):
+        commands.append(next(a for a in args if not str(a).startswith("-")))
         real_init(self, *args, **kwargs)
 
-    monkeypatch.setattr(libtmux.common.tmux_cmd, "__init__", counting_init)
+    monkeypatch.setattr(libtmux.common.tmux_cmd, "__init__", recording_init)
     observation = executor(TerminalAction(command="echo counted"))
 
     assert "counted" in observation.text
     # Each tmux process stalls the server's other threads while it is spawned;
-    # a command used to take 11.
-    assert calls <= 6
+    # a command used to take 11. How often the screen is polled depends on
+    # timing, so only the rest is counted.
+    assert len([c for c in commands if c != "capture-pane"]) <= 3
+
+
+def test_command_starting_with_a_dash_runs(executor):
+    observation = executor(TerminalAction(command="-not-a-command", timeout=10))
+
+    assert observation.exit_code == 127
 
 
 def test_command_ending_in_semicolon_runs(executor):

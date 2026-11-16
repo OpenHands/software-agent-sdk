@@ -393,7 +393,7 @@ class TmuxTerminal(TerminalInterface):
         # 3) Plain text — use literal=True so tmux doesn't split on
         #    whitespace or interpret special tokens.
         if enter and not text.endswith("\n"):
-            self._send_then_enter("-l", text)
+            self._send_then_enter("-l", "--", text)
         else:
             self.pane.send_keys(text, enter=False, literal=True)
 
