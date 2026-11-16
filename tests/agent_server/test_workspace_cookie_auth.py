@@ -200,12 +200,16 @@ def test_mint_session_marks_cookie_secure_on_forwarded_ipv6_loopback(
     assert "Partitioned" in set_cookie
 
 
-def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
+def test_mint_session_over_remote_plain_http_uses_lax(client_factory):
     """On non-HTTPS to a non-loopback host we don't claim Secure — the
-    browser would reject a Secure cookie over plain HTTP anyway. The
-    cookie won't actually work for cross-site embedding in that case
-    (SameSite=None requires Secure), but emitting a Secure attribute we
-    can't honor would just make the failure mode less obvious."""
+    browser would reject a Secure cookie over plain HTTP anyway. We also
+    mint with ``SameSite=Lax`` instead of ``None``: Chromium refuses to
+    store any ``SameSite=None`` cookie without ``Secure``, so a ``None``
+    cookie would never be stored and the workspace preview would always
+    401 (OpenHands/OpenHands#15567). ``Lax`` keeps the cookie usable for
+    the same-site workspace requests the canvas makes when served from
+    the same origin; cross-site embedding remains unsupported on plain
+    HTTP."""
     client = client_factory(conversation_id=uuid4())
 
     resp = client.post(
@@ -218,9 +222,35 @@ def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
     assert resp.status_code == 204
 
     set_cookie = resp.headers["set-cookie"]
-    assert "SameSite=none" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "SameSite=none" not in set_cookie
     assert "Secure" not in set_cookie
     assert "Partitioned" not in set_cookie
+
+
+def test_workspace_accepts_cookie_over_remote_plain_http(
+    client_factory, workspace_with_index
+):
+    """End-to-end regression for OpenHands/OpenHands#15567: over plain
+    HTTP to a non-loopback host, mint the cookie with the Host header a
+    LAN browser would send, then load the workspace preview using only
+    the cookie."""
+    cid = uuid4()
+    client = client_factory(conversation_id=cid, workspace_dir=workspace_with_index)
+
+    mint = client.post(
+        "/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY, "Host": "192.168.1.50:8000"},
+    )
+    assert mint.status_code == 204
+    set_cookie = mint.headers["set-cookie"]
+    assert "Secure" not in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert WORKSPACE_SESSION_COOKIE_NAME in mint.cookies
+
+    resp = client.get(_workspace_url(cid))
+    assert resp.status_code == 200
+    assert resp.text == "<title>hello</title>"
 
 
 # ---- Cookie auth on workspace router --------------------------------------

@@ -44,6 +44,7 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from tests.agent_server.conftest import install_test_context
 from tests.agent_server.stress.budgets import SLOW_WEBHOOK
 from tests.agent_server.stress.probe import ResourceProbe
 from tests.agent_server.stress.scripts import (
@@ -128,7 +129,7 @@ def app(
 ) -> FastAPI:
     fastapi_app = FastAPI()
     add_domain_error_handler(fastapi_app)
-    fastapi_app.state.config = Config()
+    install_test_context(fastapi_app, Config())
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")
     fastapi_app.include_router(bash_router_module.bash_router, prefix="/api")
@@ -187,7 +188,7 @@ async def test_slow_webhook_does_not_unbound_growth(
       (b) the webhook subscriber buffer doesn't accumulate unbounded events.
     """
     # Distinct workspaces per run so any workspace-side state from the
-    # baseline (e.g. .git from `_ensure_workspace_is_git_repo`, scratch
+    # baseline (e.g. .git from `_prepare_workspace_dir`, scratch
     # files) doesn't bleed into the webhook timing.
     workspace_baseline = str(tmp_path / "ws_baseline")
     workspace_webhook = str(tmp_path / "ws_webhook")
@@ -199,7 +200,7 @@ async def test_slow_webhook_does_not_unbound_growth(
     # client for it.
     baseline_app = FastAPI()
     add_domain_error_handler(baseline_app)
-    baseline_app.state.config = Config()
+    install_test_context(baseline_app, Config())
     baseline_app.include_router(conversation_router, prefix="/api")
     baseline_app.include_router(event_router, prefix="/api")
     baseline_app.dependency_overrides[get_conversation_service] = lambda: (

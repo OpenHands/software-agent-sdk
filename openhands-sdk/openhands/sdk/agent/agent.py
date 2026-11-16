@@ -234,6 +234,12 @@ def _should_handle_non_multimodal_image_input(
     return _messages_contain_image(messages) and not llm.vision_is_active()
 
 
+_ONE_TURN_ENDER = (
+    "Not shown: this response already ends the turn with an earlier call. "
+    "Ask one question at a time; ask this one after the user answers."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _ActionBatch:
     """Immutable result of preparing a batch of actions for execution.
@@ -247,6 +253,7 @@ class _ActionBatch:
 
     action_events: list[ActionEvent]
     has_finish: bool
+    ends_turn: bool = False
     blocked_reasons: dict[str, str] = field(default_factory=dict)
     results_by_id: dict[str, list[Event]] = field(default_factory=dict)
 
@@ -277,6 +284,44 @@ class _ActionBatch:
                 f"after FinishTool: {', '.join(names)}"
             )
         return action_events[: finish_idx + 1], True
+
+    @staticmethod
+    def _ends_turn(
+        executed: list[ActionEvent],
+        results_by_id: dict[str, list[Event]],
+        tools: dict[str, ToolDefinition] | None,
+    ) -> bool:
+        """Whether a call to an ``ends_turn`` tool succeeded in this batch.
+
+        Only the first such call counts: any later one in the same batch has
+        its result replaced by an error, so one response asks one question
+        and only that one waits for an answer.
+        """
+        ended = False
+        for ae in executed:
+            tool = (tools or {}).get(ae.tool_name)
+            if tool is None or not tool.ends_turn:
+                continue
+            results = results_by_id.get(ae.id, [])
+            succeeded = any(
+                isinstance(event, ObservationEvent) and not event.observation.is_error
+                for event in results
+            )
+            if not succeeded:
+                continue
+            if not ended:
+                ended = True
+                continue
+            refused = (tool.observation_type or Observation).from_text(
+                _ONE_TURN_ENDER, is_error=True
+            )
+            results_by_id[ae.id] = [
+                event.model_copy(update={"observation": refused})
+                if isinstance(event, ObservationEvent)
+                else event
+                for event in results
+            ]
+        return ended
 
     @classmethod
     def prepare(
@@ -313,6 +358,7 @@ class _ActionBatch:
         return cls(
             action_events=action_events,
             has_finish=has_finish,
+            ends_turn=cls._ends_turn(executable, results_by_id, tools),
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
@@ -357,6 +403,7 @@ class _ActionBatch:
         return cls(
             action_events=action_events,
             has_finish=has_finish,
+            ends_turn=cls._ends_turn(executable, results_by_id, tools),
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
@@ -407,6 +454,9 @@ class _ActionBatch:
         """
         # Nothing to finalise: no FinishTool, or it was blocked by a hook.
         if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            # A tool such as ask_user ends the turn without finish.
+            if self.ends_turn:
+                mark_finished()
             return
 
         should_continue, followup = check_iterative_refinement(self.action_events[-1])
@@ -1236,9 +1286,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     def _analyze_for_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> tuple[list[risk.SecurityRisk], SecurityAnalysisEvent | None]:
-        # A single `FinishAction` or `ThinkAction` never requires confirmation
-        if len(action_events) == 1 and isinstance(
-            action_events[0].action, (FinishAction, ThinkAction)
+        # A single `FinishAction` or `ThinkAction` never requires confirmation,
+        # nor does a single call that only ends the turn (`ask_user`): it asks
+        # the user, so confirming it would be asking twice.
+        if len(action_events) == 1 and (
+            isinstance(action_events[0].action, (FinishAction, ThinkAction))
+            or self._only_ends_turn(action_events[0])
         ):
             return [], None
 
@@ -1260,6 +1313,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             },
         )
         return [analysis.risk for _, analysis in analyses], event
+
+    def _only_ends_turn(self, action_event: ActionEvent) -> bool:
+        """Whether the call is to a read-only tool that ends the turn."""
+        tool = self.tools_map.get(action_event.tool_name)
+        return (
+            tool is not None
+            and tool.ends_turn
+            and tool.annotations is not None
+            and tool.annotations.readOnlyHint is True
+        )
 
     @staticmethod
     def _set_confirmation_status(

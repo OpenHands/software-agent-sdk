@@ -277,7 +277,7 @@ def _allowed_control_origin(config: Config, origin: str) -> bool:
     )
 
 
-def _request_origin(request: Request | WebSocket) -> str | None:
+def _request_origin(request: Request | WebSocket, config: Config) -> str | None:
     """Derive the request origin from the connection the server actually saw.
 
     ``X-Forwarded-Proto``/``X-Forwarded-Host`` are client-controllable, so they
@@ -285,9 +285,7 @@ def _request_origin(request: Request | WebSocket) -> str | None:
     proxy terminates TLS in front of this server. Otherwise the request's own
     scheme and ``Host`` decide — the same inputs a spoofing client cannot fake.
     """
-    config: Config | None = getattr(request.app.state, "config", None)
-    trust_forwarded = bool(config and config.trust_forwarded_headers)
-    if trust_forwarded:
+    if config.trust_forwarded_headers:
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
         scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
         forwarded_host = request.headers.get("x-forwarded-host", "")
@@ -299,15 +297,18 @@ def _request_origin(request: Request | WebSocket) -> str | None:
     return _origin(f"{scheme}://{host}")
 
 
-def _require_ingress_host(request: Request | WebSocket, public_url: str) -> None:
-    if _request_origin(request) != _origin(public_url):
+def _require_ingress_host(
+    request: Request | WebSocket, public_url: str, config: Config
+) -> None:
+    if _request_origin(request, config) != _origin(public_url):
         raise Misdirected("Canvas App request must use the configured ingress origin")
 
 
-def _require_bootstrap_origin(request: Request, public_url: str) -> None:
-    _require_ingress_host(request, public_url)
+def _require_bootstrap_origin(
+    request: Request, public_url: str, config: Config
+) -> None:
+    _require_ingress_host(request, public_url, config)
     origin = request.headers.get("origin", "")
-    config: Config = request.app.state.config
     if not _allowed_control_origin(config, origin):
         raise Forbidden("Origin is not allowed")
     if _origin(origin) == _origin(public_url):
@@ -367,14 +368,14 @@ def _cookie_path(extension_name: str) -> str:
     return f"{_APP_BACKEND_PATH}/{extension_name}"
 
 
-def _session_cookie_is_secure(request: Request) -> bool:
+def _session_cookie_is_secure(request: Request, config: Config) -> bool:
     """Whether a ``Secure`` app-session cookie can be issued for this request.
 
     Uses :func:`_request_origin`, so it makes the same non-spoofable
     trusted-proxy decision as the ingress checks rather than reading
     ``X-Forwarded-*`` unconditionally.
     """
-    origin = _request_origin(request)
+    origin = _request_origin(request, config)
     if origin is None:
         return False
     parsed = urlparse(origin)
@@ -389,8 +390,9 @@ def _set_session_cookie(
     extension_name: str,
     token: str,
     max_age: int,
+    config: Config,
 ) -> None:
-    if not _session_cookie_is_secure(request):
+    if not _session_cookie_is_secure(request, config):
         raise Unavailable(
             "Canvas App sessions require HTTPS or a loopback secure context"
         )
@@ -407,10 +409,10 @@ def _set_session_cookie(
 
 
 async def create_app_backend_session(
-    request: Request, response: Response, extension_name: str
+    request: Request, response: Response, extension_name: str, config: Config
 ) -> AppBackendSessionResponse:
-    public_url = _public_url(request.app.state.config)
-    _require_bootstrap_origin(request, public_url)
+    public_url = _public_url(config)
+    _require_bootstrap_origin(request, public_url, config)
     endpoint = _ready_endpoint(request, extension_name)
     token, session = await get_app_backend_session_store(request).create(
         extension_name, endpoint
@@ -421,6 +423,7 @@ async def create_app_backend_session(
         extension_name,
         token,
         APP_BACKEND_SESSION_TTL_SECONDS,
+        config,
     )
     return AppBackendSessionResponse(
         ingress_url=f"{public_url}{_cookie_path(extension_name)}/",
@@ -429,21 +432,21 @@ async def create_app_backend_session(
 
 
 async def delete_app_backend_session(
-    request: Request, response: Response, extension_name: str
+    request: Request, response: Response, extension_name: str, config: Config
 ) -> None:
-    public_url = _public_url(request.app.state.config)
-    _require_bootstrap_origin(request, public_url)
+    public_url = _public_url(config)
+    _require_bootstrap_origin(request, public_url, config)
     token = request.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
     await get_app_backend_session_store(request).revoke_token(token)
-    _set_session_cookie(response, request, extension_name, "", 0)
+    _set_session_cookie(response, request, extension_name, "", 0, config)
 
 
 async def proxy_app_backend_http(
-    request: Request, extension_name: str, path: str
+    request: Request, extension_name: str, path: str, config: Config
 ) -> Response:
     _validate_proxy_path(path)
-    public_url = _public_url(request.app.state.config)
-    _require_ingress_host(request, public_url)
+    public_url = _public_url(config)
+    _require_ingress_host(request, public_url, config)
     if request.method not in _SAFE_METHODS:
         _require_app_origin(request.headers.get("origin"), public_url)
     endpoint = _ready_endpoint(request, extension_name)
@@ -475,12 +478,12 @@ async def proxy_app_backend_http(
 
 
 async def proxy_app_backend_websocket(
-    websocket: WebSocket, extension_name: str, path: str
+    websocket: WebSocket, extension_name: str, path: str, config: Config
 ) -> None:
     try:
         _validate_proxy_path(path)
-        public_url = _public_url(websocket.app.state.config)
-        _require_ingress_host(websocket, public_url)
+        public_url = _public_url(config)
+        _require_ingress_host(websocket, public_url, config)
         _require_app_origin(websocket.headers.get("origin"), public_url)
         endpoint = _ready_endpoint(websocket, extension_name)
         token = websocket.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)

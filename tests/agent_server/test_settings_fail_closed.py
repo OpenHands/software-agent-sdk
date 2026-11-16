@@ -17,9 +17,8 @@ from openhands.agent_server.openai.service import _create_conversation_request
 from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
+    ServerStores,
     SettingsFileUnreadableError,
-    get_llm_profile_store,
-    reset_stores,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.sdk import LLM
@@ -40,9 +39,7 @@ def settings_dir(tmp_path, monkeypatch):
     path = tmp_path / ".openhands"
     path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(path))
-    reset_stores()
     yield path
-    reset_stores()
 
 
 @pytest.fixture
@@ -160,6 +157,30 @@ def test_profile_listing_fails_closed(client, settings_dir, route):
     }
 
 
+def test_delete_fails_before_removing_an_agent_profile(client, settings_dir):
+    client.post("/api/agent-profiles/keep", json={"llm_profile_ref": "base"})
+    _write(settings_dir, TRUNCATED)
+
+    response = client.delete("/api/agent-profiles/keep")
+
+    assert response.status_code == 409
+    assert client.get("/api/agent-profiles/keep").status_code == 200
+
+
+def test_delete_fails_before_removing_a_meta_profile(client, settings_dir):
+    body = {
+        "classifier_model": "minimax",
+        "classes": [{"description": "UI", "model": "deepseek"}],
+    }
+    assert client.post("/api/meta-profiles/keep", json=body).status_code == 201
+    _write(settings_dir, TRUNCATED)
+
+    response = client.delete("/api/meta-profiles/keep")
+
+    assert response.status_code == 409
+    assert client.get("/api/meta-profiles/keep").status_code == 200
+
+
 def test_unreadable_settings_log_names_the_file_and_reason(settings_dir, caplog):
     path = _write(settings_dir, TRUNCATED)
 
@@ -190,7 +211,8 @@ def test_the_gateway_refuses_an_unreadable_file(settings_dir, tmp_path):
         workspace_path=tmp_path / "workspace",
         session_api_keys=[],
     )
-    get_llm_profile_store().save("fast", LLM(model="fast-model"))
+    stores = ServerStores.from_config(config)
+    stores.llm_profiles.save("fast", LLM(model="fast-model"))
     _write(settings_dir, TRUNCATED)
 
     with pytest.raises(SettingsFileUnreadableError):
@@ -199,5 +221,6 @@ def test_the_gateway_refuses_an_unreadable_file(settings_dir, tmp_path):
             system_text="",
             user_content=[],
             config=config,
+            stores=stores,
             conversation_id=None,
         )

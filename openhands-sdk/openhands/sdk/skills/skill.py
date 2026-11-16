@@ -16,6 +16,8 @@ from pydantic import (
     BaseModel,
     Field,
     SerializationInfo,
+    TypeAdapter,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -1174,6 +1176,36 @@ PUBLIC_SKILLS_REF = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 # A local checkout or package of the public repo, read instead of a git clone.
 PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
+# Deployment switches for the default public extensions repository. Read at
+# call time so a warm agent-server picks up values delivered by POST /api/init.
+# They gate only automatic loading/fetching from that repository; skills a
+# client sends or a persisted conversation already holds are not filtered.
+PUBLIC_SKILLS_ENABLED_ENV = "OH_PUBLIC_SKILLS_ENABLED"
+PUBLIC_CATALOG_ENABLED_ENV = "OH_PUBLIC_CATALOG_ENABLED"
+_BOOL_ADAPTER = TypeAdapter(bool)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    """Parse a default-enabled switch; unset, empty or unrecognised keep it on."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return True
+    try:
+        return _BOOL_ADAPTER.validate_python(raw)
+    except ValidationError:
+        logger.warning("Ignoring unrecognised %s=%r; keeping it enabled", name, raw)
+        return True
+
+
+def public_skills_enabled() -> bool:
+    """Whether skills auto-load from the default public extensions repository."""
+    return _env_flag_enabled(PUBLIC_SKILLS_ENABLED_ENV)
+
+
+def public_catalog_enabled() -> bool:
+    """Whether the default public plugin and skills catalogs may be fetched."""
+    return _env_flag_enabled(PUBLIC_CATALOG_ENABLED_ENV)
+
 
 # Process-level cache for load_public_skills. Conversation creation re-validates
 # AgentContext several times and each validation re-runs load_public_skills
@@ -1190,6 +1222,7 @@ _PUBLIC_SKILLS_CACHE: dict[
 ] = {}
 _PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
 _PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
+_PUBLIC_SKILLS_LOAD_LOCK = threading.Lock()
 
 
 def _invalidate_public_skills_cache() -> None:
@@ -1298,7 +1331,8 @@ def load_public_skills(
 
     Returns:
         List of Skill objects loaded from the public repository.
-        Returns empty list if loading fails.
+        Returns empty list if loading fails, or for the default repository when
+        ``OH_PUBLIC_SKILLS_ENABLED`` is false (nothing is fetched or read).
 
     Example:
         >>> from openhands.sdk.context import AgentContext
@@ -1310,6 +1344,21 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
+    if repo_url == PUBLIC_SKILLS_REPO and not public_skills_enabled():
+        logger.info("Public skills are disabled by %s", PUBLIC_SKILLS_ENABLED_ENV)
+        return []
+    if _local_public_skills_path(repo_url) is None:
+        return _load_public_skills(repo_url, ref, marketplace_path)
+    # A local copy is parsed once at a time, so a caller racing the startup
+    # warm-up reads its cache instead of parsing again. Clones are not
+    # serialized: a slow or failing one must not hold up other callers.
+    with _PUBLIC_SKILLS_LOAD_LOCK:
+        return _load_public_skills(repo_url, ref, marketplace_path)
+
+
+def _load_public_skills(
+    repo_url: str, ref: str, marketplace_path: str | None
+) -> list[Skill]:
     local_path = _local_public_skills_path(repo_url)
     cache_key = (str(local_path or repo_url), ref, marketplace_path)
     with _PUBLIC_SKILLS_CACHE_LOCK:

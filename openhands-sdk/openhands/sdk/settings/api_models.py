@@ -43,6 +43,7 @@ from pydantic_core import CoreSchema
 
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.mcp.config import MCPAuthCredential, MCPServer, MCPTransport
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 # An AgentProfile's stable id is a UUID (the pointer target); reject malformed
@@ -259,5 +260,5 @@ class SecretCreateRequest(BaseModel):
     """
 
     name: str
-    value: SecretStr
+    value: Annotated[SecretStr, SecretField(from_client=True)]
     description: str | None = None

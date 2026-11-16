@@ -14,15 +14,15 @@ from fastapi import (
     Depends,
     Query,
 )
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from openhands.agent_server._secrets_exposure import get_config
-from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
+    get_conversation_registry,
     get_conversation_service,
     get_event_service,
+    get_settings_store,
 )
 from openhands.agent_server.errors import error_responses
 from openhands.agent_server.event_service import EventService
@@ -31,6 +31,7 @@ from openhands.agent_server.experimental_features import (
     is_enabled,
 )
 from openhands.agent_server.models import (
+    AskUserAnswerRequest,
     ConfirmationResponseRequest,
     EventSortOrder,
     ReactionRequest,
@@ -38,7 +39,12 @@ from openhands.agent_server.models import (
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import (
+    FileSettingsStore,
+    PersistedSettings,
+    SettingsStore,
+    run_store,
+)
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.errors import (
@@ -49,6 +55,7 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.event import Event, ReactionEvent
+from openhands.sdk.event.ask_user import AskUserAnswerEvent
 
 
 event_read_router = APIRouter(
@@ -238,7 +245,10 @@ async def batch_get_conversation_events(
 @event_write_router.post(
     "",
     responses=error_responses(
-        {RateLimited: "Message saved but server run capacity is full"}
+        {
+            Conflict: "Gateway run in progress; message not saved",
+            RateLimited: "Message saved but server run capacity is full",
+        }
     ),
 )
 async def send_message(
@@ -247,22 +257,33 @@ async def send_message(
 ) -> Success:
     """Send a message to a conversation.
 
+    A 409 response means a gateway run is active and the message was not saved.
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
     """
     message = Message(role=request.role, content=request.content)
-    await event_service.send_message(message, request.run)
+    # The inner gateway route holds the lock for its whole turn; refuse before
+    # waiting on it so a direct event fails fast instead of queuing behind it.
+    _refuse_during_gateway_run(event_service)
+    async with event_service._gateway_run_lock:
+        _refuse_during_gateway_run(event_service)
+        await event_service.send_message(message, request.run)
     return Success()
+
+
+def _refuse_during_gateway_run(event_service: EventService) -> None:
+    if event_service._active_gateway_runs:
+        raise Conflict("Gateway run in progress; message not saved")
 
 
 async def _gateway_context(
     conversation_id: UUID,
-    http_request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> tuple[EventService, float]:
     deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
     event_service = await get_event_service(
-        conversation_id, http_request, conversation_service
+        conversation_id, conversation_service, registry
     )
     return event_service, deadline
 
@@ -285,24 +306,28 @@ async def run_gateway_message(
     """Run one gateway turn at a time for this conversation."""
     if deadline is None:
         deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    event_service._active_gateway_runs += 1
     try:
-        await asyncio.wait_for(
-            event_service._gateway_run_lock.acquire(),
-            timeout=deadline - time.monotonic(),
-        )
-    except TimeoutError as exc:
-        raise UpstreamTimeout("Agent run timed out") from exc
-    try:
-        return await _run_gateway_message(request, event_service, deadline)
+        try:
+            await asyncio.wait_for(
+                event_service._gateway_run_lock.acquire(),
+                timeout=deadline - time.monotonic(),
+            )
+        except TimeoutError as exc:
+            raise UpstreamTimeout("Agent run timed out") from exc
+        try:
+            return await _run_gateway_message(request, event_service, deadline)
+        finally:
+            event_service._gateway_run_lock.release()
     finally:
-        event_service._gateway_run_lock.release()
+        event_service._active_gateway_runs -= 1
 
 
 async def _run_gateway_message(
     request: SendMessageRequest, event_service: EventService, deadline: float
 ) -> dict[str, Any]:
     """Save the message only after run capacity is available."""
-    if event_service._run_task is not None:
+    while event_service._run_task is not None:
         try:
             await event_service.wait_for_run_completion(
                 timeout=max(0, deadline - time.monotonic())
@@ -374,16 +399,22 @@ reaction_router = APIRouter(
 )
 
 
-async def require_reactions_enabled(config: Config) -> None:
-    """Refuse with 409 unless the user has conversation reactions on."""
+async def require_feature_enabled(
+    settings_store: SettingsStore, key: str, off_detail: str
+) -> None:
+    """Refuse with 409 unless the user has experimental feature ``key`` on.
+
+    A Docker runtime's server finds the user's switch on the host, which
+    checks it before forwarding the request, so this check is skipped there.
+    """
+    if host_experimental_features() is not None:
+        return
     try:
-        settings = await asyncio.to_thread(
-            lambda: get_settings_store(config).load() or PersistedSettings()
-        )
+        settings = await run_store(settings_store.load) or PersistedSettings()
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
-    if not is_enabled(settings.experimental_features, "conversation_reactions"):
-        raise Conflict("Conversation reactions are turned off")
+    if not is_enabled(settings.experimental_features, key):
+        raise Conflict(off_detail)
 
 
 @reaction_router.post(
@@ -398,8 +429,8 @@ async def require_reactions_enabled(config: Config) -> None:
 )
 async def react_to_message(
     request: ReactionRequest,
-    http_request: Request,
     event_service: EventService = Depends(get_event_service),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> ReactionEvent:
     """Add or remove the user's emoji reaction on a message.
 
@@ -411,10 +442,11 @@ async def react_to_message(
     unlike the agent's tools, which a conversation gets when it starts, this
     check follows the switch at once.
     """
-    # A Docker runtime's server finds the user's switch on the host, which
-    # checks it before forwarding the request.
-    if host_experimental_features() is None:
-        await require_reactions_enabled(get_config(http_request))
+    await require_feature_enabled(
+        settings_store,
+        "conversation_reactions",
+        "Conversation reactions are turned off",
+    )
     try:
         return await event_service.react(
             request.emoji, request.target_event_id, removed=request.removed
@@ -425,7 +457,55 @@ async def react_to_message(
         raise Invalid(str(exc))
 
 
+ask_user_router = APIRouter(
+    prefix="/conversations/{conversation_id}/ask_user", tags=["Events"]
+)
+
+
+@ask_user_router.post(
+    "/answer",
+    responses=error_responses(
+        {
+            Invalid: "That question is not waiting for an answer",
+            NotFound: "Item not found",
+            Conflict: "Decision cards are turned off",
+            RateLimited: "Answer saved but server run capacity is full",
+        }
+    ),
+)
+async def answer_ask_user(
+    request: AskUserAnswerRequest,
+    event_service: EventService = Depends(get_event_service),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+) -> AskUserAnswerEvent:
+    """Answer the agent's pending `ask_user` question, and run the agent.
+
+    Pick an option (`option_index`), give words (`text`), or both. The answer
+    is saved as an `AskUserAnswerEvent`, which clients use to show the card as
+    answered, followed by a user message the agent reads; then the agent runs.
+    `ask_id` must be the pending question: one the user already answered,
+    by a tap or by writing in the chat, is refused (400). There is no field
+    for another conversation to answer on the user's behalf. Needs the
+    `ask_user` feature on; this check follows the switch at once.
+    """
+    await require_feature_enabled(
+        settings_store, "ask_user", "Decision cards are turned off"
+    )
+    _refuse_during_gateway_run(event_service)
+    async with event_service._gateway_run_lock:
+        _refuse_during_gateway_run(event_service)
+        try:
+            return await event_service.answer_ask(
+                request.ask_id, request.option_index, request.text
+            )
+        except ValueError as exc:
+            if str(exc) == "inactive_service":
+                raise
+            raise Invalid(str(exc))
+
+
 event_router = APIRouter()
 event_router.include_router(event_read_router)
 event_router.include_router(event_write_router)
 event_router.include_router(reaction_router)
+event_router.include_router(ask_user_router)

@@ -22,10 +22,7 @@ from openhands.agent_server.launch import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    get_settings_store,
-    reset_stores,
+    ServerStores,
 )
 from openhands.sdk import LLM
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -41,6 +38,7 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.skills import Skill
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import client_context
 
 
 CATALOG = [
@@ -52,7 +50,6 @@ CATALOG = [
 @pytest.fixture
 def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    reset_stores()
     config = Config(
         static_files_path=None,
         session_api_keys=[],
@@ -61,7 +58,7 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
         workspace_path=tmp_path / "workspace",
     )
     (tmp_path / "workspace").mkdir()
-    get_settings_store(config).save(
+    ServerStores.from_config(config).settings.save(
         PersistedSettings(
             agent_settings=OpenHandsAgentSettings(
                 mcp_config={
@@ -71,7 +68,7 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
             )
         )
     )
-    get_llm_profile_store().save(
+    ServerStores.from_config(Config()).llm_profiles.save(
         "default",
         LLM(model="parity-model", api_key=SecretStr("sk-parity")),
         include_secrets=True,
@@ -82,11 +79,10 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
         TestClient(create_app(config)) as client,
     ):
         yield client
-    reset_stores()
 
 
 def _save(profile: OpenHandsAgentProfile) -> OpenHandsAgentProfile:
-    get_agent_profile_store().save(profile)
+    ServerStores.from_config(Config()).agent_profiles.save(profile)
     return profile
 
 
@@ -270,8 +266,9 @@ def test_a_selection_from_the_skill_catalog_launches_exactly_that_selection(
 def test_the_global_critic_key_reaches_profile_launches_but_no_response(
     server, tmp_path
 ):
-    config = server.app.state.config
-    store = get_settings_store(config)
+    context = client_context(server)
+    config = context.config
+    store = context.stores.settings
     stored = store.load()
     assert stored is not None
     store.save(
@@ -296,7 +293,7 @@ def test_the_global_critic_key_reaches_profile_launches_but_no_response(
     )
     settings = store.load()
     assert settings is not None
-    stores = server_launch_stores(settings, config.cipher)
+    stores = server_launch_stores(settings, context.stores, config.cipher)
     request = StartConversationRequest(
         agent_profile_id=profile.id, workspace=LocalWorkspace(working_dir="/workspace")
     )
@@ -328,10 +325,13 @@ def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
 ):
     stored = _save(_profile("named"))
     workspace = str(tmp_path / "workspace")
-    config = server.app.state.config
-    settings = get_settings_store(config).load()
+    context = client_context(server)
+    config = context.config
+    settings = context.stores.settings.load()
     assert settings is not None
-    resolved = resolve(stored, server_launch_stores(settings, config.cipher))
+    resolved = resolve(
+        stored, server_launch_stores(settings, context.stores, config.cipher)
+    )
     agent_settings = resolved.settings.model_dump(
         mode="json", context={"expose_secrets": True}
     )
@@ -349,15 +349,16 @@ def test_a_docker_host_preview_matches_what_the_container_launches(
     server, tmp_path, image_has_browser
 ):
     profile = _save(_profile("named"))
-    host = server.app.state.config.model_copy(
+    context = client_context(server)
+    host = context.config.model_copy(
         update={
             "conversation_runtime": "docker",
             "conversation_image_has_browser": image_has_browser,
         }
     )
-    settings = get_settings_store(host).load()
+    settings = context.stores.settings.load()
     assert settings is not None
-    stores = server_launch_stores(settings, host.cipher)
+    stores = server_launch_stores(settings, context.stores, host.cipher)
 
     preview = preview_launch(profile, stores, target_launch_runtime(host))
 
