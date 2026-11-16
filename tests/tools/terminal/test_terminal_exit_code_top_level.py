@@ -26,8 +26,8 @@ def test_exit_code_top_level_soft_timeout(terminal_type):
     )
     session.initialize()
     try:
-        # Command produces no output and should trigger no-change timeout
-        obs = session.execute(TerminalAction(command="sleep 2"))
+        # Leave enough time for polling and command-echo settling before exit.
+        obs = session.execute(TerminalAction(command="sleep 10"))
         assert obs.metadata.exit_code == -1
         assert obs.exit_code == -1
         assert obs.exit_code == obs.metadata.exit_code

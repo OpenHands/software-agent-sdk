@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
+import psutil
 import pytest
 from fastmcp.client.transports import StdioTransport
 
@@ -55,15 +56,9 @@ def _client(client_type: type[MCPClient] = MCPClient) -> MCPClient:
 
 def _is_alive(pid: int) -> bool:
     try:
-        if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
-            return False
-    except FileNotFoundError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
 
 
 def _wait_until_dead(pid: int) -> None:

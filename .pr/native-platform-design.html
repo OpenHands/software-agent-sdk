@@ -1,0 +1,486 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Reliable native macOS terminals and tests</title><style>body{font:16px/1.6 system-ui;color:#222;background:#fdfdfb;margin:0}main{max-width:960px;margin:auto;padding:40px}nav{padding:16px;background:#f3f1ec}a{color:#294eaa}h1{font-size:36px}h2{margin-top:42px}pre{overflow:auto;padding:18px;background:#f3f1ec;font:13px/1.5 monospace}.callout{border-left:4px solid #b25b0e;padding:16px;background:#fff2e5}svg{width:100%;height:auto}text{font:15px system-ui;fill:#222}rect{fill:#f7f6f1;stroke:#aaa}.changed{fill:#fff2e5;stroke:#b25b0e}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}section{border-top:1px solid #ddd;margin-top:24px}summary{cursor:pointer}</style><main><h1>Reliable native macOS terminals and tests</h1><p>General terminal fixes and portable test setup, extracted unchanged from the native App backend proposal. This prerequisite is independently useful and introduces no App backend API or Windows Job Objects.</p><p class="callout">Runtime fixes: initialize PTY dimensions, choose a supported UTF-8 locale, and retry only the observed macOS PTY allocation error. Existing assertions retain their behavioral contracts; timing waits are bounded.</p><nav><a href="#s0">Mac runners execute all suites</a> · <a href="#s1">Give the PTY a real viewport</a> · <a href="#s2">Recover from the native macOS PTY allocation race</a> · <a href="#s3">Use an available UTF-8 locale</a> · <a href="#s4">Test inherited priority correctly</a> · <a href="#s5">Check actual encoding</a> · <a href="#s6">Wait for interruption acknowledgment</a> · <a href="#s7">Wait for the real fixture endpoint</a> · <a href="#s8">Observe process exit portably</a> · <a href="#s9">Avoid fixture reverse-DNS stalls</a> · <a href="#s10">Allow timeout polling to settle</a> · <a href="#s11">Isolate real terminal fixtures</a> · <a href="#s12">Exercise PTY allocation recovery</a> · <a href="#s13">Verify cleanup on the owned sandbox</a></nav><h2>Validation</h2><p>Extracted source matches the green native macOS and Windows implementation at 13a5fe73. New PR CI verifies this prerequisite independently; prior aggregate results are not a substitute for its own checks.</p><section id="s0"><h2>Mac runners execute all suites</h2><p>Install tmux and verify the runner-provided Chrome. Fork only terminal tests; browser and other tools call macOS frameworks that crash after fork. Keep all suites enabled, with per-test diagnostics for hangs.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">No tmux; browsers inherit forked runtime</text><text x="485" y="80">Prerequisites + isolated terminal suite</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/.github/workflows/tests-macos.yml#L34">.github/workflows/tests-macos.yml:34</a></p><details><summary>Inspect diff</summary><pre>diff --git a/.github/workflows/tests-macos.yml b/.github/workflows/tests-macos.yml
+index b0513c42..d5ab71b7 100644
+--- a/.github/workflows/tests-macos.yml
++++ b/.github/workflows/tests-macos.yml
+@@ -35,9 +35,17 @@ jobs:
+                 include:
+                     - suite: sdk
+                       args: -n auto tests/sdk
+-                    # --forked: terminal tests conflict when run in parallel
++                    # Only terminal tests need fork isolation. Other tools can
++                    # load macOS frameworks that are unsafe after fork.
++                    - suite: terminal
++                      args: --forked --timeout=180 --timeout-method=thread tests/tools/terminal
+                     - suite: tools
+-                      args: --forked tests/tools
++                      args: &gt;-
++                          --timeout=180 --timeout-method=thread
++                          --ignore=tests/tools/browser_use
++                          --ignore=tests/tools/terminal tests/tools
++                    - suite: browser
++                      args: tests/tools/browser_use
+                     - suite: agent_server
+                       args: -n auto tests/agent_server
+                     - suite: workspace
+@@ -58,8 +66,15 @@ jobs:
+                   enable-cache: true
+                   python-version: &#x27;3.13&#x27;
+ 
++            - name: Install terminal prerequisite
++              run: brew install tmux
++
+             - name: Install deps
+               run: uv sync --frozen --group dev
+ 
++            - name: Verify runner browser prerequisite
++              if: matrix.suite == &#x27;browser&#x27;
++              run: &#x27;&quot;/Applications/Google Chrome.app/Contents/MacOS/Google Chrome&quot; --version&#x27;
++
+             - name: Run ${{ matrix.suite }} tests
+               run: CI=true uv run python -m pytest -vvs ${{ matrix.args }}</pre></details></section><section id="s1"><h2>Give the PTY a real viewport</h2><p>Native Mac CI exposed zero-sized PTYs: readline inserted spaces into echoed completion markers. Set the same bounded viewport used by tmux before starting the shell. Existing heredoc integration tests exercise the regression.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Zero-sized PTY; corrupted marker echoes</text><text x="485" y="80">Explicit viewport; intact completion markers</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L160">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:160</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py#L163">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py:163</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
+index 2672b7fc..7a70526d 100644
+--- a/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
++++ b/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py
+@@ -21,12 +21,15 @@ if platform.system() == &quot;Windows&quot;:
+ import fcntl
+ import pty
+ import select
++import termios
+ 
+ from openhands.sdk.logger import get_logger
+ from openhands.tools.terminal.constants import (
+     CMD_OUTPUT_PS1_BEGIN,
+     CMD_OUTPUT_PS1_END,
+     HISTORY_LIMIT,
++    TMUX_SESSION_HEIGHT,
++    TMUX_SESSION_WIDTH,
+ )
+ from openhands.tools.terminal.env import (
+     build_terminal_env,
+@@ -158,6 +161,9 @@ class SubprocessTerminal(TerminalInterface):
+ 
+         # Create a PTY; give the slave to the child, keep the master
+         master_fd, slave_fd = pty.openpty()
++        # A new PTY has a zero-sized viewport on macOS. Readline otherwise
++        # inserts wrapping spaces into echoed commands and completion markers.
++        termios.tcsetwinsize(slave_fd, (TMUX_SESSION_HEIGHT, TMUX_SESSION_WIDTH))
+ 
+         logger.debug(&quot;Initializing PTY terminal with: %s&quot;, &quot; &quot;.join(bash_cmd))
+         try:</pre></details></section><section id="s2"><h2>Recover from the native macOS PTY allocation race</h2><p>Concurrent pane replacement on hosted macOS twice returned a tmux ENXIO allocation error. Retry only that exact macOS failure, at most twice with a short delay. Other errors and persistent allocation failures propagate; replacement creates the new pane before discarding the old one. Native tests inject the observed error and verify both recovery and continued use of the old pane on failure.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Any new_window error aborts replacement</text><text x="485" y="80">Bounded retry for macOS PTY ENXIO</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py#L175">openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py:175</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py#L177">openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py:177</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py b/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py
+index 3d8370a2..006e6f08 100644
+--- a/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py
++++ b/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py
+@@ -7,6 +7,7 @@ tmux session, enabling concurrent command execution across panes.
+ from __future__ import annotations
+ 
+ import shlex
++import sys
+ import threading
+ import time
+ import uuid
+@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
+ from typing import Final
+ 
+ import libtmux
++from libtmux.exc import LibTmuxException
+ 
+ from openhands.sdk.logger import get_logger
+ from openhands.tools.terminal.constants import (
+@@ -181,11 +183,25 @@ class TmuxPanePool:
+             shell_command = [&quot;su&quot;, self.username, &quot;-&quot;]
+         priority_prefix = process_priority_prefix(build_terminal_env(self.env))
+ 
+-        window = self._session.new_window(
+-            window_name=f&quot;pane-{len(self._all_panes)}&quot;,
+-            window_shell=shlex.join([*priority_prefix, *shell_command]),
+-            start_directory=self.work_dir,
+-        )
++        attempt = 0
++        while True:
++            try:
++                window = self._session.new_window(
++                    window_name=f&quot;pane-{len(self._all_panes)}&quot;,
++                    window_shell=shlex.join([*priority_prefix, *shell_command]),
++                    start_directory=self.work_dir,
++                )
++                break
++            except LibTmuxException as exc:
++                if (
++                    sys.platform != &quot;darwin&quot;
++                    or &quot;fork failed: Device not configured&quot; not in str(exc)
++                    or attempt == 2
++                ):
++                    raise
++                # XNU can race PTY allocation against an asynchronously closing pane.
++                attempt += 1
++                time.sleep(0.05)
+         active_pane = window.active_pane
+         assert active_pane is not None</pre></details></section><section id="s3"><h2>Use an available UTF-8 locale</h2><p>Use en_US.UTF-8 on macOS, retaining C.UTF-8 elsewhere. The integration test checks the shell encoding, rather than a particular locale name.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">One fallback locale for all platforms</text><text x="485" y="80">Platform-available UTF-8 fallback</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/openhands-tools/openhands/tools/terminal/env.py#L16">openhands-tools/openhands/tools/terminal/env.py:16</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/openhands-tools/openhands/tools/terminal/env.py#L18">openhands-tools/openhands/tools/terminal/env.py:18</a></p><details><summary>Inspect diff</summary><pre>diff --git a/openhands-tools/openhands/tools/terminal/env.py b/openhands-tools/openhands/tools/terminal/env.py
+index 20243ba8..23756e0c 100644
+--- a/openhands-tools/openhands/tools/terminal/env.py
++++ b/openhands-tools/openhands/tools/terminal/env.py
+@@ -4,6 +4,7 @@ import codecs
+ import locale
+ import os
+ import re
++import sys
+ from collections.abc import Mapping
+ 
+ from openhands.sdk.logger import get_logger
+@@ -13,7 +14,8 @@ from openhands.sdk.utils import sanitized_env
+ logger = get_logger(__name__)
+ 
+ ENV_VAR_NAME_RE = re.compile(r&quot;^[a-zA-Z_][a-zA-Z0-9_]*$&quot;)
+-UTF8_FALLBACK_LOCALE = &quot;C.UTF-8&quot;
++# C.UTF-8 is unavailable on older supported macOS releases.
++UTF8_FALLBACK_LOCALE = &quot;en_US.UTF-8&quot; if sys.platform == &quot;darwin&quot; else &quot;C.UTF-8&quot;
+ 
+ 
+ def normalize_terminal_env(</pre></details></section><section id="s4"><h2>Test inherited priority correctly</h2><p>Hosted Mac runners already use utility QoS. Compare the resulting priority against an independently launched utility-clamped process and the inherited server priority; a clamp cannot lower a priority already below its ceiling. Local tests pass under both default and utility parent priority.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">Require a strict priority decrease</text><text x="485" y="80">Verify the inherited utility ceiling</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_process_priority.py#L84">tests/tools/terminal/test_process_priority.py:84</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_process_priority.py b/tests/tools/terminal/test_process_priority.py
+index 4aafd9c8..e5ea271d 100644
+--- a/tests/tools/terminal/test_process_priority.py
++++ b/tests/tools/terminal/test_process_priority.py
+@@ -83,7 +83,22 @@ def _server_priority() -&gt; int:
+ 
+ def _assert_lowered(agent: int, server: int) -&gt; None:
+     if SYSTEM == &quot;Darwin&quot;:
+-        assert agent &lt; server
++        # Hosted runners may already run at utility QoS. A clamp cannot lower
++        # an inherited priority that is already at or below its ceiling.
++        utility = int(
++            subprocess.check_output(
++                [
++                    &quot;/usr/sbin/taskpolicy&quot;,
++                    &quot;-c&quot;,
++                    &quot;utility&quot;,
++                    &quot;sh&quot;,
++                    &quot;-c&quot;,
++                    &quot;ps -o pri= -p $$&quot;,
++                ],
++                text=True,
++            )
++        )
++        assert agent == min(server, utility)
+     else:
+         assert agent == min(19, server + 10)</pre></details></section><section id="s5"><h2>Check actual encoding</h2><p>assert a Linux locale name → assert UTF-8 shell encoding.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">assert a Linux locale name</text><text x="485" y="80">assert UTF-8 shell encoding</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/agent_server/test_api.py#L1">tests/agent_server/test_api.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/agent_server/test_api.py#L820">tests/agent_server/test_api.py:820</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/agent_server/test_api.py b/tests/agent_server/test_api.py
+index ed89855e..95779af3 100644
+--- a/tests/agent_server/test_api.py
++++ b/tests/agent_server/test_api.py
+@@ -817,7 +817,8 @@ class TestServiceParallelization:
+                 server_context=_context_without_side_services()
+             )
+             async with api_lifespan(mock_app):
+-                assert os.environ[overridden] == &quot;C.UTF-8&quot;
++                encoding = subprocess.check_output([&quot;locale&quot;, &quot;charmap&quot;], text=True)
++                assert encoding.strip() == &quot;UTF-8&quot;
+ 
+             assert os.environ.get(overridden) == original</pre></details></section><section id="s6"><h2>Wait for interruption acknowledgment</h2><p>release tool before interruption lands → wait for public InterruptEvent.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">release tool before interruption lands</text><text x="485" y="80">wait for public InterruptEvent</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/cross/test_conversation_parity.py#L197">tests/cross/test_conversation_parity.py:197</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/cross/test_conversation_parity.py#L198">tests/cross/test_conversation_parity.py:198</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/cross/test_conversation_parity.py b/tests/cross/test_conversation_parity.py
+index 72e2049b..246f4536 100644
+--- a/tests/cross/test_conversation_parity.py
++++ b/tests/cross/test_conversation_parity.py
+@@ -32,6 +32,7 @@ from openhands.sdk.event import (
+     AgentErrorEvent,
+     ConversationStateUpdateEvent,
+     Event,
++    InterruptEvent,
+     MessageEvent,
+     ObservationEvent,
+     UserRejectObservation,
+@@ -205,6 +206,13 @@ def _interrupt_during_tool(conversation: BaseConversation) -&gt; dict[str, Any]:
+     try:
+         assert TOOL_ENTERED.wait(timeout=10), &quot;the tool never started&quot;
+         conversation.interrupt()
++        # interrupt() schedules cancellation; keep the tool blocked until it lands.
++        deadline = time.monotonic() + 5
++        while not any(
++            isinstance(event, InterruptEvent) for event in conversation.state.events
++        ):
++            assert time.monotonic() &lt; deadline, &quot;the interruption never completed&quot;
++            time.sleep(0.01)
+     finally:
+         TOOL_RELEASED.set()
+         runner.join(timeout=10)</pre></details></section><section id="s7"><h2>Wait for the real fixture endpoint</h2><p>request during server startup → bounded retry for connection failures.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">request during server startup</text><text x="485" y="80">bounded retry for connection failures</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/cross/test_verify_agent_server_skill.py#L106">tests/cross/test_verify_agent_server_skill.py:106</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/cross/test_verify_agent_server_skill.py#L107">tests/cross/test_verify_agent_server_skill.py:107</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/cross/test_verify_agent_server_skill.py b/tests/cross/test_verify_agent_server_skill.py
+index aaf7d9f5..be3ec7a3 100644
+--- a/tests/cross/test_verify_agent_server_skill.py
++++ b/tests/cross/test_verify_agent_server_skill.py
+@@ -20,6 +20,7 @@ from contextlib import suppress
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from pathlib import Path
+ 
++import httpx
+ import psutil
+ import pytest
+ from websockets.exceptions import ConnectionClosed
+@@ -115,8 +116,22 @@ def test_llm_stub_preserves_explicit_error_body(run_dir, capsys, body):
+     )
+     assert code == 0, out
+     url = json.loads(out)[&quot;url&quot;]
++    # The spawned fixture can still be starting: macOS runner reverse DNS
++    # stalls HTTPServer before listen (actions/runner-images#14409). Keep the
++    # real CLI/fixture unchanged and wait for its HTTP endpoint before testing
++    # the error-body contract.
++    deadline = time.monotonic() + 60
+     with cas.http_client() as client:
+-        response = client.post(url + &quot;/v1/chat/completions&quot;, json={&quot;messages&quot;: []})
++        while True:
++            try:
++                response = client.post(
++                    url + &quot;/v1/chat/completions&quot;, json={&quot;messages&quot;: []}
++                )
++                break
++            except (httpx.ConnectError, httpx.ConnectTimeout):
++                if time.monotonic() &gt;= deadline:
++                    raise
++                time.sleep(0.1)
+     assert response.status_code == 429
+     assert response.json() == body</pre></details></section><section id="s8"><h2>Observe process exit portably</h2><p>read Linux /proc state → psutil process and zombie status.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">read Linux /proc state</text><text x="485" y="80">psutil process and zombie status</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py#L56">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py:56</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py#L57">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py:57</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py b/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py
+index 2ee8cf24..a99da3ed 100644
+--- a/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py
++++ b/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py
+@@ -10,6 +10,7 @@ from collections.abc import Sequence
+ from pathlib import Path
+ from typing import cast
+ 
++import psutil
+ import pytest
+ from fastmcp.client.transports import StdioTransport
+ 
+@@ -55,15 +56,9 @@ def _client(client_type: type[MCPClient] = MCPClient) -&gt; MCPClient:
+ 
+ def _is_alive(pid: int) -&gt; bool:
+     try:
+-        if Path(f&quot;/proc/{pid}/stat&quot;).read_text().split()[2] == &quot;Z&quot;:
+-            return False
+-    except FileNotFoundError:
++        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
++    except psutil.NoSuchProcess:
+         return False
+-    try:
+-        os.kill(pid, 0)
+-    except ProcessLookupError:
+-        return False
+-    return True
+ 
+ 
+ def _wait_until_dead(pid: int) -&gt; None:</pre></details></section><section id="s9"><h2>Avoid fixture reverse-DNS stalls</h2><p>HTTPServer resolves hostname → fixture skips reverse DNS.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">HTTPServer resolves hostname</text><text x="485" y="80">fixture skips reverse DNS</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/tools/browser_use/test_browser_executor_e2e.py#L53">tests/tools/browser_use/test_browser_executor_e2e.py:53</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/browser_use/test_browser_executor_e2e.py#L53">tests/tools/browser_use/test_browser_executor_e2e.py:53</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/browser_use/test_browser_executor_e2e.py b/tests/tools/browser_use/test_browser_executor_e2e.py
+index 6fd4367d..fb971f9a 100644
+--- a/tests/tools/browser_use/test_browser_executor_e2e.py
++++ b/tests/tools/browser_use/test_browser_executor_e2e.py
+@@ -169,8 +169,12 @@ def test_server() -&gt; Generator[str]:
+         server_process = subprocess.Popen(
+             [
+                 sys.executable,
+-                &quot;-m&quot;,
+-                &quot;http.server&quot;,
++                &quot;-c&quot;,
++                # macOS runner reverse DNS can stall before HTTPServer.listen.
++                # The loopback fixture needs no canonical host name (#14409 in
++                # actions/runner-images).
++                &quot;import runpy, socket; socket.getfqdn = lambda name=&#x27;&#x27;: name; &quot;
++                &quot;runpy.run_module(&#x27;http.server&#x27;, run_name=&#x27;__main__&#x27;)&quot;,
+                 str(port),
+                 &quot;--bind&quot;,
+                 &quot;127.0.0.1&quot;,</pre></details></section><section id="s10"><h2>Allow timeout polling to settle</h2><p>sleep may end during polling → longer command preserves timeout contract.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">sleep may end during polling</text><text x="485" y="80">longer command preserves timeout contract</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/tools/terminal/test_terminal_exit_code_top_level.py#L23">tests/tools/terminal/test_terminal_exit_code_top_level.py:23</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_terminal_exit_code_top_level.py#L23">tests/tools/terminal/test_terminal_exit_code_top_level.py:23</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_terminal_exit_code_top_level.py b/tests/tools/terminal/test_terminal_exit_code_top_level.py
+index 7d6b6e16..52d872a8 100644
+--- a/tests/tools/terminal/test_terminal_exit_code_top_level.py
++++ b/tests/tools/terminal/test_terminal_exit_code_top_level.py
+@@ -26,8 +26,8 @@ def test_exit_code_top_level_soft_timeout(terminal_type):
+     )
+     session.initialize()
+     try:
+-        # Command produces no output and should trigger no-change timeout
+-        obs = session.execute(TerminalAction(command=&quot;sleep 2&quot;))
++        # Leave enough time for polling and command-echo settling before exit.
++        obs = session.execute(TerminalAction(command=&quot;sleep 10&quot;))
+         assert obs.metadata.exit_code == -1
+         assert obs.exit_code == -1
+         assert obs.exit_code == obs.metadata.exit_code</pre></details></section><section id="s11"><h2>Isolate real terminal fixtures</h2><p>shared /tmp path; generic Python → private workdir; active Python.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">shared /tmp path; generic Python</text><text x="485" y="80">private workdir; active Python</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/tools/terminal/test_terminal_session.py#L1">tests/tools/terminal/test_terminal_session.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_terminal_session.py#L692">tests/tools/terminal/test_terminal_session.py:692</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_terminal_session.py b/tests/tools/terminal/test_terminal_session.py
+index 780f375b..7428f040 100644
+--- a/tests/tools/terminal/test_terminal_session.py
++++ b/tests/tools/terminal/test_terminal_session.py
+@@ -11,7 +11,9 @@ and run the parametrized tests for each one.
+ 
+ import logging
+ import os
++import shlex
+ import subprocess
++import sys
+ import tempfile
+ import threading
+ import time
+@@ -687,6 +689,15 @@ def _run_bash_action(session, command: str, **kwargs):
+     return obs
+ 
+ 
++def _http_server_command(port: int) -&gt; str:
++    # HTTPServer reverse DNS can block for 35 seconds on macOS runners.
++    script = (
++        &quot;import runpy, socket; socket.getfqdn = lambda name=&#x27;&#x27;: name; &quot;
++        &quot;runpy.run_module(&#x27;http.server&#x27;, run_name=&#x27;__main__&#x27;)&quot;
++    )
++    return f&quot;{shlex.quote(sys.executable)} -u -c {shlex.quote(script)} {port}&quot;
++
++
+ @parametrize_terminal_types
+ def test_bash_server(terminal_type):
+     &quot;&quot;&quot;Test running a server with timeout and interrupt.&quot;&quot;&quot;
+@@ -698,9 +709,7 @@ def test_bash_server(terminal_type):
+         try:
+             # Use python -u for unbuffered output, potentially helping
+             # capture initial output on Windows
+-            obs = _run_bash_action(
+-                session, &quot;python -u -m http.server 8081&quot;, timeout=1.0
+-            )
++            obs = _run_bash_action(session, _http_server_command(8081), timeout=1.0)
+             assert obs.metadata.exit_code == -1
+             assert &quot;Serving HTTP on&quot; in obs.text
+ 
+@@ -714,9 +723,7 @@ def test_bash_server(terminal_type):
+             assert obs.metadata.exit_code == 0
+ 
+             # Run server again to verify it works
+-            obs = _run_bash_action(
+-                session, &quot;python -u -m http.server 8081&quot;, timeout=1.0
+-            )
++            obs = _run_bash_action(session, _http_server_command(8081), timeout=1.0)
+             assert obs.metadata.exit_code == -1
+             assert &quot;Serving HTTP on&quot; in obs.text
+ 
+@@ -735,7 +742,7 @@ def test_bash_background_server(terminal_type):
+         server_port = 8081
+         try:
+             # Start the server in background
+-            obs = _run_bash_action(session, f&quot;python3 -m http.server {server_port} &amp;&quot;)
++            obs = _run_bash_action(session, f&quot;{_http_server_command(server_port)} &amp;&quot;)
+             assert obs.metadata.exit_code == 0
+ 
+             # Give the server a moment to be ready
+@@ -1174,7 +1181,7 @@ def test_long_output_from_nested_directories(terminal_type):
+         try:
+             # Create nested directories with many files
+             setup_cmd = (
+-                &quot;mkdir -p /tmp/test_dir &amp;&amp; cd /tmp/test_dir &amp;&amp; &quot;
++                &quot;mkdir -p test_dir &amp;&amp; cd test_dir &amp;&amp; &quot;
+                 &#x27;for i in $(seq 1 100); do mkdir -p &quot;folder_$i&quot;; &#x27;
+                 &#x27;for j in $(seq 1 100); do touch &quot;folder_$i/file_$j.txt&quot;; done; done&#x27;
+             )
+@@ -1182,7 +1189,7 @@ def test_long_output_from_nested_directories(terminal_type):
+             assert obs.metadata.exit_code == 0
+ 
+             # List the directory structure recursively
+-            obs = _run_bash_action(session, &quot;ls -R /tmp/test_dir&quot;, timeout=60)
++            obs = _run_bash_action(session, &quot;ls -R .&quot;, timeout=60)
+             assert obs.metadata.exit_code == 0
+ 
+             # Verify output contains expected files
+@@ -1205,8 +1212,7 @@ def test_command_backslash(terminal_type):
+         try:
+             # Create a file with the content &quot;implemented_function&quot;
+             cmd = (
+-                &quot;mkdir -p /tmp/test_dir &amp;&amp; &quot;
+-                &#x27;echo &quot;implemented_function&quot; &gt; /tmp/test_dir/file_1.txt&#x27;
++                &#x27;mkdir -p test_dir &amp;&amp; echo &quot;implemented_function&quot; &gt; test_dir/file_1.txt&#x27;
+             )
+             obs = _run_bash_action(session, cmd)
+             assert obs.metadata.exit_code == 0
+@@ -1218,12 +1224,12 @@ def test_command_backslash(terminal_type):
+                 semicolon = &quot;\\;&quot;  # Escape for tmux
+ 
+             cmd = (
+-                &quot;find /tmp/test_dir -type f -exec grep&quot;
++                &quot;find test_dir -type f -exec grep&quot;
+                 + f&#x27; -l &quot;implemented_function&quot; {{}} {semicolon}&#x27;
+             )
+             obs = _run_bash_action(session, cmd)
+             assert obs.metadata.exit_code == 0
+-            assert &quot;/tmp/test_dir/file_1.txt&quot; in obs.text
++            assert &quot;test_dir/file_1.txt&quot; in obs.text
+         finally:
+             session.close()</pre></details></section><section id="s12"><h2>Exercise PTY allocation recovery</h2><p>no allocation-failure regression → transient recovery; old pane survives.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">no allocation-failure regression</text><text x="485" y="80">transient recovery; old pane survives</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/tools/terminal/test_tmux_pane_pool.py#L1">tests/tools/terminal/test_tmux_pane_pool.py:1</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_tmux_pane_pool.py#L127">tests/tools/terminal/test_tmux_pane_pool.py:127</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/tools/terminal/test_tmux_pane_pool.py b/tests/tools/terminal/test_tmux_pane_pool.py
+index dd16e0d3..80ea89a5 100644
+--- a/tests/tools/terminal/test_tmux_pane_pool.py
++++ b/tests/tools/terminal/test_tmux_pane_pool.py
+@@ -1,12 +1,15 @@
+ &quot;&quot;&quot;Tests for TmuxPanePool.&quot;&quot;&quot;
+ 
+ import os
++import sys
+ import tempfile
+ import threading
+ import time
+ from pathlib import Path
+ 
++import libtmux
+ import pytest
++from libtmux.exc import LibTmuxException
+ 
+ from openhands.tools.terminal.constants import (
+     TMUX_SESSION_HEIGHT,
+@@ -119,6 +122,37 @@ def test_replace_returns_new_terminal(pool):
+     pool.checkin(new)
+ 
+ 
++@pytest.mark.skipif(sys.platform != &quot;darwin&quot;, reason=&quot;macOS PTY allocation race&quot;)
++@pytest.mark.parametrize(&quot;persistent&quot;, [False, True])
++def test_replace_handles_macos_pty_allocation_failure(pool, monkeypatch, persistent):
++    old = pool.checkout()
++    original = libtmux.Session.new_window
++    failed = False
++
++    def allocate(session, *args, **kwargs):
++        nonlocal failed
++        if persistent or not failed:
++            failed = True
++            raise LibTmuxException(
++                &quot;create window failed: fork failed: Device not configured&quot;
++            )
++        return original(session, *args, **kwargs)
++
++    monkeypatch.setattr(libtmux.Session, &quot;new_window&quot;, allocate)
++    if persistent:
++        with pytest.raises(LibTmuxException, match=&quot;Device not configured&quot;):
++            pool.replace(old)
++        terminal = old
++    else:
++        terminal = pool.replace(old)
++    terminal.send_keys(&quot;echo allocation$((40 + 2))&quot;)
++    deadline = time.monotonic() + 3
++    while &quot;allocation42&quot; not in terminal.read_screen():
++        assert time.monotonic() &lt; deadline
++        time.sleep(0.01)
++    pool.checkin(terminal)
++
++
+ def test_replace_preserves_semaphore(pool):
+     &quot;&quot;&quot;Replace does not consume an extra semaphore slot.&quot;&quot;&quot;
+     t1 = pool.checkout()
+@@ -372,8 +406,9 @@ def test_first_terminal_shell_gets_fallback_locale(
+     session = create_terminal_session(work_dir=str(tmp_path), terminal_type=&quot;tmux&quot;)
+     session.initialize()
+     try:
+-        obs = session.execute(TerminalAction(command=&#x27;echo &quot;ctype=$LC_CTYPE&quot;&#x27;))
++        obs = session.execute(TerminalAction(command=&quot;locale charmap&quot;))
+     finally:
+         session.close()
+ 
+-    assert &quot;ctype=C.UTF-8&quot; in obs.text
++    assert obs.metadata.exit_code == 0
++    assert obs.text.strip() == &quot;UTF-8&quot;</pre></details></section><section id="s13"><h2>Verify cleanup on the owned sandbox</h2><p>class-wide cleanup mock → real cleanup; assert handle termination.</p><svg viewBox="0 0 900 130" role="img" aria-label="Before and after"><text x="15" y="25">Before</text><text x="475" y="25">After</text><rect x="10" y="40" width="410" height="70" rx="5"/><rect class="changed" x="470" y="40" width="420" height="70" rx="5"/><path d="M425 75h35m-8-7 8 7-8 7" fill="none" stroke="#b25b0e"/><text x="25" y="80">class-wide cleanup mock</text><text x="485" y="80">real cleanup; assert handle termination</text></svg><p>Before: <a href="https://github.com/OpenHands/software-agent-sdk/blob/e454a869d539de6d643a62bfe0dedf381cd99348/tests/workspace/test_agent_sandbox_workspace.py#L153">tests/workspace/test_agent_sandbox_workspace.py:153</a><br>After: <a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/workspace/test_agent_sandbox_workspace.py#L153">tests/workspace/test_agent_sandbox_workspace.py:153</a></p><details><summary>Inspect diff</summary><pre>diff --git a/tests/workspace/test_agent_sandbox_workspace.py b/tests/workspace/test_agent_sandbox_workspace.py
+index a1080248..8e18ca5a 100644
+--- a/tests/workspace/test_agent_sandbox_workspace.py
++++ b/tests/workspace/test_agent_sandbox_workspace.py
+@@ -159,13 +159,12 @@ def test_exit_preserves_parent_lifecycle_and_cleanup(k8s_mocks):
+ 
+     with (
+         patch.object(RemoteWorkspace, &quot;__exit__&quot;, side_effect=error) as parent_exit,
+-        patch.object(type(ws), &quot;cleanup&quot;) as cleanup,
+         pytest.raises(RuntimeError, match=&quot;callback failed&quot;),
+     ):
+         ws.__exit__(RuntimeError, error, None)
+ 
+     parent_exit.assert_called_once_with(RuntimeError, error, None)
+-    cleanup.assert_called_once()
++    k8s_mocks.handle.terminate.assert_called_once()
+ 
+ 
+ def test_cleanup_terminates_sandbox(k8s_mocks):</pre></details></section><h2>Supporting files</h2><table><tr><th>File</th><th>Change</th></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/.github/workflows/tests-macos.yml">.github/workflows/tests-macos.yml</a></td><td>+17 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/openhands-tools/openhands/tools/terminal/env.py">openhands-tools/openhands/tools/terminal/env.py</a></td><td>+3 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py">openhands-tools/openhands/tools/terminal/terminal/subprocess_terminal.py</a></td><td>+6 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py">openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py</a></td><td>+21 / −5</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/agent_server/test_api.py">tests/agent_server/test_api.py</a></td><td>+2 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/cross/test_conversation_parity.py">tests/cross/test_conversation_parity.py</a></td><td>+8 / −0</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/cross/test_verify_agent_server_skill.py">tests/cross/test_verify_agent_server_skill.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py">tests/sdk/mcp/test_mcp_client_subprocess_cleanup.py</a></td><td>+3 / −8</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/browser_use/test_browser_executor_e2e.py">tests/tools/browser_use/test_browser_executor_e2e.py</a></td><td>+6 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_process_priority.py">tests/tools/terminal/test_process_priority.py</a></td><td>+16 / −1</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_terminal_exit_code_top_level.py">tests/tools/terminal/test_terminal_exit_code_top_level.py</a></td><td>+2 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_terminal_session.py">tests/tools/terminal/test_terminal_session.py</a></td><td>+19 / −13</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/tools/terminal/test_tmux_pane_pool.py">tests/tools/terminal/test_tmux_pane_pool.py</a></td><td>+37 / −2</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/00fdbf045501222d658e8d77924ef1266ef248bb/tests/workspace/test_agent_sandbox_workspace.py">tests/workspace/test_agent_sandbox_workspace.py</a></td><td>+1 / −2</td></tr></table><p>Temporary PR review aid. The repository release workflow removes root .pr artifacts after merge.</p></main></html>
