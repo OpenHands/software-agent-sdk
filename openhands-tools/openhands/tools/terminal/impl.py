@@ -14,6 +14,7 @@ from openhands.sdk.tool import ToolExecutor
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
 from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
+from openhands.tools.terminal.credential_runtime import TerminalCredentialRuntime
 from openhands.tools.terminal.definition import (
     _LITERAL_ARG_HINT_TEMPLATE,
     TerminalAction,
@@ -24,7 +25,6 @@ from openhands.tools.terminal.env import (
     ENV_VAR_NAME_RE,
     normalize_terminal_env,
 )
-from openhands.tools.terminal.credential_runtime import TerminalCredentialRuntime
 from openhands.tools.terminal.terminal.factory import (
     _is_tmux_available,
     create_terminal_session,
