@@ -3,7 +3,6 @@ import importlib
 import json
 import logging
 import os
-import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -165,11 +164,6 @@ def _local_branch_exists(repo_root: Path, branch: str) -> bool:
     return True
 
 
-_DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS = 300
-# Not FETCH_HEAD's mtime: a fetch of any other remote or ref rewrites it.
-_origin_fetched_at: dict[Path, float] = {}
-
-
 def _fetch_origin(repo_root: Path) -> None:
     """Refresh ``origin``'s refs for a worktree start point; keep cached ones on
     failure."""
@@ -182,16 +176,6 @@ def _fetch_origin(repo_root: Path) -> None:
             repo_root,
             exc,
         )
-        return
-    _origin_fetched_at[repo_root] = time.monotonic()
-
-
-def _fetched_recently(repo_root: Path) -> bool:
-    fetched_at = _origin_fetched_at.get(repo_root)
-    return (
-        fetched_at is not None
-        and time.monotonic() - fetched_at < _DEFAULT_BRANCH_FETCH_MAX_AGE_SECONDS
-    )
 
 
 def _get_worktree_start_point(repo_root: Path) -> str:
@@ -199,9 +183,9 @@ def _get_worktree_start_point(repo_root: Path) -> str:
 
     Policy (in order):
       1. ``origin/<default_branch>`` if an ``origin`` remote is configured.
-         ``git fetch origin`` is run first, unless the repository was fetched
-         in the last five minutes, so the worktree starts from a recent remote
-         tip; the default branch is resolved via ``refs/remotes/origin/HEAD``.
+         ``git fetch origin`` is run first so the worktree starts from the
+         latest remote tip; the default branch is resolved via
+         ``refs/remotes/origin/HEAD``.
       2. Local ``main`` if there is no usable remote default but ``main``
          exists locally.
       3. Local ``master`` if neither remote default nor local ``main`` is
@@ -210,8 +194,7 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          checks whether the selected ref resolves to a commit.
     """
     if _has_git_remote(repo_root):
-        if not _fetched_recently(repo_root):
-            _fetch_origin(repo_root)
+        _fetch_origin(repo_root)
         try:
             ref = run_git_command(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
