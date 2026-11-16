@@ -102,6 +102,8 @@ export type {
   ThinkEvent,
   ReactionEmoji,
   ReactionEvent,
+  AskUserAction,
+  AskUserObservation,
   AskUserAnswerEvent,
   HookExecutionEvent,
   HookExecutionEventType,
