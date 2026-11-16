@@ -144,6 +144,22 @@ class TestTmuxPoolRecovery:
         assert after.exit_code == 0
         assert "after_rebuild" in after.text
 
+    def test_shell_exit_beside_a_busy_pane_rebuilds_pool(self, pool_executor):
+        # The busy pane keeps the tmux server up, so the exited pane is gone
+        # while the server still answers.
+        busy = threading.Thread(
+            target=lambda: pool_executor(TerminalAction(command="sleep 3", timeout=10))
+        )
+        busy.start()
+        time.sleep(0.5)
+        obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
+        busy.join()
+
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+        assert "after_rebuild" in after.text
+
     def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
         obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))
         assert obs.is_error

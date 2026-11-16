@@ -55,7 +55,7 @@ Preconditions:
 - **The feature flag (`F39.flag-gates`).**
   ```sh
   control-agent-server api GET /api/settings/experimental \
-    --check 1.key eq message_edits --check 1.enabled eq false --save F39.flag-gates/list
+    --check 3.key eq message_edits --check 3.enabled eq false --save F39.flag-gates/list
   OFF=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server api PATCH /api/settings/experimental/message_edits --json '{"enabled": true}' \
     --expect 200 --check enabled eq true
