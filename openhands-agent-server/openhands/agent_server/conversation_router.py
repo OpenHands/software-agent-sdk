@@ -954,7 +954,7 @@ async def navigate_conversation(
         )
     except ValueError as exc:
         # An unknown ``event_id`` against an existing conversation is a 404;
-        # other ValueErrors (e.g. inactive_service) are genuine server errors.
+        # other ValueErrors (e.g. ServiceInactive) are genuine server errors.
         if "event_id" in str(exc):
             raise NotFound(str(exc)) from exc
         raise

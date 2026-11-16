@@ -15,7 +15,11 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import CondensationUnavailable, EventService
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    EventService,
+    ServiceInactive,
+)
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -2686,7 +2690,7 @@ def test_load_conversation_plugin_inactive_service_returns_400(
 ):
     """The /load_plugin endpoint maps inactive runtime state to 400."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.load_plugin.side_effect = ValueError("inactive_service")
+    mock_event_service.load_plugin.side_effect = ServiceInactive()
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
     )
