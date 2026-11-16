@@ -94,6 +94,7 @@ from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
+from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -308,9 +309,7 @@ class EventService:
         meta_file = self.conversation_dir / "meta.json"
         self.stored = StoredConversation.model_validate_json(
             meta_file.read_text(),
-            context={
-                "cipher": self.cipher,
-            },
+            context=cipher_context(self.cipher),
         )
 
     async def save_meta(self, stored: StoredConversation | None = None) -> None:
@@ -324,11 +323,7 @@ class EventService:
             meta_file = self.conversation_dir / "meta.json"
             atomic_write_text(
                 meta_file,
-                new_stored.model_dump_json(
-                    context={
-                        "cipher": self.cipher,
-                    }
-                ),
+                new_stored.model_dump_json(context=cipher_context(self.cipher)),
             )
         self.stored = new_stored
 
@@ -369,7 +364,7 @@ class EventService:
                 }
             )
 
-        context = {"cipher": self.cipher}
+        context = cipher_context(self.cipher)
         base_state_file = self.conversation_dir / BASE_STATE
         meta_file = self.conversation_dir / "meta.json"
         legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
@@ -1259,8 +1254,8 @@ class EventService:
         conversation.llm_registry.set_stats_update_callback(stats_callback)
 
     @staticmethod
-    def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
-        """Initialize the workspace as a git repo if it isn't already one.
+    def _prepare_workspace_dir(working_dir: Path) -> None:
+        """Create the workspace and make it a git repo if it isn't already one.
 
         The /api/git/changes endpoint expects a real repository to compute
         changes against; without this, agent-created files never appear in
@@ -1268,6 +1263,7 @@ class EventService:
         are handled by `get_valid_ref()` via GIT_EMPTY_TREE_HASH, and
         untracked files surface through `git ls-files --others`.
         """
+        working_dir.mkdir(parents=True, exist_ok=True)
         try:
             validate_git_repository(working_dir)
             return  # already a repo
@@ -1305,9 +1301,9 @@ class EventService:
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
-        working_dir = Path(workspace.working_dir)
-        working_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_workspace_is_git_repo(working_dir)
+        await asyncio.to_thread(
+            self._prepare_workspace_dir, Path(workspace.working_dir)
+        )
         # base_state.json is the single source of truth for the agent. On resume
         # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
         # persisted agent. On a new conversation the creating caller supplied the
@@ -1326,7 +1322,7 @@ class EventService:
                 )
             agent_cls = type(self.agent)
             agent = agent_cls.model_validate(
-                self.agent.model_dump(context={"expose_secrets": True}),
+                self.agent.model_dump(context=client_context("plaintext")),
             )
 
         # Create LocalConversation with plugins and hook_config.
@@ -1825,8 +1821,11 @@ class EventService:
             # coroutine enters its own try/finally.
             self._run_task.add_done_callback(settle)
 
+    # ``timeout`` bounds only the wait for the run task, not the status read
+    # after it, which a caller-side ``asyncio.timeout`` would also cut off.
     async def wait_for_run_completion(
-        self, timeout: float | None = None
+        self,
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> ConversationExecutionStatus:
         """Wait for the active run task without cancelling it on timeout."""
         run_task = self._run_task
