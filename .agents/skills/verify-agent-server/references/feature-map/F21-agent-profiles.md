@@ -1048,10 +1048,10 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - A profile file that is valid JSON but not a valid profile is listed
   (summaries read raw JSON) yet is 400 on GET. Through other families'
   routes the same profile is a deliberate 500 `Could not load agent
-  profile` on `POST /api/conversations`, and an unhandled 500 on
-  `GET /api/settings/secrets?agent_profile_id=` (F18), which also answers
-  500 instead of 503 while the store is busy: it loads the profile outside
-  the store error mapping.
+  profile` on `POST /api/conversations`, and the same 400 `Failed to load
+  profile` on `GET /api/settings/secrets?agent_profile_id=`, which also
+  answers 503 `Profile store is busy` while the store is busy
+  (`F18.secret-scope-profile-errors`).
 - 5xx responses (the busy 503) carry `detail: "Internal Server Error"` and
   the real message in `exception`; 4xx carry `detail` directly.
 - A launched run uses `acp_skill_sourcing` `native` unless told otherwise,

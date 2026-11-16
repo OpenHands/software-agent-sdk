@@ -2167,6 +2167,58 @@ class TestConversationServiceStartConversation:
         assert "Do all file and git work inside this worktree" in suffix
 
     @pytest.mark.asyncio
+    async def test_start_conversation_runs_worktree_git_off_the_event_loop(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=repo_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+        loop_thread = threading.get_ident()
+        threads: dict[str, int] = {}
+
+        def _recording(name, fn):
+            def wrapper(*args, **kwargs):
+                threads[name] = threading.get_ident()
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=cast(AgentBase, kwargs.get("agent")) or _sample_agent(),
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        module = "openhands.agent_server.conversation_service"
+        with (
+            patch(f"{module}.EventService", side_effect=_event_service_factory),
+            patch(
+                f"{module}._plan_conversation_worktree",
+                _recording("plan", _plan_conversation_worktree),
+            ),
+            patch(
+                f"{module}._create_conversation_worktree",
+                _recording("create", _create_conversation_worktree),
+            ),
+        ):
+            await conversation_service.start_conversation(request)
+
+        assert set(threads) == {"plan", "create"}
+        assert loop_thread not in threads.values()
+
+    @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_preserves_relative_workspace(
         self, conversation_service, tmp_path
     ):
@@ -4352,6 +4404,50 @@ class TestConversationTreeForkAndNavigate:
                 await svc.fork_conversation(info.id, from_event_id="evt-missing")
             # Validation must fail-fast before any fork dir is written to disk.
             assert {p.name for p in conversations_dir.iterdir()} == before
+
+    @pytest.mark.asyncio
+    async def test_cipher_backed_fork_resumes_with_credentials(self, tmp_path):
+        """A cipher-backed fork survives a restart with its secrets (#5465)."""
+        conversations_dir = tmp_path / "conversations"
+        cipher = Cipher("fork-resume-test-key")
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(
+                    model="gpt-4o",
+                    api_key=SecretStr("sk-fork-test"),
+                    usage_id="test-llm",
+                ),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        )
+
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as svc:
+            info, _ = await svc.start_conversation(request)
+            source_service = await svc.get_event_service(info.id)
+            assert source_service is not None
+            source_service.get_conversation().update_secrets({"MY_TOKEN": "tok-123"})
+
+            fork_info = await svc.fork_conversation(info.id)
+            assert fork_info is not None
+
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as restarted:
+            # Resume path: the restarted server loads the fork from its
+            # persisted base_state.json with agent=None.
+            fork_service = await restarted.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_conversation = fork_service.get_conversation()
+            api_key = fork_conversation.agent.llm.api_key
+            assert isinstance(api_key, SecretStr)
+            assert api_key.get_secret_value() == "sk-fork-test"
+            assert (
+                fork_conversation.state.secret_registry.get_secret_value("MY_TOKEN")
+                == "tok-123"
+            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

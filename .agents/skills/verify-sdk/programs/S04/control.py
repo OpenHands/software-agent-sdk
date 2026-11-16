@@ -7,6 +7,7 @@ tools are the real terminal and the `sleeper` tool from `S01/sleeper.py`.
 Usage: control.py MODE
   pause           pause() between steps, while idle, twice, then resume
   pause-mid-call  pause() while an LLM call is in flight
+  arun-pause-persisted  pause() while arun() waits on the model is on disk at once
   async-callback  a coroutine on the main loop receives events from run()
   interrupt       interrupt() cancels arun() mid-LLM-call; resume; fallbacks
   cancel-token    interrupt() during a batch of tool calls skips the rest
@@ -142,6 +143,57 @@ elif mode == "pause-mid-call":
     }
     conversation.run()
     out["status_after_resume"] = conversation.state.execution_status.value
+    conversation.close()
+
+elif mode == "arun-pause-persisted":
+    import json
+    import uuid
+
+    from sdk_verify import conversation_dir
+
+    cid = uuid.uuid4()
+    delay = 3.0
+    llm = slow_llm([sleeper("only", 0.1), {"finish": "done"}], delay=delay)
+    conversation = Conversation(
+        agent=Agent(llm=llm, tools=[Tool(name="SleeperTool")]),
+        workspace=WORKSPACE,
+        persistence_dir=str(run_paths()["conversations"]),
+        conversation_id=cid,
+        visualizer=None,
+    )
+    base_state = conversation_dir(str(cid)) / "base_state.json"
+
+    def disk_status() -> str:
+        return json.loads(base_state.read_text())["execution_status"]
+
+    conversation.send_message("Sleep once, then finish.")
+    thread = threading.Thread(target=lambda: asyncio.run(conversation.arun()))
+    thread.start()
+    llm.in_flight.wait(timeout=30)
+    time.sleep(0.2)
+    out["disk_status_before_pause"] = disk_status()
+    paused_at = time.monotonic()
+    conversation.pause()  # from this (other) thread, the model call in flight
+    out |= {
+        "pause_returned_after_s": round(time.monotonic() - paused_at, 2),
+        "disk_status_mid_call": disk_status(),
+        "model_call_still_in_flight": thread.is_alive() and llm.call_count == 0,
+        "pause_events_mid_call": count(conversation, PauseEvent),
+    }
+    thread.join(timeout=60)
+    out |= {
+        "status": conversation.state.execution_status.value,
+        "disk_status_after_arun": disk_status(),
+        "llm_calls": llm.call_count,
+        "pause_events": count(conversation, PauseEvent),
+    }
+    llm.delay = 0.0
+    conversation.run()
+    out |= {
+        "status_after_resume": conversation.state.execution_status.value,
+        "disk_status_after_resume": disk_status(),
+        "llm_calls_after_resume": llm.call_count,
+    }
     conversation.close()
 
 elif mode == "async-callback":

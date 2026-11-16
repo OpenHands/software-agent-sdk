@@ -803,7 +803,10 @@ Preconditions:
   recipes that stop at `finished` re-read the status over REST.
 - `POST .../events` with `run: true` on a `running` conversation is a 200,
   not the 409 of `POST /run`: the message joins the running loop. A client
-  that wants to know whether a new run started must watch the socket.
+  that wants to know whether a new run started must watch the socket. The
+  exception is a conversation whose current turn was started by the OpenAI
+  gateway: there the POST is 409 `Gateway run in progress; message not
+  saved` and nothing is stored (`F30.direct-event-during-turn-409`).
 - The body is required (no body is a 422), but every field has a default:
   `{}` is a valid request and appends a user `MessageEvent` with empty
   `content`.

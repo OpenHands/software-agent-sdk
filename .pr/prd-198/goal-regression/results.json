@@ -1,0 +1,53 @@
+{
+  "source": {
+    "baseline_sdk": "9f7d5cb11b1256c1878f5584a657401feca9ad16",
+    "candidate_sdk": "46892b09e7483e0c838a1f7bb2076a180d7d5700",
+    "goal_driver_and_routes_unchanged": true
+  },
+  "same_canvas_build_used": true,
+  "distinct_sandboxes": true,
+  "proof_files_absent_before_each_run": true,
+  "default_skill_names_identical": true,
+  "cases": [
+    {
+      "case": "baseline-default",
+      "canvas_slash_goal_submitted": true,
+      "goal_started_event": true,
+      "goal_status": "complete",
+      "audit_rounds": 1,
+      "max_iterations": 2,
+      "agent_finished": true,
+      "independent_file_contents_verified": true,
+      "public_skills_enabled": true,
+      "loaded_skill_count": 74,
+      "public_catalogs_disabled": false
+    },
+    {
+      "case": "candidate-default",
+      "canvas_slash_goal_submitted": true,
+      "goal_started_event": true,
+      "goal_status": "complete",
+      "audit_rounds": 1,
+      "max_iterations": 2,
+      "agent_finished": true,
+      "independent_file_contents_verified": true,
+      "public_skills_enabled": true,
+      "loaded_skill_count": 74,
+      "public_catalogs_disabled": false
+    },
+    {
+      "case": "candidate-off",
+      "canvas_slash_goal_submitted": true,
+      "goal_started_event": true,
+      "goal_status": "complete",
+      "audit_rounds": 1,
+      "max_iterations": 2,
+      "agent_finished": true,
+      "independent_file_contents_verified": true,
+      "public_skills_enabled": false,
+      "loaded_skill_count": 1,
+      "public_catalogs_disabled": true
+    }
+  ],
+  "scope": "Agent-operated live Canvas goal-completion regression for one local-artifact objective. Not universal workflow coverage or a released Enterprise dependency validation."
+}

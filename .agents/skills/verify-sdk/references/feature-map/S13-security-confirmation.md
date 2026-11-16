@@ -1,6 +1,6 @@
 # Security analyzers, confirmation mode and secrets
 
-A Python program decides, per conversation, whether the agent's tool calls run straight away or stop for approval. Every tool schema the agent sends carries a `security_risk` field (`LOW`, `MEDIUM`, `HIGH`), and the system prompt carries a risk policy (built in, or a custom file through `Agent(security_policy_filename=...)`). `conversation.set_security_analyzer(...)` picks who rates each pending action: the actor LLM's own label (`LLMSecurityAnalyzer`), local deterministic rules (`PatternSecurityAnalyzer`, `PolicyRailSecurityAnalyzer`, composed with `EnsembleSecurityAnalyzer`), a separate guardrail LLM (`ToolShieldLLMSecurityAnalyzer`) or the Gray Swan API (`GraySwanAnalyzer`); each verdict is recorded as a `SecurityAnalysisEvent`. `conversation.set_confirmation_policy(...)` (`NeverConfirm`, `AlwaysConfirm`, `ConfirmRisky(threshold, confirm_unknown)`) then decides: when it says confirm, `run()` returns with `execution_status == WAITING_FOR_CONFIRMATION`, the program reads the pending actions, and either calls `run()` again to execute them or `reject_pending_actions(reason)` to turn them into `UserRejectObservation`s. Secrets given to `Conversation(secrets=...)` or `conversation.update_secrets(...)` (plain strings, `StaticSecret`, `LookupSecret` URLs, or custom `SecretSource`s) are exported as env vars to terminal commands that reference them, listed by name in the system prompt, and replaced with `<secret-hidden>` in every tool observation, agent message, and analysis event before callbacks or persistence see them.
+A Python program decides, per conversation, whether the agent's tool calls run straight away or stop for approval. Every tool schema the agent sends carries a `security_risk` field (`LOW`, `MEDIUM`, `HIGH`), and the system prompt carries a risk policy (built in, or a custom file through `Agent(security_policy_filename=...)`). `conversation.set_security_analyzer(...)` picks who rates each pending action: the actor LLM's own label (`LLMSecurityAnalyzer`), local deterministic rules (`PatternSecurityAnalyzer`, `PolicyRailSecurityAnalyzer`, composed with `EnsembleSecurityAnalyzer`), a separate guardrail LLM (`ToolShieldLLMSecurityAnalyzer`) or the Gray Swan API (`GraySwanAnalyzer`); each verdict is recorded as a `SecurityAnalysisEvent`. `conversation.set_confirmation_policy(...)` (`NeverConfirm`, `AlwaysConfirm`, `ConfirmRisky(threshold, confirm_unknown)`) then decides: when it says confirm, `run()` returns with `execution_status == WAITING_FOR_CONFIRMATION`, the program reads the pending actions, and either calls `run()` again to execute them or `reject_pending_actions(reason)` to turn them into `UserRejectObservation`s. Secrets given to `Conversation(secrets=...)` or `conversation.update_secrets(...)` (plain strings, `StaticSecret`, `LookupSecret` URLs, or custom `SecretSource`s) are exported as env vars to terminal commands that reference them, listed by name in the system prompt, and replaced with `<secret-hidden>` in every tool observation, agent message (its text, reasoning and thinking blocks), and analysis event before callbacks or persistence see them.
 
 Source: `openhands-sdk/openhands/sdk/security/`, `openhands-sdk/openhands/sdk/secret/`, `openhands-sdk/openhands/sdk/conversation/secret_registry.py`, `openhands-sdk/openhands/sdk/agent/agent.py`, `openhands-sdk/openhands/sdk/agent/base.py`, `openhands-sdk/openhands/sdk/conversation/base.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/tool/tool.py`, `openhands-sdk/openhands/sdk/settings/model.py`, `openhands-sdk/openhands/sdk/utils/redact.py`
 
@@ -31,6 +31,7 @@ Examples: `examples/01_standalone_sdk/04_confirmation_mode_example.py`, `example
 - `S13.mask-tool-output`: every tool observation goes through `ToolDefinition.__call__`, which masks it with `mask_secrets_in_model`: file editor views, grep's echoed pattern, glob paths and nested apply-patch content are masked; no tool bypasses it; without a conversation nothing is masked. Unit: `tests/tools/test_tool_output_secret_masking.py`. Example: none. Real-LLM: none.
 - `S13.mask-models`: `mask_secrets_in_model` walks nested models, lists, sets, dicts and namedtuples, leaves non-strings, `SecretStr` and enum members alone, and keeps base64 image data (data URLs, browser screenshots) intact while masking regular URLs. Unit: `tests/sdk/conversation/test_secret_registry_model_masking.py`, `tests/cross/test_secret_masking_tool_payloads.py`. Example: none. Real-LLM: none.
 - `S13.mask-async`: in `arun()`, agent messages and tool thoughts are masked the same as in sync, including `LookupSecret`s resolved over loopback and secrets registered during a lookup, without blocking the loop. Unit: `tests/sdk/agent/test_async_secret_masking.py`. Example: none. Real-LLM: none.
+- `S13.mask-thinking`: on an agent reply without tool calls (a text reply, or a reasoning-only reply that gets the nudge), the `MessageEvent` also has registered values masked in `reasoning_content` and in each thinking block's text, in memory and in the persisted event, in `run()` and `arun()`; a block whose text was masked carries no `signature`, and a redacted-thinking block's `data` is left as the provider sent it. Unit: `tests/sdk/agent/test_response_dispatch.py::test_thinking_blocks_mask_registered_secret`, `::test_reasoning_only_response_masks_registered_secret`. Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
 
@@ -181,6 +182,25 @@ Preconditions:
     --check async.tool_step.seconds lt 10
   ```
   Expected: both cases are masked in well under a second. `astep` resolves lookups with the state lock released before running tools, as it does before masking an agent message, so a server's `update_secrets` call never waits on that lock.
+- **Reasoning and thinking blocks of an agent message (`S13.mask-thinking`).** With `secrets={"THINK_TOKEN": "think-tok-s13"}`, a scripted model first answers with `reasoning_content` only, then with text, `reasoning_content`, a signed thinking block and a redacted-thinking block, each quoting the value; once under `run()` and once under `arun()`, both persisted.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S13/secrets_run --arg thinking \
+    --check thinking.run.status eq finished --check thinking.run.agent_messages eq 2 \
+    --check thinking.run.reasoning_only eq "first I recall <secret-hidden>" \
+    --check thinking.run.text eq "The token is <secret-hidden>." \
+    --check thinking.run.reasoning_content eq "I will quote <secret-hidden>" \
+    --check thinking.run.thinking.0 eq "The user wants <secret-hidden> repeated" \
+    --check thinking.run.signatures.0 missing --check thinking.run.redacted_data.0 eq opaque-s13 \
+    --check thinking.run.persisted_leaks eq false --check thinking.run.persisted_masked_thinking eq true \
+    --check thinking.run.persisted_masked_reasoning eq true \
+    --check thinking.arun.status eq finished --check thinking.arun.reasoning_only eq "first I recall <secret-hidden>" \
+    --check thinking.arun.reasoning_content eq "I will quote <secret-hidden>" \
+    --check thinking.arun.thinking.0 eq "The user wants <secret-hidden> repeated" \
+    --check thinking.arun.signatures.0 missing --check thinking.arun.persisted_leaks eq false \
+    --check thinking.arun.persisted_masked_thinking eq true
+  ```
+  The value appears nowhere in the conversation's event files. The masked block has no signature, because the provider's signature would not match the masked text.
 - **A real model labels its own actions (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`).** Live. The model is asked to run `ls` and then `rm -rf scratch`; `ConfirmRisky()` stops, and the program rejects until the agent finishes. A model that declines to propose the deletion at all (DeepSeek Flash did on 2026-11-03: it only listed and read `scratch/`) leaves the confirmation path unexercised, and the program exits 3.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -224,6 +244,6 @@ Preconditions:
 - `ConversationSettings.security_analyzer` defaults to `"llm"`, so `confirmation_mode=True` alone gives `ConfirmRisky` + `LLMSecurityAnalyzer`; pass `security_analyzer="none"` for `AlwaysConfirm`. With `confirmation_mode=False` the LLM analyzer is still built and keeps recording `SecurityAnalysisEvent`s under `NeverConfirm`.
 - `PolicyRailSecurityAnalyzer` does not normalize Unicode (fullwidth or zero-width `rm -rf /` rate LOW); only `PatternSecurityAnalyzer` does. Use the ensemble.
 - Nothing in the SDK calls `GraySwanAnalyzer.set_events`. In a conversation each request carries only a synthesized system message plus the pending action, unless the program calls `set_events(...)` itself.
-- Masking covers observations, agent messages and analysis events. An `ActionEvent`'s arguments and `thought` keep the literal value the model wrote, both in memory and in the persisted event file, in sync and async alike.
+- Masking covers observations, agent messages (text, `reasoning_content` and thinking-block text) and analysis events. An `ActionEvent`'s arguments, `thought`, `reasoning_content` and thinking blocks keep the literal value the model wrote, both in memory and in the persisted event file, in sync and async alike.
 - Once a command references a secret, the variable stays exported in that terminal session: a later `env` shows it, although its output is masked.
 - `sdk-map run` treats example 47 as model-backed because of its `examples/` path, although it never calls the model.

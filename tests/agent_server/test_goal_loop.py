@@ -16,7 +16,9 @@ from pydantic import PrivateAttr, SecretStr
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.goal import GoalAsked, GoalController
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.testing import TestLLM
@@ -809,3 +811,33 @@ async def test_restart_leaves_inactive_goal_status_alone(
         assert _goal_status_updates(restarted) == before
     finally:
         await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_stops_on_a_question_for_the_user(event_service, tmp_path):
+    # The agent asked the user (ask_user): no followup may land over the
+    # question, so the loop stops, resumable, without judging the round.
+    await _start(event_service, tmp_path, "turn 1")
+    judge = _scripted(_NOT_DONE, usage_id="judge")
+    try:
+        with patch.object(
+            GoalController,
+            "on_run_finished",
+            return_value=GoalAsked(ask_id="ask-1", question="Postgres or SQLite?"),
+        ):
+            await event_service.start_goal_loop(
+                "build x", judge_llm=judge, max_iterations=5
+            )
+            await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "interrupted"
+        assert updates[-1]["active"] is False
+        user_messages = [
+            e
+            for e in event_service.get_conversation()._state.events
+            if isinstance(e, MessageEvent) and e.source == "user"
+        ]
+        assert len(user_messages) == 1  # only the objective
+    finally:
+        await event_service.close()

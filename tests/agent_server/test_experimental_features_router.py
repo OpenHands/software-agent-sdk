@@ -165,11 +165,12 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 
 
 @pytest.mark.asyncio
-async def test_every_feature_is_listed_and_off(client):
+async def test_features_are_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
         ("conversation_reactions", False),
+        ("ask_user", False),
         ("conversation_mentions", False),
     ]
 
@@ -181,6 +182,9 @@ def test_feature_tools_follow_the_flags():
     ] == [
         "react",
         "unreact",
+    ]
+    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
+        "ask_user"
     ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_mentions": True})

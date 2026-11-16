@@ -68,7 +68,7 @@ Preconditions:
 - **The feature flag (`F38.flag`, `F38.flag-gates`).**
   ```sh
   control-agent-server api GET /api/settings/experimental \
-    --check 1.key eq conversation_mentions --check 1.enabled eq false --save F38.flag/list
+    --check 2.key eq conversation_mentions --check 2.enabled eq false --save F38.flag/list
   OFF=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server api PATCH /api/settings/experimental/conversation_mentions --json '{"enabled": true}' \
     --expect 200 --check enabled eq true
