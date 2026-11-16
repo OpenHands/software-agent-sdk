@@ -24,6 +24,7 @@ from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
     RunSlot,
+    ServiceInactive,
 )
 from openhands.agent_server.experimental_features import (
     experimental_feature_tools,
@@ -779,7 +780,7 @@ class ConversationService:
         async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             active_services = tuple(event_services.items())
             results = await asyncio.gather(
                 *(
@@ -890,7 +891,7 @@ class ConversationService:
     ) -> ConversationInfo | None:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         children = (
             children_index.get(conversation_id, [])
@@ -1000,7 +1001,7 @@ class ConversationService:
         """
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         targets: list[tuple[UUID, str, tuple[int, int] | None]] = []
         for conversation_id, record in list(self._conversation_records.items()):
@@ -1049,7 +1050,7 @@ class ConversationService:
         """Refresh one catalog record changed by an external runtime."""
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         disk_records = await asyncio.to_thread(self._load_catalog_sync, conversation_id)
         if conversation_id not in disk_records:
             event_service = event_services.get(conversation_id)
@@ -1069,7 +1070,7 @@ class ConversationService:
         """Add injected live services to the in-memory catalog."""
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         for conversation_id, event_service in event_services.items():
             if conversation_id in self._conversation_records:
                 continue
@@ -1151,7 +1152,7 @@ class ConversationService:
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         if (
             conversation_id not in event_services
             and conversation_id not in self._conversation_records
@@ -1169,7 +1170,7 @@ class ConversationService:
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
@@ -1204,7 +1205,7 @@ class ConversationService:
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         record = self._conversation_records.get(conversation_id)
         if record is None:
             event_service = self._event_services.get(conversation_id)
@@ -1270,7 +1271,7 @@ class ConversationService:
         sort_order: ConversationSortOrder,
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         await self._reconcile_active_records()
 
         if execution_status is not None:
@@ -1333,7 +1334,7 @@ class ConversationService:
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         await self._reconcile_active_records()
 
         if execution_status is None:
@@ -1429,7 +1430,7 @@ class ConversationService:
         catalog cannot change between the existence check and the reuse.
         """
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         existing_record = self._conversation_records.get(conversation_id)
         existing_event_service = self._event_services.get(conversation_id)
         stored = (
@@ -1576,7 +1577,7 @@ class ConversationService:
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         conversation_id = request.conversation_id or uuid4()
         if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):
@@ -1915,7 +1916,7 @@ class ConversationService:
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         if (
             conversation_id not in event_services
             and conversation_id not in self._conversation_records
@@ -2056,7 +2057,7 @@ class ConversationService:
     ) -> EventService | None:
         """Open append-only event history without acquiring a runtime lease."""
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
@@ -2121,7 +2122,7 @@ class ConversationService:
                 conversation.
         """
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         # Reject duplicate fork IDs before fork() writes into its persistence
         # directory. The catalog includes both live and unloaded conversations.
@@ -2222,7 +2223,7 @@ class ConversationService:
                 Nothing is persisted in that case.
         """
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         parent_service = await self._get_or_load_event_service(parent_id)
         if parent_service is None:
@@ -2572,7 +2573,7 @@ class ConversationService:
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         # A new conversation starts with the ``launched`` agent (meta.json does
         # not carry it). Otherwise the agent is read from base_state.json, and
@@ -2639,7 +2640,7 @@ class ConversationService:
             # even if the system is not shut down gracefully
             await event_service.save_meta()
             if self._event_services is not event_services:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             state = await event_service.get_state()
         except BaseException:
             try:

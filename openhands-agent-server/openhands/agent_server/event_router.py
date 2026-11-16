@@ -25,7 +25,7 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, ServiceInactive
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
@@ -451,9 +451,9 @@ async def react_to_message(
         return await event_service.react(
             request.emoji, request.target_event_id, removed=request.removed
         )
+    except ServiceInactive:
+        raise
     except ValueError as exc:
-        if str(exc) == "inactive_service":
-            raise
         raise Invalid(str(exc))
 
 
@@ -498,9 +498,9 @@ async def answer_ask_user(
             return await event_service.answer_ask(
                 request.ask_id, request.option_index, request.text
             )
+        except ServiceInactive:
+            raise
         except ValueError as exc:
-            if str(exc) == "inactive_service":
-                raise
             raise Invalid(str(exc))
 
 
