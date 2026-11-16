@@ -7,6 +7,7 @@ import {
   HttpError,
   isMessageEditEvent,
   isAskUserAnswerEvent,
+  isMessageEditEvent,
   isReactionEvent,
   RemoteConversation,
   RemoteEventsList,

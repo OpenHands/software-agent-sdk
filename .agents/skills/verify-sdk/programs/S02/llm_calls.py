@@ -2,10 +2,14 @@
 against a local endpoint that answers from a script. One scenario per mode.
 
 Usage: llm_calls.py MODE
-  retries         transient errors retried, others raised at once, listener
-  no-response     empty replies retried with a temperature bump, then raised
+  retries         transient errors retried, others raised at once, listener;
+                  a 2xx body that is not JSON retried
+  no-response     empty and content-free replies retried with a temperature
+                  bump, then raised; a length-capped empty reply and a
+                  reasoning-only reply returned
   errors          provider errors mapped to the SDK's typed exceptions
-  timeouts        per-attempt timeout and async stream idle timeout
+  timeouts        per-attempt timeout and async stream idle timeout; the
+                  timeout retry budget and the final error's summary
   streaming       sync/async streaming callbacks, and stream without callback
   prompted        text replies parsed back into tool calls (non-native)
   cache-too-small a prompt-cache rejection retried without cache markers
@@ -60,6 +64,20 @@ def attempt(fn):
         return None, type(exc).__name__, round(time.monotonic() - started, 1)
 
 
+def attempt_message(fn):
+    """Run fn; return (result, error type name, error text, seconds)."""
+    started = time.monotonic()
+    try:
+        return fn(), None, None, round(time.monotonic() - started, 1)
+    except Exception as exc:
+        return (
+            None,
+            type(exc).__name__,
+            str(exc),
+            round(time.monotonic() - started, 1),
+        )
+
+
 def chat_llm(server: FakeProvider, **kw) -> LLM:
     return LLM(
         model=kw.pop("model", "openai/gpt-4o-mini"),
@@ -110,6 +128,24 @@ if mode == "retries":
             lambda: chat_llm(s, num_retries=3, **FAST).completion(MESSAGES)
         )
         out["budget_denial"] = {"error": err, "requests": len(s.requests)}
+    # A 2xx reply whose body is not JSON: LiteLLM's OpenAI-compatible handler
+    # (`hosted_vllm/`) raises APIError with the 2xx status. A 4xx body that is
+    # not JSON is not retried.
+    for name, status in (("malformed_2xx", 200), ("malformed_4xx", 400)):
+        with FakeProvider(
+            [{"raw": "<html>upstream glitch</html>", "raw_status": status}]
+            + [{"text": "hi"}]
+        ) as s:
+            r, err, _ = attempt(
+                lambda: chat_llm(
+                    s, model="hosted_vllm/verify-model", num_retries=3, **FAST
+                ).completion(MESSAGES)
+            )
+            out[name] = {
+                "text": text_of(r) if r else None,
+                "error": err,
+                "requests": len(s.requests),
+            }
 
 elif mode == "no-response":
     with FakeProvider([{"empty": True}, {"empty": True}, {"text": "hi"}]) as s:
@@ -130,6 +166,38 @@ elif mode == "no-response":
         llm = chat_llm(s, num_retries=2, **FAST)
         r, err, _ = attempt(lambda: asyncio.run(llm.acompletion(MESSAGES)))
         out["chat_async"] = {"text": text_of(r) if r else None, "error": err}
+    # A choice with empty text, no tool call and no reasoning, plain and
+    # streamed.
+    for name, stream in (("content_free", False), ("content_free_stream", True)):
+        with FakeProvider([{"text": ""}, {"text": "hi"}]) as s:
+            llm = chat_llm(s, num_retries=3, temperature=0.0, stream=stream, **FAST)
+            kwargs = {"on_token": lambda _c: None} if stream else {}
+            r, err, _ = attempt(lambda: llm.completion(MESSAGES, **kwargs))
+            out[name] = {
+                "text": text_of(r) if r else None,
+                "error": err,
+                "requests": len(s.requests),
+                "temperatures": [q["body"].get("temperature") for q in s.requests],
+            }
+    with FakeProvider([{"text": "", "finish_reason": "length"}, {"text": "hi"}]) as s:
+        r, err, _ = attempt(
+            lambda: chat_llm(s, num_retries=3, **FAST).completion(MESSAGES)
+        )
+        out["length_capped"] = {
+            "text": text_of(r) if r else None,
+            "error": err,
+            "requests": len(s.requests),
+        }
+    with FakeProvider([{"reasoning": "only thinking"}, {"text": "hi"}]) as s:
+        r, err, _ = attempt(
+            lambda: chat_llm(s, num_retries=3, **FAST).completion(MESSAGES)
+        )
+        out["reasoning_only"] = {
+            "text": text_of(r) if r else None,
+            "reasoning": r.message.reasoning_content if r else None,
+            "error": err,
+            "requests": len(s.requests),
+        }
     # On the Responses path a no-response is a stream that ends without its
     # completed event.
     incomplete = {"text": "lost", "incomplete": True}
@@ -224,6 +292,67 @@ elif mode == "timeouts":
             lambda: asyncio.run(llm.acompletion(MESSAGES, on_token=on_token))
         )
         out["stream_idle"] = {"error": err, "seconds": secs}
+
+    # Every attempt reaches the timeout: retrying stops after two timeouts'
+    # worth of time, whatever num_retries allows.
+    def summary(text):
+        text = text or ""
+        return {
+            "names_limit": "within the LLM timeout of 1s" in text,
+            "names_attempts": "gave up after 2 attempts" in text,
+            "names_settings": "higher timeout in the LLM settings" in text,
+        }
+
+    never = {"delay": 30, "text": "never sent"}
+    with FakeProvider([never] * 6) as s:
+        _, err, text, secs = attempt_message(
+            lambda: chat_llm(s, num_retries=5, timeout=1, **FAST).completion(MESSAGES)
+        )
+        out["hard"] = {
+            "error": err,
+            "seconds": secs,
+            "requests": len(s.requests),
+            "message": text,
+            **summary(text),
+        }
+    with FakeProvider([never] * 6) as s:
+        llm = chat_llm(
+            s, num_retries=5, timeout=1, stream=True, stream_idle_timeout=None, **FAST
+        )
+
+        async def ignore(chunk) -> None:
+            pass
+
+        _, err, text, secs = attempt_message(
+            lambda: asyncio.run(llm.acompletion(MESSAGES, on_token=ignore))
+        )
+        out["hard_async"] = {
+            "error": err,
+            "seconds": secs,
+            "requests": len(s.requests),
+            "message": text,
+            "hard_timeout": "LLM hard timeout after 1 seconds" in (text or ""),
+            **summary(text),
+        }
+    # Timeouts far below `timeout` (a stream idle timeout of 0.3 s against a
+    # 30 s limit) keep every attempt.
+    with FakeProvider([{"stall": 5, "text": "stalled"}] * 4) as s:
+        llm = chat_llm(
+            s, num_retries=3, timeout=30, stream=True, stream_idle_timeout=0.3, **FAST
+        )
+
+        async def ignore(chunk) -> None:
+            pass
+
+        _, err, text, secs = attempt_message(
+            lambda: asyncio.run(llm.acompletion(MESSAGES, on_token=ignore))
+        )
+        out["quick"] = {
+            "error": err,
+            "seconds": secs,
+            "requests": len(s.requests),
+            "message": text,
+        }
     # The same stall inside an async agent run ends the conversation in ERROR.
     from openhands.sdk import Agent, Conversation
 

@@ -201,7 +201,7 @@ Preconditions:
     --check thinking.arun.persisted_masked_thinking eq true
   ```
   The value appears nowhere in the conversation's event files. The masked block has no signature, because the provider's signature would not match the masked text.
-- **A real model labels its own actions (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`).** Live. The model is asked to run `ls` and then `rm -rf scratch`; `ConfirmRisky()` stops, and the program rejects until the agent finishes. A model that declines to propose the deletion at all (DeepSeek Flash did on 2026-11-03: it only listed and read `scratch/`) leaves the confirmation path unexercised, and the program exits 3.
+- **A real model labels its own actions (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`).** Live. The model is asked to run `ls` and then `rm -rf scratch`; `ConfirmRisky()` stops, and the program rejects until the agent finishes. A model that declines to propose the deletion at all (DeepSeek Flash did on 2026-11-03: it only listed and read `scratch/`) leaves the confirmation path unexercised, and the program exits 3. The risk label is the model's own judgment: DeepSeek Flash labels `rm -rf scratch` `MEDIUM` in many runs, which `ConfirmRisky()` lets through (`stops` 0, `scratch_kept` false), so this bullet can fail on any revision without a product change; read the `risks` it printed before suspecting the analyzer.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
   control-sdk program S13/live_risk \

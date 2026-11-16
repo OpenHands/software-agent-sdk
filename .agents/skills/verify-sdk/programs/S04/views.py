@@ -6,6 +6,8 @@ interactive terminal session. The model is a scripted `TestLLM` (or a priced
 Usage: views.py MODE
   visualizer   default Rich output, None, a class, an instance, a custom one
   fork         fork(): copy, independence, metrics, agent, title, tags, reload
+  fork-secrets fork() of a cipher-backed conversation: the api key and the
+               conversation secrets on the fork's disk, a reload, a step
   branch       parent ids, fork(from_event_id=...), navigate_to(...)
   goal         run_goal with a judge LLM: complete, capped, unparsable verdict
   final        get_agent_final_response for finish, text, nothing, both
@@ -224,6 +226,136 @@ elif mode == "fork":
         out["reloaded_fork_title"] = reloaded.state.tags.get("title")
         out["fork_events"] = fork_events
         reloaded.close()
+
+elif mode == "fork-secrets":
+    from openhands.sdk.conversation import LocalConversation
+    from openhands.sdk.utils.cipher import Cipher
+
+    API_KEY = "sk-fork-verify-123"
+    SECRETS = {"VERIFY_TOKEN": "tok-fork-123", "LATER_TOKEN": "later-token-4567"}
+    cipher = Cipher("verify-fork-cipher-key")
+
+    def on_disk(raw, plain):
+        """How a secret field sits in base_state.json."""
+        if raw == plain:
+            return "plaintext"
+        if isinstance(raw, str):
+            try:
+                decrypted = cipher.decrypt(raw)
+            except Exception:
+                decrypted = None
+            if decrypted is not None and decrypted.get_secret_value() == plain:
+                return "encrypted"
+        return f"other: {str(raw)[:40]}"
+
+    def base_state(conv):
+        return json.loads((BASE / conv.id.hex / "base_state.json").read_text())
+
+    def disk_view(conv):
+        state = base_state(conv)
+        sources = state.get("secret_registry", {}).get("secret_sources", {})
+        return {
+            "api_key": on_disk(state["agent"]["llm"].get("api_key"), API_KEY),
+            **{
+                name: on_disk((sources.get(name) or {}).get("value"), value)
+                for name, value in SECRETS.items()
+            },
+        }
+
+    with FakeProvider(
+        [
+            term(
+                'echo "v=$VERIFY_TOKEN l=$LATER_TOKEN";'
+                ' printf %s "$VERIFY_TOKEN" | wc -c; printf %s "$LATER_TOKEN" | wc -c',
+                summary="s",
+                security_risk="LOW",
+            ),
+            {"finish": "fork done"},
+        ]
+    ) as server:
+        llm = LLM(
+            model="openai/gpt-4o-mini",
+            base_url=server.url,
+            api_key=SecretStr(API_KEY),
+            usage_id="agent",
+            num_retries=1,
+        )
+        source = LocalConversation(
+            agent=Agent(llm=llm, tools=[Tool(name=TerminalTool.name)]),
+            workspace=WORKSPACE,
+            persistence_dir=str(BASE),
+            cipher=cipher,
+            secrets={"VERIFY_TOKEN": SECRETS["VERIFY_TOKEN"]},
+            visualizer=None,
+            delete_on_close=False,
+        )
+        source.update_secrets({"LATER_TOKEN": SECRETS["LATER_TOKEN"]})
+        source.send_message("Echo the tokens, then finish.")
+        fork = source.fork()
+        out["source_on_disk"] = disk_view(source)
+        out["fork_on_disk"] = disk_view(fork)
+        out["fork_registry_has"] = sorted(fork.state.secret_registry.secret_sources)
+        fork_id = fork.id
+        fork.close()
+        source.close()
+
+        # Reopen the fork from disk alone (agent=None), as a restarted server does.
+        reloaded = LocalConversation(
+            agent=None,
+            workspace=WORKSPACE,
+            persistence_dir=str(BASE),
+            conversation_id=fork_id,
+            cipher=cipher,
+            visualizer=None,
+            delete_on_close=False,
+        )
+        key = reloaded.agent.llm.api_key
+        out["reloaded_api_key_is_real"] = (
+            key is not None and key.get_secret_value() == API_KEY
+        )
+        out["reloaded_registry"] = {
+            name: reloaded.state.secret_registry.get_secret_value(name) == value
+            for name, value in SECRETS.items()
+        }
+        reloaded.run()
+        observations = [
+            e
+            for e in reloaded.state.events
+            if isinstance(e, ObservationEvent) and e.tool_name == TerminalTool.name
+        ]
+        text = observations[-1].observation.text if observations else ""
+        out |= {
+            "reloaded_status": reloaded.state.execution_status.value,
+            "requests": len(server.requests),
+            "authorization": [
+                r["headers"].get("authorization") == f"Bearer {API_KEY}"
+                for r in server.requests
+            ],
+            "command_output": [line.strip() for line in text.splitlines()[:3]],
+            "values_in_output": any(v in text for v in SECRETS.values()),
+            "fork_on_disk_after_run": disk_view(reloaded),
+        }
+        reloaded.close()
+
+    # A conversation without a cipher still forks with its secrets redacted.
+    plain = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="openai/gpt-4o-mini", api_key=SecretStr(API_KEY)),
+            tools=[],
+        ),
+        workspace=WORKSPACE,
+        persistence_dir=str(BASE),
+        visualizer=None,
+    )
+    plain_fork = plain.fork()
+    raw = base_state(plain_fork)["agent"]["llm"].get("api_key")
+    out["no_cipher_fork_api_key"] = (
+        "redacted"
+        if isinstance(raw, str) and set(raw) == {"*"}
+        else on_disk(raw, API_KEY)
+    )
+    plain_fork.close()
+    plain.close()
 
 elif mode == "branch":
     conversation = conversation_for(
