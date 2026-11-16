@@ -21,6 +21,7 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.event_router import event_router
+from openhands.agent_server.event_service import ServiceInactive
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent
@@ -218,3 +219,23 @@ async def test_answers_are_refused_while_the_feature_is_off(
 
     assert response.status_code == 409
     assert find_pending_ask(await _events(service, cid)) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_service_is_not_a_bad_answer(client, service, tmp_path):
+    """ServiceInactive is a server state, not a bad request: it is not a 400."""
+    cid, ask_id = await _conversation_with_question(service, tmp_path)
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+
+    async def inactive(*args, **kwargs):
+        raise ServiceInactive()
+
+    with (
+        patch.object(event_service, "answer_ask", inactive),
+        pytest.raises(ServiceInactive),
+    ):
+        await client.post(
+            f"/api/conversations/{cid}/ask_user/answer",
+            json={"ask_id": ask_id, "option_index": 0},
+        )

@@ -32,6 +32,7 @@ from openhands.agent_server.event_service import (
     PAUSED_BY_SHUTDOWN_MARKER,
     ConversationRunLimitExceeded,
     HeldForUser,
+    ServiceInactive,
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.persistence import PersistedProjects
@@ -190,9 +191,8 @@ async def _deliver(
             return
         except HeldForUser:
             return
-        except ValueError as exc:
-            if str(exc) == "inactive_service" or last:
-                raise
+        except ServiceInactive:
+            raise
         except Exception:
             if last:
                 raise

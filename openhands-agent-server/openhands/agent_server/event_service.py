@@ -187,6 +187,17 @@ RunRefusal = ConversationAlreadyRunning | HeldForUser
 """Why :func:`admission_refusal` refuses a run."""
 
 
+class ServiceInactive(ValueError):
+    """The service is not running: not started yet, or closing or closed.
+
+    It stays a ``ValueError`` with the message ``"inactive_service"``, so
+    routes and clients see the same error as before; callers catch the type.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("inactive_service")
+
+
 class _RunPermit:
     """Ref-counted permit shared by the chained runs of one admission session."""
 
@@ -592,7 +603,7 @@ class EventService:
     ) -> None:
         conversation = self._conversation
         if conversation is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         secrets = {
             name: value
             for name, value in secrets.items()
@@ -660,7 +671,7 @@ class EventService:
 
     def get_conversation(self):
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         return self._conversation
 
     @classmethod
@@ -679,7 +690,7 @@ class EventService:
         if self._persisted_events is not None:
             return self._persisted_events
         if self._conversation is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         return self._conversation._state.events
 
     def _get_event_sync(self, event_id: str) -> Event | None:
@@ -942,7 +953,7 @@ class EventService:
 
     def _admission_refusal_sync(self, *, from_user: bool) -> RunRefusal | None:
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         with self._conversation._state as state:
             return admission_refusal(state, from_user=from_user)
 
@@ -956,7 +967,7 @@ class EventService:
         state lock is reentrant, so ``send`` can take it again inside.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         with self._conversation._state as state:
             held = state.execution_status
             send(message)
@@ -968,7 +979,7 @@ class EventService:
 
     def _get_execution_status_sync(self) -> ConversationExecutionStatus:
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         with self._conversation._state as state:
             return state.execution_status
 
@@ -1017,7 +1028,7 @@ class EventService:
 
     def _create_state_update_event_sync(self) -> ConversationStateUpdateEvent:
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         state = self._conversation._state
         with state:
             event = ConversationStateUpdateEvent.from_conversation_state(state)
@@ -1027,7 +1038,7 @@ class EventService:
         self,
     ) -> tuple[ConversationStateUpdateEvent, int]:
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         state = self._conversation._state
         with state:
             return self._create_state_update_event_sync(), len(state.events)
@@ -1116,7 +1127,7 @@ class EventService:
             ``"not_run"`` when a stop or a closed service left it unrun.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         # A normal user message supersedes any active /goal loop in this
         # conversation. The goal loop's own messages pass _from_goal_loop=True.
         if not (_from_goal_loop or keep_goal_loop):
@@ -1180,7 +1191,7 @@ class EventService:
                 except HeldForUser:
                     raise
                 except ValueError:
-                    # "inactive_service" is terminal and must not re-arm.
+                    # ServiceInactive is terminal and must not re-arm.
                     pass
                 finally:
                     self._unpin_run_session()
@@ -1226,7 +1237,7 @@ class EventService:
         user; the message stays for its next run.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         with await RunSlot.acquire(self._run_semaphore, wait=True) as run_slot:
             try:
                 started = await self.run(
@@ -1857,13 +1868,14 @@ class EventService:
             landed meanwhile, or a closing service, left nothing to run.
 
         Raises:
-            ValueError: If the service is inactive, the conversation is already
-                running, or (with ``refuse_pending_confirmation``) it waits on
-                the user (the status value, e.g. ``"paused"``).
+            ServiceInactive: If the service is inactive.
+            ValueError: If the conversation is already running, or (with
+                ``refuse_pending_confirmation``) it waits on the user
+                (:class:`HeldForUser`).
             ConversationRunLimitExceeded: If all server run slots are occupied.
         """
         if not self._conversation or self._closing:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         request_generation = self._explicit_interrupt_generation
 
         # Use lock to make check-and-set atomic, preventing race conditions
@@ -1898,7 +1910,7 @@ class EventService:
                 if refusal is not None:
                     raise refusal
             if self._closing:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             # Re-check: the status read above can yield to a late stop too.
             if (
                 acp_internal_rerun_generation is not None
@@ -2137,11 +2149,12 @@ class EventService:
             max_iterations: Hard cap on audit rounds before giving up.
 
         Raises:
-            ValueError: If the service is inactive, a goal loop is already
-                running, no judge LLM is available, or the objective is empty.
+            ServiceInactive: If the service is inactive.
+            ValueError: If a goal loop is already running, no judge LLM is
+                available, or the objective is empty.
         """
         if not self._conversation or self._closing:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         if judge_llm is None:
             judge_llm = getattr(self._conversation.agent, "llm", None)
         if judge_llm is None:
@@ -2152,7 +2165,7 @@ class EventService:
         # conversation run; otherwise /goal could judge an unrelated transcript.
         async with self._run_lock:
             if self._closing:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
                 raise GoalAlreadyRunning()
             # _run_task first: a live run holds the state lock across its step,
@@ -2166,7 +2179,7 @@ class EventService:
             # it may have begun teardown meanwhile (mirrors run()'s post-status
             # _closing re-check) -- avoid spawning a task close() won't cancel.
             if self._closing:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             self._goal_loop_outcome = None
             await self._schedule_goal_loop(controller)
 
@@ -2183,7 +2196,7 @@ class EventService:
 
         await asyncio.get_running_loop().run_in_executor(None, _require_answered)
         if self._closing:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         # Reserve capacity before spawning the loop so a full server refuses
         # /goal with 429 up front (matching /run), rather than admitting the
         # request and failing mid-loop.
@@ -2406,13 +2419,14 @@ class EventService:
         and across a server restart because goal-status events are persisted.
 
         Raises:
-            ValueError: If the service is inactive, a goal loop is already
-                running, no judge LLM is available, or there is no resumable goal
-                loop because none was started or it already completed/capped,
-                or an ask_user question still awaits the user's answer.
+            ServiceInactive: If the service is inactive.
+            ValueError: If a goal loop is already running, no judge LLM is
+                available, there is no resumable goal loop because none was
+                started or it already completed/capped, or an ask_user
+                question still awaits the user's answer.
         """
         if not self._conversation or self._closing:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         last = await loop.run_in_executor(None, self._last_goal_loop_status)
         if last is None or last.get("status") in ("complete", "capped"):
@@ -2436,7 +2450,7 @@ class EventService:
         # Same busy guard as start_goal_loop: refuse a goal loop or active run.
         async with self._run_lock:
             if self._closing:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
                 raise GoalAlreadyRunning()
             if (self._run_task is not None and not self._run_task.done()) or (
@@ -2445,7 +2459,7 @@ class EventService:
             ):
                 raise ConversationAlreadyRunning()
             if self._closing:  # see start_goal_loop: close() may have begun teardown
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             self._goal_loop_outcome = None
             await self._schedule_goal_loop(controller, resume=True)
 
@@ -2472,7 +2486,7 @@ class EventService:
             ValueError: The emoji is not allowed or there is no such message.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         conversation = self._conversation
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -2499,7 +2513,7 @@ class EventService:
             ValueError: The question is not pending, or the answer is invalid.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         answer, message = await loop.run_in_executor(
             None,
@@ -2525,7 +2539,7 @@ class EventService:
         without the state lock, as :meth:`_get_agent_final_response_sync` does.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         state = self._conversation._state
         if before is None:
             return find_pending_ask_back(state.walk_back())
@@ -2539,7 +2553,7 @@ class EventService:
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.reject_pending_actions, reason
@@ -2586,7 +2600,7 @@ class EventService:
     async def add_mcp_servers(self, servers: dict[str, MCPServer]) -> None:
         """Add modern MCP servers to the conversation."""
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.add_mcp_servers, servers)
         await self._publish_state_update()
@@ -2594,7 +2608,7 @@ class EventService:
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         profile = self.stored.launched_agent_profile
         if profile is not None:
             secrets = {
@@ -2611,7 +2625,7 @@ class EventService:
     async def set_confirmation_policy(self, policy: ConfirmationPolicyBase):
         """Set the confirmation policy for the conversation."""
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
@@ -2626,7 +2640,7 @@ class EventService:
         """
         conversation = self._conversation
         if conversation is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, setattr, conversation, "max_budget_per_run", max_budget_per_run
@@ -2637,7 +2651,7 @@ class EventService:
     ):
         """Set the security analyzer for the conversation."""
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.set_security_analyzer, security_analyzer
@@ -2646,7 +2660,7 @@ class EventService:
     async def load_plugin(self, plugin_ref: str) -> None:
         """Load a marketplace plugin into the active conversation."""
         if self._conversation is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
 
@@ -2664,11 +2678,11 @@ class EventService:
         needed.
         """
         if self._conversation is None:
-            # Match the inactive-service convention of the other event-service
-            # methods (the conversation router maps it to 400). The SDK no
-            # longer raises for a created-but-not-yet-run conversation, so a
-            # pre-first-run switch is a normal 200 deferral, not an error.
-            raise ValueError("inactive_service")
+            # Inactive, as in the other event-service methods (the
+            # conversation router maps it to 400). The SDK no longer raises for
+            # a created-but-not-yet-run conversation, so a pre-first-run switch
+            # is a normal 200 deferral, not an error.
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
@@ -2679,7 +2693,7 @@ class EventService:
         worker thread, a not-yet-run conversation only persists the value.
         """
         if self._conversation is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_effort, effort)
 
@@ -2769,7 +2783,7 @@ class EventService:
         executor to avoid blocking the event loop.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         resolved_llm = llm
         if llm is not None:
@@ -2791,7 +2805,7 @@ class EventService:
         Delegates to LocalConversation in an executor to avoid blocking the event loop.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.ask_agent, question)
@@ -2802,7 +2816,7 @@ class EventService:
         Delegates to LocalConversation in an executor to avoid blocking the event loop.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         # A missing or request-ignoring condenser is the caller's agent
         # configuration, not a server fault: report it as such instead of
@@ -2830,7 +2844,7 @@ class EventService:
             ValueError: If ``event_id`` is not ``None`` and not in the conversation.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -2847,7 +2861,7 @@ class EventService:
         append-only and immutable once written.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         return get_agent_final_response(self._conversation._state.active_branch())
 
     async def get_agent_final_response(self) -> str:
@@ -2857,13 +2871,13 @@ class EventService:
         or empty string if no final response is found.
         """
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_agent_final_response_sync)
 
     async def get_state(self) -> ConversationState:
         if not self._conversation:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         return self._conversation._state
 
     async def _publish_to_subscribers(self, event: Event) -> None:

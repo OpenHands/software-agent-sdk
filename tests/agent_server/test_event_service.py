@@ -27,6 +27,7 @@ from openhands.agent_server.event_service import (
     CondensationUnavailable,
     EventService,
     RunSlot,
+    ServiceInactive,
     _log_emit_failure,
 )
 from openhands.agent_server.file_router import _create_zip_from_directory
@@ -260,7 +261,7 @@ class TestEventServiceSearchEvents:
         """Test that search_events raises ValueError when conversation is not active."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.search_events()
 
     @pytest.mark.asyncio
@@ -743,7 +744,7 @@ class TestEventServiceCountEvents:
         """Test that count_events raises ValueError when service is inactive."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.count_events()
 
     @pytest.mark.asyncio
@@ -877,7 +878,7 @@ class TestEventServiceSendMessage:
         event_service._conversation = None
         message = Message(role="user", content=[])
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.send_message(message)
 
     @pytest.mark.asyncio
@@ -1734,7 +1735,7 @@ class TestEventServiceSendMessage:
         """Runtime plugin loads require an active conversation."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.load_plugin("plugin@team")
 
 
@@ -1775,7 +1776,7 @@ class TestEventServiceRespondToConfirmation:
         """Rejecting pending actions should fail when service is inactive."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.reject_pending_actions("any reason")
 
     @pytest.mark.asyncio
@@ -2035,7 +2036,7 @@ class TestEventServiceRun:
         """Test that run raises ValueError when conversation is not active."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.run()
 
     @pytest.mark.asyncio
@@ -2405,13 +2406,14 @@ class TestEventServiceSaveMeta:
         assert "agent" not in json.loads(meta_file.read_text())
 
     @pytest.mark.asyncio
-    async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
-        """An inactive service (no live conversation) raises the shared
-        ``inactive_service`` ValueError — consistent with the other
-        event-service methods — which the router maps to 400. It is no longer a
-        RuntimeError: the SDK now defers (rather than rejects) a switch before
-        the first run(), so the only failure mode here is a closed/never-started
-        service.
+    async def test_switch_acp_model_inactive_service_raises_service_inactive(
+        self, tmp_path
+    ):
+        """An inactive service (no live conversation) raises ServiceInactive,
+        like the other event-service methods, which the router maps to 400.
+        It is no longer a RuntimeError: the SDK now defers (rather than
+        rejects) a switch before the first run(), so the only failure mode
+        here is a closed/never-started service.
         """
 
         stored = StoredConversation(
@@ -2425,7 +2427,7 @@ class TestEventServiceSaveMeta:
         # _conversation defaults to None (service not started).
         assert service._conversation is None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await service.switch_acp_model("new-model")
 
 

@@ -28,7 +28,7 @@ from openhands.agent_server.conversation_service import (
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, ServiceInactive
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -1481,7 +1481,7 @@ class TestConversationServiceSearchConversations:
         """Test that search_conversations raises ValueError when service is inactive."""
         conversation_service._event_services = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.search_conversations()
 
     @pytest.mark.asyncio
@@ -1848,7 +1848,7 @@ class TestConversationServiceCountConversations:
         """Test that count_conversations raises ValueError when service is inactive."""
         conversation_service._event_services = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.count_conversations()
 
     @pytest.mark.asyncio
@@ -3085,7 +3085,7 @@ class TestConversationServiceUpdateConversation:
         conversation_service._event_services = None
 
         request = UpdateConversationRequest(title="New Title")
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.update_conversation(uuid4(), request)
 
     @pytest.mark.asyncio
@@ -3291,7 +3291,7 @@ class TestConversationServiceDeleteConversation:
         """Test that delete_conversation raises ValueError when service is inactive."""
         conversation_service._event_services = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.delete_conversation(uuid4())
 
     @pytest.mark.asyncio
