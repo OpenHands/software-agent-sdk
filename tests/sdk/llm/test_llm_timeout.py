@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import patch
@@ -22,6 +23,7 @@ from openhands.sdk.event.error_classification import (
 )
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMTimeoutError
+from openhands.sdk.llm.utils.retry_mixin import TIMEOUT_EXHAUSTED_PHRASE
 
 
 # Default timeout in seconds (5 minutes)
@@ -490,7 +492,8 @@ async def test_hard_timeouts_stop_retrying_after_the_timeout_budget(caplog) -> N
 
 def test_quick_timeouts_keep_every_retry() -> None:
     """Timeouts far below the per-attempt limit (e.g. a connect timeout) are
-    still retried ``num_retries`` times."""
+    still retried ``num_retries`` times, and the final error keeps its own
+    message: it never claims the LLM timeout was reached (#6864)."""
     llm = LLM(
         model="gpt-4o-mini",
         usage_id="test-llm",
@@ -507,11 +510,72 @@ def test_quick_timeouts_keep_every_retry() -> None:
         calls.append(1)
         raise LiteLLMTimeout("Connection timed out.", "gpt-4o-mini", "openai")
 
-    with pytest.raises(LiteLLMTimeout, match=r"gave up after 3 attempts") as exc:
+    with pytest.raises(LiteLLMTimeout) as exc:
         connect()
 
     assert len(calls) == 3
-    assert "Connection timed out. The model did not" in str(exc.value)
+    assert exc.value.message == "litellm.Timeout: Connection timed out."
+    assert classify_error("LLMTimeoutError", str(exc.value)) == ErrorClassification(
+        kind=FailureKind.TRANSIENT, retryable=True, user_action="retry"
+    )
+
+
+def test_timeout_that_used_the_whole_timeout_gets_the_summary() -> None:
+    """A transport timeout (not our async hard timer) that took the whole
+    ``timeout`` still names the limit and points at settings, as on the sync
+    path where httpx enforces ``timeout``."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=1,
+        num_retries=5,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    calls: list[int] = []
+
+    @llm._make_retry_decorator()
+    def read() -> None:
+        calls.append(1)
+        time.sleep(1)
+        raise LiteLLMTimeout("Request timed out.", "gpt-4o-mini", "openai")
+
+    with pytest.raises(LiteLLMTimeout) as exc:
+        read()
+
+    assert len(calls) == 2
+    detail = str(exc.value)
+    assert "within the LLM timeout of 1s (gave up after 2 attempts" in detail
+    assert classify_error("LLMTimeoutError", detail) == ErrorClassification(
+        kind=FailureKind.CONFIG, retryable=False, user_action="settings"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exhausted_stream_idle_timeouts_stay_transient() -> None:
+    """Every attempt stalls into the stream idle timeout, far below ``timeout``:
+    all retries run, the final error names the idle timeout without pointing
+    at the LLM timeout, and it classifies as a retryable transient (#6864)."""
+    async with _hung_chat_completion_server() as (base_url, attempts):
+        llm = _streaming_llm(
+            base_url, timeout=30, stream_idle_timeout=0.3, num_retries=3
+        )
+
+        with pytest.raises(LLMTimeoutError) as exc_info:
+            await llm.acompletion(
+                messages=[Message(role="user", content=[TextContent(text="Hello")])],
+                on_token=lambda _: None,
+            )
+
+    assert len(attempts) == 3
+    detail = str(exc_info.value)
+    assert "LLM stream idle timeout after 0.3 seconds" in detail
+    assert TIMEOUT_EXHAUSTED_PHRASE not in detail
+    assert "higher timeout" not in detail
+    assert classify_error("LLMTimeoutError", detail) == ErrorClassification(
+        kind=FailureKind.TRANSIENT, retryable=True, user_action="retry"
+    )
 
 
 def test_non_timeout_errors_are_reraised_unchanged() -> None:
