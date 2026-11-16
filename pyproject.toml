@@ -66,6 +66,7 @@ select = [
     "I",    # isort
     "UP",   # pyupgrade
     "ARG",  # flake8-unused-arguments
+    "ASYNC",  # flake8-async: no blocking calls on the event loop
 ]
 # Enforce rules that catch mutable defaults and related pitfalls
 # - B006: mutable-argument-default
@@ -78,7 +79,8 @@ ignore = ["UP042"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)
-"tests/**/*.py" = ["ARG"]
+# and poll or block on purpose while driving threads and subprocesses.
+"tests/**/*.py" = ["ARG", "ASYNC"]
 
 
 # Allowlist safe default calls for flake8-bugbear rules (e.g., FastAPI Depends)

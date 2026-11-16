@@ -1,7 +1,5 @@
 """Routes for user-facing experimental features (see :mod:`.experimental_features`)."""
 
-import asyncio
-
 from fastapi import APIRouter, Depends
 
 from openhands.agent_server.dependencies import get_settings_store
@@ -13,7 +11,11 @@ from openhands.agent_server.experimental_features import (
     find_experimental_feature,
     is_enabled,
 )
-from openhands.agent_server.persistence import FileSettingsStore, PersistedSettings
+from openhands.agent_server.persistence import (
+    FileSettingsStore,
+    PersistedSettings,
+    run_store,
+)
 from openhands.sdk.errors import Conflict, NotFound
 
 
@@ -27,7 +29,7 @@ async def list_experimental_features(
     store: FileSettingsStore = Depends(get_settings_store),
 ) -> list[ExperimentalFeature]:
     """List the features the user can turn on or off, and whether each is on."""
-    settings = await asyncio.to_thread(lambda: store.load() or PersistedSettings())
+    settings = await run_store(store.load) or PersistedSettings()
     return experimental_feature_flags(settings.experimental_features)
 
 

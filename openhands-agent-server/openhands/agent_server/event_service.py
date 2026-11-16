@@ -1239,8 +1239,8 @@ class EventService:
         conversation.llm_registry.set_stats_update_callback(stats_callback)
 
     @staticmethod
-    def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
-        """Initialize the workspace as a git repo if it isn't already one.
+    def _prepare_workspace_dir(working_dir: Path) -> None:
+        """Create the workspace and make it a git repo if it isn't already one.
 
         The /api/git/changes endpoint expects a real repository to compute
         changes against; without this, agent-created files never appear in
@@ -1248,6 +1248,7 @@ class EventService:
         are handled by `get_valid_ref()` via GIT_EMPTY_TREE_HASH, and
         untracked files surface through `git ls-files --others`.
         """
+        working_dir.mkdir(parents=True, exist_ok=True)
         try:
             validate_git_repository(working_dir)
             return  # already a repo
@@ -1285,9 +1286,9 @@ class EventService:
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
-        working_dir = Path(workspace.working_dir)
-        working_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_workspace_is_git_repo(working_dir)
+        await asyncio.to_thread(
+            self._prepare_workspace_dir, Path(workspace.working_dir)
+        )
         # base_state.json is the single source of truth for the agent. On resume
         # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
         # persisted agent. On a new conversation the creating caller supplied the
@@ -1805,8 +1806,11 @@ class EventService:
             # coroutine enters its own try/finally.
             self._run_task.add_done_callback(settle)
 
+    # ``timeout`` bounds only the wait for the run task, not the status read
+    # after it, which a caller-side ``asyncio.timeout`` would also cut off.
     async def wait_for_run_completion(
-        self, timeout: float | None = None
+        self,
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> ConversationExecutionStatus:
         """Wait for the active run task without cancelling it on timeout."""
         run_task = self._run_task

@@ -25,6 +25,7 @@ from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
     ServerStores,
+    run_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
@@ -168,7 +169,7 @@ async def get_settings(
         values.
     """
     expose_mode = parse_expose_secrets_header(request)
-    settings = store.load() or PersistedSettings()
+    settings = await run_store(store.load) or PersistedSettings()
 
     # Audit log all settings access for security visibility
     # Use WARNING level for plaintext mode to highlight security-sensitive operations
@@ -452,7 +453,8 @@ async def create_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: server_data}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         config,
         stores,
@@ -479,7 +481,8 @@ async def patch_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: patch_data}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         config,
         stores,
@@ -500,7 +503,8 @@ async def delete_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: None}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         config,
         stores,
@@ -568,7 +572,7 @@ async def get_secret_value(
     """
     _validate_secret_name(name)
 
-    value = store.get_secret(name)
+    value = await run_store(store.get_secret, name)
 
     client_host = request.client.host if request.client else "unknown"
     if value is None:
@@ -603,7 +607,8 @@ async def create_secret(
     value = secret.value.get_secret_value()
 
     try:
-        store.set_secret(
+        await run_store(
+            store.set_secret,
             name=secret.name,
             value=value,
             description=secret.description,
@@ -647,7 +652,7 @@ async def delete_secret(
 
     client_host = request.client.host if request.client else "unknown"
     try:
-        deleted = store.delete_secret(name)
+        deleted = await run_store(store.delete_secret, name)
     except RuntimeError as e:
         # Data corruption protection triggered (file exists but unreadable)
         logger.error(f"Secret delete blocked: {e}")
