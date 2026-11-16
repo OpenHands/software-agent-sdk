@@ -134,5 +134,10 @@ Preconditions:
   must quote the edited text, not the original.
 - `old_str` that occurs twice (in one message or across messages) is an error;
   the model has to include more context.
+- Two `edit_message` calls in one response that edit the same message both
+  read it before either is recorded, so the first (in call order) stands and
+  the later one answers an error quoting the message as the first left it;
+  the agent edits again in its next response. Edits of different messages in
+  one response all apply.
 - Turning the flag off keeps `edit_message` in conversations started while it
   was on, as with reactions.
