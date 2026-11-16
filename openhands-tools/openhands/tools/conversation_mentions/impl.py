@@ -1,11 +1,10 @@
 """Executors for ``find_conversations`` and ``read_conversation``.
 
-Both read the agent-server that runs the tool over its own REST API, the seam
-``start_child_conversation`` uses, so they work the same in a local server and
-in a runtime's server. They only use read routes.
+Both read the agent-server that runs the tool over its own REST API, as
+``start_child_conversation`` does (same URL and session key), so they work the
+same in a local server and in a runtime's server. They only use read routes.
 """
 
-import os
 import re
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -16,10 +15,11 @@ from openhands.sdk.conversation.types import (
     CONVERSATION_MENTION_SCHEME,
     conversation_mention,
 )
+from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.child_conversation.impl import (
-    DEFAULT_INTERNAL_SERVER_URL,
-    INTERNAL_SERVER_URL_ENV,
+    internal_server_url,
+    response_detail,
     session_api_key_headers,
 )
 from openhands.tools.conversation_mentions.definition import (
@@ -32,6 +32,8 @@ from openhands.tools.conversation_mentions.definition import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 
+
+logger = get_logger(__name__)
 
 TIMEOUT_SECONDS = 30.0
 PAGE_SIZE = 100
@@ -48,55 +50,24 @@ _MENTION_OR_ID = re.compile(
 )
 
 
-class _ToolError(Exception):
-    pass
+def _get(client: httpx.Client, path: str, **params: Any) -> Any:
+    response = client.get(
+        path, params={k: v for k, v in params.items() if v is not None}
+    )
+    response.raise_for_status()
+    return response.json()
 
 
-class _NotFound(_ToolError):
-    pass
-
-
-class _ServerClient:
-    """A small client for the agent-server that runs this tool."""
-
-    def __init__(
-        self,
-        server_url: str | None,
-        timeout: float,
-        transport: httpx.BaseTransport | None,
-    ):
-        self._server_url = server_url
-        self._timeout = timeout
-        self._transport = transport
-
-    def get(self, path: str, **params: Any) -> Any:
-        base = (
-            self._server_url
-            or os.getenv(INTERNAL_SERVER_URL_ENV, DEFAULT_INTERNAL_SERVER_URL)
-        ).rstrip("/")
-        try:
-            with httpx.Client(
-                timeout=self._timeout, transport=self._transport
-            ) as client:
-                response = client.get(
-                    f"{base}{path}",
-                    params={k: v for k, v in params.items() if v is not None},
-                    headers=session_api_key_headers(),
-                )
-        except httpx.HTTPError as exc:
-            raise _ToolError(
-                f"Could not reach the server: {type(exc).__name__}: {exc}"
-            ) from exc
-        if response.status_code == 404:
-            raise _NotFound("not found")
-        if response.status_code >= 400:
-            raise _ToolError(
-                f"The server answered {response.status_code}: {response.text[:300]}"
-            )
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise _ToolError(f"Unexpected server response: {exc}") from exc
+def _failure(exc: Exception, timeout: float) -> str:
+    """Why a request to the server failed, for the tool's error text."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return (
+            f"the server answered {exc.response.status_code}: "
+            f"{response_detail(exc.response)}"
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return f"the server did not answer within {timeout:.0f} seconds"
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _error(text: str) -> ConversationMentionsObservation:
@@ -115,8 +86,18 @@ class FindConversationsExecutor(
         timeout: float = TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
     ):
-        self._own_id = own_conversation_id
-        self._client = _ServerClient(server_url, timeout, transport)
+        self.own_conversation_id = own_conversation_id
+        self.server_url = server_url
+        self.timeout = timeout
+        self._transport = transport
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(
+            base_url=self.server_url or internal_server_url(),
+            headers=session_api_key_headers(),
+            timeout=self.timeout,
+            transport=self._transport,
+        )
 
     def __call__(
         self,
@@ -127,26 +108,31 @@ class FindConversationsExecutor(
         found: list[dict[str, Any]] = []
         page_id: str | None = None
         try:
-            for _ in range(SEARCH_PAGES):
-                page = self._client.get(
-                    "/api/conversations/search",
-                    limit=PAGE_SIZE,
-                    sort_order="UPDATED_AT_DESC",
-                    page_id=page_id,
-                )
-                for item in page.get("items", []):
-                    if self._own_id is not None and _same_id(
-                        item.get("id"), self._own_id
-                    ):
-                        continue
-                    title = (item.get("title") or "").lower()
-                    if all(word in title for word in words):
-                        found.append(item)
-                page_id = page.get("next_page_id")
-                if len(found) >= action.limit or not page_id:
-                    break
-        except (_ToolError, AttributeError, TypeError) as exc:
-            return _error(f"Could not list conversations: {exc}")
+            with self._client() as client:
+                for _ in range(SEARCH_PAGES):
+                    page = _get(
+                        client,
+                        "/api/conversations/search",
+                        limit=PAGE_SIZE,
+                        sort_order="UPDATED_AT_DESC",
+                        page_id=page_id,
+                    )
+                    for item in page["items"]:
+                        if self.own_conversation_id is not None and _same_id(
+                            item.get("id"), self.own_conversation_id
+                        ):
+                            continue
+                        title = (item.get("title") or "").lower()
+                        if all(word in title for word in words):
+                            found.append(item)
+                    page_id = page.get("next_page_id")
+                    if len(found) >= action.limit or not page_id:
+                        break
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("find_conversations failed: %s", exc)
+            return _error(
+                f"Could not list conversations: {_failure(exc, self.timeout)}"
+            )
 
         found = found[: action.limit]
         query = action.query.strip()
@@ -178,7 +164,17 @@ class ReadConversationExecutor(
         timeout: float = TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
     ):
-        self._client = _ServerClient(server_url, timeout, transport)
+        self.server_url = server_url
+        self.timeout = timeout
+        self._transport = transport
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(
+            base_url=self.server_url or internal_server_url(),
+            headers=session_api_key_headers(),
+            timeout=self.timeout,
+            transport=self._transport,
+        )
 
     def __call__(
         self,
@@ -192,14 +188,20 @@ class ReadConversationExecutor(
             )
         hex_id = UUID(match.group(1)).hex
         try:
-            info = self._client.get(f"/api/conversations/{hex_id}")
-            messages = self._messages(hex_id, action.limit)
-        except _NotFound:
-            return _error(f"There is no conversation {hex_id}.")
-        except _ToolError as exc:
-            return _error(f"Could not read conversation {hex_id}: {exc}")
-        except (AttributeError, TypeError, KeyError) as exc:
-            return _error(f"Unexpected server response: {exc}")
+            with self._client() as client:
+                info = _get(client, f"/api/conversations/{hex_id}")
+                messages = _messages(client, hex_id, action.limit)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return _error(f"There is no conversation {hex_id}.")
+            return _error(
+                f"Could not read conversation {hex_id}: {_failure(exc, self.timeout)}"
+            )
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("read_conversation failed for %s: %s", hex_id, exc)
+            return _error(
+                f"Could not read conversation {hex_id}: {_failure(exc, self.timeout)}"
+            )
 
         mention = conversation_mention(info.get("title"), hex_id)
         status = info.get("execution_status") or "unknown"
@@ -212,27 +214,30 @@ class ReadConversationExecutor(
             "oldest first:\n\n" + "\n\n".join(messages)
         )
 
-    def _messages(self, hex_id: str, limit: int) -> list[str]:
-        path = f"/api/conversations/{hex_id}/events/search"
-        events = [
-            *self._client.get(
-                path, kind="MessageEvent", sort_order="TIMESTAMP_DESC", limit=limit
-            )["items"],
-            *self._client.get(
-                path,
-                kind="ActionEvent",
-                source="agent",
-                sort_order="TIMESTAMP_DESC",
-                limit=100,
-            )["items"],
-        ]
-        lines = [
-            (event["timestamp"], line)
-            for event in events
-            if (line := _message_line(event)) is not None
-        ]
-        lines.sort(key=lambda pair: pair[0])
-        return [line for _, line in lines[-limit:]]
+
+def _messages(client: httpx.Client, hex_id: str, limit: int) -> list[str]:
+    """The latest messages and ``finish`` texts, as transcript lines."""
+    path = f"/api/conversations/{hex_id}/events/search"
+    events = [
+        *_get(
+            client, path, kind="MessageEvent", sort_order="TIMESTAMP_DESC", limit=limit
+        )["items"],
+        *_get(
+            client,
+            path,
+            kind="ActionEvent",
+            source="agent",
+            sort_order="TIMESTAMP_DESC",
+            limit=100,
+        )["items"],
+    ]
+    lines = [
+        (event["timestamp"], line)
+        for event in events
+        if (line := _message_line(event)) is not None
+    ]
+    lines.sort(key=lambda pair: pair[0])
+    return [line for _, line in lines[-limit:]]
 
 
 def _same_id(value: Any, own_id: UUID) -> bool:

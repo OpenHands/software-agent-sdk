@@ -243,3 +243,34 @@ def test_tools_are_read_only_and_carry_the_mention_guidance():
         assert not tool_class.user_selectable
     assert FindConversationsTool.name == "find_conversations"
     assert ReadConversationTool.name == "read_conversation"
+
+
+def test_tools_call_the_server_like_start_child_conversation(monkeypatch):
+    monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://internal:9000/")
+    monkeypatch.setenv("SESSION_API_KEY", "qa-key")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"items": [], "next_page_id": None})
+
+    executor = FindConversationsExecutor(transport=httpx.MockTransport(handler))
+
+    executor(FindConversationsAction())
+
+    assert str(seen[0].url).startswith("http://internal:9000/api/conversations/search")
+    assert seen[0].headers["X-Session-API-Key"] == "qa-key"
+
+
+def test_a_slow_server_reads_as_a_timeout():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    executor = ReadConversationExecutor(
+        server_url=SERVER, timeout=3, transport=httpx.MockTransport(handler)
+    )
+
+    result = executor(ReadConversationAction(conversation=uuid4().hex))
+
+    assert result.is_error
+    assert "did not answer within 3 seconds" in result.text

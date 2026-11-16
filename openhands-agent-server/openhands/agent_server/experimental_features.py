@@ -125,10 +125,10 @@ new conversations while Projects is off rather than added while it is on."""
 
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
+    ASK_USER,
     CONVERSATION_MENTIONS,
     MESSAGE_EDITS,
     PROJECTS,
-    ASK_USER,
 ]
 
 
@@ -169,6 +169,9 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     if is_enabled(features, ASK_USER.key):
         # Registered by openhands.tools.ask_user.
         tools.append(Tool(name=ASK_USER_TOOL_NAME))
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
     return tools
 
 
