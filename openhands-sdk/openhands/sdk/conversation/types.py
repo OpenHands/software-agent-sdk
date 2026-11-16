@@ -97,7 +97,7 @@ def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) ->
     return f"[{text}]({CONVERSATION_MENTION_SCHEME}{hex_id})"
 
 
-GOAL_LOOP_SENDER = "goal_loop"
+GOAL_LOOP_SENDER = "goal"
 """``sender`` of the messages a ``/goal`` loop sends its own conversation: the
 goal and each round's follow-up. They continue the user's turn; they are not
 the user's words."""

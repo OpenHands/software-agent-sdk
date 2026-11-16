@@ -1093,6 +1093,8 @@ class EventService:
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
         send = self._conversation.send_message
+        if _from_goal_loop and sender is None:
+            sender = GOAL_LOOP_SENDER
         if sender is not None:
             send = functools.partial(send, sender=sender)
         if refuse_pending_confirmation:
@@ -2148,6 +2150,17 @@ class EventService:
     async def _schedule_goal_loop(
         self, controller: GoalController, *, resume: bool = False
     ) -> None:
+        conversation = self.get_conversation()
+
+        def _require_answered() -> None:
+            with conversation._state:
+                pending = find_pending_ask_back(conversation._state.walk_back())
+                if pending is not None:
+                    raise ValueError("pending_ask")
+
+        await asyncio.get_running_loop().run_in_executor(None, _require_answered)
+        if self._closing:
+            raise ValueError("inactive_service")
         # Reserve capacity before spawning the loop so a full server refuses
         # /goal with 429 up front (matching /run), rather than admitting the
         # request and failing mid-loop.
@@ -2226,7 +2239,6 @@ class EventService:
                 _user(nudge),
                 run=False,
                 _from_goal_loop=True,
-                sender=GOAL_LOOP_SENDER,
             )
             while True:
                 try:
@@ -2283,7 +2295,6 @@ class EventService:
                     _user(step.followup),
                     run=False,
                     _from_goal_loop=True,
-                    sender=GOAL_LOOP_SENDER,
                 )
         except asyncio.CancelledError:
             logger.info("Goal loop cancelled")
@@ -2375,7 +2386,8 @@ class EventService:
         Raises:
             ValueError: If the service is inactive, a goal loop is already
                 running, no judge LLM is available, or there is no resumable goal
-                loop because none was started or it already completed/capped.
+                loop because none was started or it already completed/capped,
+                or an ask_user question still awaits the user's answer.
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")

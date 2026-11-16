@@ -52,6 +52,7 @@ from openhands.sdk.event import (
     SecurityAnalysisEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.ask_user import find_pending_ask
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
@@ -74,8 +75,11 @@ from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.ask_user import AskUserTool
 from openhands.tools.file_editor import FileEditorTool
+from tests.command_utils import python_command
 from tests.cross.conftest import live_server_env
+from tests.tools.ask_user.test_ask_user import QUESTION
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
@@ -329,6 +333,97 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_pending_question_blocks_goal_resume_over_http(
+    server_env, monkeypatch, tmp_path
+):
+    scripted_agent = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id="ask",
+                        name="ask_user",
+                        arguments=json.dumps(QUESTION),
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Shipped")]),
+            Message(role="assistant", content=[TextContent(text="Checked")]),
+        ]
+    )
+
+    def complete(self, messages, tools=None, **kwargs):
+        if tools:
+            return scripted_agent.completion(messages, tools, **kwargs)
+        return TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        TextContent(text='{"score":1,"complete":true,"missing":""}')
+                    ],
+                )
+            ]
+        ).completion(messages, **kwargs)
+
+    async def acomplete(self, messages, tools=None, **kwargs):
+        return complete(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "completion", complete)
+    monkeypatch.setattr(LLM, "acompletion", acomplete)
+    interrupted = threading.Event()
+    completed = threading.Event()
+
+    def on_event(event):
+        if isinstance(event, ConversationStateUpdateEvent) and event.key == "goal":
+            if event.value["status"] == "interrupted":
+                interrupted.set()
+            if event.value["status"] == "complete":
+                completed.set()
+
+    marker = tmp_path / "stop-ran"
+    command = python_command(
+        "from pathlib import Path; import sys; "
+        f"marker = Path({str(marker)!r}); existed = marker.exists(); "
+        "marker.touch(); print('Keep working', file=sys.stderr); "
+        "sys.exit(0 if existed else 2)"
+    )
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation = Conversation(
+        agent=Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+            tools=[Tool(name=AskUserTool.name)],
+        ),
+        workspace=workspace,
+        callbacks=[on_event],
+        visualizer=None,
+        hook_config=HookConfig(
+            stop=[HookMatcher(hooks=[HookDefinition(command=command)])]
+        ),
+    )
+    try:
+        path = f"/api/conversations/{conversation.id}/goal"
+        with httpx.Client(base_url=server_env["host"], timeout=15) as client:
+            client.post(path, json={"objective": "Ship the fix"}).raise_for_status()
+            assert interrupted.wait(15)
+            assert find_pending_ask(conversation.state.events) is not None
+            assert not marker.exists()
+            response = client.post(f"{path}/resume")
+            assert response.status_code == 400
+            assert "pending_ask" in response.text
+            conversation.send_message("Use the flag")
+            client.post(f"{path}/resume").raise_for_status()
+            assert completed.wait(15)
+            assert find_pending_ask(conversation.state.events) is None
+            assert marker.exists()
+    finally:
+        conversation.close()
 
 
 def test_recovery_provenance_served_over_http_and_websocket(server_env):

@@ -132,9 +132,14 @@ class AskUserExecutor(ToolExecutor[AskUserAction, AskUserObservation]):
 
     def __call__(
         self,
-        action: AskUserAction,  # noqa: ARG002
+        action: AskUserAction,
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> AskUserObservation:
+        if any(not option.label.strip() for option in action.options):
+            return AskUserObservation.from_text(
+                "Each option needs a nonblank label. Ask again with named options.",
+                is_error=True,
+            )
         return AskUserObservation.from_text(
             "The question is shown to the user. Your turn ends here; their "
             "answer will arrive as their next message."

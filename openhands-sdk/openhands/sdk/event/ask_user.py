@@ -192,7 +192,9 @@ def answer_message_text(
     """The message the agent reads for an answer picked on the card."""
     lines = [f'{ANSWER_HEADER_PREFIX}: "{pending.question}"]']
     if option_index is not None:
-        lines.append(pending.option_labels[option_index])
+        lines.append(
+            f"Option {option_index + 1}: {pending.option_labels[option_index]}"
+        )
     if text and text.strip():
         lines.append(text.strip())
     return "\n".join(lines)

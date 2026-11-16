@@ -393,7 +393,7 @@ async def test_a_tap_on_the_coordinators_card_answers_the_member(
     assert message.sender == f"conversation:{cat.hex}"
     assert message.llm_message.content[0].text == (  # type: ignore[union-attr]
         '[Answer to your question: "Which database should config.yaml use?"]\n'
-        "Postgres\nWe grow."
+        "Option 1: Postgres\nWe grow."
     )
     # Answered: a second answer has nothing left to close.
     assert not await pass_on_answer(service, cat, project, tap.id, "Postgres", None)
