@@ -22,6 +22,7 @@ then, from its event log.
 """
 
 import asyncio
+import weakref
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -411,19 +412,38 @@ async def pass_on_answer(
     member = await service.get_event_service(member_id)
     if member is None or member.stored.tags.get(PROJECT_TAG_KEY) != project_hex:
         return False
-    question = await asyncio.to_thread(member.pending_ask)
-    if question is None:
-        return False
-    index, text = _matched_answer(question, picked, words)
-    try:
-        await member.answer_ask(
-            question.ask_id, index, text, sender=conversation_sender(coordinator_id)
-        )
-    except ValueError:
-        # Answered in the meantime, by the user in the member or by another
-        # pass of this same answer: nothing is left to close.
-        return False
+    # The answer closes the member's question only once its message is saved,
+    # so two passes of one answer must not both find the question pending.
+    async with _passing_lock():
+        question = await asyncio.to_thread(member.pending_ask)
+        if question is None:
+            return False
+        index, text = _matched_answer(question, picked, words)
+        try:
+            await member.answer_ask(
+                question.ask_id,
+                index,
+                text,
+                sender=conversation_sender(coordinator_id),
+            )
+        except ValueError:
+            # Answered in the meantime, by the user in the member.
+            return False
     return True
+
+
+_passing_answers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _passing_lock() -> asyncio.Lock:
+    """One lock per event loop for :func:`pass_on_answer` (tests run many)."""
+    loop = asyncio.get_running_loop()
+    lock = _passing_answers.get(loop)
+    if lock is None:
+        lock = _passing_answers[loop] = asyncio.Lock()
+    return lock
 
 
 def _matched_answer(

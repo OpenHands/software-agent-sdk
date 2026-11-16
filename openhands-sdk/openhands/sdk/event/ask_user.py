@@ -152,8 +152,16 @@ def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
         events: The conversation's events, oldest first (its active branch).
     """
     asked_action_id: EventID | None = None
+    # The message saved after a tap's answer closes the question, also when
+    # the server delivers it for a project's coordinator, whose card the user
+    # answered: that message carries the coordinator as its ``sender``.
+    message_after = False
     for event in reversed(events):
         if is_from_user(event):
+            return None
+        if isinstance(event, MessageEvent) and event.source == "user":
+            message_after = True
+        elif isinstance(event, AskUserAnswerEvent) and message_after:
             return None
         if (
             isinstance(event, ObservationEvent)
