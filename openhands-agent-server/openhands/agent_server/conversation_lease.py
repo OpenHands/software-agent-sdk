@@ -19,8 +19,8 @@ logger = get_logger(__name__)
 LEASE_FILE_NAME = "owner_lease.json"
 LEASE_LOCK_FILE_NAME = ".owner_lease.lock"
 DEFAULT_LEASE_TTL_SECONDS = 45.0
-# The lock is held for a few milliseconds per write; filelock's default 50 ms
-# poll made a waiter (including the event loop) sleep far longer than that.
+# The lock is held for a few milliseconds per write, so a waiter (including the
+# event loop) polls at that scale rather than filelock's default 50 ms.
 LEASE_LOCK_POLL_SECONDS = 0.002
 
 
