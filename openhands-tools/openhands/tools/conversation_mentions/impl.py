@@ -231,10 +231,18 @@ def _messages(client: httpx.Client, hex_id: str, limit: int) -> list[str]:
             limit=100,
         )["items"],
     ]
+    # The agent may have edited its messages since (``message_edits``): the
+    # latest edit of each is its text. Edits come after their messages, so
+    # the newest page of edits covers the messages read here.
+    edits: dict[str, str] = {}
+    for edit in _get(
+        client, path, kind="MessageEditEvent", sort_order="TIMESTAMP_DESC", limit=100
+    )["items"]:
+        edits.setdefault(edit["target_event_id"], edit["text"])
     lines = [
         (event["timestamp"], line)
         for event in events
-        if (line := _message_line(event)) is not None
+        if (line := _message_line(event, edits.get(event.get("id", "")))) is not None
     ]
     lines.sort(key=lambda pair: pair[0])
     return [line for _, line in lines[-limit:]]
@@ -254,8 +262,11 @@ def _conversation_line(item: dict[str, Any]) -> str:
     return f"- {mention}: {status}, last active {updated} UTC"
 
 
-def _message_line(event: dict[str, Any]) -> str | None:
-    """One transcript line for a message or a ``finish``; None for the rest."""
+def _message_line(event: dict[str, Any], edited: str | None = None) -> str | None:
+    """One transcript line for a message or a ``finish``; None for the rest.
+
+    ``edited`` is the message's text after the agent's latest edit, if any.
+    """
     kind = event.get("kind")
     if kind == "MessageEvent":
         message = event.get("llm_message") or {}
@@ -281,6 +292,9 @@ def _message_line(event: dict[str, Any]) -> str | None:
         who = "agent (finish)"
     else:
         return None
+    if edited is not None:
+        text = edited
+        who += ", edited"
     text = text.strip()
     if not text:
         return None

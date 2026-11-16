@@ -124,14 +124,21 @@ def find_edit(
         raise ValueError("new_str is the same as old_str; nothing to edit.")
     messages: list[Event] = []
     edited: dict[EventID, str] = {}
+    answered: set[EventID] = set()
     for event in view_events:
         if is_editable(event):
             messages.append(event)
+        if isinstance(event, ObservationEvent):
+            answered.add(event.action_id)
         for edit in _edits_in(event):
             edited[edit.target_event_id] = edit.text
     matches: list[tuple[Event, str]] = []
     count = 0
     for message in messages:
+        # A ``finish`` in the response being executed has no result yet: it
+        # is not an earlier message.
+        if isinstance(message, ActionEvent) and message.id not in answered:
+            continue
         text = edited[message.id] if message.id in edited else _written_text(message)
         occurrences = text.count(old_str)
         if occurrences:
