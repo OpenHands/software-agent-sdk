@@ -68,6 +68,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -311,7 +312,9 @@ async def _prepare_forward(
     config = registry.config
     start = StartConversationRequest.model_validate(
         body,
-        context={"cipher": config.cipher} if body.get("secrets_encrypted") else None,
+        context=(
+            cipher_context(config.cipher) if body.get("secrets_encrypted") else None
+        ),
     )
     try:
         settings = await run_store(registry.stores.settings.load)
@@ -497,7 +500,7 @@ async def proxy_conversation(
             }
         materialized = await asyncio.to_thread(materialize_secrets, secrets)
         body = UpdateSecretsRequest(secrets=materialized).model_dump(
-            mode="json", context={"expose_secrets": "plaintext"}
+            mode="json", context=client_context("plaintext")
         )
         response = await _proxy_with_session(
             registry,
