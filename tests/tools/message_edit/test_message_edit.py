@@ -226,7 +226,9 @@ def test_edit_tool_is_not_offered_in_agent_settings():
     assert EditMessageTool.user_selectable is False
 
 
-def _edit_call() -> ModelResponse:
+def _edit_call(*edits: tuple[str, str]) -> ModelResponse:
+    """One response with an ``edit_message`` call per (old_str, new_str)."""
+    edits = edits or ((QUESTION, STRUCK),)
     return ModelResponse(
         id="resp-1",
         choices=[
@@ -237,15 +239,14 @@ def _edit_call() -> ModelResponse:
                     content="",
                     tool_calls=[
                         ChatCompletionMessageToolCall(
-                            id="call-1",
+                            id=f"call-{i}",
                             type="function",
                             function=Function(
                                 name="edit_message",
-                                arguments=json.dumps(
-                                    {"old_str": QUESTION, "new_str": STRUCK}
-                                ),
+                                arguments=json.dumps({"old_str": old, "new_str": new}),
                             ),
                         )
+                        for i, (old, new) in enumerate(edits, start=1)
                     ],
                 ),
                 finish_reason="tool_calls",
@@ -270,6 +271,42 @@ def test_agent_records_the_edit_after_the_observation(conversation):
     assert edit.target_event_id == _agent_message(conversation).id
     # The message itself is never changed.
     assert _agent_message(conversation).llm_message.content[0].text == QUESTION  # type: ignore[union-attr]
+
+
+def test_a_second_edit_of_one_message_in_one_response_is_refused(tmp_path):
+    """Calls in one response all read the message before any edit is
+    recorded, so a second edit of the same message would undo the first."""
+    agent = Agent(llm=_llm(), tools=[Tool(name="edit_message")])
+    conv = Conversation(agent=agent, workspace=str(tmp_path), callbacks=[])
+    conv.send_message("Which port and host?")
+    conv.state.append_event(_message("agent", "Port is 3000. Host is alpha."))
+    conv.state.append_event(_message("agent", "Tests pass."))
+
+    response = _edit_call(
+        ("3000", "8080"), ("alpha", "beta"), ("Tests pass.", "~~Tests pass.~~")
+    )
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        side_effect=lambda messages, **kw: response,
+    ):
+        conv.agent.step(conv, on_event=conv._on_event)
+
+    events = list(conv.state.events)
+    edits = [e for e in events if isinstance(e, MessageEditEvent)]
+    # The first edit of each message stands; nothing is silently undone.
+    assert [e.text for e in edits] == [
+        "Port is 8080. Host is alpha.",
+        "~~Tests pass.~~",
+    ]
+    results = [e for e in events if isinstance(e, ObservationEvent)]
+    assert [r.observation.is_error for r in results] == [False, True, False]
+    assert "already edits this message" in results[1].observation.text
+    assert results[1].observation.text.endswith("Port is 8080. Host is alpha.")
+    # The agent can make the second edit next, against the edited text.
+    retry = EditMessageExecutor()(
+        EditMessageAction(old_str="alpha", new_str="beta"), conv
+    )
+    assert retry.edited_text == "Port is 8080. Host is beta."
 
 
 def test_the_agent_sees_its_call_but_not_the_edit_event(conversation):
