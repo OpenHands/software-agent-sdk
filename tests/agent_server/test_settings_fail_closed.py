@@ -145,6 +145,24 @@ def test_get_settings_returns_defaults_without_a_file(client):
     assert response.json()["conversation_settings"]["confirmation_mode"] is False
 
 
+def test_confirmation_mode_is_not_downgraded_by_corruption(client, settings_dir):
+    response = client.patch(
+        "/api/settings",
+        json={"conversation_settings_diff": {"confirmation_mode": True}},
+    )
+    assert response.status_code == 200
+    assert (
+        client.get("/api/settings").json()["conversation_settings"]["confirmation_mode"]
+        is True
+    )
+
+    _write(settings_dir, TRUNCATED)
+
+    response = client.get("/api/settings")
+    assert response.status_code == 409
+    assert "confirmation_mode" not in response.text
+
+
 @pytest.mark.parametrize("route", ["/api/agent-profiles", "/api/meta-profiles"])
 def test_profile_listing_fails_closed(client, settings_dir, route):
     _write(settings_dir, TRUNCATED)
@@ -213,6 +231,12 @@ def test_the_gateway_refuses_an_unreadable_file(settings_dir, tmp_path):
     )
     stores = ServerStores.from_config(config)
     stores.llm_profiles.save("fast", LLM(model="fast-model"))
+    stores.settings.update(
+        lambda s: _apply(s, {"conversation_settings_diff": {"confirmation_mode": True}})
+    )
+    settings = stores.settings.load_existing()
+    assert settings is not None
+    assert settings.conversation_settings.confirmation_mode
     _write(settings_dir, TRUNCATED)
 
     with pytest.raises(SettingsFileUnreadableError):
