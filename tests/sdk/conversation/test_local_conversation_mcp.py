@@ -16,7 +16,6 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.mcp.client import MCPClient

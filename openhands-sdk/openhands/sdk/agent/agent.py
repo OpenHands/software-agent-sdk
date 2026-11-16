@@ -452,11 +452,12 @@ class _ActionBatch:
             mark_finished: Called to set the conversation execution status
                 to FINISHED when the agent is done.
         """
+        if self.ends_turn:
+            mark_finished()
+            return
+
         # Nothing to finalise: no FinishTool, or it was blocked by a hook.
         if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
-            # A tool such as ask_user ends the turn without finish.
-            if self.ends_turn:
-                mark_finished()
             return
 
         should_continue, followup = check_iterative_refinement(self.action_events[-1])
