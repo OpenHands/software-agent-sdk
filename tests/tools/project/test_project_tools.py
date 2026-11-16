@@ -283,7 +283,11 @@ def test_message_maps_server_409_to_refusal(tmp_path):
     server = _Server(
         [conversation],
         message_response=httpx.Response(
-            409, json={"detail": "Conversation is waiting for confirmation"}
+            409,
+            json={
+                "detail": "Conversation is waiting for confirmation",
+                "status": "waiting_for_confirmation",
+            },
         ),
     )
     executor = MessageProjectConversationExecutor(
@@ -351,7 +355,9 @@ def test_message_maps_a_409_for_a_pause_to_its_refusal(tmp_path):
     conversation = _conversation("running", "working")
     server = _Server(
         [conversation],
-        message_response=httpx.Response(409, json={"detail": "Conversation is paused"}),
+        message_response=httpx.Response(
+            409, json={"detail": "Conversation is paused", "status": "paused"}
+        ),
     )
     executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)

@@ -31,6 +31,7 @@ from uuid import UUID
 from openhands.agent_server.event_service import (
     PAUSED_BY_SHUTDOWN_MARKER,
     ConversationRunLimitExceeded,
+    HeldForUser,
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.persistence import PersistedProjects
@@ -187,9 +188,9 @@ async def _deliver(
         except ConversationRunLimitExceeded:
             _run_when_free(coordinator_id, coordinator)
             return
+        except HeldForUser:
+            return
         except ValueError as exc:
-            if str(exc) in HELD_FOR_USER_STATUSES:
-                return
             if str(exc) == "inactive_service" or last:
                 raise
         except Exception:
@@ -210,13 +211,14 @@ def _run_when_free(coordinator_id: UUID, coordinator: "EventService") -> None:
     async def wait_and_run() -> None:
         try:
             await coordinator.run_saved_message_when_free()
+        except HeldForUser:
+            pass
         except ValueError as exc:
-            if str(exc) not in HELD_FOR_USER_STATUSES:
-                logger.warning(
-                    "Coordinator %s did not run for an update: %s",
-                    coordinator_id,
-                    exc,
-                )
+            logger.warning(
+                "Coordinator %s did not run for an update: %s",
+                coordinator_id,
+                exc,
+            )
         except Exception:
             logger.warning(
                 "Coordinator %s did not run for an update",

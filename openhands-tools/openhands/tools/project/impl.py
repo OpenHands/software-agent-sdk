@@ -327,20 +327,12 @@ _HELD_REFUSALS = {
 
 
 def _held_status(response: httpx.Response) -> str:
-    """The held status a 409 from the send route names (by its detail)."""
+    """The held status a 409 from the send route names in its ``status``."""
     try:
-        detail = str(response.json().get("detail", ""))
-    except ValueError:
+        status = response.json().get("status")
+    except (ValueError, AttributeError):
         return ""
-    for status, words in (
-        ("waiting_for_confirmation", "confirmation"),
-        ("paused", "paused"),
-        ("error", "error"),
-        ("stuck", "stuck"),
-    ):
-        if words in detail:
-            return status
-    return ""
+    return status if status in HELD_FOR_USER_STATUSES else ""
 
 
 def _held_refusal(conversation_id: str, status: str) -> str:

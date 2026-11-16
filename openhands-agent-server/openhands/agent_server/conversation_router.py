@@ -31,7 +31,11 @@ from openhands.agent_server.dependencies import (
     get_llm_profile_store,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import CondensationUnavailable
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    ConversationAlreadyRunning,
+    GoalAlreadyRunning,
+)
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -428,11 +432,11 @@ async def run_conversation(
 
     try:
         await event_service.run()
+    except ConversationAlreadyRunning:
+        raise Conflict(
+            "Conversation already running. Wait for completion or pause first."
+        )
     except ValueError as e:
-        if str(e) == "conversation_already_running":
-            raise Conflict(
-                "Conversation already running. Wait for completion or pause first."
-            )
         raise Invalid(str(e))
 
     return Success()
@@ -467,11 +471,10 @@ async def start_goal_in_conversation(
         await event_service.start_goal_loop(
             request.objective, max_iterations=request.max_iterations
         )
+    except (ConversationAlreadyRunning, GoalAlreadyRunning):
+        raise Conflict("Conversation run or goal loop already running.")
     except ValueError as e:
-        message = str(e)
-        if message in ("conversation_already_running", "goal_already_running"):
-            raise Conflict("Conversation run or goal loop already running.")
-        raise Invalid(message)
+        raise Invalid(str(e))
 
     return Success()
 
@@ -517,11 +520,10 @@ async def resume_goal_in_conversation(
 
     try:
         await event_service.resume_goal_loop()
+    except (ConversationAlreadyRunning, GoalAlreadyRunning):
+        raise Conflict("Conversation run or goal loop already running.")
     except ValueError as e:
-        message = str(e)
-        if message in ("conversation_already_running", "goal_already_running"):
-            raise Conflict("Conversation run or goal loop already running.")
-        raise Invalid(message)
+        raise Invalid(str(e))
 
     return Success()
 

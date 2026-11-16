@@ -25,7 +25,11 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import EventService, admission_refusal
+from openhands.agent_server.event_service import (
+    EventService,
+    HeldForUser,
+    admission_refusal,
+)
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
@@ -52,10 +56,7 @@ from openhands.agent_server.project_wake import SenderError, sender_message_head
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import (
-    HELD_FOR_USER_STATUSES,
-    conversation_sender,
-)
+from openhands.sdk.conversation.types import conversation_sender
 from openhands.sdk.errors import (
     Conflict,
     Invalid,
@@ -293,9 +294,10 @@ async def send_message(
     With ``run``, a conversation waiting for confirmation is normally run, which
     approves its pending actions, and a paused, errored or stuck one is resumed.
     ``refuse_pending_confirmation`` prevents both, for senders other than the
-    user: a conversation already in one of those states answers 409 and
-    nothing is saved, and one that reaches one while the message is delivered
-    keeps the message and is not run (``run`` is that status, such as
+    user: a conversation already in one of those states answers 409, with
+    that status in the response's ``status`` field, and nothing is saved;
+    one that reaches one while the message is delivered keeps the message
+    and is not run (``run`` is that status, such as
     ``"waiting_for_confirmation"`` or ``"paused"``). The refusal is decided
     under the conversation's run lock.
 
@@ -338,8 +340,10 @@ async def send_message(
         state = await event_service.get_state()
         previous_status = state.execution_status
         refusal = admission_refusal(state, from_user=False)
-        if refusal in HELD_FOR_USER_STATUSES:
-            raise Conflict(_HELD_DETAIL[refusal])
+        if isinstance(refusal, HeldForUser):
+            raise Conflict(
+                _HELD_DETAIL[refusal.status], extra={"status": refusal.status}
+            )
     outcome: MessageRunOutcome | None
     # The inner gateway route holds the lock for its whole turn; refuse before
     # waiting on it so a direct event fails fast instead of queuing behind it.
@@ -353,11 +357,10 @@ async def send_message(
                 refuse_pending_confirmation=guarded,
                 sender=sender,
             )
-        except ValueError as e:
-            held = str(e)
-            if not guarded or held not in HELD_FOR_USER_STATUSES:
+        except HeldForUser as e:
+            if not guarded:
                 raise
-            outcome = cast(MessageRunOutcome, held)
+            outcome = cast(MessageRunOutcome, e.status)
     if request.run and outcome is None:
         outcome = "not_run"
     return SendMessageResponse(run=outcome, previous_status=previous_status)

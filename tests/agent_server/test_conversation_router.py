@@ -15,7 +15,12 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import CondensationUnavailable, EventService
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    ConversationAlreadyRunning,
+    EventService,
+    GoalAlreadyRunning,
+)
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -1373,7 +1378,7 @@ def test_start_goal_in_conversation_rejects_busy_loop(
 ):
     """/goal returns 409 when a goal loop or conversation run is active."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
+    mock_event_service.start_goal_loop.side_effect = GoalAlreadyRunning()
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1658,7 +1663,7 @@ def test_run_conversation_already_running(
 
     # Mock the service responses
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.run.side_effect = ValueError("conversation_already_running")
+    mock_event_service.run.side_effect = ConversationAlreadyRunning()
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service

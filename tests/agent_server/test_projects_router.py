@@ -780,6 +780,8 @@ async def test_a_sender_conversation_is_always_guarded(client, service, tmp_path
     )
 
     assert response.status_code == 409
+    # The status that refused it is a field, so clients need not parse words.
+    assert response.json()["status"] == "waiting_for_confirmation"
     assert await _user_messages(service, worker) == 0
 
 
@@ -2135,7 +2137,11 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
 ):
     """Review S3/F2: the guard for other conversations and Voice's
     send_message_if_idle are one rule, differing only in who may resume."""
-    from openhands.agent_server.event_service import admission_refusal
+    from openhands.agent_server.event_service import (
+        ConversationAlreadyRunning,
+        HeldForUser,
+        admission_refusal,
+    )
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.event import ActionEvent
     from openhands.sdk.llm import MessageToolCall
@@ -2169,7 +2175,13 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
         "active_branch",
         side_effect=AssertionError("read the whole branch"),
     ):
-        assert admission_refusal(state, from_user=from_user) == refusal
+        got = admission_refusal(state, from_user=from_user)
+    if refusal is None:
+        assert got is None
+    elif refusal == "conversation_already_running":
+        assert isinstance(got, ConversationAlreadyRunning)
+    else:
+        assert isinstance(got, HeldForUser) and got.status == refusal
 
 
 @pytest.mark.asyncio
