@@ -28,6 +28,9 @@ class Subscriber[T](ABC):
     async def close(self):
         """Clean up this subscriber"""
 
+    async def close_connection(self, code: int, reason: str) -> None:
+        """Close the client connection behind this subscriber, if it has one."""
+
 
 class MaxSubscribersError(Exception):
     """Raised when a PubSub instance has reached its subscriber limit."""
@@ -125,3 +128,16 @@ class PubSub[T]:
                         f"Error closing subscriber {subscriber_id}: {result}",
                         exc_info=result,
                     )
+
+    async def close_connections(self, code: int, reason: str) -> None:
+        """Close every subscriber's client connection with this close code."""
+        results = await asyncio.gather(
+            *[
+                subscriber.close_connection(code, reason)
+                for subscriber in list(self._subscribers.values())
+            ],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Failed to close a subscriber connection: %s", result)

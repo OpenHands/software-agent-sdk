@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config, TelemetrySpec
+from openhands.agent_server.persistence import FileSettingsStore, ServerStores
 from openhands.agent_server.telemetry import (
     NoOpTelemetrySink,
     build_telemetry_sink,
@@ -15,6 +16,7 @@ from openhands.agent_server.telemetry import (
     get_telemetry_sink,
 )
 from openhands.agent_server.telemetry.sanitizer import pseudonymize
+from tests.agent_server.telemetry.conftest import build_sink
 
 
 def test_default_config_yields_a_noop_sink(temp_persistence_dir):
@@ -23,7 +25,7 @@ def test_default_config_yields_a_noop_sink(temp_persistence_dir):
 
 
 async def test_building_from_a_default_config_stays_a_noop(temp_persistence_dir):
-    sink = await build_telemetry_sink(Config(static_files_path=None))
+    sink = await build_sink(Config(static_files_path=None))
     assert isinstance(sink, NoOpTelemetrySink)
     assert sink.enabled is False
 
@@ -31,7 +33,7 @@ async def test_building_from_a_default_config_stays_a_noop(temp_persistence_dir)
 async def test_building_sink_carries_configured_deployment_kind(
     temp_persistence_dir,
 ):
-    sink = await build_telemetry_sink(
+    sink = await build_sink(
         Config(
             static_files_path=None, telemetry=TelemetrySpec(deployment_kind="remote")
         )
@@ -53,7 +55,7 @@ async def test_salt_falls_back_to_the_secret_key_as_documented(
     assert "linkable across restarts" in description
 
     conversation_id = uuid4()
-    sink = await build_telemetry_sink(config_factory())
+    sink = await build_sink(config_factory())
     try:
         factory = get_event_factory()
         assert factory is not None
@@ -66,15 +68,13 @@ async def test_salt_falls_back_to_the_secret_key_as_documented(
 
 async def test_opt_in_without_an_api_key_stays_inactive(config_factory):
     """No key means no exporter."""
-    sink = await build_telemetry_sink(config_factory("posthog"))
+    sink = await build_sink(config_factory("posthog"))
     assert isinstance(sink, NoOpTelemetrySink)
 
 
 async def test_kill_switch_short_circuits_delivery(config_factory, monkeypatch):
     monkeypatch.setenv("DO_NOT_TRACK", "1")
-    sink = await build_telemetry_sink(
-        config_factory("posthog", posthog_api_key="phc_test")
-    )
+    sink = await build_sink(config_factory("posthog", posthog_api_key="phc_test"))
     assert sink.enabled is False
 
 
@@ -131,7 +131,7 @@ async def test_disabled_server_never_constructs_the_exporter(temp_persistence_di
     monkeypatched = getattr(service_mod, "PostHogExporter", None)
     assert monkeypatched is None, "exporter must not be a module-level attribute"
 
-    await build_telemetry_sink(Config(static_files_path=None))
+    await build_sink(Config(static_files_path=None))
     assert built == []
 
 
@@ -302,14 +302,14 @@ def test_deferred_pod_does_not_emit_an_unpaired_server_stopped(
     assert emitted == [], f"deferred pod emitted unpaired lifecycle events: {emitted}"
 
 
-async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
+async def test_telemetry_reads_consent_through_the_server_settings_store(
     temp_persistence_dir, monkeypatch
 ):
-    """Regression: telemetry must prime the settings store WITH the config.
+    """Telemetry reads consent through the store the server hands it.
 
-    ``get_settings_store`` is a singleton whose cipher is fixed by the first
-    call. Telemetry initialises during lifespan startup, so a no-arg call here
-    would leave the whole process writing secrets with encryption disabled.
+    Telemetry initialises during lifespan startup. It must use the server's
+    settings store, which carries the config's cipher and directory, and not
+    build a keyless one of its own.
     """
     from base64 import urlsafe_b64encode
 
@@ -317,7 +317,6 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
 
     import openhands.agent_server.telemetry.posthog_exporter as pe
     from openhands.agent_server.config import Config, TelemetrySpec
-    from openhands.agent_server.persistence.store import get_settings_store
 
     class _FakeExporter:
         async def send(self, events):
@@ -336,13 +335,20 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
         ),
     )
 
-    sink = await build_telemetry_sink(config)
+    store = ServerStores.from_config(config).settings
+    loads: list[FileSettingsStore] = []
+    real_load = FileSettingsStore.load
+
+    def recording_load(self, **kwargs):
+        loads.append(self)
+        return real_load(self, **kwargs)
+
+    monkeypatch.setattr(FileSettingsStore, "load", recording_load)
+
+    sink = await build_telemetry_sink(config, store)
     try:
-        store = get_settings_store(config)
-        assert store.cipher is not None, (
-            "telemetry primed the settings store without a cipher; secrets "
-            "would be persisted unencrypted process-wide"
-        )
+        assert loads == [store], "consent must be read through the given store"
+        assert store.cipher is not None
         assert store.persistence_dir == temp_persistence_dir
     finally:
         await sink.aclose()

@@ -24,6 +24,7 @@ from openhands.sdk.logger import get_logger
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_response import LLMResponse
     from openhands.sdk.llm.utils.metrics import Metrics
     from openhands.sdk.utils.cipher import Cipher
@@ -59,27 +60,10 @@ class FallbackStrategy(BaseModel):
         "If not specified, defaults to `.openhands/profiles`.",
     )
 
-    # Private: lazily resolved LLM instances
-    _resolved: list[Any] | None = PrivateAttr(default=None)
-    _cipher: Cipher | None = PrivateAttr(default=None)
-    _store: LLMProfileStore | None = PrivateAttr(default=None)
-
-    def with_cipher(self, cipher: Cipher) -> FallbackStrategy:
-        """Return this strategy decrypting its fallback profiles with ``cipher``.
-
-        The conversation's :class:`~openhands.sdk.llm.llm_registry.LLMRegistry`
-        installs it on each LLM it registers, so an encrypted profile resolves
-        to its plaintext key. A copy rather than a mutation: ``model_copy`` of
-        an LLM shares its strategy, and a sub-agent's copy must not rebind the
-        parent's.
-        """
-        if cipher is self._cipher:
-            return self
-        bound = self.model_copy()
-        bound._cipher = cipher
-        bound._store = None
-        bound._resolved = None
-        return bound
+    # Private: lazily resolved LLM instances, per cipher they were decrypted
+    # with. Conversations with different ciphers can share a strategy (they
+    # share the LLM), and each must only get what its own cipher decrypts.
+    _resolved: dict[Cipher | None, list[Any]] = PrivateAttr(default_factory=dict)
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""
@@ -94,21 +78,27 @@ class FallbackStrategy(BaseModel):
         primary_error: Exception,
         primary_metrics: Metrics,
         call_fn: Callable[[Any], LLMResponse],
+        *,
+        primary: LLM | None = None,
+        cipher: Cipher | None = None,
     ) -> LLMResponse | None:
-        """Try fallback LLMs in order. Merges metrics into primary on success.
+        """Try fallback models in the caller's role and session.
 
         Args:
             primary_model: The primary model name (for logging).
             primary_error: The error from the primary model.
-            primary_metrics: The primary LLM's Metrics to merge fallback costs into.
+            primary_metrics: The primary LLM's metrics for legacy direct callers.
             call_fn: A callable that takes an LLM instance and returns an LLMResponse.
+            primary: The caller whose usage ID and aggregate accounting are kept.
+            cipher: Decrypts fallback profiles stored encrypted at rest. An LLM
+                passes the cipher of the conversation making the call.
 
         Returns:
             LLMResponse from the first successful fallback, or None if all fail.
         """
         total = len(self.fallback_llms)
         tried = 0
-        for i, fb in enumerate(self._iter_fallbacks()):
+        for i, fb in enumerate(self._iter_fallbacks(cipher)):
             tried += 1
             remaining = total - i - 1
             logger.warning(
@@ -118,17 +108,23 @@ class FallbackStrategy(BaseModel):
                 f"{remaining} fallback(s) remaining"
             )
             try:
-                # Disable nested fallbacks to prevent recursive chains
-                saved_strategy = fb.fallback_strategy
-                fb.fallback_strategy = None
-                metrics_before = fb.metrics.deep_copy()
-                try:
-                    result = call_fn(fb)
-                finally:
-                    fb.fallback_strategy = saved_strategy
-                # Merge fallback metrics (cost + tokens) into primary
-                metrics_diff = fb.metrics.diff(metrics_before)
-                primary_metrics.merge(metrics_diff)
+                fallback = fb.model_copy(
+                    update={
+                        "usage_id": primary.usage_id
+                        if primary is not None
+                        else fb.usage_id,
+                        "fallback_strategy": None,
+                    }
+                )
+                metrics_before = (
+                    fallback.metrics.deep_copy() if primary is None else None
+                )
+                if primary is not None:
+                    fallback._session = primary.session
+                    fallback._registry_session = primary._registered_session()
+                result = call_fn(fallback)
+                if metrics_before is not None:
+                    primary_metrics.merge(fallback.metrics.diff(metrics_before))
                 logger.info(f"[Fallback Strategy] Fallback LLM ({fb.model}) succeeded")
                 return result
             except Exception as fb_error:
@@ -148,32 +144,29 @@ class FallbackStrategy(BaseModel):
             )
         return None
 
-    @property
-    def _profile_store(self) -> LLMProfileStore:
-        if self._store is None:
-            self._store = LLMProfileStore(self.profile_store_dir, cipher=self._cipher)
-        return self._store
-
-    def _iter_fallbacks(self) -> Generator[Any]:
+    def _iter_fallbacks(self, cipher: Cipher | None = None) -> Generator[Any]:
         """Yield fallback LLM instances, resolving lazily from profiles.
 
-        Profiles are loaded one at a time and appended to ``_resolved``
-        progressively.  On subsequent calls the already-cached instances
-        are yielded first, then resolution continues for any remaining
-        profiles that were not yet loaded.
+        Profiles are loaded one at a time, decrypted with ``cipher``, and
+        appended to that cipher's ``_resolved`` list progressively.  On
+        subsequent calls the already-cached instances are yielded first, then
+        resolution continues for any remaining profiles that were not yet
+        loaded.
         """
-        if self._resolved is None:
-            self._resolved = []
+        resolved = self._resolved.setdefault(cipher, [])
 
         # Yield already-cached instances
-        yield from self._resolved
+        yield from resolved
 
         # Continue resolving profiles that haven't been loaded yet
-        remaining_names = self.fallback_llms[len(self._resolved) :]
+        remaining_names = self.fallback_llms[len(resolved) :]
+        if not remaining_names:
+            return
+        store = LLMProfileStore(self.profile_store_dir, cipher=cipher)
         for name in remaining_names:
             try:
-                fb = self._profile_store.load(name)
-                self._resolved.append(fb)
+                fb = store.load(name)
+                resolved.append(fb)
                 yield fb
             except (FileNotFoundError, ValueError) as exc:
                 logger.error(

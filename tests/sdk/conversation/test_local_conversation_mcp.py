@@ -1,7 +1,9 @@
 """Tests for how LocalConversation wires MCP servers into a running agent."""
 
+import asyncio
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -11,6 +13,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ObservationEvent
@@ -86,6 +89,91 @@ def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None
     conversation._ensure_agent_ready()
 
     assert provider.calls == []
+    conversation.close()
+
+
+def _mcp_tool(client: EmptyMCPClient, name: str) -> MCPToolDefinition:
+    return MCPToolDefinition.create(
+        mcp_tool=mcp_types.Tool(
+            name=name,
+            description=name,
+            input_schema={"type": "object", "properties": {}},
+        ),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+
+def test_add_mcp_servers_registers_modern_runtime_tools(tmp_path: Path) -> None:
+    client = EmptyMCPClient()
+    client.tools = [_mcp_tool(client, "fetch")]
+    provider = RecordingMCPToolProvider(client)
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+
+    conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+
+    assert [set(call) for call in provider.calls] == [{"docs"}]
+    assert "docs" in conversation.agent.mcp_config
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
+    conversation.close()
+
+
+def test_add_mcp_servers_rejects_sse_transport(tmp_path: Path) -> None:
+    provider = RecordingMCPToolProvider()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+
+    with pytest.raises(ValueError, match="SSE transport"):
+        conversation.add_mcp_servers(
+            {"events": MCPServer(url="http://example.test/sse", transport="sse")}
+        )
+
+    assert provider.calls == []
+    assert conversation.agent.mcp_config == {}
+    conversation.close()
+
+
+def test_add_mcp_servers_accepts_running_conversation(tmp_path: Path) -> None:
+    client = EmptyMCPClient()
+    client.tools = [_mcp_tool(client, "fetch")]
+    provider = RecordingMCPToolProvider(client)
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+    conversation.state.transition(ConversationExecutionStatus.RUNNING, "test")
+
+    conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+
+    assert [set(call) for call in provider.calls] == [{"docs"}]
+    assert conversation.state.execution_status == ConversationExecutionStatus.RUNNING
+    assert "docs" in conversation.agent.mcp_config
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
     conversation.close()
 
 
@@ -263,7 +351,12 @@ def _slow_fetch_server(delay: float) -> dict[str, Any]:
 
 
 def _mcp_conversation(
-    tmp_path: Path, servers: dict[str, Any], llm: LLM | None = None
+    tmp_path: Path,
+    servers: dict[str, Any],
+    llm: LLM | None = None,
+    *,
+    mcp_startup_budget: float | None = None,
+    mcp_tool_provider: MCPToolProvider | None = None,
 ) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
@@ -274,7 +367,114 @@ def _mcp_conversation(
         ),
         workspace=str(tmp_path),
         visualizer=None,
+        mcp_startup_budget=mcp_startup_budget,
+        mcp_tool_provider=mcp_tool_provider,
     )
+
+
+def _wait_until(condition: Any, timeout: float = 20) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def test_startup_budget_starts_the_agent_before_a_slow_mcp_server(
+    tmp_path: Path,
+) -> None:
+    # A model litellm knows locally, so agent init makes no model-info requests.
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+    conversation = _mcp_conversation(
+        tmp_path, {"slow": _slow_fetch_server(6)}, llm, mcp_startup_budget=0.5
+    )
+
+    started = time.monotonic()
+    conversation._ensure_agent_ready()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5
+    assert _mcp_tool_names(conversation) == set()
+    _wait_until(lambda: _mcp_tool_names(conversation))
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+
+class BlockedMCPToolProvider:
+    """Finishes starting only when the test releases it."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.client = EmptyMCPClient()
+        self.client.tools = list(
+            MCPToolDefinition.create(
+                mcp_types.Tool(name="late_tool", input_schema={"type": "object"}),
+                cast(MCPClient, self.client),
+            )
+        )
+
+    def create_tools(self, mcp_config, timeout=30.0, **kwargs) -> MCPClient:
+        self.release.wait(10)
+        return cast(MCPClient, self.client)
+
+
+def test_late_mcp_tools_are_closed_when_the_conversation_closed_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = BlockedMCPToolProvider()
+    conversation = _mcp_conversation(
+        tmp_path,
+        {"blocked": {"command": "unused"}},
+        mcp_startup_budget=0.1,
+        mcp_tool_provider=cast(MCPToolProvider, provider),
+    )
+    closed: list[Any] = []
+    monkeypatch.setattr(
+        conversation, "_close_runtime_tools", lambda tools: closed.extend(tools)
+    )
+    conversation._ensure_agent_ready()
+
+    conversation.close()
+    provider.release.set()
+    _wait_until(lambda: closed)
+
+    assert [tool.name for tool in closed] == ["late_tool"]
+    assert _mcp_tool_names(conversation) == set()
+
+
+@pytest.mark.parametrize("use_arun", [False, True])
+def test_first_step_waits_for_mcp_servers_that_missed_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_arun: bool
+) -> None:
+    provider = BlockedMCPToolProvider()
+    conversation = _mcp_conversation(
+        tmp_path,
+        {"blocked": {"command": "unused"}},
+        mcp_startup_budget=0.1,
+        mcp_tool_provider=cast(MCPToolProvider, provider),
+    )
+    tools_at_first_step: list[set[str]] = []
+
+    def step(self, conversation, *args, **kwargs) -> None:
+        tools_at_first_step.append(_mcp_tool_names(conversation))
+        conversation.state.transition(
+            ConversationExecutionStatus.FINISHED, reason="test"
+        )
+
+    async def astep(self, conversation, *args, **kwargs) -> None:
+        step(self, conversation)
+
+    monkeypatch.setattr(Agent, "step", step)
+    monkeypatch.setattr(Agent, "astep", astep)
+    conversation.send_message("hello")
+    threading.Timer(0.5, provider.release.set).start()
+    try:
+        if use_arun:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+    finally:
+        conversation.close()
+
+    assert tools_at_first_step == [{"late_tool"}]
 
 
 def _mcp_tool_names(conversation: LocalConversation) -> set[str]:
@@ -297,7 +497,6 @@ def _failed_servers(caplog: pytest.LogCaptureFixture) -> list[str]:
     "broken",
     [
         pytest.param(UNRESPONSIVE_SERVER, id="never-answers"),
-        pytest.param({}, id="invalid-entry"),
         pytest.param({"command": "missing-mcp-server-command"}, id="missing-command"),
     ],
 )

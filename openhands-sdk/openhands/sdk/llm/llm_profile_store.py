@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from filelock import FileLock, Timeout
 
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
@@ -22,8 +23,9 @@ from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
-    STRICT_DECRYPT_CONTEXT_KEY,
     SecretDecryptionError,
+    cipher_context,
+    client_context,
 )
 
 
@@ -215,8 +217,9 @@ class LLMProfileStore:
                 yield
         except Timeout:
             logger.error(f"[Profile Store] Failed to acquire lock within {timeout}s")
-            raise TimeoutError(
-                f"Profile store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Profile store is busy. Please retry.",
+                message=f"Profile store lock acquisition timed out after {timeout}s",
             )
 
     def list(self) -> list[str]:
@@ -239,7 +242,7 @@ class LLMProfileStore:
         """
         clean_name = canonical_profile_name(name)
         if not PROFILE_NAME_REGEX.match(clean_name):
-            raise ValueError(
+            raise Invalid(
                 f"Invalid profile name: {name!r}. "
                 "Profile names must be 1-64 characters, start with a letter "
                 "or digit, and contain only letters, digits, '.', '_', or '-'."
@@ -308,13 +311,12 @@ class LLMProfileStore:
             if llm.provider_connection_id:
                 llm = llm.model_copy(update={"api_key": None, "base_url": None})
 
-            context: dict[str, Any] = {}
-            if include_secrets:
-                if cipher:
-                    context["cipher"] = cipher
-                    context["expose_secrets"] = "encrypted"
-                else:
-                    context["expose_secrets"] = True
+            if not include_secrets:
+                context = client_context("redact")
+            elif cipher:
+                context = cipher_context(cipher)
+            else:
+                context = client_context("plaintext")
 
             profile_json = json.dumps(llm.to_persisted(context=context), indent=2)
             with tempfile.NamedTemporaryFile(
@@ -380,18 +382,14 @@ class LLMProfileStore:
             try:
                 from openhands.sdk.llm.llm import LLM
 
-                context: dict[str, Any] | None = (
-                    {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
-                    if cipher
-                    else None
-                )
+                context = cipher_context(cipher, strict=strict)
 
                 llm_instance = LLM.load_from_json(str(profile_path), context=context)
             except SecretDecryptionError:
                 raise
             except Exception as e:
                 # Re-raise as ValueError for clearer error handling
-                raise ValueError(f"Failed to load profile `{name}`: {e}") from e
+                raise Invalid(f"Failed to load profile `{name}`: {e}") from e
 
             logger.info(f"[Profile Store] Loaded profile `{name}` from {profile_path}")
 

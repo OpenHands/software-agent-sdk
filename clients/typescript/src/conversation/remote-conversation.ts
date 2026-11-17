@@ -347,6 +347,11 @@ export class RemoteConversation implements IConversation {
     await this.client.post(`/api/conversations/${this.id}/switch_acp_model`, { model });
   }
 
+  /** Switch this ACP conversation's reasoning effort (see `ConversationClient.switchAcpEffort`). */
+  async switchAcpEffort(effort: string): Promise<void> {
+    await this.client.post(`/api/conversations/${this.id}/switch_acp_effort`, { effort });
+  }
+
   /**
    * Start a `/goal` loop inside this conversation: the agent pursues the
    * objective and is re-prompted after each run until a judge marks it done or

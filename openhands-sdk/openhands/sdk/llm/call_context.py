@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm_session import LLMSession
+    from openhands.sdk.utils.cipher import Cipher
 
 
 @dataclass(frozen=True)
@@ -21,23 +26,41 @@ class LLMCallContext:
 
     prompt_cache_key: str | None = None
     session_id: str | None = None
+    # The conversation's LLM sessions by role (``usage_id``). A call records its
+    # usage in the session of the calling LLM's role, when the conversation has
+    # one. It is a live view owned by the conversation's ``LLMRegistry``, so it
+    # takes no part in equality or hashing.
+    sessions: Mapping[str, LLMSession] | None = field(
+        default=None, compare=False, repr=False
+    )
+    # The conversation's cipher. A fallback strategy decrypts the profiles it
+    # loads with it, so the cipher follows the call instead of living on an
+    # ``LLM`` that several conversations may share.
+    cipher: Cipher | None = field(default=None, compare=False, repr=False)
 
     def for_conversation(
         self,
         conversation_id: str,
         *,
         prompt_cache_key: str | None = None,
+        sessions: Mapping[str, LLMSession] | None = None,
+        cipher: Cipher | None = None,
     ) -> LLMCallContext:
         """Derive context for a conversation while preserving inheritable fields.
 
-        Conversation identity is always replaced. Any additional fields added to
-        this dataclass are inherited automatically unless this method explicitly
-        gives them conversation-local semantics.
+        Conversation identity is always replaced, and so are the sessions: a
+        child conversation never records into its parent's. A conversation
+        given no ``cipher`` keeps its parent's, so a sub-agent reads the same
+        encrypted profiles. Any additional fields added to this dataclass are
+        inherited automatically unless this method explicitly gives them
+        conversation-local semantics.
         """
         return replace(
             self,
             prompt_cache_key=prompt_cache_key or conversation_id,
             session_id=conversation_id,
+            sessions=sessions,
+            cipher=cipher if cipher is not None else self.cipher,
         )
 
 

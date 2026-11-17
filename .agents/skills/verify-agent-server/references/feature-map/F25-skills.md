@@ -59,6 +59,7 @@ Routes: `POST /api/skills`, `GET /api/skills/catalog`, `POST /api/skills/sync`, 
 - `F25.ts-client`: the TypeScript `SkillsClient` installs a skill from a git source, lists, reads, disables and re-enables it (`toggleSkill`, with `getSkills` following the flag), refreshes, syncs, reads the marketplace and uninstalls it; an unknown skill is a 404 `HttpError` and a client without a key gets 401.
 - `F25.marketplace-stale-cache`: after a sync brings a new entry into the public repository, the catalog lists it: a successful sync clears the catalog's 5-minute cache, which never keeps an empty result.
 - `F25.uninstall`: uninstall deletes the directory and the metadata entry, the single view and a second uninstall are 404, the catalog drops the skill and the marketplace entry reads `installed: false` again.
+- `F25.long-description`: a skill description over 1024 characters is cut to 1024 in the project catalog, the installed view and the profile catalog, with a notice that names `invoke_skill(name=...)` and not the `SKILL.md` path.
 
 ## How to get to it (agent POV)
 
@@ -420,7 +421,7 @@ Preconditions:
   commit, and the skill leaves the store again. This bullet is the network
   arrange step for `F25.install-documented-sources`: it proves github.com is
   reachable and `skills/github` installs.
-- **Documented install sources (`F25.install-documented-sources`), known bug.**
+- **Documented install sources (`F25.install-documented-sources`).**
   Install the same skill in each GitHub form the OpenAPI description of
   `InstallSkillRequest.source` advertises.
 
@@ -431,20 +432,15 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 422 && response.body.detail eq 'Invalid skill. Ensure the source contains a valid SKILL.md.'
+          --check name eq github --save F25.install-documented-sources/documented
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
   done
   ```
   `F25.install-github` proves the skill installs from github.com when the
-  subpath is explicit. The shorthand should install the same skill, but
-  currently answers 422: the installation manager treats an omitted
-  `repo_path` as a repository-root install and loads the fetched `github`
-  skill from a temporary directory named `extensions`. Skill validation
-  rejects the resulting directory/name mismatch. This regression is tracked
-  in [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184).
-  The earlier parser rejection was fixed in #5909; the current shorthand clones
+  subpath is explicit. The shorthand installs the same skill under its own
+  name. The shorthand clones
   `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
   The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
   again; that form is not parsed (it would be cloned as
@@ -683,7 +679,7 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/qa-f25-invoke"'"}' --expect 200 --check name eq qa-f25-invoke
   control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": true, "load_project": false, "load_org": false}' \
     --expect 200 --check skills contains '"name": "qa-f25-invoke", "type": "agentskills", "content": "QA_INVOKE_BODY' \
-    --check skills contains '"triggers": [], "source": "'"$I/qa-f25-invoke/SKILL.md"'"'
+    --check skills contains '"triggers": [], "paths": [], "source": "'"$I/qa-f25-invoke/SKILL.md"'"'
   CID2=$(control-agent-server conversation start --tools none --no-autotitle \
     --prompt 'Call the invoke_skill tool with name "qa-f25-invoke", then finish.' --wait --until finished,idle --timeout 300 --print-id)
   control-agent-server conversation events "$CID2" --kinds SystemPromptEvent --contains '<name>qa-f25-invoke</name>'
@@ -865,6 +861,34 @@ Preconditions:
   the marketplace entry reads `installed: false` again, and the user tier no
   longer has `qa-f25-skill`. `qa-f25-src-skill` and `qa-f25-gone` stay
   installed in this run.
+- **Long description (`F25.long-description`).** A project skill whose
+  description is longer than 1024 characters, read through the project
+  catalog, then installed and read through the installed view and the
+  profile launch catalog, then uninstalled. The bullet arranges everything
+  itself, so it also runs alone (`map run --only`).
+  ```sh
+  LD="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f25-long"
+  mkdir -p "$LD/.agents/skills/qa-f25-long"
+  printf -- '---\nname: qa-f25-long\ndescription: QA_LONG_DESC %s\n---\nQA_LONG_BODY\n' "$(printf 'x%.0s' $(seq 1500))" \
+    > "$LD/.agents/skills/qa-f25-long/SKILL.md"
+  control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": false, "load_project": true, "load_org": false, "project_dir": "'"$LD"'"}' \
+    --expect 200 --check skills contains '"name": "qa-f25-long"' --check skills contains 'to load the full skill.</NOTE>' \
+    --check skills not-contains 'complete skill content at' --save F25.long-description/project
+  control-agent-server api POST /api/skills/install --json '{"source": "'"$LD/.agents/skills/qa-f25-long"'"}' --expect 200 \
+    --check name eq qa-f25-long --check description len-eq 1024
+  control-agent-server api GET /api/skills/installed/qa-f25-long --expect 200 --check description len-eq 1024 \
+    --check description contains 'QA_LONG_DESC x' --check description contains 'Call invoke_skill(name="qa-f25-long") to load the full skill.' \
+    --check description not-contains SKILL.md --save F25.long-description/installed
+  control-agent-server api GET /api/skills/catalog --expect 200 --check skills contains '"name": "qa-f25-long"' \
+    --check skills contains 'to load the full skill.</NOTE>' --check skills not-contains 'complete skill content at' --save F25.long-description/catalog
+  control-agent-server api DELETE /api/skills/installed/qa-f25-long --expect 200
+  ```
+  Every view cuts the description to 1024 characters when the `SKILL.md`
+  is loaded: it keeps the head and the tail and puts in the middle
+  `<response clipped><NOTE>Due to the max output limit, only part of the
+  full description is shown. Call invoke_skill(name="qa-f25-long") to load
+  the full skill.</NOTE>`, naming the skill and never its file (the
+  agent's prompt omits skill locations on purpose).
 
 ## Gotchas
 
@@ -905,11 +929,8 @@ Preconditions:
   are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
   `github:OpenHands/extensions/skills/github` is the same install as
   `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
-  in the fetch layer, but installation currently rejects that shorthand with
-  422 because the loader renames the skill directory to the repository name
-  (`F25.install-documented-sources`,
-  [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184)). Use the
-  explicit `repo_path` form until fixed. A GitHub `/tree/<ref>/<path>` URL
+  in the fetch layer, and installation accepts both
+  (`F25.install-documented-sources`). A GitHub `/tree/<ref>/<path>` URL
   is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
@@ -945,5 +966,4 @@ Preconditions:
   `--until-kind K --until FIELD=VALUE` fails unless a frame of kind `K` with
   that field arrives within `--duration`, which is how the activation bullet
   asserts the WebSocket replay.
-- Error 500s carry the exception text in an `exception` field; the
-  `known bug` bullets save it as evidence.
+- Error 500s carry the exception text in an `exception` field.

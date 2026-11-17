@@ -22,7 +22,6 @@ from openhands.sdk.llm import (
     LLM,
     FallbackStrategy,
     LLMCallContext,
-    LLMRegistry,
     Message,
     TextContent,
 )
@@ -70,7 +69,7 @@ _MSGS = [Message(role="user", content=[TextContent(text="hi")])]
 def _patch_resolve(primary: LLM, fallback_instances: list[LLM]):
     """Pre-populate the resolved fallback cache, bypassing LLMProfileStore."""
     assert primary.fallback_strategy is not None
-    primary.fallback_strategy._resolved = fallback_instances
+    primary.fallback_strategy._resolved = {None: fallback_instances}
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -504,16 +503,16 @@ def _encrypted_fallback_strategy(profile_dir, cipher: Cipher) -> FallbackStrateg
     )
 
 
-def _primary_down_fallback_key(mock_comp) -> list[str]:
+def _primary_down_fallback_key(mock_comp) -> list[str | None]:
     """Fail the primary model and record the API key each fallback call sent."""
-    keys: list[str] = []
+    keys: list[str | None] = []
 
     def side_effect(**kwargs):
         if kwargs.get("model") == "gpt-4o":
             raise APIConnectionError(
                 message="down", llm_provider="openai", model="gpt-4o"
             )
-        keys.append(kwargs["api_key"])
+        keys.append(kwargs.get("api_key"))
         return _get_mock_response("from fallback", model="claude-sonnet-4-20250514")
 
     mock_comp.side_effect = side_effect
@@ -521,22 +520,21 @@ def _primary_down_fallback_key(mock_comp) -> list[str]:
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_registry_cipher_decrypts_encrypted_fallback_profile(mock_comp, tmp_path):
-    """#4558: a registered LLM's fallback gets the plaintext key, not ciphertext."""
+def test_call_context_cipher_decrypts_encrypted_fallback_profile(mock_comp, tmp_path):
+    """#4558: the fallback gets the profile's plaintext key, not its ciphertext."""
     cipher = Cipher("server-secret-key")
     strategy = _encrypted_fallback_strategy(tmp_path, cipher)
     primary = _get_llm("gpt-4o", fallback_strategy=strategy)
     keys = _primary_down_fallback_key(mock_comp)
 
-    LLMRegistry(cipher=cipher).add(primary)
-    primary.completion(_MSGS)
+    primary.completion(_MSGS, call_context=LLMCallContext(cipher=cipher))
 
     assert keys == [_FALLBACK_KEY]
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_conversation_cipher_reaches_fallback_profiles(mock_comp, tmp_path):
-    """The conversation's cipher decrypts its agent LLM's fallback profiles."""
+    """A conversation's run decrypts its agent LLM's fallback profiles."""
     cipher = Cipher("server-secret-key")
     strategy = _encrypted_fallback_strategy(tmp_path / "profiles", cipher)
     keys = _primary_down_fallback_key(mock_comp)
@@ -547,46 +545,91 @@ def test_conversation_cipher_reaches_fallback_profiles(mock_comp, tmp_path):
     )
     try:
         conversation.send_message("hi")
-        conversation.agent.llm.completion(_MSGS)
+        conversation.run()
     finally:
         conversation.close()
 
     assert keys == [_FALLBACK_KEY]
 
 
-def test_with_cipher_returns_a_bound_copy(tmp_path):
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversations_sharing_an_llm_keep_their_own_cipher(mock_comp, tmp_path):
+    """Two conversations can share an agent's LLM. The second one must not
+    replace the cipher the first decrypts its fallback profiles with."""
+    cipher = Cipher("first-conversation-key")
+    strategy = _encrypted_fallback_strategy(tmp_path / "profiles", cipher)
+    agent = Agent(llm=_get_llm("gpt-4o", fallback_strategy=strategy), tools=[])
+    keys = _primary_down_fallback_key(mock_comp)
+    first = LocalConversation(agent=agent, workspace=tmp_path / "a", cipher=cipher)
+    second = LocalConversation(
+        agent=agent,
+        workspace=tmp_path / "b",
+        cipher=Cipher("second-conversation-key"),
+    )
+    try:
+        for conversation in (first, second, first):
+            agent.llm.completion(
+                _MSGS, call_context=conversation.get_llm_call_context()
+            )
+    finally:
+        first.close()
+        second.close()
+
+    # The second conversation's key cannot decrypt the profile; the first's
+    # still can afterwards.
+    assert keys == [_FALLBACK_KEY, None, _FALLBACK_KEY]
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_a_sub_agent_conversation_inherits_the_parents_cipher(mock_comp, tmp_path):
+    """TaskManager and delegate build the child conversation without a cipher
+    and hand it the parent's call context."""
+    cipher = Cipher("server-secret-key")
+    strategy = _encrypted_fallback_strategy(tmp_path / "profiles", cipher)
+    parent_llm = _get_llm("gpt-4o", fallback_strategy=strategy)
+    keys = _primary_down_fallback_key(mock_comp)
+    parent = LocalConversation(
+        agent=Agent(llm=parent_llm, tools=[]),
+        workspace=tmp_path / "parent",
+        cipher=cipher,
+    )
+    child_llm = parent_llm.model_copy(update={"usage_id": "sub-agent"})
+    child = LocalConversation(
+        agent=Agent(llm=child_llm, tools=[]),
+        workspace=tmp_path / "child",
+        _parent_llm_call_context=parent.get_llm_call_context(),
+    )
+    try:
+        child_llm.completion(_MSGS, call_context=child.get_llm_call_context())
+    finally:
+        child.close()
+        parent.close()
+
+    assert keys == [_FALLBACK_KEY]
+
+
+def test_a_child_context_keeps_its_parents_cipher_unless_given_its_own():
+    parent_cipher, own_cipher = Cipher("parent-key"), Cipher("own-key")
+    parent = LLMCallContext(cipher=parent_cipher)
+
+    assert parent.for_conversation("child").cipher is parent_cipher
+    assert parent.for_conversation("child", cipher=own_cipher).cipher is own_cipher
+
+
+def test_fallbacks_are_resolved_per_cipher(tmp_path):
     cipher = Cipher("server-secret-key")
     strategy = _encrypted_fallback_strategy(tmp_path, cipher)
-    unbound = next(strategy._iter_fallbacks())
 
-    bound = strategy.with_cipher(cipher)
+    decrypted = next(strategy._iter_fallbacks(cipher))
 
-    assert bound is not strategy
-    assert bound.with_cipher(cipher) is bound
-    loaded = next(bound._iter_fallbacks())
-    assert loaded.api_key is not None
-    assert loaded.api_key.get_secret_value() == _FALLBACK_KEY
-    # The original keeps what it had loaded without the cipher.
-    assert next(strategy._iter_fallbacks()) is unbound
-
-
-def test_a_sub_agent_copy_does_not_unbind_the_parents_fallback(tmp_path):
-    """A sub-agent LLM is a model_copy sharing the parent's strategy; its
-    registry (no cipher) must not undo the parent's binding."""
-    cipher = Cipher("server-secret-key")
-    parent = _get_llm(
-        "gpt-4o", fallback_strategy=_encrypted_fallback_strategy(tmp_path, cipher)
-    )
-    LLMRegistry(cipher=cipher).add(parent)
-    # TaskManager copies the parent's registered LLM for the sub-agent.
-    child = parent.model_copy(update={"usage_id": "sub-agent"})
-    LLMRegistry().add(child)
-
-    for llm in (parent, child):
-        assert llm.fallback_strategy is not None
-        key = next(llm.fallback_strategy._iter_fallbacks()).api_key
-        assert key is not None
-        assert key.get_secret_value() == _FALLBACK_KEY
+    assert decrypted.api_key is not None
+    assert decrypted.api_key.get_secret_value() == _FALLBACK_KEY
+    assert next(strategy._iter_fallbacks(cipher)) is decrypted
+    # A caller without the cipher never gets what the cipher decrypted.
+    without_cipher = next(strategy._iter_fallbacks())
+    assert without_cipher is not decrypted
+    assert without_cipher.api_key is not None
+    assert without_cipher.api_key.get_secret_value() != _FALLBACK_KEY
 
 
 # =========================================================================

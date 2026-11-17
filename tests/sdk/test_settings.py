@@ -179,6 +179,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_command",
         "acp_args",
         "acp_model",
+        "acp_effort",
         "acp_session_mode",
         "acp_prompt_timeout",
         "acp_startup_timeout",
@@ -1942,7 +1943,7 @@ def test_acp_create_agent_uses_server_default_command(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/claude-agent-acp@0.63.0",
+        "@agentclientprotocol/claude-agent-acp@0.99.1",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.

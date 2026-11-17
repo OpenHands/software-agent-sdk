@@ -15,6 +15,8 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.server_context import server_context_of
 
 
 def test_docker_worktrees_remain_host_resolvable_after_runtime_lifecycle(
@@ -56,7 +58,8 @@ def test_docker_worktrees_remain_host_resolvable_after_runtime_lifecycle(
     first, second = uuid4(), uuid4()
 
     with TestClient(app) as client:
-        registry = app.state.conversation_registry
+        registry = server_context_of(app).conversation_registry
+        assert isinstance(registry, DockerConversationRegistry)
         try:
             for cid in (first, second):
                 response = client.post(
