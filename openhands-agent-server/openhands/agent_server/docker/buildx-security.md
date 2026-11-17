@@ -58,6 +58,20 @@ inventory and import inspection support the conclusion independently of
 linker dead-code elimination. The v0.38.2 amd64 binary that embeds x/net
 v0.59.0 likewise had only `namesgenerator.GetRandomName` from these modules.
 
+## Release-age gate: blocked until 2026-11-18T20:14:20Z
+
+Upstream published v0.39.0 at **2026-11-11T20:14:20Z**. It is less than
+seven days old at the 2026-11-17 investigation time. Keep this PR draft and
+**do not approve or merge before 2026-11-18T20:14:20Z**, unless an actual
+maintainer explicitly approves a narrowly documented cooldown exception for
+this exact release and advisory. General implementation or merge authorization
+is not that exception. No such exception has been recorded.
+
+The aged v0.38.2 official amd64 binary was checked with `go version -m` and
+still embeds `golang.org/x/net v0.59.0`; it does not meet the v0.60.0 fix floor
+and is not a valid downgrade alternative. Passing installation tests do not
+waive the release-age gate. Recheck CI/reviews on the exact head once eligible.
+
 ## Verification and limits
 
 - `python tests/agent_server/docker_runtime/test_buildx_install.py` exercises
