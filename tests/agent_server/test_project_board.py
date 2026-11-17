@@ -290,10 +290,10 @@ async def _start(
 async def test_set_tag_only_if_absent(service, tmp_path):
     cid = await _start(service, tmp_path, {"project": "p1", "resolved": "user"})
 
-    kept = await service.set_conversation_tag(
+    kept = await service.projects.set_conversation_tag(
         cid, "resolved", "auto", only_if_absent=True
     )
-    added = await service.set_conversation_tag(
+    added = await service.projects.set_conversation_tag(
         cid, "turn", "asked", only_if_absent=True
     )
 
@@ -309,7 +309,7 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
     subscriber = ConversationOutcomeSubscriber(
         conversation_id=cid,
         tags=lambda: event_service.stored.tags,
-        set_tag=service.set_conversation_tag,
+        set_tag=service.projects.set_conversation_tag,
     )
 
     await _feed(subscriber, _message("agent", "Shall I merge it?"), _status("finished"))
@@ -323,16 +323,11 @@ def test_board_tag_keys():
     assert BOARD_TAG_KEYS == {"resolved", "resolvenote", "turn", "ask"}
 
 
-@pytest.mark.asyncio
-async def test_service_registers_the_subscriber_for_every_conversation(
-    service, tmp_path
-):
-    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asked"})
+async def _reopened_by_a_user_message(service: ConversationService, cid: UUID) -> bool:
     event_service = await service.get_event_service(cid)
     assert event_service is not None
-
     # A user message published through the conversation's own pub/sub reaches
-    # the registered subscriber, which reopens the conversation.
+    # the board, which reopens the conversation.
     await event_service._pub_sub(_message("user", "One more thing"))
 
     async def turn_cleared() -> bool:
@@ -343,7 +338,30 @@ async def test_service_registers_the_subscriber_for_every_conversation(
         if await turn_cleared():
             break
         await asyncio.sleep(0.01)
-    assert await turn_cleared()
+    return await turn_cleared()
+
+
+@pytest.mark.asyncio
+async def test_service_watches_a_project_member(service, tmp_path):
+    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asked"})
+
+    assert await _reopened_by_a_user_message(service, cid)
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_that_joins_a_project_is_watched_from_then_on(
+    service, tmp_path
+):
+    cid = await _start(service, tmp_path, {})
+    await service.projects.set_conversation_tag(cid, "project", "p1")
+    await service.projects.set_conversation_tag(cid, "turn", "asked")
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+
+    assert await _reopened_by_a_user_message(service, cid)
+    # The board is the server's own: it does not keep the conversation from
+    # idle eviction the way a client's websocket does.
+    assert not event_service.has_external_subscribers()
 
 
 def _stop_hook_feedback() -> MessageEvent:

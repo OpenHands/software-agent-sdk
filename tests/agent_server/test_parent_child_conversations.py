@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import project_service
 from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -31,6 +32,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
 )
 from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.project_service import ProjectService
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -676,7 +678,6 @@ async def test_project_child_gets_the_project_memory(
 ):
     from uuid import uuid4
 
-    from openhands.agent_server import conversation_service as module
     from openhands.agent_server.persistence import ProjectItem
     from openhands.agent_server.project_memory import ProjectMemoryStore
 
@@ -688,7 +689,7 @@ async def test_project_child_gets_the_project_memory(
     )
     project = ProjectItem(id=project_id, name="Docs", description="Ship the docs.")
     monkeypatch.setattr(
-        module,
+        project_service,
         "_load_project",
         lambda stores, project_hex: project if project_hex == project_id.hex else None,
     )
@@ -733,7 +734,7 @@ async def _launch_worker(tmp_path, workspace_dir, monkeypatch, profile_id):
     async def worker_profile(self, stored):
         return profile_id
 
-    monkeypatch.setattr(ConversationService, "_project_worker_profile", worker_profile)
+    monkeypatch.setattr(ProjectService, "_worker_profile", worker_profile)
     launch = await _launch_child(
         tmp_path,
         workspace_dir,
@@ -748,7 +749,7 @@ async def _launch_worker(tmp_path, workspace_dir, monkeypatch, profile_id):
 async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
     tmp_path, workspace_dir, monkeypatch, git_repo
 ):
-    from openhands.agent_server.conversation_service import PROJECT_WORKER_TOOLS
+    from openhands.agent_server.project_service import PROJECT_WORKER_TOOLS
 
     if git_repo:
         workspace_dir = tmp_path / "repo"
@@ -822,7 +823,6 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
     without = ProjectItem(name="B")
     server_stores.projects.save(PersistedProjects(projects=[with_profile, without]))
     server_stores.settings.save(PersistedSettings(active_agent_profile_id=str(active)))
-    from openhands.agent_server import conversation_service as module
 
     def stored(tags):
         return StoredConversation(
@@ -833,13 +833,13 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
 
     predefined: list[UUID | None] = [None]
     monkeypatch.setattr(
-        module, "ensure_project_profile", lambda role, stores: predefined[0]
+        project_service, "ensure_project_profile", lambda role, stores: predefined[0]
     )
 
     service = ConversationService(
         conversations_dir=tmp_path / "conversations", stores=server_stores
     )
-    pick = service._project_worker_profile
+    pick = service.projects._worker_profile
 
     assert await pick(stored({"project": with_profile.id.hex})) == named
     assert await pick(stored({"project": without.id.hex})) == active
@@ -905,9 +905,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
     tmp_path, workspace_dir, monkeypatch
 ):
     from openhands.agent_server import conversation_service as module
-    from openhands.agent_server.conversation_service import (
-        PROJECT_COORDINATOR_TOOLS,
-    )
+    from openhands.agent_server.project_service import PROJECT_COORDINATOR_TOOLS
 
     profile_id = uuid4()
     sources: list = []
@@ -931,7 +929,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=ServerStores.from_config(Config()),
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 project_hex,
                 str(workspace_dir),
                 agent_profile_id=profile_id,
@@ -985,7 +983,7 @@ async def test_a_new_coordinator_can_pass_on_its_members_questions(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=stores,
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 uuid4().hex, str(workspace_dir), agent_profile_id=uuid4()
             )
 
@@ -1000,16 +998,19 @@ async def test_a_new_coordinator_can_pass_on_its_members_questions(
 
 @pytest.mark.asyncio
 async def test_a_new_coordinator_needs_a_profile(tmp_path, workspace_dir, monkeypatch):
-    from openhands.agent_server import conversation_service as module
 
-    monkeypatch.setattr(module, "_active_agent_profile_id", lambda stores: None)
-    monkeypatch.setattr(module, "ensure_project_profile", lambda role, stores: None)
+    monkeypatch.setattr(
+        project_service, "_active_agent_profile_id", lambda stores: None
+    )
+    monkeypatch.setattr(
+        project_service, "ensure_project_profile", lambda role, stores: None
+    )
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
         stores=ServerStores.from_config(Config()),
     ) as service:
         with pytest.raises(ValueError, match="No agent profile"):
-            await service.start_project_coordinator(uuid4().hex, str(workspace_dir))
+            await service.projects.start_coordinator(uuid4().hex, str(workspace_dir))
 
 
 @pytest.mark.asyncio
@@ -1019,9 +1020,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
     """A client such as Insider starts its Cat with its own id, tags and
     system-prompt addition; the server still adds the project tag and tools."""
     from openhands.agent_server import conversation_service as module
-    from openhands.agent_server.conversation_service import (
-        PROJECT_COORDINATOR_TOOLS,
-    )
+    from openhands.agent_server.project_service import PROJECT_COORDINATOR_TOOLS
     from openhands.sdk.conversation.request import AgentLaunchAdditions
 
     seen: list = []
@@ -1043,7 +1042,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=ServerStores.from_config(Config()),
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 project_hex,
                 str(workspace_dir),
                 agent_profile_id=uuid4(),
@@ -1057,7 +1056,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
                 },
             )
             with pytest.raises(ValueError, match="already exists"):
-                await service.start_project_coordinator(
+                await service.projects.start_coordinator(
                     project_hex,
                     str(workspace_dir),
                     agent_profile_id=uuid4(),
@@ -1091,10 +1090,10 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
         roles.append(role)
         return predefined
 
-    monkeypatch.setattr(module, "ensure_project_profile", ensure)
+    monkeypatch.setattr(project_service, "ensure_project_profile", ensure)
     project = ProjectItem(name="Ship docs", description="Docs for 1.0")
     monkeypatch.setattr(
-        module,
+        project_service,
         "_load_project",
         lambda stores, project_hex: project if project_hex == project.id.hex else None,
     )
@@ -1115,7 +1114,7 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=ServerStores.from_config(Config()),
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 project.id.hex, str(workspace_dir)
             )
 
@@ -1158,7 +1157,7 @@ async def test_two_projects_cannot_share_a_reserved_coordinator_id(
         ) as service:
             results = await asyncio.gather(
                 *(
-                    service.start_project_coordinator(
+                    service.projects.start_coordinator(
                         uuid4().hex,
                         str(workspace_dir),
                         agent_profile_id=uuid4(),

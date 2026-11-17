@@ -494,7 +494,7 @@ async def test_membership_survives_service_restart(persistence_dir, tmp_path):
     conversations_dir = tmp_path / "conversations"
     async with ConversationService(conversations_dir=conversations_dir) as service:
         worker = await _start(service, tmp_path)
-        await service.set_conversation_tag(worker, "project", "abc")
+        await service.projects.set_conversation_tag(worker, "project", "abc")
 
     async with ConversationService(conversations_dir=conversations_dir) as service:
         members = await service.list_tagged_conversations("project", "abc")
@@ -898,7 +898,7 @@ async def test_failed_coordinator_tag_undoes_the_whole_patch(
     async def vanished(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(service, "set_conversation_tag", vanished)
+    monkeypatch.setattr(service.projects, "set_conversation_tag", vanished)
     response = await client.patch(
         f"/api/projects/{project['id']}",
         json={"name": "Q", "coordinator_conversation_id": new.hex},
@@ -1574,14 +1574,14 @@ async def test_creating_a_project_can_start_its_coordinator(
     workspace.mkdir(exist_ok=True)
     started: list[tuple] = []
 
-    async def start_project_coordinator(project_hex, working_dir, **kwargs):
+    async def start_coordinator(project_hex, working_dir, **kwargs):
         started.append((project_hex, working_dir, kwargs))
         coordinator = await _start(
             service, tmp_path, title="Cat", tags={"project": project_hex}
         )
         return SimpleNamespace(id=coordinator)
 
-    monkeypatch.setattr(service, "start_project_coordinator", start_project_coordinator)
+    monkeypatch.setattr(service.projects, "start_coordinator", start_coordinator)
 
     response = await client.post(
         "/api/projects",
@@ -1616,10 +1616,10 @@ async def test_creating_a_project_can_start_its_coordinator(
 async def test_a_coordinator_that_cannot_start_leaves_no_project(
     client, service, tmp_path, monkeypatch
 ):
-    async def start_project_coordinator(project_hex, working_dir, **kwargs):
+    async def start_coordinator(project_hex, working_dir, **kwargs):
         raise ValueError("No agent profile to start the coordinator from")
 
-    monkeypatch.setattr(service, "start_project_coordinator", start_project_coordinator)
+    monkeypatch.setattr(service.projects, "start_coordinator", start_coordinator)
 
     response = await client.post(
         "/api/projects",
@@ -1986,7 +1986,7 @@ async def test_a_run_clears_the_shutdown_mark(service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_the_server_catches_up_on_updates_when_it_starts(tmp_path, monkeypatch):
-    from openhands.agent_server import conversation_service as module
+    from openhands.agent_server import project_service as module
 
     started = asyncio.Event()
 
@@ -2054,7 +2054,7 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     assert (
         await client.post(f"{base}/{member.hex}/resolve", **agent)
     ).status_code == 202
-    await asyncio.gather(*service._agent_resolves)
+    await asyncio.gather(*service.projects._agent_resolves)
     assert await _tags(service, member) == {
         "project": project["id"],
         "turn": "answered",
@@ -2068,7 +2068,7 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     assert (
         await client.post(f"{base}/{member.hex}/resolve", **agent)
     ).status_code == 202
-    await asyncio.gather(*service._agent_resolves)
+    await asyncio.gather(*service.projects._agent_resolves)
     assert (await _tags(service, member))["resolved"] == "user"
     assert "resolvenote" not in await _tags(service, member)
     bad = await client.post(f"{base}/{member.hex}/resolve", json={"by": "coordinator"})
@@ -2087,7 +2087,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     )
 
     # Stale read: no board tags, a different project, a forged resolve note.
-    await service.update_conversation_from_client(
+    await service.projects.update_conversation_from_client(
         member,
         UpdateConversationRequest(
             tags={"project": "p2", "env": "prod", "resolvenote": "x", "turn": "y"}
@@ -2103,12 +2103,12 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     # Writing resolved does nothing, either way.
     current = await _tags(service, member)
     for value in ("user", "auto"):
-        await service.update_conversation_from_client(
+        await service.projects.update_conversation_from_client(
             member, UpdateConversationRequest(tags={**current, "resolved": value})
         )
         assert "resolved" not in await _tags(service, member)
-    await service.set_resolved(member, True)
-    await service.update_conversation_from_client(
+    await service.projects.set_resolved(member, True)
+    await service.projects.update_conversation_from_client(
         member, UpdateConversationRequest(tags=current)
     )
     assert (await _tags(service, member))["resolved"] == "user"

@@ -2943,6 +2943,13 @@ class EventService:
         """Seconds since the last recorded activity."""
         return time.monotonic() - self._last_active_monotonic
 
+    async def subscribe_internal(self, subscriber: Subscriber[Event]) -> UUID:
+        """:meth:`subscribe_to_events` for the server's own subscriber, which
+        does not keep the conversation from idle eviction."""
+        subscriber_id = await self.subscribe_to_events(subscriber)
+        self._internal_subscriber_ids.add(subscriber_id)
+        return subscriber_id
+
     def mark_subscription_baseline(self) -> None:
         """Snapshot the current (internal) subscribers; later ones are external."""
         self._internal_subscriber_ids = self._pub_sub.subscriber_ids()

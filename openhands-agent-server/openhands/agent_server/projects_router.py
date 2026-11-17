@@ -437,7 +437,7 @@ async def _join(
     service: ConversationService, project_id: UUID, conversation_id: UUID
 ) -> bool:
     """Tag the conversation as a member; ``False`` when it does not exist."""
-    tags = await service.set_conversation_tag(
+    tags = await service.projects.set_conversation_tag(
         conversation_id, PROJECT_TAG, project_id.hex
     )
     return tags is not None
@@ -598,7 +598,7 @@ async def _start_new_coordinator(
 ) -> ProjectItem:
     """Start the coordinator after the record exists; drop the record if it fails."""
     try:
-        info = await service.start_project_coordinator(
+        info = await service.projects.start_coordinator(
             project.id.hex,
             new.working_dir,
             agent_profile_id=new.agent_profile_id,
@@ -837,7 +837,7 @@ async def remove_project_conversation(
     if project.coordinator_conversation_id == conversation_id:
         raise Conflict("Conversation is the project's coordinator")
     try:
-        tags = await service.set_conversation_tag(
+        tags = await service.projects.set_conversation_tag(
             conversation_id, PROJECT_TAG, None, expected=project_id.hex
         )
     except ValueError:
@@ -873,10 +873,10 @@ async def _set_member_resolved(
         raise NotFound("Conversation not in project")
     if resolved and by == "agent":
         # The agent is inside its own tool call: answer at once (see
-        # ConversationService.resolve_for_agent).
-        service.resolve_for_agent(conversation_id)
+        # ProjectService.resolve_for_agent).
+        service.projects.resolve_for_agent(conversation_id)
         return Response(status_code=status.HTTP_202_ACCEPTED)
-    if await service.set_resolved(conversation_id, resolved, by=by) is None:
+    if await service.projects.set_resolved(conversation_id, resolved, by=by) is None:
         raise NotFound("Conversation not in project")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

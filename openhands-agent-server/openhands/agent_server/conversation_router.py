@@ -810,7 +810,7 @@ async def update_conversation(
     removed, which resolves or reopens the conversation; prefer the project
     routes ``.../resolve`` and ``.../reopen``.
     """
-    updated = await conversation_service.update_conversation_from_client(
+    updated = await conversation_service.projects.update_conversation_from_client(
         conversation_id, request
     )
     if not updated:
