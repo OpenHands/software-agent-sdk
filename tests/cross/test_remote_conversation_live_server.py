@@ -567,6 +567,35 @@ def _start_idle_conversation(client: httpx.Client) -> str:
     return start.json()["id"]
 
 
+def test_add_mcp_server_that_fails_to_start_is_invalid(server_env):
+    """A server that exits at once is refused with 400 and not added (#6926)."""
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        # A message readies the agent, so the add starts the server.
+        message = client.post(
+            f"/api/conversations/{conversation_id}/events",
+            json={"content": [{"type": "text", "text": "Never run."}], "run": False},
+            timeout=10.0,
+        )
+        message.raise_for_status()
+
+        response = client.post(
+            f"/api/conversations/{conversation_id}/mcp",
+            json={
+                "mcp_servers": {
+                    "qa-dies": {"command": sys.executable, "args": ["-c", "pass"]}
+                }
+            },
+            timeout=60.0,
+        )
+        info = client.get(f"/api/conversations/{conversation_id}", timeout=10.0)
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("Could not start MCP server qa-dies: ")
+    info.raise_for_status()
+    assert "qa-dies" not in (info.json()["agent"].get("mcp_config") or {})
+
+
 def _assert_closed_by_server(websocket) -> int:
     """Read until the server's close frame; fail if the socket stays open."""
     with pytest.raises(ConnectionClosed) as closed:
