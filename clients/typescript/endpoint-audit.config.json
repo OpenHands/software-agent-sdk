@@ -91,6 +91,12 @@
       "reason": "Client-ahead API stacked on the pending Agent Server pre-flight LLM validation endpoint.",
       "owner": "OpenHands TypeScript client maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/4422"
+    },
+    {
+      "endpoints": ["POST /api/conversations/{}/events/batch"],
+      "reason": "Browser-safe batch-events route added with its typed client in the same change; the pinned Agent Server release predates it. The canonical GET batch operation requires a GET body that fetch/browsers reject.",
+      "owner": "OpenHands TypeScript client maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/4756"
     }
   ],
 
@@ -102,6 +108,12 @@
       ],
       "reason": "RemoteWorkspace.startWorkspaceSession exposes these authenticated URLs for browser iframe and file requests; they are not HttpClient method calls.",
       "owner": "OpenHands TypeScript client maintainers"
+    },
+    {
+      "endpoints": ["GET /api/conversations/{}/events"],
+      "reason": "ConversationClient.batchGetEvents covers this operation's request/response contract through the browser-safe POST /api/conversations/{}/events/batch alias added in the same change, because the canonical GET form requires a GET body that fetch/browsers reject. Handwritten signatures are derived from this GET operation's generated types.",
+      "owner": "OpenHands TypeScript client maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/4756"
     }
   ],
 

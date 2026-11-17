@@ -83,6 +83,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -550,7 +551,7 @@ async def add_conversation_mcp_servers(
     }
     try:
         await event_service.add_mcp_servers(mcp_servers)
-    except ValueError as exc:
+    except (ValueError, MCPServerStartError) as exc:
         raise Invalid(str(exc)) from exc
     return Success()
 

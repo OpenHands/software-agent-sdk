@@ -87,6 +87,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.exceptions import MCPError, MCPServerStartError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -136,6 +137,7 @@ from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
+    redact_text_secrets,
     redact_url_credentials,
     redact_url_credentials_in_text,
 )
@@ -1809,7 +1811,15 @@ class LocalConversation(BaseConversation):
         return create_kwargs
 
     def add_mcp_servers(self, servers: Mapping[str, MCPServer]) -> None:
-        """Add modern MCP servers to this conversation without legacy session reuse."""
+        """Add modern MCP servers to this conversation without legacy session reuse.
+
+        Raises:
+            ValueError: The servers cannot be added (SSE transport, a name the
+                agent already has, or an agent without OpenHands MCP support).
+            MCPServerStartError: A server failed to start; nothing is added and
+                the servers already started are closed. ``server_name`` names
+                it and the original error is the ``__cause__``.
+        """
         if not self.agent.supports_openhands_mcp:
             raise ValueError("Runtime MCP additions require an OpenHands agent")
         mcp_config = expand_mcp_servers(
@@ -1830,16 +1840,20 @@ class LocalConversation(BaseConversation):
         runtime_tools: list[ToolDefinition] = []
         if agent_ready:
             create_kwargs = self._runtime_mcp_create_kwargs()
-            try:
-                for name, server in enabled_mcp_servers(mcp_config).items():
+            for name, server in enabled_mcp_servers(mcp_config).items():
+                try:
                     runtime_tools.extend(
                         self._start_runtime_mcp_server(
                             name, server, create_kwargs, prefixed=True
                         )
                     )
-            except Exception:
-                self._close_runtime_tools(runtime_tools)
-                raise
+                except Exception as exc:
+                    self._close_runtime_tools(runtime_tools)
+                    raise MCPServerStartError(
+                        name,
+                        f"Could not start MCP server {name}: "
+                        f"{self._mcp_start_failure_reason(exc)}",
+                    ) from exc
 
         with self._state:
             duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
@@ -1855,6 +1869,17 @@ class LocalConversation(BaseConversation):
                 self._close_runtime_tools(runtime_tools)
                 raise
             self.agent = self._state.agent = updated_agent
+
+    def _mcp_start_failure_reason(self, exc: Exception) -> str:
+        """One line saying why a server did not start, without its secrets."""
+        # The client's bare "MCP Connection Failure" hides the cause, e.g. a
+        # missing executable; report the cause instead.
+        cause = exc.__cause__ if type(exc) is MCPError else None
+        lines = str(cause or exc).strip().splitlines()
+        text = lines[0] if lines else type(exc).__name__
+        return redact_text_secrets(
+            self._state.secret_registry.mask_secrets_in_output(text)
+        )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
