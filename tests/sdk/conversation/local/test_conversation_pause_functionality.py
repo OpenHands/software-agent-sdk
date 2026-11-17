@@ -466,14 +466,17 @@ class TestPauseFunctionality:
         return entered, release
 
     @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("paused_before_run", [False, True])
     @pytest.mark.parametrize("stop", ["pause", "interrupt"])
     def test_stop_during_run_startup_is_not_resumed(
-        self, monkeypatch: pytest.MonkeyPatch, stop: str
+        self, monkeypatch: pytest.MonkeyPatch, stop: str, paused_before_run: bool
     ):
         """pause()/interrupt() from another thread while run() is starting stops it.
 
-        The stop finds the conversation IDLE and moves it to PAUSED; run() must not
-        treat that PAUSED as a resume request (requirement 2, not 3).
+        From IDLE the stop moves the conversation to PAUSED; run() must not treat
+        that PAUSED as a resume request (requirement 2, not 3). From PAUSED (a
+        resumed or restored conversation) the stop finds it already PAUSED; run()
+        must not resume it either.
         """
         self._use_scripted_llm(
             [Message(role="assistant", content=[TextContent(text="Task completed")])]
@@ -481,6 +484,8 @@ class TestPauseFunctionality:
         self.conversation.send_message(
             Message(role="user", content=[TextContent(text="Hello")])
         )
+        if paused_before_run:
+            self.conversation.pause()
         entered, release = self._hold_agent_startup(monkeypatch)
 
         run_exc: list[Exception | None] = [None]
@@ -517,8 +522,9 @@ class TestPauseFunctionality:
 
     @pytest.mark.timeout(5)
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("paused_before_run", [False, True])
     async def test_pause_during_arun_startup_is_not_resumed(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, paused_before_run: bool
     ):
         """Same for arun(): agent startup runs in a worker thread there."""
         self._use_scripted_llm(
@@ -527,6 +533,8 @@ class TestPauseFunctionality:
         self.conversation.send_message(
             Message(role="user", content=[TextContent(text="Hello")])
         )
+        if paused_before_run:
+            self.conversation.pause()
         entered, release = self._hold_agent_startup(monkeypatch)
 
         task = asyncio.create_task(self.conversation.arun())
