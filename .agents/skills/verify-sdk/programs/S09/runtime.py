@@ -67,9 +67,7 @@ def texts(conv):
 
 
 def errors(conv):
-    return [
-        e.error[:200] for e in conv.state.events if isinstance(e, AgentErrorEvent)
-    ]
+    return [e.error[:200] for e in conv.state.events if isinstance(e, AgentErrorEvent)]
 
 
 def refusal(conv, servers):
@@ -112,7 +110,9 @@ if mode == "add":
     conv.close()
 
     # 2. Before the first message: recorded, connected when the agent starts.
-    conv = conversation([call("echo", text="early"), {"finish": "done"}], usage_id="early")
+    conv = conversation(
+        [call("echo", text="early"), {"finish": "done"}], usage_id="early"
+    )
     conv.add_mcp_servers({"solo": server()})
     out["early_mcp_config"] = sorted(conv.agent.mcp_config)
     conv.send_message("use the tool")

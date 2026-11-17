@@ -30,7 +30,7 @@ from sdk_verify import emit, make_llm, run_paths
 from openhands.sdk import Agent, Conversation, Tool
 from openhands.sdk.critic import CriticBase, CriticResult, IterativeRefinementConfig
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
-from openhands.sdk.event.ask_user import AskUserAnswerEvent, find_pending_ask
+from openhands.sdk.event.ask_user import find_pending_ask
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
@@ -129,7 +129,9 @@ if MODE == "live":
 
 # ask: the call ends the turn and the question is pending, also after a reload
 llm = make_llm([ask(), {"finish": "should never be reached"}])
-conversation = conversation_for(None, llm=llm, persistence_dir=str(paths["conversations"]))
+conversation = conversation_for(
+    None, llm=llm, persistence_dir=str(paths["conversations"])
+)
 conversation.send_message("Clean up the build machine.")
 conversation.run()
 p = pending(conversation)
@@ -290,9 +292,7 @@ def stop_hook_case(use_async: bool) -> dict:
     command = (
         f"test -f {marker} || {{ touch {marker}; echo 'Keep working' >&2; exit 2; }}"
     )
-    llm = make_llm(
-        [ask(), {"text": "Kept them."}, {"text": "Checked: kept them."}]
-    )
+    llm = make_llm([ask(), {"text": "Kept them."}, {"text": "Checked: kept them."}])
     conversation = conversation_for(
         None,
         llm=llm,

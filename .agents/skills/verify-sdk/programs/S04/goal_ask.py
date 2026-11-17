@@ -66,7 +66,11 @@ def user_messages(conversation, *, active: bool = False) -> list[dict]:
 
 def outcome_of(result) -> dict:
     if isinstance(result, GoalAsked):
-        return {"kind": "GoalAsked", "ask_id": result.ask_id, "question": result.question}
+        return {
+            "kind": "GoalAsked",
+            "ask_id": result.ask_id,
+            "question": result.question,
+        }
     return {"kind": type(result).__name__, "status": result.status}
 
 
@@ -93,7 +97,9 @@ if MODE == "asked":
     }
     _, message = conversation.answer_ask(p.ask_id, 1)
     conversation.send_message(message)
-    answered = run_goal(conversation, "Tidy the build machine.", judge, max_iterations=3)
+    answered = run_goal(
+        conversation, "Tidy the build machine.", judge, max_iterations=3
+    )
     out["answered"] = outcome_of(answered) | {
         "agent_calls": agent_llm.call_count,
         "judge_calls": judge.call_count,
