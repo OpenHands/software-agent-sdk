@@ -28,7 +28,11 @@ import type {
   UpdateSecretsRequest,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
-import type { ReactionEmoji, ReactionEvent } from '../events/types';
+import type { AskUserAnswerEvent, ReactionEmoji, ReactionEvent } from '../events/types';
+import type {
+  AgentServerBatchEventsResponse,
+  AgentServerLoadPluginResponse,
+} from '../models/agent-server-api';
 
 export interface ConversationClientOptions {
   host: string;
@@ -212,6 +216,36 @@ export class ConversationClient {
     );
   }
 
+  /**
+   * Batch-fetch events in one request, preserving input order with `null`
+   * for missing ids. Uses the browser-safe `POST .../events/batch` route;
+   * the canonical `GET .../events` batch endpoint requires a GET body, which
+   * `fetch`/browsers reject, so it is not used here. Servers predating the
+   * POST route answer 404/405, which surfaces as an HttpError.
+   */
+  async batchGetEvents(
+    conversationId: string,
+    eventIds: string[]
+  ): Promise<AgentServerBatchEventsResponse> {
+    const response = await this.client.post<AgentServerBatchEventsResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/events/batch`,
+      eventIds
+    );
+    return response.data;
+  }
+
+  /** Load a plugin from the conversation's registered marketplaces. */
+  async loadPlugin(
+    conversationId: string,
+    pluginRef: string
+  ): Promise<AgentServerLoadPluginResponse> {
+    const response = await this.client.post<AgentServerLoadPluginResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/load_plugin`,
+      { plugin_ref: pluginRef }
+    );
+    return response.data;
+  }
+
   async sendEvent(
     conversationId: string,
     event: object,
@@ -240,6 +274,28 @@ export class ConversationClient {
         emoji,
         ...(options.targetEventId === undefined ? {} : { target_event_id: options.targetEventId }),
         ...(options.removed === undefined ? {} : { removed: options.removed }),
+      }
+    );
+    return response.data;
+  }
+
+  /**
+   * Answer the agent's pending `ask_user` question and run the agent: pick an
+   * option (`optionIndex`, from 0), give words (`text`), or both. The server
+   * answers 400 when `askId` is not the pending question (already answered by
+   * a tap or a chat reply) and 409 while the `ask_user` feature is off.
+   */
+  async answerAskUser(
+    conversationId: string,
+    askId: string,
+    answer: { optionIndex?: number; text?: string }
+  ): Promise<AskUserAnswerEvent> {
+    const response = await this.client.post<AskUserAnswerEvent>(
+      `/api/conversations/${conversationId}/ask_user/answer`,
+      {
+        ask_id: askId,
+        ...(answer.optionIndex === undefined ? {} : { option_index: answer.optionIndex }),
+        ...(answer.text === undefined ? {} : { text: answer.text }),
       }
     );
     return response.data;

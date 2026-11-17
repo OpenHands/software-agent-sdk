@@ -45,7 +45,7 @@ Routes: none
 - `F34.ws-callback-client`: `RemoteConversation.startWebSocketClient()` in Node delivers the conversation's events to the conversation callback without errors.
 - `F34.conversation-controls`: `setTitle` and `setConfirmationPolicy` change the server's title and policy.
 - `F34.conversation-confirm`: under `AlwaysConfirm`, `sendConfirmationResponse(false, reason)` records one `UserRejectObservation` with that reason and leaves the command unrun, `sendConfirmationResponse(true)` runs the pending command, and `updateSecrets` (a string and a function value) puts both values into that command's shell without any event containing them.
-- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding events to the source.
+- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding a message or action to the source: the one event it adds is a `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`.
 - `F34.manager`: `ConversationManager` searches with paging, counts by status, batch-gets (unknown ids are `null`), lists all, loads a conversation with its server working directory, creates and deletes one, and an unknown id rejects with 404.
 - `F34.manager-update-result`: `ConversationManager.updateConversation` stores the new title and resolves with the updated `ConversationInfo` it is typed to return.
 - `F34.manager-create-options`: `ConversationManager.createConversation(agent, {maxIterations, stuckDetection})` creates the conversation with those settings.
@@ -1106,9 +1106,10 @@ Preconditions:
 - **Fork, navigate and ask (`F34.conversation-branching`).** On `CID`, the
   finished DeepSeek conversation; the fork is deleted at the end.
 
-  Requires: `F34.conversation-create`
+  Requires: `F34.conversation-create`, `F34.conversation-run`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  ENVIRONMENT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --field .)
   cat > "$F34/branching.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
   import { m, host, apiKey, F34, assert } from './lib.mjs';
@@ -1130,8 +1131,15 @@ Preconditions:
   await fork.navigateTo(first.id);
   assert.equal((await fork.state.modelDump()).leaf_event_id, first.id);
   writeFileSync(`${F34}/fork-leaf`, first.id);
+  const STATE = 'ConversationStateUpdateEvent';
+  const stateBefore = await conversation.state.events.count({ kind: STATE });
   assert.equal(typeof (await conversation.askAgent('In one short sentence: which file did you create?')), 'string');
-  assert.equal(await conversation.state.events.count(), Number(total));
+  assert.equal(await conversation.state.events.count(), Number(total) + 1);
+  assert.equal(await conversation.state.events.count({ kind: STATE }), stateBefore + 1);
+  const [newest] = (await conversation.state.events.search({ limit: 1, sort_order: 'TIMESTAMP_DESC' })).items;
+  assert.equal(newest.kind, STATE);
+  assert.equal(newest.key, 'stats');
+  assert.ok(newest.value.usage_to_metrics['ask-agent-llm'].accumulated_token_usage.completion_tokens >= 1);
   console.log('QA_F34_BRANCHING_OK');
   JS
   control-agent-server exec --timeout 180 --expect-output QA_F34_BRANCHING_OK --save F34.conversation-branching/program -- node "$F34/branching.mjs" "$CID" "$TOTAL"
@@ -1139,7 +1147,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$FORK" --max-chars 300 --check forked_from_conversation_id eq "$CID" \
     --check title eq qa-f34-fork --check leaf_event_id eq "$(cat "$F34/fork-leaf")" --save F34.conversation-branching/fork
   control-agent-server api GET "/api/conversations/$CID" --max-chars 300 --check execution_status eq finished --check leaf_event_id ne "$(cat "$F34/fork-leaf")"
-  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$TOTAL"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$((TOTAL + 1))"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --check . eq "$((ENVIRONMENT + 1))"
   control-agent-server api DELETE "/api/conversations/$FORK" --expect 200
   ```
   `fork` returns a `RemoteConversation` bound to the fork: its own id,
@@ -1147,8 +1156,12 @@ Preconditions:
   agent model, and all `TOTAL` copied events. With the state cached right
   before, `navigateTo(<first event>)` leaves the cached state on the new
   HEAD, which GET confirms (the source's HEAD did not move). `askAgent`
-  resolves with a string and adds no event to the source, which is still
-  `finished`.
+  resolves with a string and adds exactly one event to the source, which is
+  still `finished`: the newest event is a `stats`
+  `ConversationStateUpdateEvent` whose `usage_to_metrics` has an
+  `ask-agent-llm` entry with the call's tokens, and the counts of every
+  other kind are unchanged (the client's counts and REST agree: one more
+  event, from source `environment`).
 - **Confirmation and secrets (`F34.conversation-confirm`).** A DeepSeek
   conversation with the `terminal` tool under `AlwaysConfirm`; two runtime
   secrets (a string and a function value) whose hashes the first command

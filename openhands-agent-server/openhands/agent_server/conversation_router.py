@@ -35,6 +35,7 @@ from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
+    AddMCPServersRequest,
     AddModelRouterRouteRequest,
     AgentResponseResult,
     AskAgentRequest,
@@ -56,6 +57,7 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
+from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -83,6 +85,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -531,6 +534,33 @@ async def resume_goal_in_conversation(
 
 
 @conversation_router.post(
+    "/{conversation_id}/mcp",
+    responses=error_responses(
+        {NotFound: "Item not found", Invalid: "Invalid MCP server update"}
+    ),
+)
+async def add_conversation_mcp_servers(
+    conversation_id: UUID,
+    request: AddMCPServersRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> Success:
+    """Add modern MCP servers to one conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    mcp_servers = {
+        name: server.with_decrypted_secrets(cipher=cipher)
+        for name, server in request.mcp_servers.items()
+    }
+    try:
+        await event_service.add_mcp_servers(mcp_servers)
+    except (ValueError, MCPServerStartError) as exc:
+        raise Invalid(str(exc)) from exc
+    return Success()
+
+
+@conversation_router.post(
     "/{conversation_id}/secrets",
     responses=error_responses({NotFound: "Item not found"}),
 )
@@ -651,7 +681,9 @@ async def switch_conversation_llm(
     # reference or missing credential surfaces as 422 before the working LLM
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
-    llm = llm_profile_store.resolve_provider_connection(llm, cipher=cipher)
+    llm = await run_store(
+        llm_profile_store.resolve_provider_connection, llm, cipher=cipher
+    )
     try:
         conversation.switch_llm(llm)
     except ValueError as e:
@@ -1013,7 +1045,7 @@ async def navigate_conversation(
         )
     except ValueError as exc:
         # An unknown ``event_id`` against an existing conversation is a 404;
-        # other ValueErrors (e.g. inactive_service) are genuine server errors.
+        # other ValueErrors (e.g. ServiceInactive) are genuine server errors.
         if "event_id" in str(exc):
             raise NotFound(str(exc)) from exc
         raise

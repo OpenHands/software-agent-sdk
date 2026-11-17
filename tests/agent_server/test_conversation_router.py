@@ -15,7 +15,11 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import CondensationUnavailable, EventService
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    EventService,
+    ServiceInactive,
+)
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -39,6 +43,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
@@ -1704,6 +1709,155 @@ def test_run_conversation_other_error(
         client.app.dependency_overrides.clear()
 
 
+def test_add_conversation_mcp_servers_success(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"docs": {"command": "true"}}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        mock_event_service.add_mcp_servers.assert_called_once()
+        servers = mock_event_service.add_mcp_servers.call_args.args[0]
+        assert set(servers) == {"docs"}
+        assert servers["docs"].command == "true"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"docs": {"command": "true"}}},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_decrypts_oauth_state(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    from base64 import urlsafe_b64encode
+
+    from openhands.sdk.utils.cipher import Cipher
+
+    secret_key = urlsafe_b64encode(b"m" * 32).decode("ascii")
+    cipher = Cipher(secret_key)
+    encrypted_access_token = cipher.encrypt(SecretStr("linear-access-token"))
+    assert encrypted_access_token is not None
+    install_test_context(
+        client.app,
+        Config(
+            static_files_path=None,
+            session_api_keys=[],
+            secret_key=SecretStr(secret_key),
+        ),
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={
+                "mcp_servers": {
+                    "linear": {
+                        "transport": "http",
+                        "url": "https://mcp.linear.app/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "state": {
+                                "tokens": {"access_token": encrypted_access_token}
+                            },
+                        },
+                    }
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        servers = mock_event_service.add_mcp_servers.call_args.args[0]
+        auth = servers["linear"].auth
+        assert auth is not None
+        state = auth.state
+        assert state is not None
+        tokens = state.tokens
+        assert tokens is not None
+        access_token = tokens.access_token
+        assert access_token is not None
+        assert access_token.get_secret_value() == "linear-access-token"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.side_effect = ValueError("legacy protocol")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"old": {"command": "true"}}},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "legacy protocol"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_start_failure_is_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.side_effect = MCPServerStartError(
+        "dies", "Could not start MCP server dies: Connection closed"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"dies": {"command": "true"}}},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Could not start MCP server dies: Connection closed"
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_update_conversation_secrets_success(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
@@ -2563,7 +2717,7 @@ def test_load_conversation_plugin_inactive_service_returns_400(
 ):
     """The /load_plugin endpoint maps inactive runtime state to 400."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.load_plugin.side_effect = ValueError("inactive_service")
+    mock_event_service.load_plugin.side_effect = ServiceInactive()
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
     )

@@ -92,6 +92,8 @@ class ServerInfo(BaseModel):
             "profile_public_skills_v1",
             "skill_catalog_v1",
             "conversation_model_router_routes_v1",
+            "conversation_configuration_additions_v1",
+            "conversation_mcp_install_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(

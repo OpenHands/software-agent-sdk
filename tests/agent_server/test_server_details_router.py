@@ -124,6 +124,8 @@ def test_server_info_reports_credential_binding_probe(client):
         "agent_launch_pipeline_v1",
         "profile_public_skills_v1",
         "conversation_model_router_routes_v1",
+        "conversation_configuration_additions_v1",
+        "conversation_mcp_install_v1",
     } <= set(payload["capabilities"])
     assert payload["conversation_runtime"] == "local"
 

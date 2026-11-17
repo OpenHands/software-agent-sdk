@@ -35,9 +35,14 @@ class ReactionExecutor(ToolExecutor[ReactAction | UnreactAction, ReactionObserva
         removed = isinstance(action, UnreactAction)
         message_id = (action.message_id or "").strip() or None
         try:
-            target = find_reaction_target(
-                conversation.state.active_branch(), message_id, source="agent"
+            # By id, the agent can only react to a message it sees. Without
+            # one, it means the user's latest message, even if condensation
+            # dropped it: walk back from the end only as far as that message.
+            state = conversation.state
+            events = (
+                state.walk_back() if message_id is None else reversed(state.view.events)
             )
+            target = find_reaction_target(events, message_id, source="agent")
         except ValueError as exc:
             return ReactionObservation.from_text(str(exc), is_error=True)
         verb = "Removed" if removed else "Reacted"

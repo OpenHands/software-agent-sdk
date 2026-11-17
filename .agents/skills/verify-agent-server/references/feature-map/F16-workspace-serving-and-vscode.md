@@ -9,12 +9,15 @@ resolves outside the workspace (encoded `..`, absolute paths, symlinks) is 400.
 These two routes sit in their own auth group: they accept the
 `X-Session-API-Key` header or the `oh_workspace_session_key` cookie, so Agent
 Canvas can embed agent-made HTML, images and PDFs in `<iframe>` and `<img>`.
-The VS Code routes report whether the bundled OpenVSCode Server is enabled and
-running, and build its URL (`tkn` is the first session key, `folder` the
+The VS Code routes report whether the bundled editor (code-server) is enabled
+and running, and build its URL (`tkn` is the first session key, `folder` the
 workspace; the conversation-scoped variant defaults the folder to the
 conversation's workspace and refuses folders outside it). They are header-only.
+The URL opens the editor's own port, where a proxy in front of code-server
+exchanges the `tkn` for an editor cookie and serves every other request only
+with that cookie.
 
-Source: `openhands-agent-server/openhands/agent_server/workspace_router.py`, `openhands-agent-server/openhands/agent_server/vscode_router.py`, `openhands-agent-server/openhands/agent_server/vscode_service.py`, `openhands-agent-server/openhands/agent_server/runtime_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-agent-server/openhands/agent_server/docker_runtime/routers.py`, `clients/typescript/src/client/vscode-client.ts`, `clients/typescript/src/workspace/remote-workspace.ts`
+Source: `openhands-agent-server/openhands/agent_server/workspace_router.py`, `openhands-agent-server/openhands/agent_server/vscode_router.py`, `openhands-agent-server/openhands/agent_server/vscode_service.py`, `openhands-agent-server/openhands/agent_server/code_server_proxy.cjs`, `openhands-agent-server/openhands/agent_server/runtime_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-agent-server/openhands/agent_server/docker_runtime/routers.py`, `clients/typescript/src/client/vscode-client.ts`, `clients/typescript/src/workspace/remote-workspace.ts`
 
 Needs: `llm`, `git`
 
@@ -51,7 +54,8 @@ Routes: `GET /api/conversations/{conversation_id}/workspace`,
 - `F16.vscode-url-after-init`: a deferred-init server that receives its session key through `POST /api/init`, with VS Code enabled but not running (no binary), answers `{"url": null}`.
 - `F16.vscode-folder-encoding`: the URL's `folder` parameter decodes back to the workspace path even when the path contains `&` or `#`.
 - `F16.docker-root-cookie`: in Docker runtime mode the slashless workspace root accepts the workspace cookie like the slashed form does (known bug: it falls into the header-only proxy and answers 401).
-- `F16.vscode-running`: with the OpenVSCode Server binary installed and its port free, status reports `running: true` and the URL opens the editor.
+- `F16.vscode-running`: with code-server installed and its port free, status reports `running: true` and the URL opens the editor.
+- `F16.vscode-resource-empty-tkn`: after the `tkn` exchange, an editor resource request that carries an empty `tkn` is authenticated by the editor cookie and proxied; without the cookie, or with a wrong `tkn`, it is 401 (known bug #6803: 401 even with the cookie).
 
 ## How to get to it (agent POV)
 
@@ -68,6 +72,13 @@ Routes: `GET /api/conversations/{conversation_id}/workspace`,
   `.../vscode/url` (the folder defaults to the conversation's
   `workspace.working_dir`; an explicit `workspace_dir` must be absolute and
   inside it). Header only.
+- The editor port (`vscode_port`), which the URL points at: a proxy
+  (`code_server_proxy.cjs`) in front of code-server, which itself listens only
+  on a private Unix socket. `GET /?tkn=<first session key>&folder=...` answers
+  303 to the same URL without `tkn` and sets an `openhands_editor_<hash>`
+  cookie (`HttpOnly`); every other request, the editor's own resource requests
+  included, needs that cookie and is 401 without it. No agent-server route
+  proxies it.
 - TypeScript client: `RemoteWorkspace.startWorkspaceSession(conversationId)`
   mints the cookie and returns `${host}/api/conversations/{id}/workspace/`
   (always with the trailing slash) for iframes;
@@ -92,7 +103,9 @@ Routes: `GET /api/conversations/{conversation_id}/workspace`,
   VS Code port, a model conversation plus `ws start`/`ws stop` for the agent's
   artifact, a `git-repo` fixture for the worktree, and second runs
   (`--no-auth --vscode`, `--no-auth --deferred-init --vscode`, Docker runtime)
-  for the other modes.
+  for the other modes. `F16.vscode-resource-empty-tkn` reaches the editor
+  port by attaching to it (`attach --url`), so `api --jar` plays the browser
+  there too.
 
 ## Driving it with control-agent-server
 
@@ -393,7 +406,7 @@ Preconditions:
 - **URL shape (`F16.vscode-url-shape`).** Global and scoped URLs,
   with and without overrides, then with a base path. A URL is advertised only
   while VS Code runs (`F16.vscode-url-not-running`), so this needs the
-  OpenVSCode Server binary (see `F16.vscode-running`). Start VS Code on a
+  code-server binary (see `F16.vscode-running`). Start VS Code on a
   free port first, and put the held port back at the end.
 
   Requires: `F16.vscode-enabled-status`
@@ -440,7 +453,7 @@ Preconditions:
 - **Folder with `&` and `#` (`F16.vscode-folder-encoding`).**
   Parse the scoped URL as a browser would, first for the normal workspace,
   then for a workspace named `qa f16&x=1#frag`. Needs VS Code running (the
-  OpenVSCode Server binary, see `F16.vscode-running`): a server that is not
+  code-server binary, see `F16.vscode-running`): a server that is not
   running advertises no URL.
 
   Requires: `F16.vscode-enabled-status`
@@ -532,8 +545,8 @@ Preconditions:
 - **VS Code actually running (`F16.vscode-running`).**
   Needs: `vscode`
 
-  Needs the OpenVSCode Server binary at
-  `/openhands/.openvscode-server/bin/openvscode-server` (the path is hardcoded;
+  Needs code-server at `$CODE_SERVER_ROOT/bin/code-server` with its bundled
+  `$CODE_SERVER_ROOT/lib/node` (the root defaults to `/openhands/.code-server`;
   `control-agent-server capabilities` reports `vscode`).
   ```sh
   control-agent-server restart --reset-config --config-json '{"enable_vscode": true}'
@@ -552,6 +565,73 @@ Preconditions:
   ```
   With the binary and a free `vscode_port`, status reports `running: true`
   and the advertised URL answers 200 with the editor.
+- **Editor resource with an empty `tkn` (`F16.vscode-resource-empty-tkn`), known bug #6803.**
+  A second server whose `CODE_SERVER_ROOT` is a stand-in editor: a link to
+  `node` as `lib/node` and a `bin/code-server` that answers every request on
+  its `--socket` with 200 and the path it received. Translated: the proxy in
+  front of it, which owns the `tkn` exchange and the cookie check, is the
+  real one; only code-server is replaced, so no editor has to be installed.
+  The recipe attaches to the editor port and plays the browser with a cookie
+  jar.
+
+  Needs: `node`
+  ```sh
+  ROOT="$F/code-server"
+  mkdir -p "$ROOT/bin" "$ROOT/lib"
+  ln -sfn "$(command -v node)" "$ROOT/lib/node"
+  cat > "$ROOT/bin/stand-in.cjs" <<'EOF'
+  const http = require("node:http");
+  const socket = process.argv[process.argv.indexOf("--socket") + 1];
+  http
+    .createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ editor: "qa-f16-stand-in", url: req.url }));
+    })
+    .listen(socket);
+  EOF
+  printf '#!/bin/sh\nexec "$(dirname "$0")/../lib/node" "$(dirname "$0")/stand-in.cjs" "$@"\n' > "$ROOT/bin/code-server"
+  chmod +x "$ROOT/bin/code-server"
+  PX=
+  stop_editor() {
+    test -z "$PX" || control-agent-server stop --run "$PX" >/dev/null
+    control-agent-server stop --run "$ED" >/dev/null
+  }
+  ED=$(control-agent-server launch --new --vscode --name f16-editor --env "CODE_SERVER_ROOT=$ROOT" --print-run)
+  trap stop_editor EXIT
+  control-agent-server api GET /api/vscode/status --run "$ED" --expect 200 --check . eq '{"running": true, "enabled": true}'
+  EPORT=$(control-agent-server api GET /api/vscode/url --run "$ED" --expect 200 --check url matches '^http://localhost:[0-9]+/\?tkn=' --field url)
+  EPORT=${EPORT#http://localhost:}
+  EPORT=${EPORT%%/*}
+  PX=$(QA_F16_TKN=$(cat "$ED/private/session_api_key") control-agent-server attach --url "http://127.0.0.1:$EPORT" --key-env QA_F16_TKN --name f16-editor-port --print-run)
+  control-agent-server api --run "$PX" --auth none GET /stable-qa-f16/vscode-remote-resource --query path=/qa-f16/theme.json --expect 401
+  control-agent-server api --run "$PX" --auth none --jar qa-f16-editor GET / --query "tkn=$(cat "$PX/private/session_api_key")" --query folder=workspace \
+    --expect 303 --check-header location eq '/?folder=workspace' --check-header set-cookie contains openhands_editor_ \
+    --check-header set-cookie contains HttpOnly --save F16.vscode-resource-empty-tkn/exchange
+  control-agent-server api --run "$PX" --auth none --jar qa-f16-editor GET / --query folder=workspace --expect 200 \
+    --check editor eq qa-f16-stand-in --check url eq '/?folder=workspace'
+  control-agent-server api --run "$PX" --auth none --jar qa-f16-editor GET /stable-qa-f16/vscode-remote-resource --query path=/qa-f16/theme.json \
+    --expect 200 --check url eq '/stable-qa-f16/vscode-remote-resource?path=%2Fqa-f16%2Ftheme.json' --save F16.vscode-resource-empty-tkn/cookie-no-tkn
+  control-agent-server api --run "$PX" --auth none GET /stable-qa-f16/vscode-remote-resource --query path=/qa-f16/theme.json --query tkn= \
+    --expect 401 --check-header set-cookie missing --save F16.vscode-resource-empty-tkn/empty-tkn-no-cookie
+  control-agent-server api --run "$PX" --auth none --jar qa-f16-editor GET /stable-qa-f16/vscode-remote-resource --query path=/qa-f16/theme.json --query tkn=qa-f16-wrong \
+    --expect 401 --check-header set-cookie missing --save F16.vscode-resource-empty-tkn/wrong-tkn
+  control-agent-server api --run "$PX" --auth none --jar qa-f16-editor GET /stable-qa-f16/vscode-remote-resource --query path=/qa-f16/theme.json --query tkn= \
+    --expect 200 --check editor eq qa-f16-stand-in --check url contains 'path=%2Fqa-f16%2Ftheme.json' --save F16.vscode-resource-empty-tkn/empty-tkn-cookie  # bug: status eq 401
+  control-agent-server stop --run "$PX"
+  control-agent-server stop --run "$ED"
+  ```
+  With the stand-in, status is `{"running": true, "enabled": true}` and the
+  URL names the editor port. Before the exchange a resource request is 401.
+  The exchange answers 303 to `/?folder=workspace` and sets the `HttpOnly`
+  `openhands_editor_<hash>` cookie; with it, the editor page and a resource
+  request reach the stand-in, which reports the path it was asked for. An
+  empty `tkn` without the cookie and a wrong `tkn` with it are 401 and set no
+  cookie. The resource request code-server itself makes, with the cookie and
+  an empty `tkn`, must be proxied like the one without `tkn`; the bug: any
+  `tkn` parameter, even an empty one, is treated as the exchange, fails the
+  comparison with the session key, and answers 401 before the cookie is
+  looked at, so themes, grammars and extension files do not load in the
+  embedded editor. Evidence lands under the attached run's directory.
 
 ## Gotchas
 
@@ -566,27 +646,34 @@ Preconditions:
   `map run` saves every variable a
   bullet assigns into the run's `map-run/*.state.sh`, so a URL or key kept in
   a variable lands on disk (`F16.vscode-url-shape` unsets `KEY`).
-- VS Code only starts if `/openhands/.openvscode-server/bin/openvscode-server`
-  exists and `vscode_port` is free, and only at startup; it never retries.
+- VS Code only starts if `$CODE_SERVER_ROOT/bin/code-server` (root
+  `/openhands/.code-server` unless the variable is set) exists and
+  `vscode_port` is free, and only at startup; it never retries.
   The log line `VSCode server binary not found, VSCode will be disabled` does
   not mean `enabled: false`: status still says `enabled: true`. The service is
   a process singleton built from the config file and environment, so toggle
   it with `restart --config-json` (overrides accumulate across restarts until
   `--reset-config`).
-- For an isolated capability lane, use the OpenVSCode release pinned in the
+- For an isolated capability lane, use the code-server release pinned in the
   repository Dockerfile and verify its release-asset checksum. Extract it to
-  a task tools directory and bind it at the fixed path inside a disposable
-  container. Run the source checkout and its Python environment there as the
-  ordinary user, and verify the target build SHA with `doctor`; the base
-  image's bundled server is not the source under test.
+  a task tools directory and point the server at it with
+  `--env CODE_SERVER_ROOT=<dir>`. Run the source checkout and its Python
+  environment as the ordinary user, and verify the target build SHA with
+  `doctor`; a base image's bundled server is not the source under test.
+- The editor port is not an agent-server route. `attach --url
+  http://127.0.0.1:<port>` gives the CLI a handle on it; its `api` calls put
+  `--run` before the method, because `map check` matches `api METHOD /path`
+  against the agent-server's route table, and use `--auth none` (the proxy
+  drops `X-Session-API-Key` anyway). The attached run is given the session key
+  (`--key-env`) only so the CLI redacts the `tkn` it sends.
 - A URL is advertised only while VS Code runs (`F16.vscode-url-not-running`),
   so `F16.vscode-url-shape` and `F16.vscode-folder-encoding` are only
-  observable with the OpenVSCode binary installed, like `F16.vscode-running`;
+  observable with the code-server binary installed, like `F16.vscode-running`;
   on a machine without it they are blocked.
 - A null URL is asserted on the whole body (`--check . eq '{"url": null}'`):
   `--check url missing` and `--check url eq null` also pass when the key is
   absent, which would break the SDK and TypeScript models that expect it.
-- With the OpenVSCode binary, `start()` mints a random token before its port
+- With the code-server binary, `start()` mints a random token before its port
   check (`tests/agent_server/test_vscode_service.py::test_start_port_unavailable`),
   so a keyless or deferred server whose VS Code failed on the held port holds
   a token too; `F16.vscode-url-no-key` and `F16.vscode-url-after-init` still
