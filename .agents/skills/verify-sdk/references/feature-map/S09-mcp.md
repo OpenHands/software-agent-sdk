@@ -230,7 +230,7 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check early_first_call_tools contains echo --check early_first_call_tools not-contains solo_echo --check early_texts.0 contains "echo: early"
   ```
   The add on a ready agent connects at once (tools listed right after the call, prefixed although `verify` is the only server); the duplicate, the SSE server and a server that exits at startup raise and leave `mcp_config` with only `verify` and the disabled `off`; the server added before the first message is connected with the agent under bare names.
-- **Reopening a conversation with added servers (`S09.runtime-add-resume`).** Known failure (reproduced 2026-11-17, #TBD): the reopened conversation offers the tools as `echo`, ..., so the second `verify_echo` call is an `AgentErrorEvent` `Tool 'verify_echo' not found` and `resumed_second_call_ok` is `false`.
+- **Reopening a conversation with added servers (`S09.runtime-add-resume`).** Known failure (reproduced 2026-11-17, [#6927](https://github.com/OpenHands/software-agent-sdk/issues/6927)): the reopened conversation offers the tools as `echo`, ..., so the second `verify_echo` call is an `AgentErrorEvent` `Tool 'verify_echo' not found` and `resumed_second_call_ok` is `false`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S09/runtime --arg resume \

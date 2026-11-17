@@ -45,7 +45,7 @@ Routes: none
 - `F34.ws-callback-client`: `RemoteConversation.startWebSocketClient()` in Node delivers the conversation's events to the conversation callback without errors.
 - `F34.conversation-controls`: `setTitle` and `setConfirmationPolicy` change the server's title and policy.
 - `F34.conversation-confirm`: under `AlwaysConfirm`, `sendConfirmationResponse(false, reason)` records one `UserRejectObservation` with that reason and leaves the command unrun, `sendConfirmationResponse(true)` runs the pending command, and `updateSecrets` (a string and a function value) puts both values into that command's shell without any event containing them.
-- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding a message or action to the source: the one event it adds is a `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`.
+- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding a message or action to the source: the one event it adds (just after the call resolves) is a `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`.
 - `F34.manager`: `ConversationManager` searches with paging, counts by status, batch-gets (unknown ids are `null`), lists all, loads a conversation with its server working directory, creates and deletes one, and an unknown id rejects with 404.
 - `F34.manager-update-result`: `ConversationManager.updateConversation` stores the new title and resolves with the updated `ConversationInfo` it is typed to return.
 - `F34.manager-create-options`: `ConversationManager.createConversation(agent, {maxIterations, stuckDetection})` creates the conversation with those settings.
@@ -1137,7 +1137,7 @@ Preconditions:
   ENVIRONMENT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --field .)
   cat > "$F34/branching.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
-  import { m, host, apiKey, F34, assert } from './lib.mjs';
+  import { m, host, apiKey, F34, assert, waitFor } from './lib.mjs';
   const [cid, total] = process.argv.slice(2);
   const conversation = new m.RemoteConversation(new m.Agent({ llm: { model: 'qa-f34/unused' } }),
     new m.RemoteWorkspace({ host, apiKey, workingDir: '/x' }), { conversationId: cid });
@@ -1159,6 +1159,7 @@ Preconditions:
   const STATE = 'ConversationStateUpdateEvent';
   const stateBefore = await conversation.state.events.count({ kind: STATE });
   assert.equal(typeof (await conversation.askAgent('In one short sentence: which file did you create?')), 'string');
+  await waitFor(async () => (await conversation.state.events.count()) > Number(total), 10000, 100);
   assert.equal(await conversation.state.events.count(), Number(total) + 1);
   assert.equal(await conversation.state.events.count({ kind: STATE }), stateBefore + 1);
   const [newest] = (await conversation.state.events.search({ limit: 1, sort_order: 'TIMESTAMP_DESC' })).items;
@@ -1182,7 +1183,9 @@ Preconditions:
   before, `navigateTo(<first event>)` leaves the cached state on the new
   HEAD, which GET confirms (the source's HEAD did not move). `askAgent`
   resolves with a string and adds exactly one event to the source, which is
-  still `finished`: the newest event is a `stats`
+  still `finished`. The server appends that event from a background task, so
+  it can land a few milliseconds after `askAgent` resolves; the program waits
+  up to 10 s for the count to grow before it asserts. The newest event is a `stats`
   `ConversationStateUpdateEvent` whose `usage_to_metrics` has an
   `ask-agent-llm` entry with the call's tokens, and the counts of every
   other kind are unchanged (the client's counts and REST agree: one more

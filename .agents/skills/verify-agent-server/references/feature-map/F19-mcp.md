@@ -69,8 +69,8 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.conversation-mcp-add`: `POST /api/conversations/{conversation_id}/mcp` on a conversation whose agent is initialized starts the server before it answers 200 `{"success": true}`, `GET /api/conversations/{conversation_id}` and `base_state.json` show it in `agent.mcp_config`, the model's next request offers its tools as `<server>_<tool>`, a call returns the tool's result, deleting the conversation stops the child, and `/server_info` advertises `conversation_mcp_install_v1` and `conversation_configuration_additions_v1`.
 - `F19.conversation-mcp-add-before-init`: on a conversation without a first message the route only records the server (no process, fast answer), with `env` values encrypted by the settings API decrypted for the child and stored encrypted in `base_state.json`; the first message connects it like any configured server.
 - `F19.conversation-mcp-add-errors`: an unknown conversation is 404, a server name the agent already has and an SSE server are 400 with the reason, a server without `command`/`url`, an unknown field and a non-UUID id are 422, none of them changes the agent's `mcp_config`, and a disabled server is stored without being spawned.
-- `F19.conversation-mcp-add-start-failure`: a server that cannot start (a command that exits at once) is refused with the route's 400 and is not added (known bug: 500 Internal Server Error with `exception: Connection closed`).
-- `F19.conversation-mcp-add-restart`: a server added at runtime is still in the conversation's agent after a restart, and the tools the agent already called keep working under the same names (known bug: with one server the tools come back unprefixed, so `qa-f19-rs_qa_echo` is `Tool ... not found`).
+- `F19.conversation-mcp-add-start-failure`: a server that cannot start (a command that exits at once) is refused with the route's 400 and is not added (known bug [#6926](https://github.com/OpenHands/software-agent-sdk/issues/6926): 500 Internal Server Error with `exception: Connection closed`).
+- `F19.conversation-mcp-add-restart`: a server added at runtime is still in the conversation's agent after a restart, and the tools the agent already called keep working under the same names (known bug [#6927](https://github.com/OpenHands/software-agent-sdk/issues/6927): with one server the tools come back unprefixed, so `qa-f19-rs_qa_echo` is `Tool ... not found`).
 - `F19.conversation-mcp-slow-start`: a conversation whose stdio server delays its handshake by 8 s is created within a few seconds, the server is spawned, and the agent's first model request waits for it and offers its tools; the agent's call returns its result.
 - `F19.conversation-mcp-late-failure`: a server that fails after the startup budget costs only its own tools: the conversation starts at once, the first step waits for the failure, the other server's tools are offered, the run finishes and the log names the failed server.
 
@@ -1153,7 +1153,7 @@ Preconditions:
   Each refusal leaves the agent's `mcp_config` as it was; the disabled
   server is stored with `enabled: false` and its command never runs; deleting
   the conversation stops the child the add started.
-- **A server that cannot start (`F19.conversation-mcp-add-start-failure`), known bug.**
+- **A server that cannot start (`F19.conversation-mcp-add-start-failure`), known bug #6926.**
   The command exits at once, so the MCP connection closes during the
   handshake. The route's documented refusal is 400 (`Invalid MCP server
   update`); today the exception escapes as a 500.
@@ -1164,7 +1164,7 @@ Preconditions:
   ```
   The server is not added either way (`agent.mcp_config` keeps no
   `qa-f19-dies`); only the status is wrong.
-- **Added servers after a restart (`F19.conversation-mcp-add-restart`), known bug.**
+- **Added servers after a restart (`F19.conversation-mcp-add-restart`), known bug #6927.**
   The stub calls the added tool, finishes, and after a restart and a new
   message calls the same tool again.
   ```sh
