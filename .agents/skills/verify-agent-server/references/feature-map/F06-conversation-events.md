@@ -19,6 +19,7 @@ Launch: `--env TZ=UTC`
 
 Routes: `GET /api/conversations/{conversation_id}/events/search`,
 `GET /api/conversations/{conversation_id}/events/count`,
+`GET /api/conversations/{conversation_id}/events/active-branch`,
 `GET /api/conversations/{conversation_id}/events/{event_id}`,
 `GET /api/conversations/{conversation_id}/events`,
 `POST /api/conversations/{conversation_id}/events`,
@@ -27,6 +28,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 ## Sub-features
 
 - `F06.send-no-run`: `POST .../events` with `run: false` persists a user `MessageEvent` (preceded by the `SystemPromptEvent` on the first message), returns `{"success": true}` and leaves the conversation `idle`.
+- `F06.active-branch`: active history is returned in root-first order, optionally limited to a positive tail length. A deliberately empty branch returns an empty array; append-only search is unchanged.
 - `F06.search-page`: search returns `{items, next_page_id}` in log order; `limit` plus the inclusive `page_id` cursor pages through it, `TIMESTAMP_DESC` reverses it, and an unknown `page_id` restarts from the first event.
 - `F06.search-validation`: search rejects `limit` 0 or 101, an unknown `sort_order` and an unparsable timestamp with 422.
 - `F06.search-filters`: `source`, `body` (case-insensitive, message text only) and fully-qualified `kind` filters narrow search results and combine.
@@ -78,6 +80,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
   `ConversationClient.searchEvents()`, `getEventCount()` and
   `RemoteEventsList.search()`/`count()`. `conversation events` in the CLI
   pages through search.
+- REST: `GET .../events/active-branch` returns a bare array of the active branch’s events, root first. Optional `limit` returns the last N events in the same order. A known conversation without an attached runtime returns 409; an unknown conversation returns 404. The Python goal runner requests this snapshot before proceeding and after each run.
 - REST: `GET .../events/{event_id}` (TypeScript `ConversationClient.getEvent()`,
   `RemoteEventsList.getEventById()`) and `GET .../events` with a JSON array body
   (batch get; no SDK or TypeScript caller, because browsers cannot send a GET
@@ -139,6 +142,15 @@ Preconditions:
   `last_user_message_id` state update; a second message (role and `run` left
   to their defaults) adds a `MessageEvent` and another update, and the
   conversation stays `idle`.
+- **Active branch (`F06.active-branch`).** Use the disposable conversation and restore its HEAD before the remaining checks.
+  ```sh
+  ACTIVE=$(control-agent-server api GET "/api/conversations/$CID/events/active-branch" --expect 200 --query limit=1 --check . len-eq 1 --field 0.id)
+  control-agent-server api GET "/api/conversations/$CID/events/active-branch" --expect 422 --query limit=0
+  control-agent-server api POST "/api/conversations/$CID/navigate" --json '{"event_id":null}' --expect 200
+  control-agent-server api GET "/api/conversations/$CID/events/active-branch" --expect 200 --check . len-eq 0
+  control-agent-server api GET "/api/conversations/$CID/events/$ACTIVE" --expect 200 --check id eq "$ACTIVE"
+  control-agent-server api POST "/api/conversations/$CID/navigate" --json "$(jq -cn --arg id "$ACTIVE" '{event_id:$id}')" --expect 200
+  ```
 - **Paging and sort order (`F06.search-page`).** Five events in pages of two.
   ```sh
   E0=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items.0.id)

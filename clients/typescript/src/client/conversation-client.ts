@@ -1,3 +1,4 @@
+import type { Event as AgentServerEvent } from '../generated/agent-server-schema';
 import { HttpClient, HttpError } from './http-client';
 import { getCachedAgentServerInfo } from './agent-server-compatibility';
 import { ConversationExecutionStatus, LLM, Success } from '../types/base';
@@ -181,6 +182,22 @@ export class ConversationClient {
     const response = await this.client.get<ConversationEventPage>(
       `/api/conversations/${conversationId}/events/search`,
       { params: options as Record<string, unknown> }
+    );
+    return response.data;
+  }
+
+  /**
+   * Read the authoritative current branch in root-first order.
+   * Requires an Agent Server supporting /events/active-branch; errors are not
+   * replaced with append-only history, which may contain abandoned branches.
+   */
+  async getActiveBranch(
+    conversationId: string,
+    options: { limit?: number } = {}
+  ): Promise<AgentServerEvent[]> {
+    const response = await this.client.get<AgentServerEvent[]>(
+      `/api/conversations/${conversationId}/events/active-branch`,
+      { params: options }
     );
     return response.data;
   }

@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.event import Event
     from openhands.sdk.hooks import HookConfig
 
 
@@ -68,6 +69,10 @@ class ConversationStateProtocol(Protocol):
     @property
     def events(self) -> EventsListBase:
         """Access to the events list."""
+        ...
+
+    def active_branch(self, limit: int | None = None) -> list["Event"]:
+        """Raw events on the current branch, root-first, excluding abandoned history."""
         ...
 
     @property
