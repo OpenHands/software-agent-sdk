@@ -2973,6 +2973,7 @@ class TestConversationServiceUpdateConversation:
         """Test that tag updates hold the ConversationState lock."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
@@ -3008,6 +3009,7 @@ class TestConversationServiceUpdateConversation:
         """Waiting on the state lock must not stall unrelated async work."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         _adopt_saved_meta(mock_service)
         state = ConversationState(
             id=sample_stored_conversation.id,
@@ -3096,6 +3098,7 @@ class TestConversationServiceUpdateConversation:
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
@@ -3144,6 +3147,7 @@ class TestConversationServiceUpdateConversation:
         )
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = stored_conversation
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=stored_conversation.id,
