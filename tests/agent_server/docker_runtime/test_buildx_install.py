@@ -15,6 +15,9 @@ DOCKERFILE = (
 )
 
 
+@unittest.skipUnless(
+    os.name == "posix", "Dockerfile install shell requires POSIX tools"
+)
 class BuildxInstallTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
