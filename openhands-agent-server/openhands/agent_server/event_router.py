@@ -242,6 +242,22 @@ async def batch_get_conversation_events(
     return events
 
 
+@event_read_router.post("/batch")
+async def batch_get_conversation_events_via_post(
+    event_ids: list[str],
+    event_service: EventService = Depends(get_event_service),
+) -> list[Event | None]:
+    """Browser-safe form of the batch get above.
+
+    The canonical batch endpoint is a GET with a required JSON body, which
+    `fetch` and browsers reject, so browser clients cannot call it. This POST
+    alias carries the same bare JSON array of event ids and returns the same
+    ordered list, with null for any missing item. The GET route is unchanged.
+    """
+    events = await event_service.batch_get_events(event_ids)
+    return events
+
+
 @event_write_router.post(
     "",
     responses=error_responses(

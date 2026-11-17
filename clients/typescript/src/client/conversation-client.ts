@@ -23,6 +23,10 @@ import type {
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
 import type { AskUserAnswerEvent, ReactionEmoji, ReactionEvent } from '../events/types';
+import type {
+  AgentServerBatchEventsResponse,
+  AgentServerLoadPluginResponse,
+} from '../models/agent-server-api';
 
 export interface ConversationClientOptions {
   host: string;
@@ -204,6 +208,36 @@ export class ConversationClient {
         }
       })
     );
+  }
+
+  /**
+   * Batch-fetch events in one request, preserving input order with `null`
+   * for missing ids. Uses the browser-safe `POST .../events/batch` route;
+   * the canonical `GET .../events` batch endpoint requires a GET body, which
+   * `fetch`/browsers reject, so it is not used here. Servers predating the
+   * POST route answer 404/405, which surfaces as an HttpError.
+   */
+  async batchGetEvents(
+    conversationId: string,
+    eventIds: string[]
+  ): Promise<AgentServerBatchEventsResponse> {
+    const response = await this.client.post<AgentServerBatchEventsResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/events/batch`,
+      eventIds
+    );
+    return response.data;
+  }
+
+  /** Load a plugin from the conversation's registered marketplaces. */
+  async loadPlugin(
+    conversationId: string,
+    pluginRef: string
+  ): Promise<AgentServerLoadPluginResponse> {
+    const response = await this.client.post<AgentServerLoadPluginResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/load_plugin`,
+      { plugin_ref: pluginRef }
+    );
+    return response.data;
   }
 
   async sendEvent(
