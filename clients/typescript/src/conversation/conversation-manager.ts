@@ -6,7 +6,9 @@ import { HttpClient } from '../client/http-client';
 import { ConversationClient } from '../client/conversation-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { FileClient } from '../client/file-client';
+import { GitClient } from '../client/git-client';
 import { HooksClient } from '../client/hooks-client';
+import { InitClient } from '../client/init-client';
 import { LLMMetadataClient } from '../client/llm-client';
 import { MCPClient } from '../client/mcp-client';
 import { ProfilesClient } from '../client/profiles-client';
@@ -103,6 +105,8 @@ export class ConversationManager {
   public readonly shared: SharedClient;
   public readonly hooks: HooksClient;
   public readonly mcp: MCPClient;
+  public readonly git: GitClient;
+  public readonly init: InitClient;
   public readonly acp: ACPConversationNamespace;
 
   constructor(options: ConversationManagerOptions) {
@@ -135,6 +139,8 @@ export class ConversationManager {
     this.shared = new SharedClient(clientOptions);
     this.hooks = new HooksClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
+    this.git = new GitClient(clientOptions);
+    this.init = new InitClient(clientOptions);
     this.acp = new ACPConversationNamespace(this);
   }
 

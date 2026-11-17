@@ -24,13 +24,14 @@ from openhands.agent_server.dependencies import (
     get_event_service,
     get_settings_store,
 )
-from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.errors import GatewayTimeout, error_responses
+from openhands.agent_server.event_service import EventService, ServiceInactive
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
 )
 from openhands.agent_server.models import (
+    AskUserAnswerRequest,
     ConfirmationResponseRequest,
     EventSortOrder,
     ReactionRequest,
@@ -42,6 +43,7 @@ from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
     SettingsStore,
+    run_store,
 )
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -50,9 +52,9 @@ from openhands.sdk.errors import (
     Invalid,
     NotFound,
     RateLimited,
-    UpstreamTimeout,
 )
 from openhands.sdk.event import Event, ReactionEvent
+from openhands.sdk.event.ask_user import AskUserAnswerEvent
 
 
 event_read_router = APIRouter(
@@ -239,6 +241,22 @@ async def batch_get_conversation_events(
     return events
 
 
+@event_read_router.post("/batch")
+async def batch_get_conversation_events_via_post(
+    event_ids: list[str],
+    event_service: EventService = Depends(get_event_service),
+) -> list[Event | None]:
+    """Browser-safe form of the batch get above.
+
+    The canonical batch endpoint is a GET with a required JSON body, which
+    `fetch` and browsers reject, so browser clients cannot call it. This POST
+    alias carries the same bare JSON array of event ids and returns the same
+    ordered list, with null for any missing item. The GET route is unchanged.
+    """
+    events = await event_service.batch_get_events(event_ids)
+    return events
+
+
 @event_write_router.post(
     "",
     responses=error_responses(
@@ -311,7 +329,7 @@ async def run_gateway_message(
                 timeout=deadline - time.monotonic(),
             )
         except TimeoutError as exc:
-            raise UpstreamTimeout("Agent run timed out") from exc
+            raise GatewayTimeout(retry_safe=True) from exc
         try:
             return await _run_gateway_message(request, event_service, deadline)
         finally:
@@ -330,14 +348,16 @@ async def _run_gateway_message(
                 timeout=max(0, deadline - time.monotonic())
             )
         except TimeoutError as exc:
-            raise UpstreamTimeout("Agent run timed out") from exc
+            raise GatewayTimeout(retry_safe=True) from exc
+
     state_before = await event_service.get_state()
     min_event_count = len(state_before.events) + 1
     usage_before = state_before.stats.get_combined_metrics().accumulated_token_usage
     run_slot = await event_service.reserve_run_slot()
     try:
         if time.monotonic() >= deadline:
-            raise UpstreamTimeout("Agent run timed out")
+            raise GatewayTimeout(retry_safe=True)
+
         await event_service.send_message(
             request.create_message(), run=True, run_slot=run_slot
         )
@@ -347,11 +367,12 @@ async def _run_gateway_message(
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise UpstreamTimeout("Agent run timed out")
+            raise GatewayTimeout(retry_safe=False)
         try:
             run_status = await event_service.wait_for_run_completion(timeout=remaining)
         except TimeoutError as exc:
-            raise UpstreamTimeout("Agent run timed out") from exc
+            raise GatewayTimeout(retry_safe=False) from exc
+
         state = await event_service.get_state()
         if len(state.events) > min_event_count and (
             run_status.is_terminal()
@@ -396,16 +417,22 @@ reaction_router = APIRouter(
 )
 
 
-async def require_reactions_enabled(settings_store: SettingsStore) -> None:
-    """Refuse with 409 unless the user has conversation reactions on."""
+async def require_feature_enabled(
+    settings_store: SettingsStore, key: str, off_detail: str
+) -> None:
+    """Refuse with 409 unless the user has experimental feature ``key`` on.
+
+    A Docker runtime's server finds the user's switch on the host, which
+    checks it before forwarding the request, so this check is skipped there.
+    """
+    if host_experimental_features() is not None:
+        return
     try:
-        settings = await asyncio.to_thread(
-            lambda: settings_store.load() or PersistedSettings()
-        )
+        settings = await run_store(settings_store.load) or PersistedSettings()
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
-    if not is_enabled(settings.experimental_features, "conversation_reactions"):
-        raise Conflict("Conversation reactions are turned off")
+    if not is_enabled(settings.experimental_features, key):
+        raise Conflict(off_detail)
 
 
 @reaction_router.post(
@@ -433,21 +460,70 @@ async def react_to_message(
     unlike the agent's tools, which a conversation gets when it starts, this
     check follows the switch at once.
     """
-    # A Docker runtime's server finds the user's switch on the host, which
-    # checks it before forwarding the request.
-    if host_experimental_features() is None:
-        await require_reactions_enabled(settings_store)
+    await require_feature_enabled(
+        settings_store,
+        "conversation_reactions",
+        "Conversation reactions are turned off",
+    )
     try:
         return await event_service.react(
             request.emoji, request.target_event_id, removed=request.removed
         )
+    except ServiceInactive:
+        raise
     except ValueError as exc:
-        if str(exc) == "inactive_service":
-            raise
         raise Invalid(str(exc))
+
+
+ask_user_router = APIRouter(
+    prefix="/conversations/{conversation_id}/ask_user", tags=["Events"]
+)
+
+
+@ask_user_router.post(
+    "/answer",
+    responses=error_responses(
+        {
+            Invalid: "That question is not waiting for an answer",
+            NotFound: "Item not found",
+            Conflict: "Decision cards are turned off",
+            RateLimited: "Answer saved but server run capacity is full",
+        }
+    ),
+)
+async def answer_ask_user(
+    request: AskUserAnswerRequest,
+    event_service: EventService = Depends(get_event_service),
+    settings_store: FileSettingsStore = Depends(get_settings_store),
+) -> AskUserAnswerEvent:
+    """Answer the agent's pending `ask_user` question, and run the agent.
+
+    Pick an option (`option_index`), give words (`text`), or both. The answer
+    is saved as an `AskUserAnswerEvent`, which clients use to show the card as
+    answered, followed by a user message the agent reads; then the agent runs.
+    `ask_id` must be the pending question: one the user already answered,
+    by a tap or by writing in the chat, is refused (400). There is no field
+    for another conversation to answer on the user's behalf. Needs the
+    `ask_user` feature on; this check follows the switch at once.
+    """
+    await require_feature_enabled(
+        settings_store, "ask_user", "Decision cards are turned off"
+    )
+    _refuse_during_gateway_run(event_service)
+    async with event_service._gateway_run_lock:
+        _refuse_during_gateway_run(event_service)
+        try:
+            return await event_service.answer_ask(
+                request.ask_id, request.option_index, request.text
+            )
+        except ServiceInactive:
+            raise
+        except ValueError as exc:
+            raise Invalid(str(exc))
 
 
 event_router = APIRouter()
 event_router.include_router(event_read_router)
 event_router.include_router(event_write_router)
 event_router.include_router(reaction_router)
+event_router.include_router(ask_user_router)

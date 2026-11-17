@@ -25,6 +25,7 @@ from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
     ServerStores,
+    run_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
@@ -58,7 +59,8 @@ from openhands.sdk.settings.api_models import MCPServerPatch
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     SecretDecryptionError,
-    is_redacted_secret,
+    cipher_context,
+    client_context,
 )
 
 
@@ -167,7 +169,7 @@ async def get_settings(
         values.
     """
     expose_mode = parse_expose_secrets_header(request)
-    settings = store.load() or PersistedSettings()
+    settings = await run_store(store.load) or PersistedSettings()
 
     # Audit log all settings access for security visibility
     # Use WARNING level for plaintext mode to highlight security-sensitive operations
@@ -332,7 +334,7 @@ def _with_profile_llm(
             **update_data,
             "agent_settings_diff": {
                 **agent_diff,
-                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+                "llm": llm.model_dump(mode="json", context=client_context("plaintext")),
             },
         },
     )
@@ -355,7 +357,7 @@ def _apply_settings_update(
         nonlocal applied_update
         if before_update is not None:
             before_update(settings)
-        context = {"cipher": config.cipher} if config.cipher is not None else None
+        context = cipher_context(config.cipher)
         applied_update = _with_profile_llm(update_data, profile_llm, settings)
         settings.update(applied_update, context=context)
         return settings
@@ -443,7 +445,7 @@ async def create_mcp_server(
     """Create one named MCP server without replacing an existing map entry."""
     server_data = server.model_dump(
         mode="python",
-        context={"expose_secrets": "plaintext"},
+        context=client_context("plaintext"),
         exclude_none=True,
         exclude_defaults=True,
     )
@@ -451,7 +453,8 @@ async def create_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: server_data}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         config,
         stores,
@@ -471,14 +474,15 @@ async def patch_mcp_server(
     """Sparsely update one existing named MCP server."""
     patch_data = patch.model_dump(
         mode="python",
-        context={"expose_secrets": "plaintext"},
+        context=client_context("plaintext"),
         exclude_unset=True,
     )
     update_data = cast(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: patch_data}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         config,
         stores,
@@ -499,7 +503,8 @@ async def delete_mcp_server(
         SettingsUpdatePayload,
         {"agent_settings_diff": {"mcp_config": {settings_key: None}}},
     )
-    return _apply_settings_update(
+    return await run_store(
+        _apply_settings_update,
         request,
         config,
         stores,
@@ -567,7 +572,7 @@ async def get_secret_value(
     """
     _validate_secret_name(name)
 
-    value = store.get_secret(name)
+    value = await run_store(store.get_secret, name)
 
     client_host = request.client.host if request.client else "unknown"
     if value is None:
@@ -600,11 +605,10 @@ async def create_secret(
     _validate_secret_name(secret.name)
 
     value = secret.value.get_secret_value()
-    if not value.strip() or is_redacted_secret(value):
-        raise Unprocessable("Secret value must not be empty or redacted")
 
     try:
-        store.set_secret(
+        await run_store(
+            store.set_secret,
             name=secret.name,
             value=value,
             description=secret.description,
@@ -648,7 +652,7 @@ async def delete_secret(
 
     client_host = request.client.host if request.client else "unknown"
     try:
-        deleted = store.delete_secret(name)
+        deleted = await run_store(store.delete_secret, name)
     except RuntimeError as e:
         # Data corruption protection triggered (file exists but unreadable)
         logger.error(f"Secret delete blocked: {e}")

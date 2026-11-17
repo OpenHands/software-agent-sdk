@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
+from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.tool.spec import Tool
 
 
@@ -59,7 +60,44 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [CONVERSATION_REACTIONS]
+ASK_USER = ExperimentalFeatureDefinition(
+    key="ask_user",
+    label="Decision cards",
+    description=(
+        "When a choice is yours to make, the agent can ask you one question "
+        "with a few options and a recommendation, shown as a card you answer "
+        "in one tap or in your own words. Applies to conversations started "
+        "after you turn it on."
+    ),
+)
+
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
+MESSAGE_EDITS = ExperimentalFeatureDefinition(
+    key="message_edits",
+    label="Message edits",
+    description=(
+        "The agent can edit its earlier messages when they got answered or "
+        "became wrong: it strikes the outdated part and adds a short note, and "
+        "the message shows as edited. Applies to conversations started after "
+        "you turn it on."
+    ),
+)
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
+    CONVERSATION_REACTIONS,
+    ASK_USER,
+    CONVERSATION_MENTIONS,
+    MESSAGE_EDITS,
+]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -86,10 +124,20 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
     if is_enabled(features, CONVERSATION_REACTIONS.key):
         # Tool names as registered by openhands.tools.reaction.
-        return [Tool(name="react"), Tool(name="unreact")]
-    return []
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, ASK_USER.key):
+        # Registered by openhands.tools.ask_user.
+        tools.append(Tool(name=ASK_USER_TOOL_NAME))
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    if is_enabled(features, MESSAGE_EDITS.key):
+        # Tool name as registered by openhands.tools.message_edit.
+        tools.append(Tool(name="edit_message"))
+    return tools
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"
