@@ -14,8 +14,14 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     StartConversationRequest,
 )
-from openhands.agent_server.project_board import (
-    ConversationOutcomeSubscriber,
+from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_turns import (
+    CardAnswered,
+    TurnEnded,
+    TurnStarted,
+    TurnStopped,
+    TurnTracker,
+    UserWrote,
     classify_turn,
     extract_ask,
     extract_request,
@@ -1180,3 +1186,72 @@ async def test_a_user_message_does_not_wait_for_the_last_turns_judge():
     assert "resolved" not in store.tags
     assert not release.is_set()
     await subscriber.drain()
+
+
+# TurnTracker: what the events say, with nothing acted on
+
+
+def _signals(tracker: TurnTracker, *events: Event) -> list:
+    return [signal for event in events for signal in tracker.observe(event)]
+
+
+def test_tracker_reads_a_turn_from_its_events():
+    tracker = TurnTracker()
+
+    signals = _signals(
+        tracker,
+        _message("user", "Pick a database.", sender="conversation:cat"),
+        _status("running"),
+        _action("terminal", "ls"),
+        _message("agent", "Postgres or SQLite?"),
+        _status("finished"),
+    )
+
+    assert signals == [
+        TurnStarted(),
+        TurnEnded(
+            turn="asked",
+            ask="Postgres or SQLite?",
+            score=None,
+            text="Postgres or SQLite?",
+            sender="conversation:cat",
+            sender_known=True,
+            judged=ResolutionState(
+                request="Pick a database.",
+                reply="Postgres or SQLite?",
+                actions=["terminal: ls"],
+            ),
+        ),
+    ]
+
+
+def test_tracker_tells_a_user_message_and_its_answer_to_a_card():
+    tracker = TurnTracker()
+    message = _message("user", "Use SQLite.")
+
+    assert tracker.observe(message) == [
+        TurnStarted(),
+        CardAnswered(message.id, None, "Use SQLite."),
+        UserWrote("Use SQLite."),
+    ]
+
+
+def test_tracker_reports_a_stop_once_and_a_finish_it_never_saw_not_at_all():
+    tracker = TurnTracker()
+
+    assert _signals(tracker, _status("finished", full=True)) == []
+    signals = _signals(
+        tracker,
+        _action("terminal", "rm -rf build"),
+        _status("waiting_for_confirmation"),
+        _status("waiting_for_confirmation"),
+    )
+
+    assert signals == [
+        TurnStopped(
+            status="waiting_for_confirmation",
+            text="terminal: rm -rf build",
+            sender=None,
+            sender_known=False,
+        )
+    ]

@@ -36,11 +36,6 @@ from openhands.agent_server.event_service import (
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.persistence import PersistedProjects
-from openhands.agent_server.project_board import (
-    TurnOutcome,
-    describe_action,
-    starts_turn,
-)
 from openhands.agent_server.project_prompts import (
     RESTART_STOP,
     SenderRole,
@@ -52,6 +47,11 @@ from openhands.agent_server.project_prompts import (
     update_text,
     user_message_header,
     user_turn_header,
+)
+from openhands.agent_server.project_turns import (
+    TurnOutcome,
+    describe_action,
+    starts_turn,
 )
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.resolution import EARLIER_REQUESTS_KEPT

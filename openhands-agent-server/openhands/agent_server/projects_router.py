@@ -67,11 +67,7 @@ from openhands.agent_server.project_artifacts import (
     open_workspace_file,
     valid_artifact_name,
 )
-from openhands.agent_server.project_board import (
-    AGENT_RESOLVE_NOTE,
-    ResolvedBy,
-    TurnOutcome,
-)
+from openhands.agent_server.project_board import AGENT_RESOLVE_NOTE, ResolvedBy
 from openhands.agent_server.project_memory import (
     MEMORY_INDEX,
     MemoryConflict,
@@ -81,6 +77,7 @@ from openhands.agent_server.project_memory import (
     ProjectMemoryStore,
     valid_memory_name,
 )
+from openhands.agent_server.project_turns import TurnOutcome
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.conversation.request import AgentLaunchAdditions

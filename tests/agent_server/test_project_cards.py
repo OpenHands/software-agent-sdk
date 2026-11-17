@@ -25,10 +25,8 @@ from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import ServerStores
-from openhands.agent_server.project_board import (
-    ConversationOutcomeSubscriber,
-    card_text,
-)
+from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_turns import card_text
 from openhands.agent_server.project_wake import notify_coordinator, pass_on_answer
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent
