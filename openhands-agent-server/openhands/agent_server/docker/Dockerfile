@@ -604,8 +604,7 @@ RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/o
     chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}/lib/vscode/extensions"
 
 # --- Docker ---
-# Pin the executable, not its Go module manifest. See buildx-security.md for
-# package-level applicability evidence for the daemon/archive Trivy findings.
+# Pin the executable to include the x/net fix for CVE-2026-78669.
 ARG BUILDX_VERSION=0.39.0
 ARG BUILDX_AMD64_SHA256=5fb31a097304fbf6dd4038649a0decf32c2b9510e4047acd7d68b9d700c46194
 ARG BUILDX_ARM64_SHA256=722cdcdfdd6f3fb943fa1ba75102d057feb18ba72aab93b1b0a8cf2b2b48a25f
