@@ -179,6 +179,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_command",
         "acp_args",
         "acp_model",
+        "acp_effort",
         "acp_session_mode",
         "acp_prompt_timeout",
         "acp_startup_timeout",
@@ -906,6 +907,38 @@ def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
                 }
             }
         )
+
+
+@pytest.mark.parametrize("schema_version", [8, 9])
+def test_validate_agent_settings_drops_legacy_mcp_server_without_endpoint(
+    schema_version: int,
+) -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": schema_version,
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o"},
+            "mcp_config": {
+                "good": {"command": "uvx", "args": ["fetch"]},
+                "qa-empty": {"enabled": True},
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert list(settings.mcp_config) == ["good"]
+
+
+@pytest.mark.parametrize("schema_version", [None, AGENT_SETTINGS_SCHEMA_VERSION])
+def test_agent_settings_reject_mcp_server_without_endpoint(
+    schema_version: int | None,
+) -> None:
+    payload: dict = {"agent_kind": "openhands", "mcp_config": {"qa-empty": {}}}
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+    with pytest.raises(ValidationError, match="require 'command' or 'url'"):
+        validate_agent_settings(payload)
 
 
 def test_current_agent_settings_reject_legacy_mcp_wrapper_without_migration() -> None:
@@ -1910,7 +1943,7 @@ def test_acp_create_agent_uses_server_default_command(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/claude-agent-acp@0.63.0",
+        "@agentclientprotocol/claude-agent-acp@0.99.1",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.

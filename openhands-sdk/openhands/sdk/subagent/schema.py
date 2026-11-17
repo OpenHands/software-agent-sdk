@@ -341,16 +341,16 @@ class AgentDefinition(BaseModel):
         Returns:
             Loaded AgentDefinition instance.
         """
-        with open(agent_path, encoding="utf-8") as f:
+        with open(agent_path, encoding="utf-8-sig") as f:
             post = frontmatter.load(f)
 
         fm = post.metadata
         content = post.content.strip()
 
         # Extract frontmatter fields with proper type handling
-        name: str = str(fm.get("name", agent_path.stem))
-        description: str = str(fm.get("description", ""))
-        model: str = str(fm.get("model", "inherit"))
+        name: str = str(fm.get("name") or agent_path.stem)
+        description: str = str(fm.get("description") or "")
+        model: str = str(fm.get("model") or "inherit")
         color: str | None = _extract_color(fm)
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)

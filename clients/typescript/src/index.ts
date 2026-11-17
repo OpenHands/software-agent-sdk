@@ -69,6 +69,9 @@ export {
   isConversationErrorEvent,
   isCondensationEvent,
   isHookExecutionEvent,
+  isReactionEvent,
+  isAskUserAnswerEvent,
+  isMessageEditEvent,
 } from './events/types';
 export type {
   EventID,
@@ -98,6 +101,12 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  ReactionEmoji,
+  ReactionEvent,
+  AskUserAction,
+  AskUserObservation,
+  AskUserAnswerEvent,
+  MessageEditEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
@@ -224,6 +233,7 @@ export type {
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
 export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
 export type {
+  ACPEffortOption,
   ACPModelDiscovery,
   ACPModelDiscoveryError,
   ACPModelDiscoveryRequest,
@@ -313,6 +323,18 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesQuery,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsQuery,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
   AgentServerConversationSettingsSchema,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,

@@ -45,10 +45,11 @@ Routes: none
 - `F34.ws-callback-client`: `RemoteConversation.startWebSocketClient()` in Node delivers the conversation's events to the conversation callback without errors.
 - `F34.conversation-controls`: `setTitle` and `setConfirmationPolicy` change the server's title and policy.
 - `F34.conversation-confirm`: under `AlwaysConfirm`, `sendConfirmationResponse(false, reason)` records one `UserRejectObservation` with that reason and leaves the command unrun, `sendConfirmationResponse(true)` runs the pending command, and `updateSecrets` (a string and a function value) puts both values into that command's shell without any event containing them.
-- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding events to the source.
+- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding a message or action to the source: the one event it adds is a `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`.
 - `F34.manager`: `ConversationManager` searches with paging, counts by status, batch-gets (unknown ids are `null`), lists all, loads a conversation with its server working directory, creates and deletes one, and an unknown id rejects with 404.
 - `F34.manager-update-result`: `ConversationManager.updateConversation` stores the new title and resolves with the updated `ConversationInfo` it is typed to return.
 - `F34.manager-create-options`: `ConversationManager.createConversation(agent, {maxIterations, stuckDetection})` creates the conversation with those settings.
+- `F34.manager-batch-over-limit`: `getConversations` on `ConversationManager`, `ConversationClient` and the ACP namespace splits a list of more than 99 ids into requests the server accepts (it refuses 100 with 422) and returns every entry in input order, `null` for unknown ids.
 - `F34.manager-acp`: `ConversationManager.acp` creates a conversation for an inline ACP agent (with its `maxIterations`) and gets, batch-gets, lists and counts it with its ACP agent fields.
 - `F34.hooks-client`: `HooksClient.loadHooks` and `RemoteConversation.loadHooks` read a project's `.openhands/hooks.json` as a snake_case `HookConfig` the client's hook helpers understand, and `null` for a directory without hooks.
 - `F34.mcp-client`: `MCPClient.testServer` lists a stdio MCP server's tools and runs one tool call, reports a server that fails to start as `{ok: false}` with an `error_kind`, and an empty command rejects with 422.
@@ -969,6 +970,44 @@ Preconditions:
   input order with `null` for the unknown id, the loaded conversation carries
   its server working directory, and the created conversation is gone after
   the delete (404, count back to `COUNT`).
+- **Batches above the server limit (`F34.manager-batch-over-limit`).**
+  `GET /api/conversations?ids=` takes at most 99 ids; the client methods
+  split a longer list into requests of at most 99 and join the answers.
+  `CID`, then 150 unknown ids, then `SCID` go through
+  `ConversationManager.getConversations`, `ConversationClient.getConversations`
+  and the ACP namespace's `getConversations`.
+
+  Requires: `F34.conversation-create`
+  ```sh
+  Q99=$(for N in $(seq 1 99); do printf 'ids=00000000-0000-4000-8000-%012d&' "$N"; done)
+  control-agent-server api GET "/api/conversations?${Q99%&}" --expect 200 --check . len-eq 99 --check 0 eq null --quiet
+  control-agent-server api GET "/api/conversations?${Q99}ids=00000000-0000-4000-8000-000000000100" --expect 422 \
+    --check detail.0.type eq too_long --quiet --save F34.manager-batch-over-limit/rest-100
+  cat > "$F34/batch.mjs" <<'JS'
+  import { writeFileSync } from 'node:fs';
+  import { m, c, host, apiKey, F34, assert } from './lib.mjs';
+  const [cid, scid] = process.argv.slice(2);
+  const unknown = Array.from({ length: 150 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`);
+  const ids = [cid, ...unknown, scid];
+  const expected = [cid, ...unknown.map(() => null), scid];
+  const manager = new m.ConversationManager({ host, apiKey });
+  const viaManager = (await manager.getConversations(ids)).map((x) => x && x.id);
+  const viaClient = (await new c.ConversationClient({ host, apiKey }).getConversations(ids)).map((x) => x && x.id);
+  const viaAcp = (await manager.acp.getConversations(ids)).map((x) => x && x.id);
+  writeFileSync(`${F34}/batch.json`, JSON.stringify({ manager: viaManager.length, client: viaClient.length, acp: viaAcp.length }));
+  assert.deepEqual(viaManager, expected);
+  assert.deepEqual(viaClient, expected);
+  assert.deepEqual(viaAcp, expected);
+  console.log('QA_F34_BATCH_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_BATCH_OK --save F34.manager-batch-over-limit/program -- node "$F34/batch.mjs" "$CID" "$SCID"
+  control-agent-server assert --json "$F34/batch.json" --check manager eq 152 --check client eq 152 --check acp eq 152
+  ```
+  REST answers 99 ids (all unknown, all `null`) and refuses a 100th with
+  `422` (`too_long`). Each client method resolves 152 entries in input
+  order, `CID` first, `SCID` last and `null` for every unknown id (the client
+  sends at most 99 ids per request, read from source, which the REST limit
+  above makes necessary).
 - **Update result (`F34.manager-update-result`).** `PATCH
   /api/conversations/{id}` answers `Success` (`{"success": true}`, also in
   the client's generated contract), so `ConversationManager.updateConversation`
@@ -1067,9 +1106,10 @@ Preconditions:
 - **Fork, navigate and ask (`F34.conversation-branching`).** On `CID`, the
   finished DeepSeek conversation; the fork is deleted at the end.
 
-  Requires: `F34.conversation-create`
+  Requires: `F34.conversation-create`, `F34.conversation-run`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  ENVIRONMENT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --field .)
   cat > "$F34/branching.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
   import { m, host, apiKey, F34, assert } from './lib.mjs';
@@ -1091,8 +1131,15 @@ Preconditions:
   await fork.navigateTo(first.id);
   assert.equal((await fork.state.modelDump()).leaf_event_id, first.id);
   writeFileSync(`${F34}/fork-leaf`, first.id);
+  const STATE = 'ConversationStateUpdateEvent';
+  const stateBefore = await conversation.state.events.count({ kind: STATE });
   assert.equal(typeof (await conversation.askAgent('In one short sentence: which file did you create?')), 'string');
-  assert.equal(await conversation.state.events.count(), Number(total));
+  assert.equal(await conversation.state.events.count(), Number(total) + 1);
+  assert.equal(await conversation.state.events.count({ kind: STATE }), stateBefore + 1);
+  const [newest] = (await conversation.state.events.search({ limit: 1, sort_order: 'TIMESTAMP_DESC' })).items;
+  assert.equal(newest.kind, STATE);
+  assert.equal(newest.key, 'stats');
+  assert.ok(newest.value.usage_to_metrics['ask-agent-llm'].accumulated_token_usage.completion_tokens >= 1);
   console.log('QA_F34_BRANCHING_OK');
   JS
   control-agent-server exec --timeout 180 --expect-output QA_F34_BRANCHING_OK --save F34.conversation-branching/program -- node "$F34/branching.mjs" "$CID" "$TOTAL"
@@ -1100,7 +1147,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$FORK" --max-chars 300 --check forked_from_conversation_id eq "$CID" \
     --check title eq qa-f34-fork --check leaf_event_id eq "$(cat "$F34/fork-leaf")" --save F34.conversation-branching/fork
   control-agent-server api GET "/api/conversations/$CID" --max-chars 300 --check execution_status eq finished --check leaf_event_id ne "$(cat "$F34/fork-leaf")"
-  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$TOTAL"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$((TOTAL + 1))"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --check . eq "$((ENVIRONMENT + 1))"
   control-agent-server api DELETE "/api/conversations/$FORK" --expect 200
   ```
   `fork` returns a `RemoteConversation` bound to the fork: its own id,
@@ -1108,8 +1156,12 @@ Preconditions:
   agent model, and all `TOTAL` copied events. With the state cached right
   before, `navigateTo(<first event>)` leaves the cached state on the new
   HEAD, which GET confirms (the source's HEAD did not move). `askAgent`
-  resolves with a string and adds no event to the source, which is still
-  `finished`.
+  resolves with a string and adds exactly one event to the source, which is
+  still `finished`: the newest event is a `stats`
+  `ConversationStateUpdateEvent` whose `usage_to_metrics` has an
+  `ask-agent-llm` entry with the call's tokens, and the counts of every
+  other kind are unchanged (the client's counts and REST agree: one more
+  event, from source `environment`).
 - **Confirmation and secrets (`F34.conversation-confirm`).** A DeepSeek
   conversation with the `terminal` tool under `AlwaysConfirm`; two runtime
   secrets (a string and a function value) whose hashes the first command
@@ -1305,20 +1357,16 @@ Preconditions:
   queued message was replayed on the new socket, and the message posted
   after the restart arrived on it (live or in that replay). REST shows both
   user messages and the conversation still `idle`.
-- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`), known bug.**
+- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`).**
   The same restart with two streams side by side: the `ws`-backed one
   (positive control) and one on Node's global `WebSocket`, which
   `F34.event-stream` uses and the README presents as all the stream
   needs. This regression recipe pins Node 22.22.0 (undici 6.23.0), the
-  affected runtime in [upstream #5651](https://github.com/OpenHands/software-agent-sdk/issues/5651);
-  the main consumer lane can use the machine's current Node. The prewarm
-  records the version before the watcher readiness timeout starts. On this
-  Node version, a handshake to a port that refuses fires
-  `error` but never `close`, and the stream schedules its retries only
-  from `onclose` (`clients/typescript/src/client/conversation-event-stream.ts:145`);
-  its own 10 s handshake abort only calls `close()`, which fires no
-  `close` either. So the first refused attempt during the restart is the
-  last one.
+  affected runtime in [upstream #5651](https://github.com/OpenHands/software-agent-sdk/issues/5651).
+  The prewarm records the version before the watcher readiness timeout starts.
+  In this runtime a refused handshake fires `error` without `close`; the stream
+  ends an unopened attempt on `error` or its handshake timeout and keeps
+  retrying through the restart.
   ```sh
   control-agent-server exec --timeout 120 --expect-output v22.22.0 --save F34.event-stream-reconnect-native/runtime -- \
     npm exec --yes --package=node@22.22.0 -- node --version
@@ -1336,15 +1384,11 @@ Preconditions:
   wait "$RPID"
   cat "$F34/reconnect-native.json"
   jq -e '.ws.reconnected and .ws.sent_after >= 1 and .native.went_down' "$F34/reconnect-native.json"
-  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1  # bug: value.native.reconnected eq false && value.native.last_state.attemptCount eq 1
+  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1
   ```
-  Expected: both streams come back and see the message posted after the
-  restart. On Node 22.22.0 the `ws`-backed stream does, while the native one stays
-  `{"isConnected": false, "isReconnecting": true, "attemptCount": 1}`
-  for the whole minute the watcher gives it, never retrying. Node 24.19.0
-  (undici 7.29.0) emits `close` after the handshake error, so both BASE and
-  TARGET pass there with byte-identical client code; that environment result
-  does not retire the Node 22 regression.
+  Expected: both streams come back, end at
+  `{"isConnected": true, "isReconnecting": false, "attemptCount": 0}`
+  and see the message posted after the restart.
 - **Endpoint audit against this checkout (`F34.endpoint-audit`).** The
   client's own drift tooling, offline, in a fixture directory (nothing is
   written into `clients/typescript`).
@@ -1365,7 +1409,7 @@ Preconditions:
     --timeout 180 --save F34.endpoint-audit/generate -- node clients/typescript/scripts/generate-agent-server-api.mjs
   node clients/typescript/scripts/summarize-agent-server-api.mjs --before clients/typescript/src/generated/agent-server-schema.ts \
     --after "$A/agent-server-schema.ts" --output "$A/summary.md"
-  grep -Eqx 'No generated TypeScript contract changes\.|- Removed exported types: none' "$A/summary.md"
+  grep -Eqx 'No generated TypeScript contract changes\.|- Removed exported types: none|- Removed exported types: `McpTypesTool`, `McpTypesToolAnnotations`' "$A/summary.md"
   ```
   `.github/scripts/export_agent_server_openapi.py` writes the same public
   contract CI uses for unreleased versions. The audit runs with a copy of
@@ -1395,7 +1439,7 @@ Preconditions:
   OLDPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd "$OLD" && HOME="$OLD/home" OH_PERSISTENCE_DIR="$OLD/persist" OH_SESSION_API_KEYS_0=qa-f34-old-key COLUMNS=400 exec timeout 600 \
     uvx --python 3.13 --from 'openhands-agent-server==1.22.0' --with 'openhands-sdk==1.22.0' --with 'openhands-tools==1.22.0' \
-    --with 'openhands-workspace==1.22.0' --with 'fastapi==0.129.0' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
+    --with 'openhands-workspace==1.22.0' --with 'fastapi==0.129.0' --with 'agent-client-protocol==0.8.1' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
   OLDPID=$!
   OLDRUN=""
   trap 'if [ -n "$OLDRUN" ]; then control-agent-server stop --run "$OLDRUN" > /dev/null 2>&1; fi; kill -TERM -- "-$OLDPID" 2>/dev/null || kill -TERM "$OLDPID" 2>/dev/null || true' EXIT
@@ -1454,12 +1498,10 @@ Preconditions:
   reconnects through `ConversationEventStream`, so the refused-handshake
   gotcha below applies to it too.
 - Node 22's global `WebSocket` (undici 6) fires `error` but no `close` when
-  a handshake is refused, so a `ConversationEventStream` on it stops
-  retrying after the first refused reconnect attempt (a server restart
-  always produces one) and stays `isReconnecting` forever
-  (`F34.event-stream-reconnect-native`). Pass the `ws` package's
-  constructor as `createWebSocket` for a Node consumer that must survive a
-  restart (`F34.event-stream-reconnect`).
+  a handshake is refused, and `close()` on such a socket fires no `close`
+  either. `ConversationEventStream` treats `error` before `open` as the end
+  of the attempt, so it reconnects on either transport
+  (`F34.event-stream-reconnect-native`, `F34.event-stream-reconnect`).
 - A real model shown a `UserRejectObservation` often refuses to propose
   the same command again ("a deliberate block"), so a recipe that needs
   both an accept and a reject accepts first and rejects a later, different
@@ -1514,3 +1556,10 @@ Preconditions:
   changes. The raw `/openapi.json` of a running server is not the public
   contract (it includes `/v1` and internal schemas), so regenerating from it
   shows thousands of unrelated changes.
+- Agent Canvas pins `@openhands/typescript-client` 1.62.0, which sends every id
+  in one lookup, so a conversation with more than 99 children still gets a 422
+  there until its pin moves to a release with the batched lookup
+  (`F34.manager-batch-over-limit`). The release bot moves the agent-server and
+  client pins together after each SDK release, as
+  [OpenHands/OpenHands#19658](https://github.com/OpenHands/OpenHands/pull/19658)
+  did for 1.62.0.

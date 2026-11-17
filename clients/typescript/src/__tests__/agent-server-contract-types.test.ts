@@ -1,12 +1,19 @@
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import type { MCPClient } from '../client/mcp-client';
+import type { ConversationClient } from '../client/conversation-client';
+import type { FileClient } from '../client/file-client';
+import type { GitClient } from '../client/git-client';
+import type { InitClient } from '../client/init-client';
+import type { PluginsClient } from '../client/plugins-client';
 import type { RemoteWorkspace } from '../workspace/remote-workspace';
 import type {
   GitChange as PublicGitChange,
   GitChangeStatus as PublicGitChangeStatus,
 } from '../index';
 import type { SettingsClient } from '../client/settings-client';
+import type { ConversationInfo } from '../models/conversation';
+import type { ACPEffortOption } from '../models/acp-model-discovery';
 import type {
   AcpAgentProfile as GeneratedACPAgentProfile,
   AgentProfileDiagnostics as GeneratedAgentProfileDiagnostics,
@@ -25,6 +32,16 @@ import type {
   OpenHandsAgentProfile,
 } from '../models/agent-profile';
 import type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,
   AgentServerMCPOAuthStatusResponse,
@@ -37,6 +54,13 @@ import type {
   AgentServerSettingsResponse,
   AgentServerSettingsSchema,
 } from '../models/agent-server-api';
+import type {
+  BatchGetConversationEventsApiConversationsConversationIdEventsGetData,
+  BatchGetConversationEventsApiConversationsConversationIdEventsGetResponse,
+  GitCommitChangesQueryApiGitCommitsShaChangesGetResponse,
+  GitCommitsQueryApiGitCommitsGetResponse,
+  InitStatus as GeneratedInitStatus,
+} from '../generated/agent-server-schema';
 import type {
   MCPAuthCredential,
   MCPConfig,
@@ -92,6 +116,11 @@ describe('Agent Server generated contract aliases', () => {
       })
     ).toBe('');
   }, 30_000);
+
+  it('exposes typed conversation effort fields', () => {
+    assertType<Equal<ConversationInfo['current_effort'], string | null | undefined>>(true);
+    assertType<Equal<ConversationInfo['available_efforts'], ACPEffortOption[] | undefined>>(true);
+  });
 
   it('statically checks settings client request and response types', () => {
     assertType<
@@ -154,6 +183,61 @@ describe('Agent Server generated contract aliases', () => {
     >(true);
   });
 
+  it('statically checks the seven uncovered operations against generated types', () => {
+    assertType<
+      Equal<
+        AgentServerBatchEventIds,
+        BatchGetConversationEventsApiConversationsConversationIdEventsGetData['body']
+      >
+    >(true);
+    assertType<
+      Equal<
+        AgentServerBatchEventsResponse,
+        BatchGetConversationEventsApiConversationsConversationIdEventsGetResponse
+      >
+    >(true);
+    assertType<
+      Equal<
+        Awaited<ReturnType<ConversationClient['batchGetEvents']>>,
+        AgentServerBatchEventsResponse
+      >
+    >(true);
+    assertType<Equal<Parameters<ConversationClient['batchGetEvents']>[1], string[]>>(true);
+    assertType<Equal<AgentServerGitCommitsResponse, GitCommitsQueryApiGitCommitsGetResponse>>(true);
+    assertType<
+      Equal<
+        AgentServerGitCommitChangesResponse,
+        GitCommitChangesQueryApiGitCommitsShaChangesGetResponse
+      >
+    >(true);
+    assertType<Equal<Awaited<ReturnType<GitClient['getCommits']>>, AgentServerGitCommitsResponse>>(
+      true
+    );
+    assertType<
+      Equal<Awaited<ReturnType<GitClient['getCommitChanges']>>, AgentServerGitCommitChangesResponse>
+    >(true);
+    assertType<Equal<Awaited<ReturnType<FileClient['downloadArchive']>>, Blob>>(true);
+    assertType<Equal<Awaited<ReturnType<FileClient['downloadArchiveBuffer']>>, ArrayBuffer>>(true);
+    assertType<Equal<AgentServerArchiveQuery['path'], string>>(true);
+    assertType<Equal<AgentServerInitStatus, GeneratedInitStatus>>(true);
+    assertType<Equal<Awaited<ReturnType<InitClient['getStatus']>>, AgentServerInitStatus>>(true);
+    assertType<Equal<Parameters<InitClient['initialize']>[0], AgentServerInitRequest>>(true);
+    assertType<Equal<AgentServerInitRequest['session_api_keys'], string[] | null | undefined>>(
+      true
+    );
+    assertType<Equal<Awaited<ReturnType<InitClient['initialize']>>, AgentServerInitResponse>>(true);
+    assertType<Equal<AgentServerLoadPluginRequest, { plugin_ref: string }>>(true);
+    assertType<
+      Equal<Awaited<ReturnType<ConversationClient['loadPlugin']>>, AgentServerLoadPluginResponse>
+    >(true);
+    assertType<
+      Equal<
+        Awaited<ReturnType<PluginsClient['loadPluginForConversation']>>,
+        AgentServerLoadPluginResponse
+      >
+    >(true);
+  });
+
   it('types git change statuses with the generated wire enum', () => {
     assertType<Equal<PublicGitChange['status'], GeneratedGitChange['status']>>(true);
     assertType<Equal<PublicGitChangeStatus, GeneratedGitChangeStatus>>(true);
@@ -192,6 +276,18 @@ describe('Agent Server generated contract aliases', () => {
     assertType<Equal<keyof OpenHandsAgentProfile, keyof GeneratedOpenHandsAgentProfile>>(true);
     assertType<Equal<keyof ACPAgentProfile, keyof GeneratedACPAgentProfile>>(true);
     assertType<Equal<keyof AgentProfileDiagnostics, keyof GeneratedAgentProfileDiagnostics>>(true);
+  });
+
+  it('preserves optional nullable ACP effort in profiles and save inputs', () => {
+    assertType<
+      Equal<Pick<ACPAgentProfile, 'acp_effort'>, Pick<GeneratedACPAgentProfile, 'acp_effort'>>
+    >(true);
+    assertType<
+      Equal<
+        Pick<Extract<AgentProfileSaveInput, { agent_kind: 'acp' }>, 'acp_effort'>,
+        Pick<GeneratedACPAgentProfile, 'acp_effort'>
+      >
+    >(true);
   });
 
   it('preserves optional nullable public-skill selection in profiles and diagnostics', () => {

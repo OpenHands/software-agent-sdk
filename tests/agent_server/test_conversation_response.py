@@ -10,10 +10,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, ServiceInactive
 from openhands.sdk import LLM, Agent, Conversation, LocalConversation, Message
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
@@ -23,6 +24,7 @@ from openhands.sdk.tool.builtins.finish import FinishAction
 @pytest.fixture
 def client():
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
     return TestClient(app)
 
@@ -51,8 +53,8 @@ def test_get_response_with_finish_action(
         "Task completed successfully!"
     )
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -78,8 +80,8 @@ def test_get_response_empty_when_no_agent_events(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.get_agent_final_response.return_value = ""
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -100,8 +102,8 @@ def test_get_response_conversation_not_found(
     """Endpoint returns 404 when conversation does not exist."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -178,10 +180,10 @@ def test_event_service_get_agent_final_response_empty():
 
 
 def test_event_service_get_agent_final_response_inactive():
-    """EventService raises ValueError when service is inactive."""
+    """EventService raises ServiceInactive when the service is inactive."""
     event_service = EventService(stored=MagicMock(), conversations_dir=Path("test_dir"))
 
-    with pytest.raises(ValueError, match="inactive_service"):
+    with pytest.raises(ServiceInactive):
         event_service._get_agent_final_response_sync()
 
 

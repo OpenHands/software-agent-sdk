@@ -89,7 +89,7 @@ def test_reruns_linked_pr_check_when_readiness_label_changes(monkeypatch, tmp_pa
     monkeypatch.setattr(
         _prod,
         "_rerun_pr_description_check",
-        lambda repo, sha: (seen.append((repo, sha)) or True),
+        lambda repo, sha: seen.append((repo, sha)) or True,
     )
     assert _prod.main() == 0
     assert seen == [("org/repo", "abc123")]
@@ -108,7 +108,7 @@ def test_reruns_linked_pr_check_when_readiness_label_removed(monkeypatch, tmp_pa
     monkeypatch.setattr(
         _prod,
         "_rerun_pr_description_check",
-        lambda repo, sha: (seen.append((repo, sha)) or True),
+        lambda repo, sha: seen.append((repo, sha)) or True,
     )
     assert _prod.main() == 0
     assert seen == [("org/repo", "abc123")]
@@ -127,7 +127,7 @@ def test_skips_cross_referenced_pr_that_does_not_link_issue(monkeypatch, tmp_pat
     monkeypatch.setattr(
         _prod,
         "_rerun_pr_description_check",
-        lambda repo, sha: (seen.append((repo, sha)) or True),
+        lambda repo, sha: seen.append((repo, sha)) or True,
     )
     assert _prod.main() == 0
     assert seen == []

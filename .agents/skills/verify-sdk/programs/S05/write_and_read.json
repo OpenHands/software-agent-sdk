@@ -1,0 +1,8 @@
+[
+  {"text": "Writing the notes file.", "tool": "terminal", "args": {"command": "printf 'alpha\\nbeta\\n' > notes.txt && wc -l notes.txt"}},
+  {"tools": [
+    {"tool": "file_editor", "args": {"command": "view", "path": "notes.txt"}},
+    {"tool": "terminal", "args": {"command": "cat notes.txt"}}
+  ]},
+  {"finish": "notes.txt has two lines"}
+]

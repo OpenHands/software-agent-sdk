@@ -32,6 +32,7 @@ def _map_git_status_to_enum(status: str) -> GitChangeStatus:
         "A": GitChangeStatus.ADDED,
         "D": GitChangeStatus.DELETED,
         "U": GitChangeStatus.UPDATED,  # Unmerged files are treated as updated
+        "T": GitChangeStatus.UPDATED,  # Type change, e.g. file -> symlink
     }
     if status not in status_mapping:
         raise ValueError(f"Unknown git status: {status}")
@@ -85,7 +86,7 @@ def _parse_name_status(output: str) -> list[GitChange]:
 
         path = paths[0]
         # Check for valid single-character status codes
-        if status in {"M", "A", "D", "U"}:
+        if status in {"M", "A", "D", "U", "T"}:
             changes.append(
                 GitChange(status=_map_git_status_to_enum(status), path=Path(path))
             )

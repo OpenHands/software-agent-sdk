@@ -26,6 +26,7 @@ Routes: `POST /api/auth/workspace-session`, `DELETE /api/auth/workspace-session`
 - `F02.ws-legacy-key`: the deprecated `session_api_key` query parameter and `X-Session-API-Key` header still open a socket, and a redundant auth frame sent after them is ignored.
 - `F02.ws-legacy-reject`: a wrong legacy key rejects the handshake itself (HTTP 403, no close frame), even when a correct first frame would follow.
 - `F02.workspace-session-mint`: `POST /api/auth/workspace-session` answers 204 with an HttpOnly `oh_workspace_session_key` cookie on `Path=/api/conversations`, `SameSite=none; Secure; Partitioned` on a loopback host, and 401 with no cookie without a valid header (the cookie itself cannot mint another).
+- `F02.workspace-session-plain-http`: over plain HTTP to a non-loopback host (no `X-Forwarded-Proto: https`) the workspace cookie is minted `SameSite=lax` without `Secure` or `Partitioned`, so browsers store it; the same host over HTTPS gets `SameSite=none; Secure; Partitioned`.
 - `F02.workspace-cookie-access`: the minted cookie alone (a cookie jar, no header) loads workspace files, also after a restart; a bogus cookie or no credential gets 401.
 - `F02.workspace-session-delete`: `DELETE /api/auth/workspace-session` answers 204 with a `Max-Age=0` cookie on the same path, which drops the cookie from the jar so workspace files are 401 again; 401 without a header.
 - `F02.multiple-keys`: every configured key (`OH_SESSION_API_KEYS_0`, `_1`, ...) authenticates HTTP and WebSocket clients; an unlisted key does not.
@@ -105,7 +106,9 @@ Preconditions:
   network namespace (`unshare -rn`, so nothing outside it can connect, and
   port 8000 is free in every replay), it runs this checkout's server the way
   an operator would (`python -m openhands.agent_server`, no `--host` unless
-  given, default port 8000) with its own `HOME` and config, waits until
+  given, default port 8000) with its own `HOME` and config and
+  `LITELLM_LOCAL_MODEL_COST_MAP=True` (the namespace has no network, and a
+  failed cost-map fetch at `import litellm` can crash startup, #6749), waits until
   `/proc/net/tcp` shows the listening socket, stops the server, prints its
   log and `listening on ADDRESS:8000`, and fails if nothing listened.
   Needs `unshare` (util-linux) with unprivileged user namespaces, or root.
@@ -143,7 +146,7 @@ Preconditions:
   cd "$dir" || exit 1
   printf '{"preload_tools": false, "enable_vscode": false}\n' > config.json
   HOME="$dir/home" OH_PERSISTENCE_DIR="$dir/home/.openhands" OPENHANDS_AGENT_SERVER_CONFIG_PATH="$dir/config.json" \
-    COLUMNS=400 PYTHONUNBUFFERED=1 "$QA_F02_PYTHON" -m openhands.agent_server "$@" > server.log 2>&1 &
+    LITELLM_LOCAL_MODEL_COST_MAP=True COLUMNS=400 PYTHONUNBUFFERED=1 "$QA_F02_PYTHON" -m openhands.agent_server "$@" > server.log 2>&1 &
   pid=$!
   addr=
   for _ in $(seq 240); do
@@ -476,7 +479,7 @@ Preconditions:
   socket table (`/proc/net/tcp`), not only from the startup line. The
   namespace keeps the unauthenticated wildcard server unreachable from
   outside, and `env -i` keeps this shell's `OH_*` variables away from it.
-- **Cookie path ignores a prefix (`F02.workspace-cookie-root-path`), known bug.**
+- **Cookie path follows the prefix (`F02.workspace-cookie-root-path`).**
   A second server with `OH_WEB_URL=http://127.0.0.1/qa-f02-prefix`, used
   through its prefixed URLs like a browser behind a path-prefix proxy.
   ```sh
@@ -487,18 +490,16 @@ Preconditions:
   control-agent-server exec --run "$PREFIXED" -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" key 200 'has:qa-f02-workspace-file'
   control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/mint -- bash "$F02/jar.sh" POST /qa-f02-prefix/api/auth/workspace-session key 204
   grep -q oh_workspace_session_key "$PREFIXED/fixtures/qa-f02-cookies.txt"
-  control-agent-server exec --run "$PREFIXED" -- bash "$F02/jar.sh" GET "/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
-  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'  # bug: exit_code eq 1 && stdout_tail contains status=401
+  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
+  grep -qE '[[:space:]]/qa-f02-prefix/api/conversations[[:space:]].*[[:space:]]oh_workspace_session_key[[:space:]]' "$PREFIXED/fixtures/qa-f02-cookies.txt"
   control-agent-server stop --run "$PREFIXED"
   ```
   The server advertises `servers: [{"url": "/qa-f02-prefix"}]` and serves
-  the file under the prefix; the minted cookie lands in the second run's jar
-  and is a valid credential (the unprefixed URL, which a prefix-stripping
-  proxy would forward, loads the file with it). Expected: the cookie also
-  comes back on the prefixed file URL, the one the browser actually uses.
-  Today it is scoped to `Path=/api/conversations` regardless of the root
-  path (unlike `CORSDispatcher`, which strips `root_path`), so the jar does
-  not send it and the file is 401. The TypeScript client's
+  the file under the prefix. The minted cookie lands in the second run's jar
+  scoped to `Path=/qa-f02-prefix/api/conversations` (the root path plus
+  `/api/conversations`), so the jar sends it back on the prefixed file URL,
+  the one a browser behind a path-prefix proxy actually uses, and the file
+  loads without the key header. The TypeScript client's
   `startWorkspaceSession()` returns `${host}/api/conversations/{id}/workspace/`,
   which carries the prefix whenever `host` does.
 - **IPv6 loopback is a secure context (`F02.workspace-session-ipv6-loopback`).**
@@ -518,6 +519,25 @@ Preconditions:
   `http://[::1]:PORT`. `request.url.hostname` returns the IPv6 address
   unbracketed (`::1`), so `_request_is_secure_context` strips a `:port`
   suffix only from a bracketed host or a host with a single colon.
+- **Plain HTTP to a non-loopback host (`F02.workspace-session-plain-http`).**
+  Mint as a browser at a LAN address over plain HTTP would (Canvas served by
+  a VM, a container or another machine), then as the same host behind a
+  TLS-terminating proxy.
+  ```sh
+  control-agent-server api POST /api/auth/workspace-session --header 'Host: 10.244.8.163:8000' --expect 204 --save F02.workspace-session-plain-http/lan-http \
+    --check-header set-cookie contains 'SameSite=lax' --check-header set-cookie contains HttpOnly \
+    --check-header set-cookie not-contains Secure --check-header set-cookie not-contains Partitioned
+  control-agent-server api POST /api/auth/workspace-session --header 'Host: 10.244.8.163:8000' --header 'X-Forwarded-Proto: https' --expect 204 \
+    --save F02.workspace-session-plain-http/lan-https --check-header set-cookie contains 'SameSite=none' \
+    --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned
+  ```
+  Over plain HTTP to a non-loopback host the cookie is `SameSite=lax`,
+  without `Secure` or `Partitioned`: browsers refuse to store a
+  `SameSite=none` cookie that is not `Secure`, while a `Lax` cookie is stored
+  and sent on the same-site requests Canvas makes when it shares the
+  server's origin, so its file previews load. Cross-site embedding on plain
+  HTTP stays unsupported. The same host behind HTTPS (`X-Forwarded-Proto:
+  https`) gets `SameSite=none; Secure; Partitioned`, like loopback.
 
 ## Gotchas
 
@@ -525,9 +545,9 @@ Preconditions:
   `Max-Age`). There is no server-side session: `DELETE` only tells the
   browser to drop it, a copied cookie keeps working until the key is rotated,
   and rotating the key invalidates every cookie at once.
-- `Path=/api/conversations` makes browsers send the cookie to every
-  conversation route, not just workspace files; the server ignores it there
-  (`F02.http-header-only`). Keep it that way: honoring it would open those
+- `Path=/api/conversations` (prefixed with the root path, if any) makes
+  browsers send the cookie to every conversation route, not just workspace
+  files; the server ignores it there (`F02.http-header-only`). Keep it that way: honoring it would open those
   routes to CSRF.
 - A wrong legacy key (query or header) is rejected before the WebSocket is
   accepted, so the client sees an HTTP 403 handshake failure, not a 4001
@@ -548,6 +568,14 @@ Preconditions:
   commands run as the server's user and can read `/proc/<server pid>/environ`.
 - `restart --env` values persist for later restarts of the same run; this
   family leaves `OH_SESSION_API_KEYS_1` and the CORS variables on its run.
+- `bind.sh` sets `LITELLM_LOCAL_MODEL_COST_MAP=True` because the private
+  namespace has no network: without it LiteLLM's remote cost-map fetch fails
+  at import and startup crashes most of the time with an `ImportError`
+  (`LoggerContext` from a partially initialized
+  `litellm.rust_bridge.catalog`) or a `_DeadlockError` (#6749, also hit by
+  `F24.offline-safe`), so `F02.default-bind` would fail for a reason
+  unrelated to the bind address.
 - With keys configured and no `--host`, the server binds `0.0.0.0`; without
   keys, `127.0.0.1` (`F02.default-bind`). The launcher always passes
   `--host 127.0.0.1`, so only `F02.default-bind` sees the default.
+- Agent Canvas bundles Agent Server 1.62.0 by default, which mints the cookie `SameSite=none` on plain HTTP too, so Canvas file previews on a plain-HTTP non-loopback origin get 401 until Canvas pins a release that has `F02.workspace-session-plain-http` ([OpenHands/OpenHands#15567](https://github.com/OpenHands/OpenHands/issues/15567), [#15519](https://github.com/OpenHands/OpenHands/issues/15519)).
