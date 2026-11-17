@@ -5,6 +5,7 @@ import logging
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -631,3 +632,131 @@ def test_single_enabled_mcp_server_keeps_unprefixed_tool_names(
 
     assert _mcp_tool_names(conversation) == {"fetch"}
     conversation.close()
+
+
+def _persisted_mcp_conversation(
+    tmp_path: Path, servers: dict[str, Any], llm: LLM | None = None
+) -> LocalConversation:
+    return LocalConversation(
+        agent=Agent(
+            llm=llm or LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config(servers),
+        ),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+        conversation_id=PERSISTED_CONVERSATION_ID,
+        delete_on_close=False,
+        visualizer=None,
+    )
+
+
+PERSISTED_CONVERSATION_ID = uuid.UUID("6927a000-0000-4000-8000-000000006927")
+
+
+def test_runtime_added_mcp_tools_keep_their_names_after_reopen(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {})
+    conversation._ensure_agent_ready()
+    conversation.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
+    conversation.close()
+
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-1",
+                        name="docs_fetch",
+                        arguments='{"url": "https://example.com"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="done")]),
+        ]
+    )
+    reopened = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER}, llm)
+    reopened.send_message("Fetch https://example.com again")
+    reopened.run()
+
+    assert _mcp_tool_names(reopened) == {"docs_fetch"}
+    observations = [
+        event.observation
+        for event in reopened.state.events
+        if isinstance(event, ObservationEvent) and event.tool_name == "docs_fetch"
+    ]
+    assert len(observations) == 1
+    assert isinstance(observations[0], MCPToolObservation)
+    assert not observations[0].is_error
+    reopened.close()
+
+
+def test_configured_mcp_server_keeps_its_names_next_to_a_runtime_addition(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {"base": FETCH_SERVER})
+    conversation._ensure_agent_ready()
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    assert _mcp_tool_names(conversation) == {"fetch", "docs_fetch"}
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(
+        tmp_path, {"base": FETCH_SERVER, "docs": FETCH_SERVER}
+    )
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch", "docs_fetch"}
+    reopened.close()
+
+
+def test_mcp_server_added_before_a_reopened_agent_starts_keeps_old_names(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {"base": FETCH_SERVER})
+    conversation._ensure_agent_ready()
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(tmp_path, {"base": FETCH_SERVER})
+    reopened.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch", "docs_fetch"}
+    reopened.close()
+
+
+def test_mcp_server_added_before_the_first_message_is_named_like_configured(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {})
+    conversation.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    conversation._ensure_agent_ready()
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER})
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch"}
+    reopened.close()
+
+
+def test_reopened_single_configured_mcp_server_stays_unprefixed(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER})
+    conversation._ensure_agent_ready()
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER})
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch"}
+    reopened.close()

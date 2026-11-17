@@ -3888,3 +3888,140 @@ def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
             assert llm_calls == 18
     finally:
         conv.close()
+
+
+def test_runtime_added_mcp_tools_keep_their_names_after_server_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Issue #6927: a server added with POST /mcp keeps `<server>_<tool>`."""
+    from openhands.sdk.llm.llm_response import LLMResponse
+
+    offered: list[list[str]] = []
+
+    def scripted_completion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        offered.append(
+            sorted(
+                tool["function"]["name"] if isinstance(tool, dict) else tool.name
+                for tool in tools or []
+            )
+        )
+        if messages[-1].role == "tool":
+            message = Message(role="assistant", content=[TextContent(text="done")])
+        else:
+            user_text = [
+                part.text
+                for item in messages
+                if item.role == "user"
+                for part in item.content
+                if isinstance(part, TextContent)
+            ][-1]
+            message = Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"call-{len(offered)}",
+                        name="docs_fetch",
+                        arguments=json.dumps({"url": user_text}),
+                        origin="completion",
+                    )
+                ],
+            )
+        return LLMResponse(
+            message=message,
+            metrics=self.metrics.get_snapshot(),
+            raw_response=ModelResponse(
+                id=f"resp-{len(offered)}", created=int(time.time()), model="test"
+            ),
+        )
+
+    async def scripted_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return scripted_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "completion", scripted_completion)
+    monkeypatch.setattr(LLM, "acompletion", scripted_acompletion)
+    repo_root = Path(__file__).resolve().parents[2]
+    docs_server = {
+        "command": sys.executable,
+        "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+        "cwd": str(repo_root),
+    }
+    # Both servers read the same conversations directory, like one server
+    # process restarted.
+    kept: dict[str, object] = {
+        "conversations_path": str(tmp_path / "kept-conversations")
+    }
+
+    def events_of(client: httpx.Client, url: str, kind: str) -> list[dict]:
+        response = client.get(
+            f"{url}/events/search", params={"kind": kind, "limit": 100}
+        )
+        response.raise_for_status()
+        return response.json()["items"]
+
+    def wait_for_turn(client: httpx.Client, url: str, turn: int) -> None:
+        # A turn ends with the scripted "done" reply after the tool result.
+        deadline = time.monotonic() + 30
+        while (
+            len(events_of(client, url, "MessageEvent")) < 2 * turn
+            or client.get(url).json()["execution_status"] != "finished"
+        ):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+
+    with (
+        live_server_env(tmp_path, monkeypatch, config_overrides=kept) as env,
+        httpx.Client(base_url=env["host"], timeout=30, trust_env=False) as client,
+    ):
+        start = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": "test"},
+                    "tools": [],
+                    "include_default_tools": [],
+                },
+                "workspace": {"working_dir": str(env["workspace_path"])},
+                "autotitle": False,
+            },
+        )
+        assert start.status_code == 201, start.text
+        url = f"/api/conversations/{start.json()['id']}"
+        # A first message starts the agent, so the server is added to a
+        # conversation whose tools are already in use.
+        sent = client.post(
+            f"{url}/events",
+            json={
+                "content": [{"type": "text", "text": "https://one.example"}],
+                "run": False,
+            },
+        )
+        assert sent.status_code == 200, sent.text
+        added = client.post(f"{url}/mcp", json={"mcp_servers": {"docs": docs_server}})
+        assert added.status_code == 200, added.text
+        assert client.post(f"{url}/run").status_code == 200
+        wait_for_turn(client, url, 1)
+        assert "docs_fetch" in offered[0]
+
+    calls_before_restart = len(offered)
+    with (
+        live_server_env(tmp_path, monkeypatch, config_overrides=kept) as env,
+        httpx.Client(base_url=env["host"], timeout=30, trust_env=False) as client,
+    ):
+        sent = client.post(
+            f"{url}/events",
+            json={
+                "content": [{"type": "text", "text": "https://two.example"}],
+                "run": True,
+            },
+        )
+        assert sent.status_code == 200, sent.text
+        wait_for_turn(client, url, 2)
+        observations = events_of(client, url, "ObservationEvent")
+        errors = events_of(client, url, "AgentErrorEvent")
+
+    assert offered[calls_before_restart] == offered[0]
+    assert errors == []
+    assert [
+        (event["tool_name"], event["observation"]["is_error"]) for event in observations
+    ] == [("docs_fetch", False), ("docs_fetch", False)]
