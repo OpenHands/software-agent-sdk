@@ -168,6 +168,7 @@ def test_openai_subscription_models_endpoint_integration(client):
     data = response.json()
     assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
     assert {
+        "gpt-6.2-sol",
         "gpt-6.1-sol",
         "gpt-6-sol",
         "gpt-6-luna",
