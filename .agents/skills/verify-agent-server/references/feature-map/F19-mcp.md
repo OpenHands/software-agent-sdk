@@ -1161,6 +1161,7 @@ Preconditions:
   SF_AGENT='{"llm": {"model": "openai/qa-offline", "api_key": "qa-offline-key", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "tools": []}'
   FCID=$(control-agent-server conversation start --body-json "$(jq -nc --argjson a "$SF_AGENT" '{agent: $a}')" --no-autotitle --prompt 'Never run.' --no-run --print-id)
   control-agent-server api POST "/api/conversations/$FCID/mcp" --json '{"mcp_servers":{"qa-f19-dies":{"command":"/bin/true"}}}' --expect 400 --save F19.conversation-mcp-add-start-failure/add # bug: status eq 500 && response.body.exception eq 'Connection closed'
+  control-agent-server api GET "/api/conversations/$FCID" --max-chars 300 --check agent.mcp_config.qa-f19-dies missing --save F19.conversation-mcp-add-start-failure/after
   ```
   The server is not added either way (`agent.mcp_config` keeps no
   `qa-f19-dies`); only the status is wrong.
