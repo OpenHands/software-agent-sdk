@@ -418,3 +418,5 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
   exception.
 - Use the committed lock for reproducible installs; review newly resolved
   artifacts before committing a lock update.
+
+- The agent-server Dockerfile pins the Buildx executable/checksums separately from apt. `openhands-agent-server/openhands/agent_server/docker/buildx-security.md` records narrowly scoped daemon-plugin/archive-extractor CVE applicability evidence; module version presence alone does not prove those code paths are linked. Reassess that evidence when changing the pin.

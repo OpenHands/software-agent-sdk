@@ -604,6 +604,11 @@ RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/o
     chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}/lib/vscode/extensions"
 
 # --- Docker ---
+# Pin the executable, not its Go module manifest. See buildx-security.md for
+# package-level applicability evidence for the daemon/archive Trivy findings.
+ARG BUILDX_VERSION=0.39.0
+ARG BUILDX_AMD64_SHA256=5fb31a097304fbf6dd4038649a0decf32c2b9510e4047acd7d68b9d700c46194
+ARG BUILDX_ARM64_SHA256=722cdcdfdd6f3fb943fa1ba75102d057feb18ba72aab93b1b0a8cf2b2b48a25f
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,docker,*) ;; \
@@ -638,6 +643,22 @@ RUN set -eux; \
     # Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
     mkdir -p /etc/docker; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
+
+# Replace the apt-provided plugin in place so no vulnerable duplicate remains.
+RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,docker,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Buildx"; exit 0;; \
+    esac; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) buildx_arch=amd64; buildx_sha256="$BUILDX_AMD64_SHA256" ;; \
+      arm64) buildx_arch=arm64; buildx_sha256="$BUILDX_ARM64_SHA256" ;; \
+      *) echo "Unsupported Buildx architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 5 "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${buildx_arch}" -o /tmp/docker-buildx; \
+    echo "$buildx_sha256  /tmp/docker-buildx" | sha256sum -c -; \
+    install -m 0755 /tmp/docker-buildx /usr/libexec/docker/cli-plugins/docker-buildx; \
+    rm /tmp/docker-buildx
 
 # --- GitHub CLI ---
 RUN set -eux; \
