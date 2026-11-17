@@ -39,9 +39,13 @@ from openhands.sdk.conversation.types import (
     CONVERSATION_SENDER_PREFIX,
     GOAL_LOOP_SENDER,
     HELD_FOR_USER_STATUSES,
+    LAST_MESSAGE_MAX_LENGTH,
+    LAST_MESSAGE_TAG_KEY,
     PROJECT_TAG_KEY,
+    PULL_REQUESTS_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
+    TAG_VALUE_MAX_LENGTH,
     TURN_TAG_KEY,
 )
 from openhands.sdk.event import (
@@ -49,6 +53,7 @@ from openhands.sdk.event import (
     ConversationStateUpdateEvent,
     Event,
     MessageEvent,
+    ObservationEvent,
 )
 from openhands.sdk.event.ask_user import (
     ANSWER_HEADER_PREFIX,
@@ -209,6 +214,54 @@ def extract_request(text: str | None) -> str | None:
     return line
 
 
+def summary_line(text: str | None) -> str | None:
+    """The first line of an agent message outside code blocks, without simple
+    Markdown, cut to :data:`LAST_MESSAGE_MAX_LENGTH`. ``None`` when it has no
+    prose."""
+    if not text:
+        return None
+    for raw in _CODE_BLOCK.sub("", text).splitlines():
+        line = " ".join(_MARKUP.sub("", raw).split())
+        if line:
+            if len(line) > LAST_MESSAGE_MAX_LENGTH:
+                line = line[: LAST_MESSAGE_MAX_LENGTH - 1].rstrip() + "…"
+            return line
+    return None
+
+
+_CREATES_PULL_REQUEST = re.compile(r"\bgh\s+pr\s+create\b")
+_PULL_REQUEST_URL = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)\b"
+)
+
+
+def creates_pull_request(event: ActionEvent) -> bool:
+    """Whether an agent's tool call opens a GitHub pull request: ``gh pr
+    create`` in a shell command, or a tool named for it (the GitHub MCP
+    server's ``create_pull_request``)."""
+    if "create_pull_request" in event.tool_name:
+        return True
+    command = getattr(event.action, "command", None)
+    return isinstance(command, str) and bool(_CREATES_PULL_REQUEST.search(command))
+
+
+def pull_request_refs(text: str) -> list[str]:
+    """The ``owner/repo#number`` of each GitHub pull request URL in ``text``,
+    in order, once each."""
+    refs = [f"{o}/{r}#{n}" for o, r, n in _PULL_REQUEST_URL.findall(text)]
+    return list(dict.fromkeys(refs))
+
+
+def merge_pull_requests(current: str | None, refs: list[str]) -> str:
+    """``current`` (a ``prs`` tag value) with ``refs`` added at the end. The
+    oldest refs drop off when the list outgrows a tag value."""
+    merged = [ref for ref in (current or "").split(",") if ref]
+    merged += [ref for ref in refs if ref not in merged]
+    while len(",".join(merged)) > TAG_VALUE_MAX_LENGTH:
+        merged.pop(0)
+    return ",".join(merged)
+
+
 def _from_conversation(sender: str | None) -> bool:
     return sender is not None and sender.startswith(CONVERSATION_SENDER_PREFIX)
 
@@ -340,6 +393,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     _reported_hold: str | None = field(default=None, init=False)
     _last_action: str | None = field(default=None, init=False)
     _last_error: str | None = field(default=None, init=False)
+    # Tool calls that open a pull request, until their result shows its URL.
+    _pull_request_calls: set[str] = field(default_factory=set, init=False)
     _tail: asyncio.Task | None = field(default=None, init=False)
     # Messages to the coordinator, delivered one after another in event order
     # and apart from the tag writes.
@@ -419,10 +474,19 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 self._note_agent_output(text, event)
                 self._card = question
             elif event.source == "agent":
+                if creates_pull_request(event):
+                    self._pull_request_calls.add(event.id)
                 self._turn_open = True
                 self._last_action = describe_action(event)
                 self._turn_actions.append(self._last_action)
                 del self._turn_actions[:-_TURN_ACTIONS_KEPT]
+            return
+        if isinstance(event, ObservationEvent):
+            if event.action_id in self._pull_request_calls:
+                self._pull_request_calls.discard(event.action_id)
+                refs = pull_request_refs(event.observation.text)
+                if refs:
+                    self._enqueue_member_update(lambda: self._add_pull_requests(refs))
             return
         if isinstance(event, ConversationErrorEvent):
             self._last_error = f"{event.code}: {event.detail}"[:_ACTION_SUMMARY_MAX]
@@ -526,6 +590,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         self._turn_open = True
         if text:
             self._last_text = text
+            line = summary_line(text)
+            if line:
+                self._enqueue_member_update(
+                    lambda: self._set_activity(LAST_MESSAGE_TAG_KEY, line)
+                )
         if event.critic_result is not None:
             self._last_score = event.critic_result.score
 
@@ -551,6 +620,27 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 )
 
         self._tail = asyncio.create_task(run())
+
+    def _enqueue_member_update(self, step: Callable[[], Awaitable[None]]) -> None:
+        """Queue a tag write that only a project member gets."""
+        if PROJECT_TAG_KEY not in self.tags():
+            return
+
+        async def run() -> None:
+            if await self._enabled():
+                await step()
+
+        self._enqueue(run)
+
+    async def _set_activity(self, key: str, value: str) -> None:
+        if self.tags().get(key) != value:
+            await self.set_tag(self.conversation_id, key, value)
+
+    async def _add_pull_requests(self, refs: list[str]) -> None:
+        current = self.tags().get(PULL_REQUESTS_TAG_KEY)
+        await self._set_activity(
+            PULL_REQUESTS_TAG_KEY, merge_pull_requests(current, refs)
+        )
 
     async def _enabled(self) -> bool:
         return self.projects_enabled is None or await self.projects_enabled()

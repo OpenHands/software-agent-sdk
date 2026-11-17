@@ -921,7 +921,12 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         ),
         "answer": (
             ConversationExecutionStatus.FINISHED,
-            {"turn": "answered", "ask": "Stale?"},
+            {
+                "turn": "answered",
+                "ask": "Stale?",
+                "lastmessage": "Opened the fix.",
+                "prs": "acme/app#412,not a ref,acme/lib#9",
+            },
         ),
         "done": (
             ConversationExecutionStatus.FINISHED,
@@ -960,6 +965,13 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
     assert by_title["question"]["turn"] == "asked"
     assert by_title["question"]["ask"] == "Which database?"
     assert by_title["answer"]["ask"] is None  # only while asked
+    assert by_title["answer"]["last_message"] == "Opened the fix."
+    assert by_title["answer"]["pull_requests"] == [  # malformed refs are skipped
+        {"owner": "acme", "repo": "app", "number": 412},
+        {"owner": "acme", "repo": "lib", "number": 9},
+    ]
+    assert by_title["done"]["last_message"] is None
+    assert by_title["done"]["pull_requests"] == []
     assert by_title["nightly"]["turn"] is None  # unknown values are ignored
     assert by_title["nightly"]["automation_id"] == "auto-7"
     assert [t["attention"] for t in conversations] == sorted(

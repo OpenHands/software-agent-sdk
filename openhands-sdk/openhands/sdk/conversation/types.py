@@ -58,6 +58,24 @@ BOARD_TAG_KEYS = frozenset(
 )
 """Tags that describe one conversation's state, so children do not copy them."""
 
+LAST_MESSAGE_TAG_KEY = "lastmessage"
+"""Tag holding the first line of the agent's latest message, cut to
+:data:`LAST_MESSAGE_MAX_LENGTH`, for a glance at where a project conversation
+stands. Kept across turns."""
+
+LAST_MESSAGE_MAX_LENGTH = 160
+"""Longest ``lastmessage``; a longer line is cut and ends with an ellipsis."""
+
+PULL_REQUESTS_TAG_KEY = "prs"
+"""Tag listing the GitHub pull requests a project conversation's agent opened,
+as comma-separated ``owner/repo#number`` refs, oldest first. Refs that do not
+fit in a tag value drop off the front. Kept across turns."""
+
+ACTIVITY_TAG_KEYS = frozenset({LAST_MESSAGE_TAG_KEY, PULL_REQUESTS_TAG_KEY})
+"""Tags recording what one conversation did. The server writes them for
+project members; children do not copy them and a new user message keeps
+them."""
+
 CONVERSATION_SENDER_PREFIX = "conversation:"
 """Prefix of a user message's ``sender`` when another conversation sent it: a
 parent delivering a child's task, or a project coordinator steering a member.

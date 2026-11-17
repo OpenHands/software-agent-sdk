@@ -9,7 +9,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    RESERVED_TAG_KEYS,
+    ConversationService,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     StartConversationRequest,
@@ -19,6 +22,8 @@ from openhands.agent_server.project_board import (
     classify_turn,
     extract_ask,
     extract_request,
+    merge_pull_requests,
+    summary_line,
 )
 from openhands.agent_server.project_wake import conversation_context
 from openhands.sdk import LLM, Agent
@@ -27,13 +32,20 @@ from openhands.sdk.conversation.resolution import (
     ResolutionVerdict,
     verdict_from_judgments,
 )
-from openhands.sdk.conversation.types import BOARD_TAG_KEYS, GOAL_LOOP_SENDER
+from openhands.sdk.conversation.types import (
+    ACTIVITY_TAG_KEYS,
+    BOARD_TAG_KEYS,
+    GOAL_LOOP_SENDER,
+    LAST_MESSAGE_MAX_LENGTH,
+    TAG_VALUE_MAX_LENGTH,
+)
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     ConversationStateUpdateEvent,
     Event,
     MessageEvent,
+    ObservationEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import FULL_STATE_KEY
@@ -41,6 +53,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalAction, TerminalObservation
 
 
 # classify_turn
@@ -65,6 +78,12 @@ def test_classify_turn(text, expected):
 
 
 # ConversationOutcomeSubscriber, with a recording set_tag
+
+
+def _board(tags: dict[str, str]) -> dict[str, str]:
+    """The tags without the activity ones (latest line, pull requests), which
+    the board tests do not look at."""
+    return {k: v for k, v in tags.items() if k not in ACTIVITY_TAG_KEYS}
 
 
 class _Tags:
@@ -157,7 +176,7 @@ async def test_finished_run_records_a_question():
         _status("finished"),
     )
 
-    assert store.tags == {
+    assert _board(store.tags) == {
         "project": "p1",
         "turn": "asked",
         "ask": "Should I also add a test?",
@@ -170,7 +189,7 @@ async def test_confident_critic_resolves_without_overriding_the_user():
     subscriber = _subscriber(store)
 
     await _feed(subscriber, _finish("All done.", score=0.95), _status("finished"))
-    assert store.tags == {
+    assert _board(store.tags) == {
         "project": "p1",
         "turn": "answered",
         "resolved": "auto",
@@ -192,7 +211,7 @@ async def test_unsure_critic_does_not_resolve():
         _subscriber(store), _finish("Done, I think.", score=0.89), _status("finished")
     )
 
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
 
 
 @pytest.mark.asyncio
@@ -203,7 +222,7 @@ async def test_new_user_message_reopens_the_conversation():
 
     await _feed(_subscriber(store), _message("user", "Yes, please add it"))
 
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
 
 
 @pytest.mark.asyncio
@@ -239,7 +258,7 @@ async def test_conversations_outside_projects_are_left_alone():
     )
 
     assert store.calls == []
-    assert store.tags == {"other": "x"}
+    assert _board(store.tags) == {"other": "x"}
 
 
 @pytest.mark.asyncio
@@ -310,7 +329,11 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
 
     info = await service.get_conversation(cid)
     assert info is not None
-    assert info.tags == {"project": "p1", "turn": "asked", "ask": "Shall I merge it?"}
+    assert _board(info.tags) == {
+        "project": "p1",
+        "turn": "asked",
+        "ask": "Shall I merge it?",
+    }
 
 
 def test_board_tag_keys():
@@ -413,7 +436,7 @@ async def test_a_user_message_leaves_tags_outside_projects_alone():
 
     await _feed(_subscriber(store), _message("user", "One more thing"))
 
-    assert store.tags == {"resolved": "user", "other": "x"}
+    assert _board(store.tags) == {"resolved": "user", "other": "x"}
 
 
 def _projects_switch(on: bool):
@@ -442,7 +465,7 @@ async def test_with_projects_off_a_member_run_records_nothing():
         _status("finished"),
     )
 
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
     assert judged == []
 
 
@@ -454,7 +477,7 @@ async def test_with_projects_off_a_member_stays_resolved():
 
     await _feed(subscriber, _message("user", "One more thing"))
 
-    assert store.tags == {"project": "p1", "resolved": "user"}
+    assert _board(store.tags) == {"project": "p1", "resolved": "user"}
 
 
 @pytest.mark.asyncio
@@ -465,7 +488,7 @@ async def test_with_projects_on_a_member_is_reopened():
 
     await _feed(subscriber, _message("user", "One more thing"))
 
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
 
 
 @pytest.mark.asyncio
@@ -490,7 +513,7 @@ async def test_a_user_message_before_the_outcome_is_saved_still_reopens():
     gate.set()
     await subscriber.drain()
 
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
 
 
 @pytest.mark.asyncio
@@ -544,7 +567,7 @@ async def test_a_slow_report_does_not_hold_up_the_board():
     assert subscriber._tail is not None
     await subscriber._tail
 
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
     gate.set()
     await subscriber.drain()
 
@@ -596,7 +619,7 @@ async def test_an_answered_turn_drops_a_stale_ask():
 
     await _feed(_subscriber(store), _finish("All done."), _status("finished"))
 
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
 
 
 @pytest.mark.asyncio
@@ -650,7 +673,7 @@ async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
 
     await _feed(subscriber, note)
 
-    assert store.tags == {"project": "p1", "turn": "asked", "ask": "Ship it?"}
+    assert _board(store.tags) == {"project": "p1", "turn": "asked", "ask": "Ship it?"}
     assert finished == []
 
 
@@ -812,7 +835,7 @@ async def test_judge_resolves_when_nothing_is_left_for_the_user():
         _status("finished"),
     )
 
-    assert store.tags == {
+    assert _board(store.tags) == {
         "project": "p1",
         "turn": "answered",
         "resolved": "auto",
@@ -844,7 +867,7 @@ async def test_judge_leaves_open_when_the_user_owes_something(verdict):
         _status("finished"),
     )
 
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
 
 
 @pytest.mark.asyncio
@@ -878,11 +901,11 @@ async def test_the_turn_shows_while_the_judge_thinks():
         if "turn" in store.tags:
             break
         await asyncio.sleep(0.01)
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
 
     release.set()
     await subscriber.drain()
-    assert store.tags == {
+    assert _board(store.tags) == {
         "project": "p1",
         "turn": "asked",
         "ask": "Tell me which you prefer.",
@@ -904,7 +927,7 @@ async def test_judge_sends_a_question_without_a_question_mark_to_the_user():
         _status("finished"),
     )
 
-    assert store.tags == {
+    assert _board(store.tags) == {
         "project": "p1",
         "turn": "asked",
         "ask": "Tell me which you prefer.",
@@ -945,7 +968,7 @@ async def test_unfinished_work_with_no_ask_is_neither_resolved_nor_needs_you():
     )
 
     assert verdict.owed == "unfinished"
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
 
 
 @pytest.mark.asyncio
@@ -991,7 +1014,7 @@ async def test_a_user_message_clears_the_resolve_note():
 
     await _feed(_subscriber(store), _message("user", "Wait, one more thing"))
 
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
 
 
 class _Log:
@@ -1092,7 +1115,7 @@ async def test_a_needs_you_reply_without_a_request_line_has_no_ask():
         _status("finished"),
     )
 
-    assert store.tags == {"project": "p1", "turn": "asked"}
+    assert _board(store.tags) == {"project": "p1", "turn": "asked"}
 
 
 @pytest.mark.asyncio
@@ -1112,7 +1135,7 @@ async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
         _status("finished"),
     )
 
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
 
 
 @pytest.mark.asyncio
@@ -1127,13 +1150,13 @@ async def test_a_worker_that_resolved_itself_is_not_judged():
     )
 
     await _feed(subscriber, _message("user", "merged"), _status("running"))
-    assert store.tags == {"project": "p1"}
+    assert _board(store.tags) == {"project": "p1"}
     # What the resolve route does for resolve_conversation, mid-turn.
     store.tags.update({"resolved": "auto", "resolvenote": "agent"})
     await _feed(subscriber, _finish("Great, thanks for merging!"), _status("finished"))
 
     assert seen == []
-    assert store.tags == {
+    assert _board(store.tags) == {
         "project": "p1",
         "turn": "answered",
         "resolved": "auto",
@@ -1180,3 +1203,126 @@ async def test_a_user_message_does_not_wait_for_the_last_turns_judge():
     assert "resolved" not in store.tags
     assert not release.is_set()
     await subscriber.drain()
+
+
+# Activity: the latest line and the pull requests a member opened
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Done. Tests pass.\n\nDetails below.", "Done. Tests pass."),
+        ("## Summary\n- **Fixed** the retry", "Summary"),
+        ("```sh\nmake\n```\nBuilt it.", "Built it."),
+        ("```only code```", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_summary_line(text, expected):
+    assert summary_line(text) == expected
+
+
+def test_a_long_summary_line_is_cut():
+    line = summary_line("word " * 100)
+    assert line is not None
+    assert len(line) == LAST_MESSAGE_MAX_LENGTH
+    assert line.endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_a_member_keeps_its_latest_line_across_turns():
+    store = _Tags({"project": "p1"})
+    subscriber = _subscriber(store)
+
+    await _feed(
+        subscriber,
+        _message("user", "Fix it"),
+        _message("agent", "Looking at the retry loop.\n\nMore soon."),
+        _finish("Fixed the retry. Tests pass."),
+        _status("finished"),
+        _message("user", "Thanks"),
+    )
+
+    assert store.tags["lastmessage"] == "Fixed the retry. Tests pass."
+
+
+@pytest.mark.asyncio
+async def test_conversations_outside_projects_get_no_latest_line():
+    store = _Tags({})
+    await _feed(_subscriber(store), _message("agent", "Hello"))
+    assert store.tags == {}
+
+
+def _terminal(command: str, call_id: str) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=TerminalAction(command=command),
+        tool_name="terminal",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall(
+            id=call_id,
+            name="terminal",
+            arguments=json.dumps({"command": command}),
+            origin="completion",
+        ),
+        llm_response_id="resp-3",
+    )
+
+
+def _result(action: ActionEvent, text: str) -> ObservationEvent:
+    return ObservationEvent(
+        source="environment",
+        observation=TerminalObservation.from_text(text, command=None),
+        action_id=action.id,
+        tool_name=action.tool_name,
+        tool_call_id=action.tool_call_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_records_the_pull_requests_it_opens():
+    store = _Tags({"project": "p1"})
+    first = _terminal("gh pr create --fill", "c1")
+    viewed = _terminal("gh pr view 7", "c2")
+    second = _terminal("cd app && gh pr create -t Fix -b ''", "c3")
+
+    await _feed(
+        _subscriber(store),
+        first,
+        _result(first, "https://github.com/acme/app/pull/412\n"),
+        # Reading another pull request does not make it this one's.
+        viewed,
+        _result(viewed, "https://github.com/acme/app/pull/7"),
+        second,
+        _result(second, "https://github.com/acme/lib/pull/9"),
+        # The same URL again (a retry) is listed once.
+        first,
+        _result(first, "https://github.com/acme/app/pull/412"),
+    )
+
+    assert store.tags["prs"] == "acme/app#412,acme/lib#9"
+
+
+@pytest.mark.asyncio
+async def test_pull_requests_outside_projects_are_not_recorded():
+    store = _Tags({})
+    opened = _terminal("gh pr create --fill", "c1")
+    await _feed(
+        _subscriber(store), opened, _result(opened, "https://github.com/a/b/pull/1")
+    )
+    assert store.tags == {}
+
+
+def test_the_oldest_pull_requests_drop_off_a_full_tag():
+    refs = [f"acme/application#{n}" for n in range(1, 40)]
+    value = merge_pull_requests(None, refs)
+    assert len(value) <= TAG_VALUE_MAX_LENGTH
+    assert value.endswith("acme/application#39")
+    assert not value.startswith("acme/application#1,")
+
+
+def test_activity_tags_are_server_owned_and_not_inherited():
+    assert ACTIVITY_TAG_KEYS == {"lastmessage", "prs"}
+    assert ACTIVITY_TAG_KEYS <= RESERVED_TAG_KEYS

@@ -22,6 +22,7 @@ project and never lets one conversation approve or resume another's work.
 """
 
 import asyncio
+import re
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from enum import Enum
@@ -88,8 +89,10 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
+    LAST_MESSAGE_TAG_KEY,
     PROJECT_TAG_KEY,
     PROJECTS_OFF_DETAIL,
+    PULL_REQUESTS_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
@@ -284,6 +287,28 @@ class ProjectsListResponse(BaseModel):
     projects: list[ProjectItem] = Field(default_factory=list)
 
 
+class ProjectPullRequest(BaseModel):
+    """A GitHub pull request a project conversation's agent opened."""
+
+    owner: str
+    repo: str
+    number: int
+
+
+_PULL_REQUEST_REF = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)$")
+
+
+def _pull_requests(value: str | None) -> list[ProjectPullRequest]:
+    """The refs of a ``prs`` tag; malformed ones are skipped."""
+    found = []
+    for ref in (value or "").split(","):
+        match = _PULL_REQUEST_REF.match(ref)
+        if match:
+            owner, repo, number = match.groups()
+            found.append(ProjectPullRequest(owner=owner, repo=repo, number=int(number)))
+    return found
+
+
 class ProjectConversation(BaseModel):
     """A conversation in a project, with what it needs from the user."""
 
@@ -324,6 +349,21 @@ class ProjectConversation(BaseModel):
             "While `turn` is `asked`: the question the agent stopped on, in one "
             "short line (at most 200 characters). Backed by the `ask` tag; a "
             "new user message clears it."
+        ),
+    )
+    last_message: str | None = Field(
+        default=None,
+        description=(
+            "The first line of the agent's latest message, at most 160 "
+            "characters. Backed by the `lastmessage` tag; kept across turns."
+        ),
+    )
+    pull_requests: list[ProjectPullRequest] = Field(
+        default_factory=list,
+        description=(
+            "GitHub pull requests the agent opened, oldest first. Backed by the "
+            "`prs` tag; kept across turns. Their state and checks come from "
+            "`GET /api/git/repositories/{owner}/{repo}/pull-requests/{number}`."
         ),
     )
     automation_id: str | None = Field(
@@ -518,6 +558,8 @@ def _conversation(
         else None,
         turn=turn,
         ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asked" else None,
+        last_message=stored.tags.get(LAST_MESSAGE_TAG_KEY) or None,
+        pull_requests=_pull_requests(stored.tags.get(PULL_REQUESTS_TAG_KEY)),
         automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
         parent_conversation_id=stored.parent_conversation_id,
         created_at=stored.created_at,

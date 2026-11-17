@@ -121,6 +121,7 @@ from openhands.sdk.conversation.title_utils import (
     generate_title_from_message,
 )
 from openhands.sdk.conversation.types import (
+    ACTIVITY_TAG_KEYS,
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
@@ -670,8 +671,9 @@ async def _logged_turn_sender(event_service: EventService) -> str | None:
     return start.sender if start is not None else None
 
 
-RESERVED_TAG_KEYS = BOARD_TAG_KEYS | {PROJECT_TAG_KEY}
-"""Tags the server owns: project membership and the board's state.
+RESERVED_TAG_KEYS = BOARD_TAG_KEYS | ACTIVITY_TAG_KEYS | {PROJECT_TAG_KEY}
+"""Tags the server owns: project membership, the board's state and what a
+member did.
 
 A client's tag ``PATCH`` keeps their current values (see :func:`_client_tags`);
 the projects routes change them.
@@ -2953,7 +2955,7 @@ class ConversationService:
                     **{
                         key: value
                         for key, value in parent_stored.tags.items()
-                        if key not in BOARD_TAG_KEYS and key != PROJECT_TAG_KEY
+                        if key not in RESERVED_TAG_KEYS
                     },
                     **(extra_tags or {}),
                 },

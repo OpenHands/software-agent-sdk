@@ -58,10 +58,20 @@ export interface ProjectConversation {
   turn: 'asked' | 'answered' | null;
   /** The question, in one line, while `turn` is `asked`. */
   ask: string | null;
+  /** The first line of the agent's latest message, kept across turns. */
+  last_message: string | null;
+  /** GitHub pull requests the agent opened, oldest first. */
+  pull_requests: ProjectPullRequest[];
   automation_id: string | null;
   parent_conversation_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProjectPullRequest {
+  owner: string;
+  repo: string;
+  number: number;
 }
 
 export interface ProjectConversationsResponse {
