@@ -1,0 +1,197 @@
+{
+  "base_source_sha256": "b2ed7dba38517313ef745ea04584c1397cd8f5772baaa90faff7d781c867e6e8",
+  "fixed_source_sha256": "c980c6fb5c0cfcc3289164ae35f92d3eb9a5b1b77c8c624baa210e01bbba46fc",
+  "fixture_sha256": "2c3879a99985db52ba9eda53fdcb3a06f8251a0e5dd8478747a5976f09f63a12",
+  "repeats_per_entrypoint": 3,
+  "methods": [
+    {
+      "method": "completion",
+      "baseline": {
+        "peak_retries_in_100ms": [
+          17,
+          16,
+          15
+        ],
+        "failures": [
+          8,
+          8,
+          8
+        ],
+        "elapsed_seconds": [
+          8.292975582997315,
+          7.949344124994241,
+          8.668117708992213
+        ],
+        "http_attempts": [
+          72,
+          72,
+          72
+        ]
+      },
+      "fixed": {
+        "peak_retries_in_100ms": [
+          5,
+          5,
+          6
+        ],
+        "failures": [
+          0,
+          0,
+          0
+        ],
+        "elapsed_seconds": [
+          5.5872871250030585,
+          5.2402711670147255,
+          5.347493665991351
+        ],
+        "http_attempts": [
+          52,
+          52,
+          54
+        ]
+      }
+    },
+    {
+      "method": "acompletion",
+      "baseline": {
+        "peak_retries_in_100ms": [
+          19,
+          16,
+          18
+        ],
+        "failures": [
+          8,
+          8,
+          8
+        ],
+        "elapsed_seconds": [
+          7.974115040968172,
+          7.837910500005819,
+          7.763315874966793
+        ],
+        "http_attempts": [
+          72,
+          72,
+          72
+        ]
+      },
+      "fixed": {
+        "peak_retries_in_100ms": [
+          5,
+          5,
+          5
+        ],
+        "failures": [
+          0,
+          0,
+          0
+        ],
+        "elapsed_seconds": [
+          5.149532291979995,
+          5.222521540999878,
+          4.864289583987556
+        ],
+        "http_attempts": [
+          52,
+          53,
+          54
+        ]
+      }
+    },
+    {
+      "method": "responses",
+      "baseline": {
+        "peak_retries_in_100ms": [
+          19,
+          17,
+          20
+        ],
+        "failures": [
+          8,
+          8,
+          8
+        ],
+        "elapsed_seconds": [
+          7.93079466704512,
+          8.085230084019713,
+          8.00473524996778
+        ],
+        "http_attempts": [
+          72,
+          72,
+          72
+        ]
+      },
+      "fixed": {
+        "peak_retries_in_100ms": [
+          5,
+          5,
+          5
+        ],
+        "failures": [
+          0,
+          0,
+          0
+        ],
+        "elapsed_seconds": [
+          5.324517207976896,
+          5.349803167046048,
+          5.090594040986616
+        ],
+        "http_attempts": [
+          53,
+          53,
+          54
+        ]
+      }
+    },
+    {
+      "method": "aresponses",
+      "baseline": {
+        "peak_retries_in_100ms": [
+          19,
+          18,
+          17
+        ],
+        "failures": [
+          8,
+          8,
+          8
+        ],
+        "elapsed_seconds": [
+          7.735933875024784,
+          7.740848291956354,
+          7.799507499963511
+        ],
+        "http_attempts": [
+          72,
+          72,
+          72
+        ]
+      },
+      "fixed": {
+        "peak_retries_in_100ms": [
+          5,
+          5,
+          5
+        ],
+        "failures": [
+          0,
+          0,
+          0
+        ],
+        "elapsed_seconds": [
+          5.130414083017968,
+          5.227141291019507,
+          4.894572374993004
+        ],
+        "http_attempts": [
+          52,
+          53,
+          54
+        ]
+      }
+    }
+  ],
+  "limits": "Synthetic capacity-limited HTTP service, real SDK/LiteLLM transport and sleep; scaled waits, no model inference or production throughput claim."
+}

@@ -1,0 +1,7855 @@
+{
+  "source": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+  "source_sha256": "b2ed7dba38517313ef745ea04584c1397cd8f5772baaa90faff7d781c867e6e8",
+  "limits": "Synthetic capacity-limited HTTP service, real SDK/LiteLLM transport and sleep; scaled waits, no model inference or production throughput claim.",
+  "trials": [
+    {
+      "method": "completion",
+      "seed": 11,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 17,
+      "failures": 8,
+      "elapsed_seconds": 8.292975582997315,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.2594272500136867,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.32366137503413484,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.323737291037105,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.3237496660440229,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.3272321250406094,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.37716245802585036,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.4244071250432171,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.4244804159970954,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.42454016604460776,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.42459029104793444,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.44159741600742564,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.4416890410357155,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.44178145803743973,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.4418443330214359,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.44189983303658664,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.4419609160395339,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.4420112500083633,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.44206475000828505,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.4421159580233507,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.4421610410208814,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.4422063330421224,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.44276550004724413,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.44368187501095235,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.4442843330325559,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 2,
+          "at": 1.5985552500351332,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.682792291045189,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.6856116660055704,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.8055317910038866,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.8056061660172418,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.8057148749940097,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.8057942080195062,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.8058722910354845,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 1.8059493330074474,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.8060187500086613,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.806088290992193,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.8061651660245843,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.8062260409933515,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.8062890830333345,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.806363000010606,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.806435541016981,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.806499625032302,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.809623791021295,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 2,
+          "at": 1.8096944160060957,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.8097511660307646,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 3,
+          "at": 3.8434732500463724,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.843629790993873,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.8437432080390863,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.8536155000329018,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.8566698750364594,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 3,
+          "at": 3.8612703750259243,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.862209041020833,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.896820583031513,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.8969173750374466,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.9027395410230383,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.902816250047181,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.9028897910029627,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.903130916005466,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.9033724580076523,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.9034542909939773,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 3,
+          "at": 3.9518989580101334,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.948809541005176,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.970585958042648,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 4,
+          "at": 7.97071629104903,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 4,
+          "at": 7.981256708037108,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.981386583007406,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 4,
+          "at": 7.98154670803342,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.981683332996909,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.981813916005194,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.981929500005208,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 4,
+          "at": 7.982048291014507,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 4,
+          "at": 7.982167416019365,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.982777291035745,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 1.9099144160281867
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 8.283948625030462
+        },
+        {
+          "client": "2",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.002213625004515
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 0.6358130410080776
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 4.151972874999046
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 1.99492916604504
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 4.156019999994896
+        },
+        {
+          "client": "7",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.048164666048251
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 0.6364693330251612
+        },
+        {
+          "client": "9",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.028594750037882
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 0.6369418330141343
+        },
+        {
+          "client": "11",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.022023541037925
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 4.157917166012339
+        },
+        {
+          "client": "13",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.036309082992375
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 8.282336416014004
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.041944750002585
+        },
+        {
+          "client": "16",
+          "ok": true,
+          "done": 0.6066559579921886
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 2.121242458000779
+        },
+        {
+          "client": "18",
+          "ok": true,
+          "done": 8.25781854102388
+        },
+        {
+          "client": "19",
+          "ok": true,
+          "done": 1.9960204160306603
+        },
+        {
+          "client": "20",
+          "ok": true,
+          "done": 4.166569749999326
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.015206500014756
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.010447125008795
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 8.292975582997315
+        }
+      ]
+    },
+    {
+      "method": "completion",
+      "seed": 29,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 16,
+      "failures": 8,
+      "elapsed_seconds": 7.949344124994241,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.2723852919880301,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.27265087503474206,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.2727644999977201,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.272803959029261,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.32979962503304705,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.33009391702944413,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.33029983402229846,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.3313603340066038,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.3315618750057183,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.33174912503454834,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.3401067919912748,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.3403574170079082,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.340556958981324,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.3407275000354275,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.3408948340220377,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.34105816698865965,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.34122950001619756,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.34139562502969056,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.3415308750118129,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.34445254202000797,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.3446266250102781,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.34477070899447426,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.34489629202289507,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.34765574999619275,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 2,
+          "at": 1.4172958339913748,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.417963417014107,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.4240974999847822,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.4245958750252612,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.4385158339864574,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.4430077919969335,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.4434925839887,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 1.4472914169891737,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.456066209007986,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.4778592090005986,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 1.4839477500063367,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.486820959020406,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4932900000130758,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.5030782090034336,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.504823249997571,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.516586042009294,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.518305125006009,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.5227447500219569,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.5271649170317687,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 2,
+          "at": 1.5287086670286953,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.4723071670159698,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.4828470420325175,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.4887456669821404,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 3,
+          "at": 3.4972850420163013,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.504661125014536,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.517729874991346,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 3,
+          "at": 3.5343902920139953,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.5388030420290306,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.546167417021934,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.551033625029959,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.563925417023711,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 3,
+          "at": 3.565846292010974,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.5849329589982517,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 3,
+          "at": 3.5899077089852653,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.591544834023807,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.5916672089952044,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 4,
+          "at": 7.615449749981053,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 4,
+          "at": 7.628980459005106,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 4,
+          "at": 7.629202292009722,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.6446857919800095,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.644832958991174,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.644970667024609,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.872665208997205,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 4,
+          "at": 7.880184167006519,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 4,
+          "at": 7.880366709025111,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.880487166985404,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.880604374979157,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.880715916980989,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 1.736187834001612
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 3.808151083998382
+        },
+        {
+          "client": "2",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.924425167031586
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 7.932709624990821
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 0.5839059589779936
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 0.5847672920208424
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 0.5818637920310721
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 3.798055041988846
+        },
+        {
+          "client": "8",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.899662124982569
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 7.93345779197989
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 7.931337083980907
+        },
+        {
+          "client": "11",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.9182617089827545
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 3.782033584022429
+        },
+        {
+          "client": "13",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.809984166990034
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 1.7342835839954205
+        },
+        {
+          "client": "15",
+          "ok": true,
+          "done": 7.949344124994241
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.810936624999158
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 3.792773000022862
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.911779708985705
+        },
+        {
+          "client": "19",
+          "ok": true,
+          "done": 0.5829687499790452
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.930386334017385
+        },
+        {
+          "client": "21",
+          "ok": true,
+          "done": 1.7379943340201862
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.906904458999634
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 1.7317095000180416
+        }
+      ]
+    },
+    {
+      "method": "completion",
+      "seed": 47,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 15,
+      "failures": 8,
+      "elapsed_seconds": 8.668117708992213,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.718732750043273,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.7189165420131758,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.7190404169959947,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.7191552090225741,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.7192586670280434,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.7194767500041053,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.7196492500370368,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.7197991670109332,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.7199377500219271,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.720081334002316,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.7202096250257455,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.7203423340106383,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.7204615420196205,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.7205820000381209,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.720697459008079,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.7208107500337064,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.7209239170188084,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.7210626250016503,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.7211785000399686,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.721300000033807,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.7214147500344552,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.7215312499902211,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.7216592089971527,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.7217838340438902,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.8130865000421181,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 2,
+          "at": 1.8132541250088252,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.8760160840465687,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.8909861670108512,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.8911245000199415,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 2.0735557500156574,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 2.0738950420054607,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 2.0773558749933727,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 2.081013292015996,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 2.0812345420126803,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 2.081410250044428,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 2.0815507090301253,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 2.0816827500239015,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 2.081805500027258,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 2.081930459011346,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 2,
+          "at": 2.0820486250449903,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 2.0821699590305798,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 2.082291459024418,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 2.0824190840357915,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 2.0825448750401847,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.964831667020917,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 4.115834542026278,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 4.121228292002343,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 4.149520084029064,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 3,
+          "at": 4.151264459011145,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 3,
+          "at": 4.152539875009097,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 4.187556917022448,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 4.187692875042558,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 4.18780512502417,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 3,
+          "at": 4.189013916999102,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 4.1904803340439685,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 4.191058458993211,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 3,
+          "at": 4.191594667034224,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 4.237840250018053,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 4.238438542000949,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 4.239206917001866,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 4,
+          "at": 8.290779250033665,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 4,
+          "at": 8.29109574999893,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 4,
+          "at": 8.330276167020202,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 8.354620500002056,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 4,
+          "at": 8.354823917034082,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 4,
+          "at": 8.355130500043742,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 8.355379084008746,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 8.355569084000308,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "0",
+          "attempt": 4,
+          "at": 8.411175709043164,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 8.41131520899944,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 4,
+          "at": 8.411415750044398,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 8.413505500007886,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.44312287500361
+        },
+        {
+          "client": "1",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.40569454204524
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 2.2000025840243325
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 8.60094862501137
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 8.599036792002153
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 2.2024366250261664
+        },
+        {
+          "client": "6",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.43118133401731
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 1.0272544590407051
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 2.201535416999832
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 8.640278084028978
+        },
+        {
+          "client": "10",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.422759084030986
+        },
+        {
+          "client": "11",
+          "ok": true,
+          "done": 1.0307503340300173
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 4.429154500016011
+        },
+        {
+          "client": "13",
+          "ok": true,
+          "done": 4.461366292031016
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 8.668117708992213
+        },
+        {
+          "client": "15",
+          "ok": true,
+          "done": 1.0299794590100646
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.43673741701059
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 4.425877750036307
+        },
+        {
+          "client": "18",
+          "ok": true,
+          "done": 1.0302468750160187
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.448932917031925
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.416769000003114
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 8.413389916997403
+        },
+        {
+          "client": "22",
+          "ok": true,
+          "done": 2.200765459041577
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 4.273329666990321
+        }
+      ]
+    },
+    {
+      "method": "acompletion",
+      "seed": 11,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 19,
+      "failures": 8,
+      "elapsed_seconds": 7.974115040968172,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.4893819160060957,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.4896122500067577,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.489782374992501,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.48992445797193795,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.4900648749899119,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.49031912500504404,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.49047666596015915,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.5145894580055028,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.5148948749992996,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.5151322499732487,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.5153344579739496,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.5155030409805477,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.5156574999564327,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.5158138750120997,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.5184034999692813,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.5186306249815971,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.518801958009135,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.5189592079841532,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.5192067499738187,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.5193643749807961,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.5195062909624539,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.5206868749810383,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.5208722079987638,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.5210466659627855,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 1.5423575830063783,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.5633136249962263,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.5634350829641335,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.566061457968317,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.5726328329765238,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.5821056250133552,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.5933610000065528,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.5935145000112243,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.6088195409975015,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.609724040958099,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.6160911659826525,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.6169125830056146,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.6273011660086922,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.6438478329801,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.6443962909979746,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.6445031249895692,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.6454903329722583,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.645822957972996,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.6474225409911014,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.647505207976792,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.589153165987227,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.60810837498866,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 3,
+          "at": 3.6105711659765802,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.6173783330013976,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.62493645795621,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.6442650409881026,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.645289290987421,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.6457782079814933,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.656419333012309,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.6754544579889625,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.6772974579944275,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.677871291001793,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.6782249999814667,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.679969999997411,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.6808285409933887,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.70891174999997,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 4,
+          "at": 7.646207165962551,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.6609568749554455,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.664750957977958,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.6715109999640845,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.677515957970172,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.692263624980114,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.6944185409811325,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.710182957991492,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.711048708006274,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.711378375010099,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.719544374966063,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 4,
+          "at": 7.735807165969163,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 0.7959152080002241
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 1.8454663750017062
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 0.7948549159918912
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 0.7954422910115682
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 0.7943130409694277
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 1.874643249961082
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 1.87523537495872
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 1.8757377910078503
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 3.923684040957596
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 3.921303374983836
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 3.9011072499561124
+        },
+        {
+          "client": "11",
+          "ok": true,
+          "done": 3.9292531249811873
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 7.960393415996805
+        },
+        {
+          "client": "13",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.711445165972691
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 7.974115040968172
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.73564379097661
+        },
+        {
+          "client": "16",
+          "ok": true,
+          "done": 7.963510208006483
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 7.971970624988899
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.734978290973231
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.707664207962807
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.68972024996765
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.729473540966865
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.7295512079726905
+        },
+        {
+          "client": "23",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.741305332980119
+        }
+      ]
+    },
+    {
+      "method": "acompletion",
+      "seed": 29,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 16,
+      "failures": 8,
+      "elapsed_seconds": 7.837910500005819,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.34014466701773927,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.3643192500458099,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.3645578339928761,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.36472616699757054,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.36488195904530585,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.3651982090086676,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.36540404200786725,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.3655889170477167,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.3657862500404008,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.36595987499458715,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.36610975000075996,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.3662976250052452,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.36646333400858566,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.36663483403390273,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.36681687500094995,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.3686065000365488,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.36887787503656,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.36910891701700166,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.3692808750201948,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.3694466670276597,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.3695913340197876,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.3697455000365153,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.37028404203010723,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.37041666702134535,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 1.3939946670434438,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.4024868750129826,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.4100250000483356,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.4161505840020254,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.4214698750292882,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.4410649170167744,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.4420580840087496,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.4422399169998243,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4682547090342268,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.4709141250350513,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.4725027499953285,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.4730638340115547,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.4801197500200942,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.4807593750301749,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.4813990000402555,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.482293084030971,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.517185167002026,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.5172604590188712,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.5182979170349427,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.51915225002449,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.440442292019725,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.4576046250294894,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.4642314999946393,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.470223334035836,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.48350604204461,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.5000115840230137,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.5010210840264335,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.5131589170196094,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.531306959048379,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.532235666993074,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.532891542010475,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.533289375016466,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.541250709036831,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.5423563750227913,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.558239459001925,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.5689452500082552,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.49967666703742,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.51440820901189,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.523290500044823,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.532371917041019,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.5427357500302605,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.548527834005654,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.55416945903562,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.559700250043534,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 4,
+          "at": 7.565800709009636,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.57142620900413,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.577093583997339,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.5826447090366855,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 0.6458039589924738
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 0.6693978340481408
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 0.6727803749963641
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 1.7067732500145212
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 0.6679021250456572
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 1.7143658340210095
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.778555291995872
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 3.7511914999922737
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 1.7163949169917032
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 1.724960417021066
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 3.76139429199975
+        },
+        {
+          "client": "11",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.558621500036679
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 3.7762060840032063
+        },
+        {
+          "client": "13",
+          "ok": true,
+          "done": 7.810833292023744
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 7.825298917014152
+        },
+        {
+          "client": "15",
+          "ok": true,
+          "done": 7.825697834021412
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.575859959004447
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 7.837910500005819
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.553158959024586
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.587187584023923
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.564611042034812
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.581541959021706
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.547353458998259
+        },
+        {
+          "client": "23",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.570247667026706
+        }
+      ]
+    },
+    {
+      "method": "acompletion",
+      "seed": 47,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 18,
+      "failures": 8,
+      "elapsed_seconds": 7.763315874966793,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.31458891701186076,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.31842691701604053,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.31858874997124076,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.3186897920095362,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.31878400000277907,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.3190173329785466,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.3192020420101471,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.3193437500158325,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.31947162497090176,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.31960037496173754,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.3197604169836268,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.3199456669972278,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.32010183297097683,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.32025629200506955,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.3203939169761725,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.3205317499814555,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.3206763750058599,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.32081604201812297,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.3209917499916628,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.3211250419844873,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.3212567499722354,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.3213937499676831,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.3215271249646321,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.32167683297302574,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.3552898329799064,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.3669218749855645,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.3742065830156207,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.3817652500001714,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.3878351249732077,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.3939934999798425,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.4007613330031745,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4076914169709198,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.415046208014246,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.4167427499778569,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.4272479999926873,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.427996999991592,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.4299727500183508,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.4455285419826396,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.446724292007275,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.4479461669689044,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.4489230829640292,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.469482624961529,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.4701739579904824,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.4702653749845922,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.3987434579757974,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.401102499978151,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.4096362499985844,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.4157257080078125,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.424347708001733,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.435174999991432,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.437241500010714,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.4508593329810537,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.4523949999711476,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.463983332971111,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.464190792001318,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.4657964580110274,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.4801434169639833,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.4814453329890966,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.490874624985736,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 3,
+          "at": 3.4920944169862196,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.4419919999782,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.4476797499810345,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "12",
+          "attempt": 4,
+          "at": 7.453600000008009,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.460919458011631,
+          "status": 200,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.466088707966264,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.486772916978225,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.488380499999039,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "23",
+          "attempt": 4,
+          "at": 7.489295249979477,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.501407167001162,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.522821874998044,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.5232844579732046,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        },
+        {
+          "client": "4",
+          "attempt": 4,
+          "at": 7.524201374966651,
+          "status": 503,
+          "path": "/v1/chat/completions"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 0.6214953750022687
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 0.6301257499726489
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 0.6285484579857439
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 0.631252332997974
+        },
+        {
+          "client": "4",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.539769999973942
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 1.6665907080168836
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 1.685476207989268
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 1.6779997500125319
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 1.6931958749773912
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 3.7185682500130497
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 3.7138265829999
+        },
+        {
+          "client": "11",
+          "ok": true,
+          "done": 3.7163313750061207
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 7.759811541996896
+        },
+        {
+          "client": "13",
+          "ok": true,
+          "done": 3.7277747499756515
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 7.755873332964256
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.534830291988328
+        },
+        {
+          "client": "16",
+          "ok": true,
+          "done": 7.7584712079842575
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 7.763315874966793
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.48114175000228
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.523384207976051
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.523178833012935
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.534822124987841
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.514919042005204
+        },
+        {
+          "client": "23",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.51567629200872
+        }
+      ]
+    },
+    {
+      "method": "responses",
+      "seed": 11,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 19,
+      "failures": 8,
+      "elapsed_seconds": 7.93079466704512,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.17954091704450548,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.2576407919987105,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.257824125001207,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.2579427920281887,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.2580529170227237,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.28903445904143155,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.289337209018413,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.28955754201160744,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.28975749999517575,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.2898870420176536,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.2900276670116,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.2902047090465203,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.2929928750381805,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.29312950000166893,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.29326704202685505,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.2933770000236109,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.2934798340429552,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.2936347500071861,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.2937657500151545,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.2938678340287879,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.29397837503347546,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.2940796250477433,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.2978169590351172,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.3012970419949852,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.356188083998859,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.3650457090116106,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 2,
+          "at": 1.36591870902339,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.3677333340165205,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.3689379999996163,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.3716465840116143,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.3900958340382203,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 1.398296500032302,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.399013374990318,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.3996019590413198,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.400154292001389,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.400707709020935,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4090243340469897,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.4314428750076331,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.440113625023514,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.4406990419956855,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.4452565000392497,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.4458446250064299,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.4548163750441745,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.4598367500002496,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.402262834017165,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.4107342500356026,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.422158083994873,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 3,
+          "at": 3.4227625420317054,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.4268595000030473,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.4438600839930587,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.4445935420226306,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 3,
+          "at": 3.4463225420331582,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 3,
+          "at": 3.4729012500029057,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.4735900000086986,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.474500334006734,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.4751174590201117,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.475693834014237,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.481599833990913,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.482297875045333,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.5025488340179436,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.549147042038385,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.61046316701686,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.6162055840250105,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 4,
+          "at": 7.62193520902656,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.6245685840258375,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 4,
+          "at": 7.634939125040546,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.7058058340335265,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.705981959006749,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 4,
+          "at": 7.706123459036462,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 4,
+          "at": 7.706263041996863,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.706378500035498,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.706506667018402,
+          "status": 503,
+          "path": "/v1/responses"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 0.5665347500471398
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 0.5655418340465985
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 1.6747412920231
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 3.737318542029243
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 7.93079466704512
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 0.489879209024366
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.7190469590132125
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 1.6656930000171997
+        },
+        {
+          "client": "8",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.678420667012688
+        },
+        {
+          "client": "9",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.725646125036292
+        },
+        {
+          "client": "10",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.716702125035226
+        },
+        {
+          "client": "11",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.7396201670053415
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 3.7063043340458535
+        },
+        {
+          "client": "13",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.676579250022769
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 7.919678584032226
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.7306327919941396
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.735186083998997
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 7.924501667032018
+        },
+        {
+          "client": "18",
+          "ok": true,
+          "done": 7.852291084011085
+        },
+        {
+          "client": "19",
+          "ok": true,
+          "done": 1.6699150000349618
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.721641500014812
+        },
+        {
+          "client": "21",
+          "ok": true,
+          "done": 1.6730236670118757
+        },
+        {
+          "client": "22",
+          "ok": true,
+          "done": 3.7358821670059115
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 0.5648511670297012
+        }
+      ]
+    },
+    {
+      "method": "responses",
+      "seed": 29,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 17,
+      "failures": 8,
+      "elapsed_seconds": 8.085230084019713,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.4487192920059897,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.46938929200405255,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.46956845896784216,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.46976925001945347,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.470000083965715,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.4701904999674298,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.47030799998901784,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.4704242919688113,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.47053679201053455,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.4706401249859482,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.47074412496294826,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.47083833400392905,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.47093054198194295,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.47105116699822247,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.4711442919797264,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.47122974996455014,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.47131129197077826,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.47139049996621907,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.4714854590129107,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.47157466696808115,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.4716620839899406,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.47174374997848645,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.4718212090083398,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.47190091700758785,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.4971971249906346,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 1.502741749980487,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 2,
+          "at": 1.508155083982274,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.521249292010907,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.5246489589917473,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.5262357089668512,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.553953583992552,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.5550331249833107,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.5557532089878805,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.574546833988279,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.5754612499731593,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.5941060839686543,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.5946469589835033,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.595075958990492,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.5955282089998946,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.59597537497757,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.5964289589901455,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.609979166998528,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.6104327499633655,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.6154137919656932,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.55009108397644,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.5577223749714904,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.5686314170015976,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 3,
+          "at": 3.600430749997031,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.6005596250179224,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.601701791980304,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.602655083988793,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.6279597919783555,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.628765875007957,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.6298157919663936,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.6367527919937856,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 3,
+          "at": 3.637146874971222,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.6570327089866623,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.6576798749738373,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.6579859589692205,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.658414624980651,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.723177291976754,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.754238708992489,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.754306000017095,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.770127708965447,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.770187583984807,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.780707416997757,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.84448849997716,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 4,
+          "at": 7.844565625011455,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 4,
+          "at": 7.844619999988936,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 4,
+          "at": 7.844665416982025,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.8447070000111125,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 4,
+          "at": 7.844744583999272,
+          "status": 503,
+          "path": "/v1/responses"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 1.8140802920097485
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 1.8098402089672163
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 0.7794972920091823
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 0.7810038339812309
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 1.811679666978307
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 3.915102708968334
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.88078070897609
+        },
+        {
+          "client": "7",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.855883874988649
+        },
+        {
+          "client": "8",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.859869666979648
+        },
+        {
+          "client": "9",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.871309874986764
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 1.831651917018462
+        },
+        {
+          "client": "11",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.863269875000697
+        },
+        {
+          "client": "12",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.867299625009764
+        },
+        {
+          "client": "13",
+          "ok": true,
+          "done": 0.7764688750030473
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 8.033099333988503
+        },
+        {
+          "client": "15",
+          "ok": true,
+          "done": 8.085230084019713
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.851991584000643
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 3.8961084589827806
+        },
+        {
+          "client": "18",
+          "ok": true,
+          "done": 8.058451541990507
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.807339624967426
+        },
+        {
+          "client": "20",
+          "ok": true,
+          "done": 8.057254583982285
+        },
+        {
+          "client": "21",
+          "ok": true,
+          "done": 3.8777173749986105
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.8115864169667475
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 0.7534965840168297
+        }
+      ]
+    },
+    {
+      "method": "responses",
+      "seed": 47,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 20,
+      "failures": 8,
+      "elapsed_seconds": 8.00473524996778,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.39658316696295515,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.4243956249556504,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.42444591695675626,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.42448770796181634,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.4245161669678055,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.4246155829750933,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.424671666987706,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.4247335830004886,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.42480704199988395,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.4248596249963157,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.4249538329895586,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.4250114999595098,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.4250785419717431,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.42537516698939726,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.4254406249965541,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.42549266695277765,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.42953512497479096,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.42958187498152256,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.4296380419982597,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.4297043749829754,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.4304949169745669,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.4307409169850871,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.4308046669466421,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.4310818749945611,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.450054166954942,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.4503011669730768,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.450645666976925,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 2,
+          "at": 1.4588513329508714,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.4610701249912381,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.4611692919861525,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.4707502499804832,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.4758171669673175,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.4838070419500582,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.4838855419657193,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4950278329779394,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.4951683749677613,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.4964340419974178,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.5103228749940172,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.510680582956411,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.521543874987401,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 2,
+          "at": 1.5219557079835795,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.5225602079881355,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.5231388749671169,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.54132474999642,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 3,
+          "at": 3.484161166998092,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.4847453329712152,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.4854443749645725,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.492471082950942,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.502492082945537,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.5234650419442914,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.5246116249472834,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.5259302499471232,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.5268829579581507,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.5451593329780735,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.551910666981712,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 3,
+          "at": 3.567566249985248,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.568216332991142,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.568648124986794,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.569102874957025,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.5830028749769554,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.644168332975823,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.671134624979459,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.691093957982957,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 4,
+          "at": 7.6981476249638945,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.698302207980305,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.786809291981626,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 4,
+          "at": 7.786989249987528,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 4,
+          "at": 7.787133874953724,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.787243416998535,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.78736170794582,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.7874887499492615,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.787595666944981,
+          "status": 503,
+          "path": "/v1/responses"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.823511749971658
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 0.7379486669669859
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 1.769856582977809
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 0.7385282079922035
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 1.766754874959588
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 3.796121666964609
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.793130541977007
+        },
+        {
+          "client": "7",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.827486207999755
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 1.7722189169726335
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 1.7749584579723887
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 8.00473524996778
+        },
+        {
+          "client": "11",
+          "ok": true,
+          "done": 7.979666582948994
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 3.799885791959241
+        },
+        {
+          "client": "13",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.8029101669671945
+        },
+        {
+          "client": "14",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.811636250000447
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.819616666994989
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.807977999967989
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 0.7372652919730172
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.815664874971844
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.751254332950339
+        },
+        {
+          "client": "20",
+          "ok": true,
+          "done": 7.948156791971996
+        },
+        {
+          "client": "21",
+          "ok": true,
+          "done": 3.7976935419719666
+        },
+        {
+          "client": "22",
+          "ok": true,
+          "done": 7.997137832979206
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 0.6999524169950746
+        }
+      ]
+    },
+    {
+      "method": "aresponses",
+      "seed": 11,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 19,
+      "failures": 8,
+      "elapsed_seconds": 7.735933875024784,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.24365616601426154,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.24385304102906957,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.2439949160325341,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.24413050001021475,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.24422900000354275,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.2699813329963945,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.2818180000176653,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.28215904103126377,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.28237566602183506,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.28254262503469363,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.28268883301643655,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.2828594580059871,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.28298933303449303,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.28310641599819064,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.28323708300013095,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.28342024999437854,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.28354904102161527,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.2836713330470957,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.28380416601430625,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.2853398750303313,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.28573050000704825,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.2885344999958761,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.2886906250496395,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.2888292910065502,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.3079113330459222,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 2,
+          "at": 1.3144232500344515,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 1.3205391250085086,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 2,
+          "at": 1.3257565410458483,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 2,
+          "at": 1.3323632500250824,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.3521690409979783,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.353486291016452,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.3546732499962673,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.3565874579944648,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.3743326250114478,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 2,
+          "at": 1.3938023330410942,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.3940967080416158,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.394355833006557,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.3945522910216823,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.3953011250123382,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.3955701250233687,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.395817375043407,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.3966472080210224,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.406355750048533,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.4156861660303548,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 3,
+          "at": 3.354226333030965,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.3706456660293043,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.3773737500305288,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.383749708009418,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.3882559580379166,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.4048074580496177,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 3,
+          "at": 3.405045624997001,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.4089955000090413,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 3,
+          "at": 3.432226166012697,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.432529500045348,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.432970624999143,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.435457415995188,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.445737291011028,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.446711666008923,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.456892082991544,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.4668450410244986,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.40516020799987,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 4,
+          "at": 7.419713833020069,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 4,
+          "at": 7.426322625018656,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.431922500021756,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 4,
+          "at": 7.443589958013035,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.451106125023216,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.457435832999181,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.4580177500029095,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.469451583048794,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.470899375039153,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 4,
+          "at": 7.480604250042234,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.480683750007302,
+          "status": 503,
+          "path": "/v1/responses"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 1.6242204160080291
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 0.5558943750220351
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 1.630252958042547
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 1.6266044580261223
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 0.5544175000395626
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 3.6657982080359943
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.6895876660128124
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 3.6834440830280073
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 1.6197391250170767
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 7.733360625046771
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 3.6923897500382736
+        },
+        {
+          "client": "11",
+          "ok": true,
+          "done": 7.719001208024565
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 7.732065958029125
+        },
+        {
+          "client": "13",
+          "ok": true,
+          "done": 0.5572965830215253
+        },
+        {
+          "client": "14",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.450163583038375
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.468920707993675
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.456932750006672
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 7.735933875024784
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.479471458005719
+        },
+        {
+          "client": "19",
+          "ok": true,
+          "done": 0.5523917500395328
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.489345416019205
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.463567250000779
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.479535875027068
+        },
+        {
+          "client": "23",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.4893705830327235
+        }
+      ]
+    },
+    {
+      "method": "aresponses",
+      "seed": 29,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 18,
+      "failures": 8,
+      "elapsed_seconds": 7.740848291956354,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.1936814999789931,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.1938394169555977,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.1939839589758776,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.19410512497415766,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.21283129195217043,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.2710002919775434,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.2711571249528788,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.27401883399579674,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.3003355839755386,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.3005339169758372,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.30068533396115527,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.3033387089963071,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.3034734589746222,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.3054287499981001,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.3055787089979276,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.30567412497475743,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.30578749999403954,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.3058801249717362,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.3059863339876756,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.30608479195507243,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.3062149589532055,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.3063227089587599,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.30641533399466425,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.306569583946839,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.3184959999634884,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 1.3279931669821963,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 1.329745583992917,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.3337997499620542,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.3379322499968112,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.3547418339876458,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.3549935419578105,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.3552325839991681,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.356170791957993,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.367752999998629,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.386721791990567,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.3872296249610372,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.3881248339894228,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.3884104589815252,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.3886894589522853,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.3895830839755945,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.3955890419892967,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.400877749954816,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4279924999573268,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.4280812919605523,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.3586544589488767,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 3,
+          "at": 3.3654624589835294,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.3704862499726005,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.3766806249623187,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.3830340419663116,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.4012928750016727,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.403451166988816,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.403675499954261,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.4301158339949325,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.430230624973774,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 3,
+          "at": 3.4309795000008307,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.4322378339711577,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.4332089590025134,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.4440066249808297,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.4624846669612452,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.4626136669539846,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 4,
+          "at": 7.4004285839619115,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.4175929999910295,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.428482499963138,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.430603583983611,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 4,
+          "at": 7.441326333966572,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.45842212496791,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 4,
+          "at": 7.4590956249739975,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.459261666983366,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.4623679999494925,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.486361291958019,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.486470833944622,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.487492416985333,
+          "status": 503,
+          "path": "/v1/responses"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 0.5097029999596998
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 1.6320724999532104
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 0.508851041959133
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 1.639120583946351
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 1.641340542002581
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 0.5079125839984044
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.665556249965448
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 7.714277791965287
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 3.6698881670017727
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 0.5107693749596365
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 3.6883269169484265
+        },
+        {
+          "client": "11",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.479504249989986
+        },
+        {
+          "client": "12",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.453708458982874
+        },
+        {
+          "client": "13",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.501969916978851
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 1.6232561249635182
+        },
+        {
+          "client": "15",
+          "ok": true,
+          "done": 7.723291124973912
+        },
+        {
+          "client": "16",
+          "ok": true,
+          "done": 7.740848291956354
+        },
+        {
+          "client": "17",
+          "ok": true,
+          "done": 7.739042333967518
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.5019364999607205
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.501904458971694
+        },
+        {
+          "client": "20",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.484688708966132
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.486669583944604
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.484671458951198
+        },
+        {
+          "client": "23",
+          "ok": true,
+          "done": 3.6810357499634847
+        }
+      ]
+    },
+    {
+      "method": "aresponses",
+      "seed": 47,
+      "jitter": null,
+      "capacity": 4,
+      "service_seconds": 0.3,
+      "clients": 24,
+      "config": {
+        "num_retries": 4,
+        "multiplier": 1,
+        "min": 1,
+        "max": 4
+      },
+      "peak_retries_in_100ms": 17,
+      "failures": 8,
+      "elapsed_seconds": 7.799507499963511,
+      "http_attempts": 72,
+      "events": [
+        {
+          "client": "0",
+          "attempt": 1,
+          "at": 0.23664741695392877,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "2",
+          "attempt": 1,
+          "at": 0.2368193749571219,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "5",
+          "attempt": 1,
+          "at": 0.23695049999514595,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "9",
+          "attempt": 1,
+          "at": 0.2978329169563949,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 1,
+          "at": 0.2979930419824086,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 1,
+          "at": 0.2983269579708576,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 1,
+          "at": 0.33169854199513793,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 1,
+          "at": 0.3319829169777222,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 1,
+          "at": 0.33213929197518155,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 1,
+          "at": 0.33230474998708814,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 1,
+          "at": 0.3324352919589728,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 1,
+          "at": 0.3325782079482451,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 1,
+          "at": 0.33270516694756225,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 1,
+          "at": 0.3328178329975344,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 1,
+          "at": 0.33582766697509214,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 1,
+          "at": 0.33600304200081155,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 1,
+          "at": 0.33611412497702986,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 1,
+          "at": 0.3362367499503307,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 1,
+          "at": 0.3364049999509007,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 1,
+          "at": 0.3365245829918422,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 1,
+          "at": 0.33662658295361325,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 1,
+          "at": 0.33672808296978474,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 1,
+          "at": 0.3370685419649817,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 1,
+          "at": 0.3373849169583991,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "14",
+          "attempt": 2,
+          "at": 1.357745082990732,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "20",
+          "attempt": 2,
+          "at": 1.367040166980587,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "1",
+          "attempt": 2,
+          "at": 1.380740666994825,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "4",
+          "attempt": 2,
+          "at": 1.3847884580027312,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 2,
+          "at": 1.3906446249457076,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 2,
+          "at": 1.4092600419535302,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 2,
+          "at": 1.4096504169865511,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 2,
+          "at": 1.41144383297069,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 2,
+          "at": 1.413070832961239,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 2,
+          "at": 1.441269916947931,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 2,
+          "at": 1.4428566669812426,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 2,
+          "at": 1.4429256249568425,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 2,
+          "at": 1.4431835419964045,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 2,
+          "at": 1.4434552500024438,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 2,
+          "at": 1.4443609579466283,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 2,
+          "at": 1.4504698329837993,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 2,
+          "at": 1.4505550829926506,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 2,
+          "at": 1.4811039579799399,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 2,
+          "at": 1.4827477499493398,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 2,
+          "at": 1.483436249953229,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "6",
+          "attempt": 3,
+          "at": 3.410703999979887,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "8",
+          "attempt": 3,
+          "at": 3.4245503330021165,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "7",
+          "attempt": 3,
+          "at": 3.4295163749484345,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "3",
+          "attempt": 3,
+          "at": 3.4361384169897065,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 3,
+          "at": 3.44199037499493,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 3,
+          "at": 3.459283832984511,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 3,
+          "at": 3.459475082985591,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 3,
+          "at": 3.4795225829584524,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 3,
+          "at": 3.4815812499728054,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 3,
+          "at": 3.483086582971737,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 3,
+          "at": 3.489271957951132,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 3,
+          "at": 3.490288542001508,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 3,
+          "at": 3.511376832961105,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 3,
+          "at": 3.512143624946475,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 3,
+          "at": 3.51241729198955,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 3,
+          "at": 3.5126449579838663,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "10",
+          "attempt": 4,
+          "at": 7.463003707991447,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "11",
+          "attempt": 4,
+          "at": 7.4760312080034055,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "12",
+          "attempt": 4,
+          "at": 7.482904207950924,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "13",
+          "attempt": 4,
+          "at": 7.4918167919968255,
+          "status": 200,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "18",
+          "attempt": 4,
+          "at": 7.499384666967671,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "16",
+          "attempt": 4,
+          "at": 7.518165874993429,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "17",
+          "attempt": 4,
+          "at": 7.518978749983944,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "15",
+          "attempt": 4,
+          "at": 7.521242332994007,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "19",
+          "attempt": 4,
+          "at": 7.544999707955867,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "21",
+          "attempt": 4,
+          "at": 7.5458749999525025,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "22",
+          "attempt": 4,
+          "at": 7.546279791975394,
+          "status": 503,
+          "path": "/v1/responses"
+        },
+        {
+          "client": "23",
+          "attempt": 4,
+          "at": 7.547327499953099,
+          "status": 503,
+          "path": "/v1/responses"
+        }
+      ],
+      "results": [
+        {
+          "client": "0",
+          "ok": true,
+          "done": 0.546574541949667
+        },
+        {
+          "client": "1",
+          "ok": true,
+          "done": 1.6848640829557553
+        },
+        {
+          "client": "2",
+          "ok": true,
+          "done": 0.5478902079630643
+        },
+        {
+          "client": "3",
+          "ok": true,
+          "done": 3.742669917002786
+        },
+        {
+          "client": "4",
+          "ok": true,
+          "done": 1.6956103749689646
+        },
+        {
+          "client": "5",
+          "ok": true,
+          "done": 0.5471816670033149
+        },
+        {
+          "client": "6",
+          "ok": true,
+          "done": 3.7245607499498874
+        },
+        {
+          "client": "7",
+          "ok": true,
+          "done": 3.7396699999808334
+        },
+        {
+          "client": "8",
+          "ok": true,
+          "done": 3.7274532499723136
+        },
+        {
+          "client": "9",
+          "ok": true,
+          "done": 0.6077165000024252
+        },
+        {
+          "client": "10",
+          "ok": true,
+          "done": 7.7760927499621175
+        },
+        {
+          "client": "11",
+          "ok": true,
+          "done": 7.789377832959872
+        },
+        {
+          "client": "12",
+          "ok": true,
+          "done": 7.786824541981332
+        },
+        {
+          "client": "13",
+          "ok": true,
+          "done": 7.799507499963511
+        },
+        {
+          "client": "14",
+          "ok": true,
+          "done": 1.662037166999653
+        },
+        {
+          "client": "15",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.545334374997765
+        },
+        {
+          "client": "16",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.544041249959264
+        },
+        {
+          "client": "17",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.544746749976184
+        },
+        {
+          "client": "18",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.514227166946512
+        },
+        {
+          "client": "19",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.567245499987621
+        },
+        {
+          "client": "20",
+          "ok": true,
+          "done": 1.6767186669749208
+        },
+        {
+          "client": "21",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.567289792001247
+        },
+        {
+          "client": "22",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.567297249974217
+        },
+        {
+          "client": "23",
+          "ok": false,
+          "error": "LLMServiceUnavailableError",
+          "done": 7.567303416959476
+        }
+      ]
+    }
+  ]
+}
