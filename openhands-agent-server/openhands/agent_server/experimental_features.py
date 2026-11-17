@@ -188,13 +188,13 @@ async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") 
         return is_enabled(host_features, key)
     if settings_store is None:
         return False
-    from openhands.agent_server.persistence import PersistedSettings, run_store
+    from openhands.agent_server.persistence import run_store
 
     try:
-        settings = await run_store(settings_store.load) or PersistedSettings()
+        features = await run_store(settings_store.experimental_features)
     except (PermissionError, OSError):
         return False
-    return is_enabled(settings.experimental_features, key)
+    return is_enabled(features, key)
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"
