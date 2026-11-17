@@ -243,7 +243,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
     """
     expectations = {
         "openai": (
-            {"gpt-6.2-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-5.6"},
+            {"gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-astra", "gpt-5.6"},
             {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"},
         ),
         "anthropic": (

@@ -503,6 +503,7 @@ def test_supports_stop_words_false_models(model):
         ("gpt-6-luna", True),
         ("gpt-6-astra", True),
         ("gpt-6.2-sol", True),
+        ("gpt-6.2-astra", True),
         ("openai/gpt-6-sol", True),
         ("litellm_proxy/gpt-6-luna", True),
         ("codex-mini-latest", True),

@@ -12,6 +12,7 @@ stay. When a new version lands, drop the oldest one in the same line.
 # GPT: gpt-6.2, gpt-6.1, gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
     "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6.1-sol",
     "gpt-6.1-terra",
     "gpt-6-sol",
@@ -128,6 +129,7 @@ VERIFIED_OPENROUTER_MODELS = [
     "anthropic/claude-haiku-4.5",
     "anthropic/claude-fable-5.2",
     "openai/gpt-6.2-sol",
+    "openai/gpt-6.2-astra",
     "openai/gpt-6.1-sol",
     "openai/gpt-6.1-terra",
     "openai/gpt-6-astra",
@@ -182,6 +184,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-fable-5-1",
     "claude-fable-5",
     "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6.1-sol",
     "gpt-6.1-terra",
     "gpt-6-sol",
