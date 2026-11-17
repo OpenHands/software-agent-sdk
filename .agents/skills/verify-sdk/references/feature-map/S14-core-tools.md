@@ -134,7 +134,7 @@ Preconditions:
   control-sdk program S14/terminal --arg auto \
     --check escape_filtered eq true --check dsr_reply_visible eq false --check after_dsr_clean eq true
   ```
-  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-11-12, [#6652](https://github.com/OpenHands/software-agent-sdk/issues/6652)): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
+  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-11-17, [#6652](https://github.com/OpenHands/software-agent-sdk/issues/6652)): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
 - **A reset keeps the configured backend (`S14.terminal-reset`, `S14.terminal-backend-select`).** The subprocess run's `echo shell=$0` after `reset=True`, and the session type at the end.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -142,7 +142,7 @@ Preconditions:
     --check steps.shell.text contains my-shell \
     --check steps.shell_after_reset.text contains my-shell --check backend_at_end eq SubprocessTerminal
   ```
-  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-12, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-17, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
 - **A one-second observation wait cap and a shell that exits, subprocess backend (`S14.terminal-observation-wait-cap`, `S14.terminal-shell-exit`).** `Tool(name="terminal", params={"terminal_type": "subprocess", "max_observation_wait_seconds": 1})`; a scripted agent starts `sleep 3; echo finished` with `timeout` 600 and polls it with `""` until it finishes, then runs `printf ...; exit 7`, `echo still-here`, a reset and `echo back`. The program also creates the tool with a cap of 0 and of -1.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

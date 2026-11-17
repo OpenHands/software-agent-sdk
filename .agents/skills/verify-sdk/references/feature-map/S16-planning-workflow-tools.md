@@ -121,7 +121,9 @@ Preconditions:
     --check oracle_requests eq 1 --check oracle_saw_question eq true --check oracle_saw_context eq true \
     --check oracle_got_tools eq false --check description_mentions_second_opinion eq true
   control-sdk program S16/oracle --arg empty \
-    --check is_error eq true --check text contains "The Oracle did not return a response."
+    --check status eq finished --check is_error eq true \
+    --check text contains "The Oracle encountered an error and did not return a response: LLMNoResponseError" \
+    --check oracle_requests eq 1
   control-sdk program S16/oracle --arg missing \
     --check is_error eq true --check text contains "no profile named 'oracle' was found. Save one to enable it." \
     --check oracle_requests eq 0 \
@@ -129,6 +131,7 @@ Preconditions:
   control-sdk program S16/oracle --arg params \
     --check error contains "AskOracleTool does not accept parameters"
   ```
+  An empty answer never reaches the tool: the oracle's `LLM` raises `LLMNoResponseError` for a completion with no content, tool calls or reasoning (retried up to the profile's `num_retries`, 0 here), and the tool reports that error as its observation. The tool's own "The Oracle did not return a response." is left for a reply whose only content is reasoning.
 - **Theory of Mind (`S16.tom-consult`, `S16.tom-sleeptime`, `S16.tom-storage-root`).** As example 30 wires them, with `tom_params` pointing at the local endpoint. Sleeptime compute runs once on an empty store and once after earlier conversations are saved under the user persistence directory; then a scripted agent consults Tom.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
