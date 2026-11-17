@@ -355,3 +355,4 @@ Preconditions:
 - Models answer in prose when the prompt does not leave the choice to the
   user; the recipes ask explicitly ("Ask me whether ... then stop until I
   answer") and assert on the tool call, not on the question's wording.
+- Agent Canvas has no decision-card UI yet and never calls the answer route (follow-up [OpenHands/OpenHands#19773](https://github.com/OpenHands/OpenHands/issues/19773), open PR [#19789](https://github.com/OpenHands/OpenHands/pull/19789)).
