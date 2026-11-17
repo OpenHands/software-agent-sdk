@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -33,8 +33,10 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from openhands.agent_server.config import Config, load_config
+from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
+from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.event import (
@@ -51,12 +53,14 @@ from openhands.sdk.event import (
     SecurityAnalysisEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.ask_user import find_pending_ask
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
@@ -72,8 +76,11 @@ from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.ask_user import AskUserTool
 from openhands.tools.file_editor import FileEditorTool
+from tests.command_utils import python_command
 from tests.cross.conftest import live_server_env
+from tests.tools.ask_user.test_ask_user import QUESTION
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
@@ -84,16 +91,15 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value == expected
 
 
-@pytest.mark.parametrize("skill_mib", [2, 17])
-def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, skill_mib):
+@pytest.mark.parametrize("context_mib", [2, 17])
+def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, context_mib):
     monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "5")
+    # Skill bodies are left out of the snapshot, so grow a field that is sent.
     agent = Agent(
         llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
         tools=[],
         agent_context=AgentContext(
-            skills=[
-                Skill(name="large-context", content="x" * (skill_mib * 1024 * 1024))
-            ]
+            system_message_suffix="x" * (context_mib * 1024 * 1024)
         ),
     )
     received = []
@@ -120,7 +126,7 @@ def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, skill_
         response.raise_for_status()
         conversation_id = UUID(response.json()["id"])
         try:
-            if skill_mib == 17:
+            if context_mib == 17:
                 with pytest.raises(
                     WebSocketConnectionError, match="message too big.*1009"
                 ):
@@ -330,6 +336,97 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_pending_question_blocks_goal_resume_over_http(
+    server_env, monkeypatch, tmp_path
+):
+    scripted_agent = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id="ask",
+                        name="ask_user",
+                        arguments=json.dumps(QUESTION),
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Shipped")]),
+            Message(role="assistant", content=[TextContent(text="Checked")]),
+        ]
+    )
+
+    def complete(self, messages, tools=None, **kwargs):
+        if tools:
+            return scripted_agent.completion(messages, tools, **kwargs)
+        return TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        TextContent(text='{"score":1,"complete":true,"missing":""}')
+                    ],
+                )
+            ]
+        ).completion(messages, **kwargs)
+
+    async def acomplete(self, messages, tools=None, **kwargs):
+        return complete(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "completion", complete)
+    monkeypatch.setattr(LLM, "acompletion", acomplete)
+    interrupted = threading.Event()
+    completed = threading.Event()
+
+    def on_event(event):
+        if isinstance(event, ConversationStateUpdateEvent) and event.key == "goal":
+            if event.value["status"] == "interrupted":
+                interrupted.set()
+            if event.value["status"] == "complete":
+                completed.set()
+
+    marker = tmp_path / "stop-ran"
+    command = python_command(
+        "from pathlib import Path; import sys; "
+        f"marker = Path({str(marker)!r}); existed = marker.exists(); "
+        "marker.touch(); print('Keep working', file=sys.stderr); "
+        "sys.exit(0 if existed else 2)"
+    )
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation = Conversation(
+        agent=Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+            tools=[Tool(name=AskUserTool.name)],
+        ),
+        workspace=workspace,
+        callbacks=[on_event],
+        visualizer=None,
+        hook_config=HookConfig(
+            stop=[HookMatcher(hooks=[HookDefinition(command=command)])]
+        ),
+    )
+    try:
+        path = f"/api/conversations/{conversation.id}/goal"
+        with httpx.Client(base_url=server_env["host"], timeout=15) as client:
+            client.post(path, json={"objective": "Ship the fix"}).raise_for_status()
+            assert interrupted.wait(15)
+            assert find_pending_ask(conversation.state.events) is not None
+            assert not marker.exists()
+            response = client.post(f"{path}/resume")
+            assert response.status_code == 400
+            assert "pending_ask" in response.text
+            conversation.send_message("Use the flag")
+            client.post(f"{path}/resume").raise_for_status()
+            assert completed.wait(15)
+            assert find_pending_ask(conversation.state.events) is None
+            assert marker.exists()
+    finally:
+        conversation.close()
+
+
 def test_recovery_provenance_served_over_http_and_websocket(server_env):
     recovery = AgentErrorEvent(
         error="Interrupted execution",
@@ -469,6 +566,35 @@ def _start_idle_conversation(client: httpx.Client) -> str:
     start = client.post("/api/conversations", json=payload, timeout=10.0)
     start.raise_for_status()
     return start.json()["id"]
+
+
+def test_add_mcp_server_that_fails_to_start_is_invalid(server_env):
+    """A server that exits at once is refused with 400 and not added (#6926)."""
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        # A message readies the agent, so the add starts the server.
+        message = client.post(
+            f"/api/conversations/{conversation_id}/events",
+            json={"content": [{"type": "text", "text": "Never run."}], "run": False},
+            timeout=10.0,
+        )
+        message.raise_for_status()
+
+        response = client.post(
+            f"/api/conversations/{conversation_id}/mcp",
+            json={
+                "mcp_servers": {
+                    "qa-dies": {"command": sys.executable, "args": ["-c", "pass"]}
+                }
+            },
+            timeout=60.0,
+        )
+        info = client.get(f"/api/conversations/{conversation_id}", timeout=10.0)
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("Could not start MCP server qa-dies: ")
+    info.raise_for_status()
+    assert "qa-dies" not in (info.json()["agent"].get("mcp_config") or {})
 
 
 def _assert_closed_by_server(websocket) -> int:
@@ -1559,6 +1685,233 @@ def test_openai_gateway_post_send_timeout_does_not_retry(
         assert len(patched_llm) == (2 if continued else 1)
 
 
+@pytest.mark.parametrize("mode", ["new", "reused", "docker-inner"])
+def test_openai_gateway_rejects_direct_event_during_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm, mode: str
+) -> None:
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / ".openhands" / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    original_acompletion = LLM.acompletion
+    gateway_started = threading.Event()
+    release_gateway = threading.Event()
+    hold_gateway = {"enabled": False}
+
+    async def gated_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        user_text = "\n".join(
+            part.text
+            for message in messages
+            if message.role == "user"
+            for part in message.content
+            if isinstance(part, TextContent)
+        )
+        if hold_gateway["enabled"] and "Direct turn." not in user_text:
+            gateway_started.set()
+            assert await asyncio.to_thread(release_gateway.wait, 5)
+        result = await original_acompletion(self, messages, tools, **kwargs)
+        reply = "Direct reply" if "Direct turn." in user_text else "Gateway reply"
+        return result.model_copy(
+            update={
+                "message": Message(role="assistant", content=[TextContent(text=reply)])
+            }
+        )
+
+    monkeypatch.setattr(LLM, "acompletion", gated_acompletion)
+
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        gateway_url = f"{env['host']}/v1/chat/completions"
+        if mode != "new":
+            seed = client.post(
+                gateway_url,
+                json={
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Start conversation."}],
+                },
+                timeout=10,
+            )
+            assert seed.status_code == 200, seed.text
+            conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
+        else:
+            conversation_id = str(uuid4())
+        event_url = f"{env['host']}/api/conversations/{conversation_id}/events"
+
+        hold_gateway["enabled"] = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            gateway_endpoint = (
+                f"{event_url}/_gateway/run" if mode == "docker-inner" else gateway_url
+            )
+            gateway_body = (
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Gateway turn."}],
+                    "run": True,
+                }
+                if mode == "docker-inner"
+                else {
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Gateway turn."}],
+                }
+            )
+            gateway_future = pool.submit(
+                client.post,
+                gateway_endpoint,
+                headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+                json=gateway_body,
+                timeout=10,
+            )
+            try:
+                assert gateway_started.wait(5)
+                direct = pool.submit(
+                    client.post,
+                    event_url,
+                    json={
+                        "content": [{"type": "text", "text": "Direct turn."}],
+                        "run": True,
+                    },
+                    timeout=5,
+                ).result(timeout=5)
+            finally:
+                release_gateway.set()
+            gateway = gateway_future.result(timeout=10)
+
+        assert gateway.status_code == 200, gateway.text
+        assert direct.status_code == 409, direct.text
+        assert direct.json()["detail"] == "Gateway run in progress; message not saved"
+        if mode == "docker-inner":
+            assert gateway.json()["final_response"] == "Gateway reply"
+            assert gateway.json()["usage"]["prompt_tokens"] == 7
+            assert gateway.json()["usage"]["completion_tokens"] == 5
+        else:
+            assert gateway.json()["choices"][0]["message"]["content"] == (
+                "Gateway reply"
+            )
+        user_events = client.get(event_url + "/count", params={"source": "user"})
+        assert user_events.status_code == 200
+        expected_count = 1 + (mode != "new")
+        assert user_events.json() == expected_count
+        assert len(patched_llm) == expected_count
+
+        later = client.post(
+            event_url,
+            json={"content": [{"type": "text", "text": "Later turn."}], "run": False},
+        )
+        assert later.status_code == 200, later.text
+        user_events = client.get(event_url + "/count", params={"source": "user"})
+        assert user_events.status_code == 200
+        assert user_events.json() == expected_count + 1
+
+
+def test_openai_gateway_continues_an_interrupted_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
+) -> None:
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / ".openhands" / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    original_acompletion = LLM.acompletion
+    direct_started = threading.Event()
+    release_direct = threading.Event()
+
+    async def gated_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        last_user_text = [
+            part.text
+            for message in messages
+            if message.role == "user"
+            for part in message.content
+            if isinstance(part, TextContent)
+        ][-1]
+        if last_user_text == "Direct turn.":
+            direct_started.set()
+            await asyncio.to_thread(release_direct.wait, 5)
+        result = await original_acompletion(self, messages, tools, **kwargs)
+        return result.model_copy(
+            update={
+                "message": Message(
+                    role="assistant",
+                    content=[TextContent(text=f"Reply to: {last_user_text}")],
+                )
+            }
+        )
+
+    monkeypatch.setattr(LLM, "acompletion", gated_acompletion)
+
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        gateway_url = f"{env['host']}/v1/chat/completions"
+        seed = client.post(
+            gateway_url,
+            json={
+                "model": "openhands_smoke",
+                "messages": [{"role": "user", "content": "Start conversation."}],
+            },
+            timeout=10,
+        )
+        assert seed.status_code == 200, seed.text
+        conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
+        conversation_url = f"{env['host']}/api/conversations/{conversation_id}"
+
+        direct = client.post(
+            f"{conversation_url}/events",
+            json={"content": [{"type": "text", "text": "Direct turn."}], "run": True},
+            timeout=5,
+        )
+        assert direct.status_code == 200, direct.text
+        try:
+            assert direct_started.wait(5)
+            interrupted = client.post(f"{conversation_url}/interrupt", timeout=10)
+        finally:
+            release_direct.set()
+        assert interrupted.status_code == 200, interrupted.text
+        deadline = time.monotonic() + 5
+        while client.get(conversation_url).json()["execution_status"] != "paused":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+
+        gateway = client.post(
+            gateway_url,
+            headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+            json={
+                "model": "openhands_smoke",
+                "messages": [{"role": "user", "content": "Gateway turn."}],
+            },
+            timeout=15,
+        )
+
+        assert gateway.status_code == 200, gateway.text
+        assert gateway.json()["choices"][0]["message"]["content"] == (
+            "Reply to: Gateway turn."
+        )
+        assert gateway.headers["X-OpenHands-ServerConversation-ID"] == conversation_id
+        gateway_turns = client.get(
+            f"{conversation_url}/events/search",
+            params={"source": "user", "body": "Gateway turn."},
+        )
+        assert len(gateway_turns.json()["items"]) == 1
+        assert client.get(conversation_url).json()["execution_status"] == "finished"
+
+
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1906,6 +2259,100 @@ def test_conversation_stats_with_live_server(
     assert stats_from_field, "Expected non-empty stats in the 'stats' field after run()"
 
     conv.close()
+
+
+def _metrics_exceeding_frame_limit() -> Metrics:
+    metrics = Metrics(model_name="gpt-4o-mini")
+    calls = 0
+    while len(metrics.model_dump_json()) <= MAX_FRAME_BYTES:
+        for _ in range(500):
+            response_id = f"chatcmpl-{calls:06d}-{uuid4().hex}"
+            metrics.add_cost(0.0123)
+            metrics.add_token_usage(
+                prompt_tokens=120_000,
+                completion_tokens=512,
+                cache_read_tokens=110_000,
+                cache_write_tokens=2_048,
+                context_window=200_000,
+                response_id=response_id,
+                reasoning_tokens=256,
+            )
+            metrics.add_response_latency(3.21, response_id)
+            calls += 1
+    return metrics
+
+
+def test_long_conversation_full_state_fits_session_frame(server_env):
+    """Per-call metrics over 4 MiB must not break reconnects (#6741)."""
+    ws_host = server_env["host"].replace("http://", "ws://")
+    with httpx.Client(base_url=server_env["host"]) as client:
+        conversation_id = _start_idle_conversation(client)
+        event_service = server_env["conversation_service"]._event_services[
+            UUID(conversation_id)
+        ]
+        state = event_service.get_conversation()._state
+        metrics = _metrics_exceeding_frame_limit()
+        with state:
+            state.stats = ConversationStats(usage_to_metrics={"agent": metrics})
+        assert len(state.model_dump_json()) > MAX_FRAME_BYTES
+
+        full_state = None
+        with connect(
+            f"{ws_host}/sockets/session/{conversation_id}", max_size=None
+        ) as ws:
+            while full_state is None:
+                frame = json.loads(ws.recv(timeout=10))
+                event = frame.get("event") or {}
+                if event.get("key") == "full_state":
+                    full_state = event["value"]
+
+        served = full_state["stats"]["usage_to_metrics"]["agent"]
+        assert "costs" not in served
+        assert "response_latencies" not in served
+        assert "token_usages" not in served
+        assert served["accumulated_cost"] == pytest.approx(metrics.accumulated_cost)
+        assert metrics.accumulated_token_usage is not None
+        assert (
+            served["accumulated_token_usage"]
+            == metrics.accumulated_token_usage.model_dump()
+        )
+
+        for response in (
+            client.get(f"/api/conversations/{conversation_id}"),
+            client.get("/api/conversations/search"),
+        ):
+            response.raise_for_status()
+            assert len(response.content) < 100_000
+        # Persistence still keeps every call.
+        persisted = json.loads(
+            (Path(event_service.conversation_dir) / "base_state.json").read_text()
+        )
+        assert len(persisted["stats"]["usage_to_metrics"]["agent"]["costs"]) == len(
+            metrics.costs
+        )
+
+
+def test_ask_agent_usage_is_in_conversation_info_at_once(server_env, patched_llm):
+    """GET /api/conversations/{id} counts a side question's usage as soon as
+    ask_agent returns, with no run or other state change after it.
+    """
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        conv.ask_agent("How's the progress?")
+
+        with httpx.Client(base_url=server_env["host"]) as client:
+            response = client.get(f"/api/conversations/{conv.id}")
+        response.raise_for_status()
+        usage_to_metrics = response.json()["stats"]["usage_to_metrics"]
+        assert "ask-agent-llm" in usage_to_metrics
+        token_usage = usage_to_metrics["ask-agent-llm"]["accumulated_token_usage"]
+        assert token_usage["prompt_tokens"] == 7  # one patched_llm call
+    finally:
+        conv.close()
 
 
 def test_events_not_lost_during_client_disconnection(

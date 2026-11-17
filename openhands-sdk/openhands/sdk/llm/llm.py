@@ -18,6 +18,7 @@ from collections.abc import (
 from contextvars import ContextVar
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Literal,
@@ -33,9 +34,8 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    TypeAdapter,
     computed_field,
-    field_serializer,
-    field_validator,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -68,7 +68,7 @@ from openhands.sdk.llm.utils.runtime_metadata import (
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
@@ -221,9 +221,8 @@ JOINT_BUDGET_MIN_OUTPUT_TOKENS: Final[int] = 1024
 # registry) for the same underlying API.
 _JOINT_BUDGET_PROVIDER_PREFIXES: Final[tuple[str, ...]] = ("bedrock",)
 
-# Secret-bearing fields on LLM. Kept as a single source of truth so callers that
-# need to walk secrets (e.g. cipher-aware decryption on the save path) stay in
-# sync with the serializer below.
+# The ``SecretField`` fields of LLM, for callers that walk secrets (e.g.
+# cipher-aware decryption on the save path).
 LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "api_key",
     "aws_access_key_id",
@@ -294,7 +293,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Model name.",
         json_schema_extra=field_meta(SettingProminence.CRITICAL),
     )
-    api_key: str | SecretStr | None = Field(
+    api_key: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         description="API key.",
         json_schema_extra=field_meta(
@@ -340,15 +339,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
 
-    aws_access_key_id: str | SecretStr | None = Field(
+    aws_access_key_id: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
-    aws_secret_access_key: str | SecretStr | None = Field(
+    aws_secret_access_key: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
-    aws_session_token: str | SecretStr | None = Field(
+    aws_session_token: Annotated[str | SecretStr | None, SecretField()] = Field(
         default=None,
         json_schema_extra=field_meta(),
     )
@@ -544,15 +543,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Enable caching of prompts.",
         json_schema_extra=field_meta(),
     )
+    log_completions_to_file: bool = Field(
+        default=False,
+        description="Enable completion JSON logging to log_completions_folder or a "
+        "configured completion-log callback. OpenTelemetry tracing is configured "
+        "separately and can export LLM message content while completion logging "
+        "is disabled.",
+        json_schema_extra=field_meta(),
+    )
     log_completions: bool = Field(
         default=False,
-        description="Enable logging of completions.",
+        description="Deprecated alias for log_completions_to_file. "
+        "Deprecated since v1.63.0 and scheduled for removal in v1.68.0.",
+        deprecated=True,
         json_schema_extra=field_meta(),
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
         description="The folder to log LLM completions to. "
-        "Required if log_completions is True.",
+        "Required if log_completions_to_file is True.",
         json_schema_extra=field_meta(),
     )
     custom_tokenizer: str | None = Field(
@@ -747,13 +756,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             _serialized_is_subscription.set(bool(data.get("is_subscription")))
         return data
 
-    @field_validator(
-        "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
-    )
-    @classmethod
-    def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
-        return validate_secret(v, info)
-
     @model_validator(mode="before")
     @classmethod
     def _coerce_inputs(cls, data):
@@ -767,6 +769,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         if "stream_idle_timeout" not in d:
             d["stream_idle_timeout"] = d.get("timeout", 300)
+
+        if "log_completions" in d:
+            old_val = TypeAdapter(bool).validate_python(d.pop("log_completions"))
+            if "log_completions_to_file" in d:
+                new_val = TypeAdapter(bool).validate_python(
+                    d["log_completions_to_file"]
+                )
+                if new_val != old_val:
+                    raise ValueError(
+                        "Conflicting values for log_completions (deprecated) and "
+                        "log_completions_to_file: pass only log_completions_to_file."
+                    )
+            else:
+                d["log_completions_to_file"] = old_val
+                warn_deprecated(
+                    "LLM(log_completions=...)",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=4,
+                )
+
+        if "log_completions_to_file" in d:
+            d["log_completions"] = d["log_completions_to_file"]
 
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
@@ -831,6 +857,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         self._init_model_info_and_caps()
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("log_completions", "log_completions_to_file"):
+            if name == "log_completions":
+                warn_deprecated(
+                    "LLM.log_completions assignment",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
+            super().__setattr__("log_completions_to_file", value)
+            super().__setattr__("log_completions", value)
+            return
+        super().__setattr__(name, value)
+
     def model_copy(
         self,
         *,
@@ -839,6 +880,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> Self:
         # Pydantic copies private attrs without re-running validators, even for
         # deep copies, so routing-field updates must rebuild derived metadata.
+        if update is not None and "log_completions" in update:
+            update = dict(update)
+            old_val = TypeAdapter(bool).validate_python(update.pop("log_completions"))
+            if "log_completions_to_file" in update:
+                new_val = TypeAdapter(bool).validate_python(
+                    update["log_completions_to_file"]
+                )
+                if new_val != old_val:
+                    raise ValueError(
+                        "Conflicting values for log_completions (deprecated) and "
+                        "log_completions_to_file: pass only log_completions_to_file."
+                    )
+            else:
+                update["log_completions_to_file"] = old_val
+                warn_deprecated(
+                    "LLM.model_copy(update={'log_completions': ...})",
+                    deprecated_in="1.63.0",
+                    removed_in="1.68.0",
+                    details="Use log_completions_to_file instead.",
+                    stacklevel=3,
+                )
+        if update is not None and "log_completions_to_file" in update:
+            update = dict(update)
+            update["log_completions"] = update["log_completions_to_file"]
         copied = super().model_copy(update=update, deep=deep)
         route_changed = update is not None and any(
             k in update for k in ("model", "base_url", "litellm_extra_body")
@@ -850,10 +915,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Sessions follow the role. A copy made for another role is a
             # different user of the model, so it starts its own accounting.
             copied.reset_metrics()
-        elif not deep:
-            # Same role, same sessions: the shallow copy shares ``_session``
-            # already, and stays with the conversation the original is in.
-            copied._registry_session = self._registered_session()
+        else:
+            if not deep:
+                # Same role, same session: the shallow copy shares
+                # ``_session`` already, and stays with the conversation the
+                # original is in.
+                copied._registry_session = self._registered_session()
+            # A deep copy never shares ``_registry_session``: it is a raw
+            # slot, not a ``PrivateAttr``, so pydantic's deepcopy leaves it
+            # unset on the copy (``_registered_session()`` below returns
+            # ``None`` for it via the ``AttributeError`` fallback).
+            logging_changed = update is not None and (
+                "log_completions_to_file" in update
+                or "log_completions_folder" in update
+            )
+            if logging_changed and copied._registered_session() is None:
+                # Not part of a conversation: ``session_for`` won't run
+                # ``LLMSession.follow`` to resync these settings before the
+                # next call, so give the copy its own ``Telemetry`` now.
+                # For a shallow copy this starts from ``self``'s telemetry
+                # (shared ``_session`` otherwise), carrying over ``metrics``
+                # and attached callbacks by reference. For a deep copy,
+                # ``copied.session.telemetry`` is already an independent
+                # deep copy (own ``Metrics``); rebuilding from ``self``'s
+                # telemetry instead would silently re-merge the two copies'
+                # usage into one shared ``Metrics`` instance.
+                source_telemetry = (
+                    copied.session.telemetry if deep else self.session.telemetry
+                )
+                copied._session = LLMSession._wrapping(
+                    source_telemetry.model_copy(
+                        update={
+                            "completion_logging_enabled": (
+                                copied.log_completions_to_file
+                            ),
+                            "log_dir": copied.log_completions_folder
+                            if copied.log_completions_to_file
+                            else None,
+                        }
+                    )
+                )
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
@@ -905,13 +1006,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # which would create noisy duplicate error logs.
         # The completion()/responses() exception handlers call Telemetry.on_error
         # after retries are exhausted (final failure), which is what we want to log.
-
-    # =========================================================================
-    # Serializers
-    # =========================================================================
-    @field_serializer(*LLM_SECRET_FIELDS, when_used="always")
-    def _serialize_secrets(self, v: SecretStr | None, info):
-        return serialize_secret(v, info)
 
     # =========================================================================
     # Public API
@@ -1221,6 +1315,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
             retry_listener=self._retry_listener_fn,
+            timeout=self.timeout,
         )
 
     def _timeout_error(self, detail: str, seconds: float) -> LiteLLMTimeout:
@@ -1253,7 +1348,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return decorate
 
     async def _anext_with_idle_timeout(
-        self, iterator: AsyncIterator[_T], timeout: float
+        self,
+        iterator: AsyncIterator[_T],
+        timeout: float,  # noqa: ASYNC109 - this function is the cancel scope
     ) -> _T:
         """Await one chunk, converting only this idle timer's own expiry.
 
@@ -1560,12 +1657,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "messages": formatted_messages[:],  # already simple dicts
         }
-        if telemetry.log_enabled:
+        if telemetry.completion_logging_enabled:
             telemetry_ctx.update(
                 {
-                    "messages": formatted_messages[:],  # already simple dicts
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -1698,14 +1795,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.session_for(call_context).telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "instructions": instructions,
+            "input": input_items[:],
         }
-        if telemetry.log_enabled:
+        if telemetry.completion_logging_enabled:
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
-                    "instructions": instructions,
-                    "input": input_items[:],
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -1729,9 +1826,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ``Telemetry.on_response`` and is not returned to the caller.
 
         Raises:
-            LLMNoResponseError: If the response has no choices
-                (Gemini sometimes returns empty choices; raising here
-                inside the retry boundary ensures it is retried).
+            LLMNoResponseError: If the response has no choices, or its only
+                choice carries no text content, no tool calls, and no
+                reasoning. Raising here, inside the retry boundary, ensures
+                both cases are retried.
         """
         raw_resp: ModelResponse | None = None
         if use_mock_tools:
@@ -1758,6 +1856,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not resp.get("choices") or len(resp["choices"]) < 1:
             raise LLMNoResponseError(
                 "Response choices is less than 1. Response: " + str(resp)
+            )
+
+        # A content-free completion is a provider failure, not agent behaviour
+        # (#6085): returning it would persist an empty agent message whose
+        # corrective nudge does not break the stuck detector's agent streak.
+        # A completion cut off by the output-token cap (e.g. the profile
+        # pre-flight ping with max_tokens=1) is deterministic, so retrying it
+        # would only repeat the same empty answer.
+        choice = resp["choices"][0]
+        message = Message.from_llm_chat_message(choice["message"])
+        has_content = any(
+            isinstance(c, TextContent) and bool(c.text.strip()) for c in message.content
+        )
+        if not (
+            choice.get("finish_reason") == "length"
+            or has_content
+            or message.tool_calls
+            or message.reasoning_content
+            or message.thinking_blocks
+        ):
+            raise LLMNoResponseError(
+                "Response choices[0] message has no content, tool calls, or "
+                "reasoning. Response: " + str(resp)
             )
         return resp
 
@@ -3411,7 +3532,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return template_messages
 
     @classmethod
-    def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
+    def from_persisted(
+        cls, data: Any, *, context: Mapping[str, Any] | None = None
+    ) -> LLM:
         """Load a persisted LLM profile payload, applying schema migrations."""
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -3438,7 +3561,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return create_subscription_llm_from_config(llm)
         return llm
 
-    def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def to_persisted(
+        self, *, context: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Serialize this LLM for profile persistence."""
         data = self.model_dump(mode="json", exclude_none=True, context=context)
         if data.get("auth_type") == "subscription":
@@ -3453,13 +3578,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     @classmethod
     def load_from_json(
-        cls, json_path: str, *, context: dict[str, Any] | None = None
+        cls, json_path: str, *, context: Mapping[str, Any] | None = None
     ) -> LLM:
         """Load an LLM instance from a JSON file.
 
         Args:
             json_path: Path to the JSON file containing LLM configuration.
-            context: Optional validation context (e.g., ``{"cipher": cipher}``
+            context: Optional validation context (e.g., ``cipher_context(cipher)``
                 for decrypting secrets stored at rest).
 
         Returns:

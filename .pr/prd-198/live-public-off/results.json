@@ -1,0 +1,60 @@
+{
+  "tested_commits": {
+    "sdk": "5c9c4294143fb569f89f962890835b070602e980",
+    "enterprise": "7f12c33ca5895bd836e672386dfd807f38f03728"
+  },
+  "sdk_live_matrix": {
+    "default": {
+      "total_skills": 74,
+      "custom_github_active": false,
+      "organization_plugin_preserved": true,
+      "skills_catalog_disabled": false,
+      "plugin_catalog_disabled": false,
+      "skill_catalog_items": 78,
+      "plugin_catalog_items": 9
+    },
+    "skills-off": {
+      "total_skills": 2,
+      "custom_github_active": true,
+      "organization_plugin_preserved": true,
+      "skills_catalog_disabled": false,
+      "plugin_catalog_disabled": false,
+      "skill_catalog_items": 78,
+      "plugin_catalog_items": 9
+    },
+    "catalog-off": {
+      "total_skills": 74,
+      "custom_github_active": false,
+      "organization_plugin_preserved": true,
+      "skills_catalog_disabled": true,
+      "plugin_catalog_disabled": true,
+      "skill_catalog_items": 0,
+      "plugin_catalog_items": 0
+    },
+    "both-off": {
+      "total_skills": 2,
+      "custom_github_active": true,
+      "organization_plugin_preserved": true,
+      "skills_catalog_disabled": true,
+      "plugin_catalog_disabled": true,
+      "skill_catalog_items": 0,
+      "plugin_catalog_items": 0
+    }
+  },
+  "enterprise_automatic_public_discovery": {
+    "default_count": 73,
+    "public_off_count": 0
+  },
+  "fresh_runtime_controls": {
+    "OH_PUBLIC_SKILLS_ENABLED": "false",
+    "OH_PUBLIC_PLUGIN_CATALOG_ENABLED": "false"
+  },
+  "custom_github_content_verified": true,
+  "organization_plugin_skill_preserved": true,
+  "both_organization_skills_invoked": true,
+  "independent_file_reads_passed": true,
+  "both_public_catalog_endpoints_disabled_and_empty": true,
+  "fresh_both_off_sdk_public_repository_cache_absent": true,
+  "default_agent_task_independently_verified": true,
+  "canvas_public_off_task_finished": true
+}

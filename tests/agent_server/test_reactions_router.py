@@ -1,6 +1,7 @@
 """Tests for POST /api/conversations/{id}/reactions."""
 
 from collections.abc import AsyncIterator
+from unittest.mock import patch
 from uuid import UUID
 
 import httpx
@@ -14,6 +15,7 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.event_router import event_router
+from openhands.agent_server.event_service import ServiceInactive
 from openhands.agent_server.experimental_features import (
     RUNTIME_EXPERIMENTAL_FEATURES_ENV,
 )
@@ -162,3 +164,20 @@ async def test_a_docker_runtime_leaves_the_switch_to_its_host(
     )
 
     assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_service_is_not_a_bad_reaction(client, service, tmp_path):
+    """ServiceInactive is a server state, not a bad request: it is not a 400."""
+    cid, _ = await _conversation_with_answer(service, tmp_path)
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+
+    async def inactive(*args, **kwargs):
+        raise ServiceInactive()
+
+    with (
+        patch.object(event_service, "react", inactive),
+        pytest.raises(ServiceInactive),
+    ):
+        await client.post(f"/api/conversations/{cid}/reactions", json={"emoji": "+1"})

@@ -23,7 +23,7 @@ Examples: `examples/01_standalone_sdk/36_event_json_to_openai_messages.py`
 - `S05.event-cache`: deserialized events are cached, so repeated iteration does not re-read and re-parse files. Unit: `tests/sdk/conversation/test_event_store.py::test_event_cache_eliminates_repeated_deserialization`, `::test_event_cache_survives_across_multiple_iterations`. Example: none. Real-LLM: none.
 - `S05.event-tree`: events carry `parent_id`; `path_to_root` walks a branch, detects cycles, and `append` rejects a parent that does not exist. Unit: `tests/sdk/conversation/test_event_tree.py`. Example: none. Real-LLM: none. (Branch navigation from the conversation API is `S04.fork-branch`.)
 - `S05.visualize`: each event has a Rich `visualize` rendering: action summaries, truncated system-prompt tool parameters, without mutating the event. Unit: `tests/sdk/event/test_action_event_summary.py`, `tests/sdk/event/test_system_prompt_event_visualize.py`, `tests/sdk/conversation/test_visualizer.py`. Example: `examples/01_standalone_sdk/26_custom_visualizer.py`. Real-LLM: none.
-- `S05.error-classification`: `ConversationErrorEvent` and `AgentErrorEvent` carry a `FailureKind` classification derived from the error code before the detail text; a sensitive detail is classified without being serialized. Unit: `tests/sdk/event/test_error_classification.py`. Example: none. Real-LLM: none.
+- `S05.error-classification`: `ConversationErrorEvent` and `AgentErrorEvent` carry a `FailureKind` classification derived from the error code before the detail text; a sensitive detail is classified without being serialized. An `LLMTimeoutError` whose detail is a hard timeout (`LLM hard timeout after ...`) or carries the exhausted-timeout summary (`did not return a complete response within the LLM timeout`, `S02.timeouts`) is `config`, not retryable, `user_action=settings`; a timeout that did not use the whole LLM timeout (`Connection timed out.`, `Request timed out.`) stays `transient`, retryable, `user_action=retry`, and so does an `LLMNoResponseError` from a run whose replies were all content-free. Unit: `tests/sdk/event/test_error_classification.py` (`test_exhausted_llm_timeout_points_to_settings_not_retry` and the timeout cases for the timeouts), `tests/sdk/llm/test_llm_timeout.py::test_hard_timeouts_stop_retrying_after_the_timeout_budget`, `tests/sdk/conversation/local/test_empty_response_retry.py::test_exhausted_empty_completions_end_as_retryable_error`. Example: none. Real-LLM: none.
 - `S05.streaming-delta`: `StreamingDeltaEvent` holds a `content` and `reasoning_content` token delta, dumps with its `kind` and round-trips through JSON; it is transient (published by the agent server for WebSocket clients, never appended to the event log). Unit: `tests/sdk/event/test_streaming.py`. Example: none. Real-LLM: none.
 - `S05.completion-log-event`: `LLMCompletionLogEvent` carries a completion log (filename, JSON data, model, usage id) as an event; the agent server emits it for remote conversations. Unit: `tests/sdk/event/test_llm_completion_log_event.py`. Example: none. Real-LLM: none.
 - `S05.token-event`: with `litellm_extra_body={"return_token_ids": True}` (vLLM), the agent emits a `TokenEvent` with prompt and response token ids. Unit: **none (untested)**. Example: none. Real-LLM: none.
@@ -78,6 +78,30 @@ Preconditions:
     --check auth_kind eq auth --check rate_limit_kind eq rate_limit --check code_beats_detail eq internal \
     --check secret_in_classification eq false
   ```
+- **LLM failures that end a run (`S05.error-classification`).** A conversation whose real `LLM` (`openai/gpt-4o-mini`) talks to `programs/S02/fake_provider.py`: an endpoint that never answers (`timeout=1`, `num_retries=5`), and an endpoint whose every reply is content-free (`num_retries=2`); then `classify_error` on the text of one quick timeout.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S05/llm_failures --arg exhausted \
+    --check hard_timeout.status eq error --check hard_timeout.requests eq 2 --check hard_timeout.errors eq 1 \
+    --check hard_timeout.code eq LLMTimeoutError --check hard_timeout.detail contains "within the LLM timeout of 1s" \
+    --check hard_timeout.classification.kind eq config --check hard_timeout.classification.retryable eq false \
+    --check hard_timeout.classification.user_action eq settings \
+    --check content_free.status eq error --check content_free.errors eq 1 --check content_free.code eq LLMNoResponseError \
+    --check content_free.classification.kind eq transient --check content_free.classification.retryable eq true \
+    --check content_free.classification.user_action eq retry \
+    --check single_quick_timeout.kind eq transient --check single_quick_timeout.retryable eq true
+  ```
+  The timed-out run's `ConversationErrorEvent` points the user at the LLM settings rather than at another identical attempt; the content-free run's event stays a retryable transient failure.
+- **A run of quick timeouts (`S05.error-classification`).** The same conversation with a streamed `LLM` whose every stream stalls past `stream_idle_timeout=0.3`, far inside `timeout=30` (`num_retries=3`, `await conversation.arun()`).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S05/llm_failures --arg quick \
+    --check quick_timeout.status eq error --check quick_timeout.requests eq 3 --check quick_timeout.errors eq 1 \
+    --check quick_timeout.code eq LLMTimeoutError \
+    --check quick_timeout.classification.kind eq transient --check quick_timeout.classification.retryable eq true \
+    --check quick_timeout.classification.user_action eq retry
+  ```
+  Expected: the stalls never come near the LLM timeout, so the event stays `transient`, retryable, `user_action=retry`, like any timeout that did not use the whole LLM timeout. Known failure (reproduced 2026-11-15, [#6864](https://github.com/OpenHands/software-agent-sdk/issues/6864), fix in [#6866](https://github.com/OpenHands/software-agent-sdk/pull/6866)): all three attempts run, but the final `LLMTimeoutError` reads `LLM stream idle timeout after 0.3 seconds. The model did not return a complete response within the LLM timeout of 30s (gave up after 3 attempts, 1s in total). ... or a higher timeout in the LLM settings.`, and the event is classified `config`, not retryable, `user_action=settings`: every timeout that runs out of attempts gets the hard-timeout summary, and the classifier keys on that summary.
 - **Concurrent appends (`S05.event-log-append`).** Four threads append 40 events to a finished conversation's log, as two parts of one program would.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -102,7 +126,7 @@ Preconditions:
   control-sdk program S05/damaged_log --arg "$CID" --arg delete \
     --check reopen_error missing --check lost_beyond_damaged eq 0
   ```
-  Expected: the conversation reopens with every readable event, and the damaged file is reported once in the log. Before #6649, reopening over a corrupted file failed with a pydantic `ValidationError` ("Invalid JSON"), and over an empty file with `FileNotFoundError: Missing event file`; a deleted file has recovered since #6197. The event log now reads an unreadable file as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) with the same id and place, so the event count is unchanged.
+  Expected: the conversation reopens with every readable event, and the damaged file is reported once in the log. A corrupted, empty or deleted event file does not stop the reopen. The event log reads an unreadable file as a `ConversationErrorEvent` stand-in (code `UnreadableEventFile`) with the same id and place, so the event count is unchanged.
 - **The same, live (`S05.json-roundtrip`, `S05.events-to-messages`, `S05.openai-format`).** A real model does the task its own way; the reload must hold for whatever it produced.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

@@ -88,6 +88,8 @@ def sample_conversation_id():
 def mock_event_service():
     """Create a mock EventService for testing."""
     service = AsyncMock(spec=EventService)
+    service._gateway_run_lock = asyncio.Lock()
+    service._active_gateway_runs = 0
     service.send_message = AsyncMock()
     return service
 
@@ -870,5 +872,13 @@ def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_i
         assert len(body) == 3
         assert body[0] is None and body[2] is None
         assert body[1]["id"] == known.id
+
+        # Browser-safe POST alias: same payload and ordered null semantics.
+        post_response = client.post(
+            f"{url}/batch", json=["qa-missing-event", known.id, "qa-missing-2"]
+        )
+        assert post_response.status_code == 200
+        assert post_response.json() == body
+        assert client.post(f"{url}/batch", json=[]).json() == []
     finally:
         client.app.dependency_overrides.clear()

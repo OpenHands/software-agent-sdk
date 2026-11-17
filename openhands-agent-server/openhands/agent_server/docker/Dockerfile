@@ -93,7 +93,12 @@ ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::ht
 # CVE-2026-109518, root code execution through a download-verification
 # bypass), first published in snapshot 20261104T120337Z. debian:trixie-slim
 # already ships apt 3.0.4, so older snapshots fail to install apt-utils.
-ARG DEBIAN_SNAPSHOT=20261105T000000Z
+# zlib 1:1.3.dfsg+really1.3.1-1+deb13u1 (CVE-2026-76844, CVE-2026-85091)
+# first appears in trixie-security snapshot 20261107T075304Z.
+# 20261114 skips the three-day window to pick up linux-libc-dev 6.12.117-1
+# (DSA-6628-1: CVE-2026-98466, CVE-2026-98715, CVE-2026-98853, CVE-2026-99109,
+# CVE-2026-99281, CVE-2026-99288), first published in snapshot 20261113T212035Z.
+ARG DEBIAN_SNAPSHOT=20261114T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node

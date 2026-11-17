@@ -46,13 +46,14 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
 - `F05.interrupt-tool-call`: interrupt while a tool call runs returns at once: `paused`, an `InterruptEvent`, an `AgentErrorEvent` for the unfinished call (same `tool_call_id`) and no observation; the resumed run sends that error to the model as the tool result and finishes.
 - `F05.run-capacity`: with `max_concurrent_runs` 1, `POST /run` on a second conversation returns 429 while the first holds the slot, leaves it `idle`, and succeeds once the first is interrupted.
 - `F05.stuck-detected`: with `stuck_detection` on (the default), a run whose model repeats the same tool call ends `stuck` after four identical action/observation pairs (four model calls), with no `ConversationErrorEvent`; GET, `status=stuck` search and count and the events socket say `stuck`.
-- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200, goes `running` and straight back to `stuck` without a model call. The SDK reports the same behavior as a known failure ([#6648](https://github.com/OpenHands/software-agent-sdk/issues/6648), `S01.stuck-recover`): if that is fixed, this bullet changes with it.
+- `F05.stuck-rerun`: `POST /run` on a `stuck` conversation with no new input returns 200 and resumes it with a fresh stuck-detection window: the model is called again, and a model that keeps looping ends `stuck` again after four more identical action/observation pairs (as the SDK does, `S01.stuck-recover`).
 - `F05.stuck-new-input`: a new user message moves a `stuck` conversation to `idle`, and `POST /run` runs it again to `finished`.
 - `F05.max-iterations-stop`: a conversation created with `max_iterations: 6` and `stuck_detection: false` whose model never finishes makes exactly six model calls (past the stuck threshold) and ends `error` with exactly one `ConversationErrorEvent` `code: MaxIterationsReached` naming the limit, on REST and the events socket, never `stuck`.
 - `F05.max-iterations-resume`: `POST /run` after `MaxIterationsReached` is accepted and gets a fresh budget of six model calls (a second `MaxIterationsReached`), and once the model calls `finish` the next run ends `finished`.
 - `F05.restart-running-graceful`: a conversation running at a graceful restart comes back `paused`, with a `PauseEvent` and an `InterruptEvent`.
 - `F05.restart-keeps-status`: `finished`, `paused` and `error` statuses survive a restart unchanged.
 - `F05.restart-hard-running`: a conversation running when the server is SIGKILLed comes back `error` on the next start, and `/run` resumes it.
+- `F05.restart-hard-tool-call`: a conversation SIGKILLed while a tool call runs comes back `error` with one `AgentErrorEvent` for that `tool_call_id` that says where it came from: `recovery_reason` `server_restart` and `classification` `{"kind": "internal", "retryable": false}`, on search, get-one and the events socket replay; an interrupted call's `AgentErrorEvent` has no `recovery_reason`.
 - `F05.pause-running-crash`: a pause accepted during a model call survives a SIGKILL: the conversation comes back `paused`, as its persisted `PauseEvent` and status update say, not `error`.
 
 ## How to get to it (agent POV)
@@ -65,7 +66,7 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
   `{"detail": "credential_binding_activation_required", "retryable": true}`
   when a required credential binding is missing (credential family); 400 while
   the server shuts down. `/run` also resumes `paused` and `error`
-  conversations (a `stuck` one only after new input) and approves actions
+  conversations (a `stuck` one with a fresh stuck-detection window) and approves actions
   waiting for confirmation.
 - REST: `POST /api/conversations/{conversation_id}/pause` and
   `POST /api/conversations/{conversation_id}/interrupt` (no body), 200
@@ -417,27 +418,24 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   waits), one `PauseEvent` is persisted, `status=paused` lists `P` and the
   socket pushes `paused` and the `PauseEvent`. The model call is still in
   flight, so `/run` is still 409 even though the status is `paused`.
-- **GET after a mid-call pause (`F05.pause-running-get`), known bug.** Read
+- **GET after a mid-call pause (`F05.pause-running-get`).** Read
   the same conversation through its detail route and its state file.
   ```sh
   control-agent-server api GET /api/conversations/search --query status=paused --check items contains "$P"
   control-agent-server api POST "/api/conversations/$P/run" --expect 409
-  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get  # bug: status eq 200 && checks.0.actual eq running
-  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused  # bug: checks.0.actual eq running
+  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get
+  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused
   ```
   The status search (the live status says `paused`) and the 409 (the model
   call is still in flight) are the controls that the mid-call pause holds.
-  Expected: `paused`, like the socket, the event log and the status search.
-  Today both still say `running` until the model call returns (here 300 s) or
-  is interrupted: the pause runs inside the run loop's open state block
-  (`ConversationState._save_depth` stays 1 while `arun()` releases only the
-  lock for the network wait, `_released_state_lock_during_io` in
-  `local_conversation.py`), so the autosave of `base_state.json` is deferred
-  to the end of the step, and `GET /api/conversations/{id}` answers from that
-  file. Even `search?status=paused`, which filters on the live status and so
-  lists `P`, returns `P`'s item with `execution_status` `running`. A consumer
-  that pauses and polls GET (as `conversation wait` and SDK pollers do) keeps
-  seeing `running`, and a crash in that window loses the pause
+  Both say `paused`, like the socket, the event log and the status search,
+  although the model call is still in flight: the run loop releases the
+  state's deferred-save depth with the lock around the network wait
+  (`_released_state_lock_during_io` in `local_conversation.py`), so the
+  pause is written to `base_state.json` at once, and
+  `GET /api/conversations/{id}` answers from that file. A consumer that
+  pauses and polls GET (as `conversation wait` and SDK pollers do) sees
+  `paused` right away, and a crash in that window keeps the pause
   (`F05.pause-running-crash`).
 - **Release a paused step with interrupt (`F05.pause-running-release`).**
   ```sh
@@ -587,13 +585,16 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server ws read f05-l-rerun --contains '"key": "execution_status", "value": "running"'
   control-agent-server ws stop f05-l-rerun --contains '"key": "execution_status", "value": "stuck"' --save F05.stuck-rerun/frames
   control-agent-server api GET "/api/conversations/$L" --check execution_status eq stuck
-  control-agent-server api GET "/api/conversations/$L/events/count" --query kind=$ACTION_KIND --check . eq 4
-  control-agent-server sink read --name qa-f05-loop --expect-min 4 --expect-max 4
+  control-agent-server api GET "/api/conversations/$L/events/count" --query kind=$ACTION_KIND --check . eq 8
+  control-agent-server api GET "/api/conversations/$L/events/count" --query kind=$OBSERVATION_KIND --check . eq 8
+  control-agent-server sink read --name qa-f05-loop --expect-min 8 --expect-max 8
   ```
-  `/run` is accepted and the run ends at once (its closing `full_state`
-  frame): the socket shows `running` then `stuck`, and there is no new action
-  and no fifth model request. The stuck detector looks only at events since
-  the last user message, so `/run` alone re-detects the same loop.
+  `/run` is accepted and the run resumes: the stuck detector counts only the
+  events after the resume (as it does after a new user message), so the
+  four earlier pairs do not re-trigger it. The stub keeps looping, so after
+  four more model calls, actions and observations (eight of each in all)
+  the run ends `stuck` again (its closing `full_state` frame): the socket
+  shows `running` then `stuck`.
 - **New input un-sticks it (`F05.stuck-new-input`).** The provider now
   answers with a `finish` call.
   ```sh
@@ -603,7 +604,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api POST "/api/conversations/$L/run" --expect 200 --check success eq true
   control-agent-server conversation wait "$L" --until finished --timeout 60
   control-agent-server api GET "/api/conversations/$L/agent_final_response" --check response eq QA_F05_UNSTUCK --save F05.stuck-new-input/final
-  control-agent-server sink read --name qa-f05-loop --expect-min 5 --expect-max 5
+  control-agent-server sink read --name qa-f05-loop --expect-min 9 --expect-max 9
   ```
   The message resets `stuck` to `idle`, and the next run makes one model call
   and ends `finished` with the stub's `finish` message.
@@ -700,7 +701,46 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   over the dead owner's lease, marks `K` `error` (a persisted
   `execution_status` update), nothing is `running`, and `/run` resumes `K`
   (interrupted again to free the slot).
-- **Crash after a mid-call pause (`F05.pause-running-crash`), known bug.**
+- **Crash during a tool call (`F05.restart-hard-tool-call`).** A new
+  conversation `X` on its own stub, whose model asks for `terminal`
+  `sleep 120`, is SIGKILLed while that command runs (the slot is free:
+  `K` was interrupted). `T`'s interrupted call is the contrast.
+
+  Requires: `F05.interrupt-tool-call`
+  Needs: `tmux`
+  ```sh
+  control-agent-server api GET "/api/conversations/$T/events/search" --query kind=$AGENT_ERROR_KIND \
+    --check items len-eq 1 --check items.0.recovery_reason missing --save F05.restart-hard-tool-call/interrupt-error
+  CRASH=$(control-agent-server fixture llm-stub --name qa-f05-crash --step 'tool:terminal:{"command":"sleep 120"}' --print-path)
+  CRASH_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$CRASH/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  X=$(control-agent-server conversation start --body-json "{\"agent\": $CRASH_AGENT}" --no-autotitle --print-id)
+  control-agent-server conversation send "$X" --text 'hi' --no-run
+  control-agent-server api POST "/api/conversations/$X/run" --expect 200 --check success eq true
+  control-agent-server api GET "/api/conversations/$X/events/count" --query kind=$ACTION_KIND --check . eq 1 --until-ok 30
+  XCALL=$(control-agent-server api GET "/api/conversations/$X/events/search" --query kind=$ACTION_KIND --field items.0.tool_call_id)
+  control-agent-server api GET "/api/conversations/$X" --check execution_status eq running
+  control-agent-server restart --hard
+  control-agent-server api GET "/api/conversations/$X" --check execution_status eq error --save F05.restart-hard-tool-call/get
+  control-agent-server api GET "/api/conversations/$X/events/search" --query kind=$AGENT_ERROR_KIND \
+    --check items len-eq 1 --check items.0.tool_call_id eq "$XCALL" --check items.0.recovery_reason eq server_restart \
+    --check items.0.classification.kind eq internal --check items.0.classification.retryable eq false \
+    --check items.0.error contains 'A restart occurred while this tool was in progress' --save F05.restart-hard-tool-call/agent-error
+  XERR=$(control-agent-server api GET "/api/conversations/$X/events/search" --query kind=$AGENT_ERROR_KIND --field items.0.id)
+  control-agent-server api GET "/api/conversations/$X/events/$XERR" --check recovery_reason eq server_restart --save F05.restart-hard-tool-call/get-one
+  control-agent-server api GET "/api/conversations/$X/events/count" --query kind=$OBSERVATION_KIND --check . eq 0
+  control-agent-server ws listen "/sockets/events/$X" --query resend_mode=all --duration 5 \
+    --until-kind AgentErrorEvent --until recovery_reason=server_restart --save F05.restart-hard-tool-call/replay
+  control-agent-server doctor
+  ```
+  Before the crash `X` is `running` with one `ActionEvent` and no result.
+  After it, `X` is `error` and carries exactly one `AgentErrorEvent`
+  answering `XCALL` ("A restart occurred while this tool was in
+  progress..."), marked `recovery_reason` `server_restart` and classified
+  `internal`, not retryable, the same on search, get-one and the socket
+  replay, and no observation. `T`'s `AgentErrorEvent` from an interrupt has
+  no `recovery_reason` (search omits null fields), so a consumer can tell a
+  crash-synthesized outcome from an interrupted one.
+- **Crash after a mid-call pause (`F05.pause-running-crash`).**
   `K` runs into the hanging stub again, is paused while the model call is in
   flight, and the server is SIGKILLed. The last bullet, so nothing depends on
   what it leaves behind.
@@ -714,16 +754,15 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
   control-agent-server restart --hard
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
-  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get  # bug: status eq 200 && checks.0.actual eq error
+  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get
   ```
   The stub's new request proves the model call was in flight when the pause
   landed, and the second `PauseEvent` is still in the event log after the
-  crash (the control). Expected: `paused`, the last status the server
-  accepted and persisted in the event log (the `PauseEvent` and the
-  `execution_status` `paused` update are both on disk). Today `K` comes back
-  `error`: the pause never reached
-  `base_state.json` (`F05.pause-running-get`), so the restart sees `running`
-  and treats the conversation as crashed mid-run.
+  crash (the control). `K` comes back `paused`, the last status the server
+  accepted (the `PauseEvent` and the `execution_status` `paused` update are
+  on disk, and the pause reached `base_state.json` at once,
+  `F05.pause-running-get`), so the restart does not treat it as crashed
+  mid-run.
 
 ## Gotchas
 
@@ -740,9 +779,10 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   first run holds the slot.
 - `GET /api/conversations/{id}` composes its answer from the autosaved
   `base_state.json`, while the events socket, the status filters of search
-  and count, and the event log come from memory. They differ while a step is
-  in flight and something changed the state mid-step
-  (`F05.pause-running-get`).
+  and count, and the event log come from memory. A change made during a
+  model call (the run loop has released the lock) is written at once
+  (`F05.pause-running-get`); one made on the run loop's own thread inside a
+  step is written only when the step ends (`F09.switch-llm-mid-run-get`).
 - Pause does not stop a model call that is in progress: the status flips to
   `paused` at once, but the step finishes first, and until then `/run`
   answers 409 "Wait for completion or pause first" although the conversation
@@ -768,7 +808,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
 - Graceful shutdown pauses and cancels running conversations (`PauseEvent`
   then `InterruptEvent`); SIGKILL leaves `running` on disk, and the next start
   turns it into `error` and appends an `AgentErrorEvent` for an unfinished
-  tool call, if any. A lease held by a dead process on the same host is taken
+  tool call, if any, marked `recovery_reason: "server_restart"`
+  (`F05.restart-hard-tool-call`). A lease held by a dead process on the same host is taken
   over immediately; a lease from another host must expire first
   (`OH_LEASE_TTL_SECONDS`, default 45), and until then `/run` answers 404.
 - `F05.run-error-responsive` only means something with the default console
@@ -781,11 +822,12 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   after every pause and interrupt. Counting them (`--expect-min`) is how the
   recipes prove a run ended when no status changes (`F05.run-finished-noop`,
   `F05.pause-tool-step`).
-- `stuck` is not an error: no `ConversationErrorEvent`, and `/run` on a
-  `stuck` conversation re-runs the detector over the events since the last
-  user message, so it returns to `stuck` at once without a model call. Only
-  new input (or a conversation created with `stuck_detection: false`) lets
-  the loop continue (`F05.stuck-rerun`, `F05.stuck-new-input`).
+- `stuck` is not an error: no `ConversationErrorEvent`. `/run` on a
+  `stuck` conversation resumes it with a fresh detection window (only events
+  after the resume count), so a model that keeps repeating itself makes four
+  more calls and ends `stuck` again; new input also resets the window
+  (`F05.stuck-rerun`, `F05.stuck-new-input`). A conversation created with
+  `stuck_detection: false` never ends `stuck`.
 - `max_iterations` counts agent steps per run, not per conversation: every
   `/run` starts from zero (`F05.max-iterations-resume`). A step that ends
   with `finish` on the last allowed iteration stays `finished`.

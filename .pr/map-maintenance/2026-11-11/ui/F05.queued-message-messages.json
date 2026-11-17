@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "total": 13,
+  "pages": 1,
+  "more": false,
+  "count": 3,
+  "events": [
+    {
+      "kind": "MessageEvent",
+      "source": "user",
+      "text": "Run this shell command: sleep 25 && echo slept. Then reply with only: done",
+      "ts": "2026-11-11T08:55:58.637129"
+    },
+    {
+      "kind": "MessageEvent",
+      "source": "user",
+      "text": "Also reply with: queued-ok",
+      "ts": "2026-11-11T08:56:26.300042"
+    },
+    {
+      "kind": "MessageEvent",
+      "source": "agent",
+      "text": "done queued-ok",
+      "ts": "2026-11-11T08:56:28.811768"
+    }
+  ]
+}

@@ -79,6 +79,7 @@ def mock_llm() -> LLM:
     mock_llm.metrics = None
     mock_llm.model = "test-model"
     mock_llm.log_completions = False
+    mock_llm.log_completions_to_file = False
     mock_llm.log_completions_folder = None
     mock_llm.custom_tokenizer = None
     mock_llm.base_url = None
