@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installed plugins in Docker conversations — #6930</title>
+<style>
+body{font:17px/1.6 system-ui,sans-serif;max-width:900px;margin:48px auto;padding:0 24px;color:#243147;background:#fafbfc}
+h1,h2{line-height:1.25;color:#142239}h2{margin-top:2em}code,pre{font-family:ui-monospace,monospace;background:#edf1f7}pre{padding:16px;overflow:auto;white-space:pre-wrap}table{border-collapse:collapse;width:100%}th,td{padding:12px;border:1px solid #cbd4df;text-align:left}a{color:#1257ac}.note{border-left:4px solid #2469b0;padding:12px 20px;background:#edf4fd}
+</style>
+<main>
+<h1>Installed plugins reach Docker conversations</h1>
+<p>Fix for <a href="https://github.com/OpenHands/software-agent-sdk/issues/6930">issue #6930</a>.
+The outer server knows its installed plugins, but a new per-conversation container has a separate persistence directory.
+Its ordinary SDK installed-plugin discovery therefore sees no host-installed plugins.</p>
+<h2>Change</h2>
+<pre>Before: server installed store → missing boundary → container ambient discovery
+After:  server installed store → private payload snapshot → container ambient discovery</pre>
+<p>Before starting a new or reprovisioned container, the registry copies enabled installed payloads into that runtime's existing private persistence directory.
+The SDK loads them through its existing ambient-plugin path. No explicit attachment, new mount, public API, or persisted schema field is introduced.</p>
+<ul>
+<li>Only snapshots marked as server-owned are reconciled. Disabled or uninstalled server plugins are removed on reprovision; an already running container keeps its snapshot.</li>
+<li>Explicit attachments retain the SDK's existing precedence and persistence. Container-local installations with the same name are not replaced.</li>
+<li>Copy installed payloads rather than re-fetching sources, so offline sources still work. Read host metadata without rewriting it; omit fetch URLs, host installation paths, and <code>.git</code> directories from the runtime snapshot.</li>
+<li>Use existing path-containment checks and preserve symlinks without dereferencing host targets during copying. Stage each payload before replacement and atomically write target metadata.</li>
+<li>Discovery or copy failures log a warning and do not fail conversation creation. Corrupt host metadata preserves the last snapshot; one failed payload copy does not prevent other payloads from being copied.</li>
+</ul>
+<h2>Observed before and after</h2>
+<table>
+<tr><th>Real workflow</th><th>Base</th><th>Fixed</th></tr>
+<tr><td>Enabled plugin; Docker and hybrid</td><td>Skill missing</td><td>Skill, command activation, hook output and MCP configuration present</td></tr>
+<tr><td>Disabled plugin; Docker and hybrid</td><td>Absent</td><td>Absent</td></tr>
+<tr><td>Disable/uninstall, stop, reprovision; both modes</td><td>Fails initial enabled assertion</td><td>Active snapshot retained; removed after reprovision</td></tr>
+<tr><td>Explicit same-name plugin; both modes</td><td>Pass</td><td>Explicit plugin wins and survives host disable</td></tr>
+</table>
+<p>The same final Docker regression file gives <strong>6 failed, 4 passed</strong> on base
+<code>06f643ca471eea73c662a76fef2e0b836a33c826</code> and <strong>10 passed</strong> with the fix.
+The related regression suite gives <strong>692 passed, 1 skipped, 16 deselected</strong>.</p>
+<p>A separate HTTP server run using the repository's verification CLI reproduced the missing skill on the base checkout, then exercised the fixed checkout with the same persisted conversation.
+The skill appeared; disabling the host plugin left the running snapshot intact; stopping and reprovisioning removed it.
+<a href="validation.json">Validation JSON</a> contains extracted checks, console summaries, source hashes and reproduction commands.</p>
+<h2>Reproduce</h2>
+<pre>make build
+OPENHANDS_DOCKER_PLUGIN_TEST_IMAGE=ghcr.io/openhands/agent-server:06f643c-python-slim   uv run --frozen pytest -m docker_live tests/agent_server/docker_runtime/test_installed_plugins_live.py
+uv run --frozen pytest tests/agent_server/docker_runtime   tests/agent_server/test_plugins_router.py   tests/agent_server/test_conversation_service_plugin.py   tests/sdk/conversation/test_local_conversation_plugins.py tests/sdk/plugin</pre>
+<p>To reproduce the baseline, copy only the live test file to a clean worktree at the base SHA and run the same live command.
+Docker must be available; the MCP fixture uses <code>host.docker.internal</code>, as in the Docker Desktop environment validated here.</p>
+<h2>Environment and limits</h2>
+<div class="note">macOS arm64 host, Python 3.13.12, Docker Desktop 4.82 / Engine 29.6.1; official Linux arm64 slim image from the same base SHA.
+Each test container uses 1 CPU and 2 GiB. The fix only changes the outer server, so the unmodified same-base runtime image exercises the new transport.</div>
+<p>Messages use <code>run=false</code>: plugin loading, command activation, shell hooks, and MCP connection are real; model inference and generated answer quality are not tested.
+The full python image pull stalled, so the slim variant was used. Full-image/browser/in-container Docker, x86_64, GPU and multi-node behavior are not claimed.</p>
+<p>The skipped related test is the existing opt-in worktree live test. The default suite deselects Docker-live cases; all ten new cases were explicitly run separately.
+An earlier harness iteration used the wrong event-list route; that harness error was corrected before the final before/after run and is not counted as a product failure.</p>
+<h2>Review</h2>
+<p>Self-review traced the ordinary create and reprovision entry points, ambient cleanup on resume, explicit attachment precedence, host isolation, source-read behavior, and owned-resource cleanup.
+No dependency or lockfile changes. The PR was prepared with AI assistance; this document does not represent human approval.</p>
+</main>
+</html>
