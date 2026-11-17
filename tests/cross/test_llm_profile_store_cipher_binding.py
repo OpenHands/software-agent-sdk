@@ -27,6 +27,9 @@ PACKAGE_ROOTS = [
     REPO_ROOT / "openhands-workspace" / "openhands",
 ]
 PER_CALL_CIPHER_METHODS = {"load", "save", "resolve_provider_connection"}
+# The deprecated ``LaunchStores(cipher=...)`` still hands its cipher to
+# ``llm_profiles.load`` per call. This entry goes when that argument does.
+DEPRECATED_PER_CALL_CIPHER = {"openhands-sdk/openhands/sdk/launch/resolve.py"}
 
 
 def _modules() -> list[Path]:
@@ -37,7 +40,9 @@ def _passes_cipher(call: ast.Call) -> bool:
     return any(keyword.arg == "cipher" for keyword in call.keywords)
 
 
-def _violations(tree: ast.AST) -> list[tuple[int, str]]:
+def _violations(
+    tree: ast.AST, *, allow_per_call_cipher: bool = False
+) -> list[tuple[int, str]]:
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -47,7 +52,8 @@ def _violations(tree: ast.AST) -> list[tuple[int, str]]:
             if not _passes_cipher(node):
                 found.append((node.lineno, "LLMProfileStore(...) without cipher="))
         elif (
-            isinstance(func, ast.Attribute)
+            not allow_per_call_cipher
+            and isinstance(func, ast.Attribute)
             and func.attr in PER_CALL_CIPHER_METHODS
             and _passes_cipher(node)
         ):
@@ -66,10 +72,12 @@ def test_package_modules_are_scanned():
 )
 def test_llm_profile_stores_are_bound_to_their_cipher(path: Path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    violations = _violations(tree)
+    relative = path.relative_to(REPO_ROOT)
+    violations = _violations(
+        tree, allow_per_call_cipher=relative.as_posix() in DEPRECATED_PER_CALL_CIPHER
+    )
     assert not violations, "\n".join(
-        f"{path.relative_to(REPO_ROOT)}:{line}: {message}"
-        for line, message in violations
+        f"{relative}:{line}: {message}" for line, message in violations
     )
 
 
