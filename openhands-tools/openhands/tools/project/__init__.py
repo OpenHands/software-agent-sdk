@@ -7,9 +7,9 @@ Provides ``list_project_conversations``, ``message_project_conversation``,
 conversations of its agent-server project, send one of them a follow-up, read
 one's latest messages, write, list and read the project's artifacts (files),
 keep the project's shared memory, and resolve itself when nothing is left in
-it. Together with ``start_child_conversation``
-(a child copies its parent's ``project`` tag) they give a project coordinator
-typed actions to start, follow and steer its conversations.
+it. Together with ``start_child_conversation``, which starts a worker in the
+coordinator's project, they give a project coordinator typed actions to start,
+follow and steer its workers.
 
 Usage:
     from openhands.tools.project import (

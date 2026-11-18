@@ -2326,9 +2326,9 @@ class ConversationService:
         shares the parent's directory. The link is recorded via
         ``parent_conversation_id``.
 
-        A project member's child is a normal conversation of the user's
-        instead (see :meth:`ProjectService.start_child`): it runs an agent profile,
-        not a copy of its parent's agent.
+        In a project, the coordinator starts workers instead (see
+        :meth:`ProjectService.start_worker`): a worker runs an agent profile,
+        not a copy of the coordinator's agent.
 
         Returns ``None`` when *parent_id* does not exist.
 
@@ -2347,12 +2347,13 @@ class ConversationService:
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
-            # With Projects off, a member's child is an ordinary child: no
-            # project tag, tools, guidance or memory (the parent keeps its own).
+            # With Projects off, a project member starts an ordinary child, not
+            # a worker: no project tag, tools, guidance or memory (the parent
+            # keeps its own).
             if PROJECT_TAG_KEY in parent_stored.tags and (
                 await self.projects.enabled()
             ):
-                return await self.projects.start_child(
+                return await self.projects.start_worker(
                     parent_service, request, run_slot
                 )
             return await self.start_copied_child(parent_service, request, run_slot)

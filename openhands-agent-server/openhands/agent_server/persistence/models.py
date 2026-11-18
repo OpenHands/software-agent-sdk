@@ -676,8 +676,8 @@ class ProjectItem(BaseModel):
     """A project: a named group of conversations led by a coordinator.
 
     Membership is not stored here. A conversation belongs to a project when
-    its ``project`` tag holds the project's id, so child conversations a
-    coordinator starts inherit the membership with the rest of its tags.
+    its ``project`` tag holds the project's id. The coordinator's workers
+    get that tag when the coordinator starts them.
     """
 
     id: OpenHandsUUID = Field(default_factory=uuid4)

@@ -8,8 +8,8 @@ from pydantic import BaseModel
 # Same for ask_user, which the ask_user feature gives to new conversations.
 import openhands.tools.ask_user  # noqa: E402, F401
 
-# Registered only in the agent-server: these tools need a server to create the
-# child on or to read the project from, so they are deliberately absent from
+# Registered only in the agent-server: these tools need a server to start a
+# conversation on or to read the project from, so they are deliberately absent from
 # get_default_tools().
 import openhands.tools.child_conversation  # noqa: E402, F401
 

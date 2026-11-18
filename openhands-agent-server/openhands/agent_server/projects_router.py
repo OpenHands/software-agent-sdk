@@ -8,8 +8,8 @@ client connected to the same server sees the same list.
 
 Membership lives on the conversations, not in the project record: a
 conversation belongs to a project when its ``project`` tag holds the project's
-id. Child conversations copy their parent's tags, so the conversations a coordinator
-starts with ``start_child_conversation`` join its project without another call.
+id. The workers a coordinator starts with ``start_child_conversation`` get
+that tag, so they join its project without another call.
 
 Two limits. Projects are local to this server: the record, its files and its
 memory live in this server's persistence folder, and a conversation running in
@@ -802,7 +802,7 @@ async def remove_project_conversation(
 ) -> DeleteResponse:
     """Remove a conversation from a project by clearing its ``project`` tag.
 
-    The conversation itself is not changed otherwise. Child conversations keep
+    The conversation itself is not changed otherwise. Workers it started keep
     their own tag. Clear the coordinator before removing it.
     """
     project = _find(await _load(_store(stores)), project_id)

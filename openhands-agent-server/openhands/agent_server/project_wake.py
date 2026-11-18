@@ -245,7 +245,7 @@ async def notify_coordinator(
     """Deliver a member's final message to its project's coordinator.
 
     A turn the coordinator started (its message, or the task message of a
-    child it started) wakes the coordinator: it waits for that reply. A turn
+    worker it started) wakes the coordinator: it waits for that reply. A turn
     the user started in the member is delivered without a run, for the
     coordinator to know on its next turn; the user already saw the reply.
     A turn another conversation started is not delivered, so an update the

@@ -533,74 +533,74 @@ class ProjectService:
                 f"Cannot start the coordinator from agent profile {profile_id}: {exc}"
             ) from exc
 
-    async def start_child(
+    async def start_worker(
         self,
-        parent_service: EventService,
+        coordinator_service: EventService,
         request: StartChildConversationRequest,
         run_slot: RunSlot,
     ) -> StartChildConversationResponse:
         """A project's new member: a worker from an agent profile, or, with
-        no profile to start from, a copy of the parent's agent that still runs
+        no profile to start from, a copy of the coordinator's agent that still runs
         the worker's prompt, project context and tools.
 
         Only the project's coordinator starts conversations in a project, so
         each member's work is the coordinator's to follow.
 
         Raises:
-            Conflict: If the parent is not the project's coordinator.
+            Conflict: If the starting conversation is not the project's coordinator.
         """
-        parent_stored = parent_service.stored
-        await self._require_coordinator(parent_stored)
-        worker_profile = await self._worker_profile(parent_stored)
+        coordinator = coordinator_service.stored
+        await self._require_coordinator(coordinator)
+        worker_profile = await self._worker_profile(coordinator)
         if worker_profile is not None:
-            return await self._start_worker(
-                parent_service, request, worker_profile, run_slot
+            return await self._start_worker_from_profile(
+                coordinator_service, request, worker_profile, run_slot
             )
-        project_hex = parent_stored.tags[PROJECT_TAG_KEY]
+        project_hex = coordinator.tags[PROJECT_TAG_KEY]
         context, role = await _project_prompt(
-            self.stores, project_hex, (parent_stored.title, parent_stored.id)
+            self.stores, project_hex, (coordinator.title, coordinator.id)
         )
         return await self.conversations.start_copied_child(
-            parent_service,
+            coordinator_service,
             request,
             run_slot,
             additions=AgentLaunchAdditions(
                 prompt_preset=PromptPreset.PROJECT_WORKER,
                 project_context=context,
             ),
-            header=sender_header(parent_stored.title, parent_stored.id, role=role),
+            header=sender_header(coordinator.title, coordinator.id, role=role),
             withheld_tools=(),
             extra_tags={PROJECT_TAG_KEY: project_hex},
         )
 
-    async def _require_coordinator(self, parent_stored: StoredConversation) -> None:
+    async def _require_coordinator(self, coordinator: StoredConversation) -> None:
         stores = self.stores
-        project_hex = parent_stored.tags[PROJECT_TAG_KEY]
+        project_hex = coordinator.tags[PROJECT_TAG_KEY]
         project = (
             await asyncio.to_thread(_load_project, stores, project_hex)
             if stores is not None
             else None
         )
-        if project is None or project.coordinator_conversation_id != parent_stored.id:
+        if project is None or project.coordinator_conversation_id != coordinator.id:
             raise Conflict(
                 "Only the project's coordinator starts conversations in a project"
             )
 
-    async def _worker_profile(self, parent_stored: StoredConversation) -> UUID | None:
-        """The agent profile a project's new member starts from.
+    async def _worker_profile(self, coordinator: StoredConversation) -> UUID | None:
+        """The agent profile a new worker starts from.
 
-        A conversation the coordinator starts is a normal conversation of
-        the user's, not a copy of its parent: it runs the project's
+        A worker is a normal conversation of the user's, not a copy of the
+        coordinator: it runs the project's
         ``worker_agent_profile_id``, or else the user's active agent
         profile. ``None`` (no project, no profile, or a workspace a normal
-        start cannot take) keeps the copy of the parent's agent.
+        start cannot take) keeps the copy of the coordinator's agent.
         """
-        project_hex = parent_stored.tags.get(PROJECT_TAG_KEY)
+        project_hex = coordinator.tags.get(PROJECT_TAG_KEY)
         stores = self.stores
         if (
             stores is None
             or not project_hex
-            or not isinstance(parent_stored.workspace, LocalWorkspace)
+            or not isinstance(coordinator.workspace, LocalWorkspace)
         ):
             return None
 
@@ -630,43 +630,42 @@ class ProjectService:
         except Exception:
             logger.warning(
                 "Cannot choose a worker agent profile for project %s; the new "
-                "conversation copies its parent's agent",
+                "conversation copies its coordinator's agent",
                 project_hex,
                 exc_info=True,
             )
             return None
 
-    async def _start_worker(
+    async def _start_worker_from_profile(
         self,
-        parent_service: EventService,
+        coordinator_service: EventService,
         request: StartChildConversationRequest,
         profile_id: UUID,
         run_slot: RunSlot,
     ) -> StartChildConversationResponse:
-        """Start a project member's new conversation from an agent profile.
+        """Start a worker from the project's worker agent profile.
 
         It keeps what makes it part of the project: the ``project`` tag, the
-        parent's workspace (in a worktree when asked), the parent link, the
-        user's confirmation policy, plugins, hooks and secrets, the parent
-        as sender of the task (with a header saying so), the worker's prompt
+        coordinator's workspace (in a worktree when asked), the parent link to
+        the coordinator, the user's confirmation policy, plugins, hooks and
+        secrets, the coordinator as sender of the task (with a header saying so), the worker's prompt
         and project context, and the project tools a worker uses.
-        It does not take the parent's agent, launch additions or client tools.
+        It does not take the coordinator's agent, launch additions or client tools.
         """
-        parent_stored = parent_service.stored
-        parent_id = parent_stored.id
-        child_id = uuid4()
+        coordinator = coordinator_service.stored
+        coordinator_id = coordinator.id
+        worker_id = uuid4()
         context, role = await _project_prompt(
             self.stores,
-            parent_stored.tags[PROJECT_TAG_KEY],
-            (parent_stored.title, parent_id),
+            coordinator.tags[PROJECT_TAG_KEY],
+            (coordinator.title, coordinator_id),
         )
         config = {
-            name: getattr(parent_stored, name)
-            for name in ConversationConfig.model_fields
+            name: getattr(coordinator, name) for name in ConversationConfig.model_fields
         }
         config.update(
-            conversation_id=child_id,
-            parent_conversation_id=parent_id,
+            conversation_id=worker_id,
+            parent_conversation_id=coordinator_id,
             worktree=request.isolation == "worktree",
             worktree_options=None,
             secrets_encrypted=False,
@@ -679,28 +678,30 @@ class ProjectService:
                 role="user",
                 content=[
                     TextContent(
-                        text=sender_header(parent_stored.title, parent_id, role=role)
+                        text=sender_header(coordinator.title, coordinator_id, role=role)
                     ),
                     TextContent(text=request.task),
                 ],
             ),
-            # A worker joins the project and nothing else: the parent's other
-            # tags (an app's role or controller markers) describe the parent.
-            tags={PROJECT_TAG_KEY: parent_stored.tags[PROJECT_TAG_KEY]},
+            # A worker joins the project and nothing else: the coordinator's
+            # other tags (an app's role or controller markers) describe it.
+            tags={PROJECT_TAG_KEY: coordinator.tags[PROJECT_TAG_KEY]},
             autotitle=request.title is None,
             prompt=None,
         )
         start = StartConversationRequest(
             **config,
             agent_profile_id=profile_id,
-            max_budget_per_run=(parent_service.get_conversation().max_budget_per_run),
+            max_budget_per_run=(
+                coordinator_service.get_conversation().max_budget_per_run
+            ),
         )
         try:
             info = await self.conversations.create_conversation(
                 start,
                 run_slot=run_slot,
                 title=request.title,
-                initial_sender=conversation_sender(parent_id),
+                initial_sender=conversation_sender(coordinator_id),
                 server_tools=[Tool(name=name) for name in PROJECT_WORKER_TOOLS],
             )
         except Exception as exc:
@@ -710,16 +711,16 @@ class ProjectService:
                 f"Cannot start the conversation from agent profile {profile_id}: {exc}"
             ) from exc
         workspace = cast(LocalWorkspace, info.workspace)
-        parent_workspace = cast(LocalWorkspace, parent_stored.workspace)
+        coordinator_workspace = cast(LocalWorkspace, coordinator.workspace)
         shared = await asyncio.to_thread(
             lambda: (
                 Path(workspace.working_dir).resolve()
-                == Path(parent_workspace.working_dir).resolve()
+                == Path(coordinator_workspace.working_dir).resolve()
             )
         )
         return StartChildConversationResponse(
-            conversation_id=child_id,
-            parent_conversation_id=parent_id,
+            conversation_id=worker_id,
+            parent_conversation_id=coordinator_id,
             status=info.execution_status.value,
             title=info.title,
             workspace=str(workspace.working_dir),

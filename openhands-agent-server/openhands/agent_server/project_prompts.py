@@ -1,6 +1,6 @@
 """What a project conversation is told about the conversations that steer it.
 
-A coordinator starts conversations with ``start_child_conversation`` and
+A coordinator starts workers with ``start_child_conversation`` and
 steers them with ``message_project_conversation``. Each of those agents should
 know who is talking to it, so it does not take the coordinator's words for the
 user's, and so it knows its final message is what gets relayed.

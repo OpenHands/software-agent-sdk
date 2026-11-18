@@ -23,7 +23,7 @@ TAG_VALUE_MAX_LENGTH = 256
 
 PROJECT_TAG_KEY = "project"
 """Tag whose value is the id (hex) of the agent-server project a conversation
-belongs to. Child conversations copy their parent's tags, so they join it too."""
+belongs to. The workers a project's coordinator starts get it too."""
 
 PROJECTS_OFF_DETAIL = "Projects are turned off"
 """Detail of the 404 every ``/api/projects`` route answers while the user has
@@ -60,7 +60,7 @@ BOARD_TAG_KEYS = frozenset(
 
 CONVERSATION_SENDER_PREFIX = "conversation:"
 """Prefix of a user message's ``sender`` when another conversation sent it: a
-parent delivering a child's task, or a project coordinator steering a member.
+parent delivering a child's task, or a project coordinator steering a worker.
 The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
 the user wrote the message."""
 
