@@ -113,5 +113,5 @@ def test_litellm_proxy_underlying_probe_does_not_hang(monkeypatch):
 
     # The alias's own model_info is still returned; only the underlying probe
     # was abandoned, and it did so without blocking construction.
-    assert info == {"max_input_tokens": 100}
+    assert info == {"max_input_tokens": 100, "_capability_source": "proxy"}
     assert elapsed < 5
