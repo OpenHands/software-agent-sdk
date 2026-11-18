@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from openhands.sdk import LLM, Agent
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.project import (
@@ -717,7 +717,7 @@ def test_a_coordinators_system_prompt_states_its_role(tmp_path):
     agent = Agent(
         llm=LLM(model="gpt-4o", usage_id="cat"),
         tools=[Tool(name="message_project_conversation")],
-        prompt_preset=PromptPreset.PROJECT_COORDINATOR,
+        system_prompt_filename=PROJECT_COORDINATOR_PROMPT,
     )
     state = _conv_state(tmp_path)
     agent._initialize(state)

@@ -24,7 +24,6 @@ from pydantic import (
 from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
 from openhands.sdk.agent.agent import Agent as Agent
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.message_request import (
     SendMessageRequest as SendMessageRequest,
 )
@@ -128,14 +127,15 @@ class AgentLaunchAdditions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt_preset: PromptPreset | None = Field(
+    system_prompt_filename: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description=(
-            "Deployment-assigned role: the built-in system prompt the resolved "
+            "Deployment-assigned role: the `system_prompt_filename` the resolved "
             "OpenHands agent uses, whatever its profile says, such as "
-            "`project_coordinator` for a project's coordinator. None keeps the "
-            "agent's own. Not for ACP agents, which Projects do not run."
+            "`system_prompt_project_coordinator.j2` for a project's coordinator. "
+            "None keeps the agent's own; an agent with an inline `system_prompt` "
+            "keeps it. Not for ACP agents, which Projects do not run."
         ),
     )
     project_context: str | None = Field(

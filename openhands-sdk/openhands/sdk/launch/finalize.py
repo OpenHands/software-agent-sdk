@@ -217,14 +217,16 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
 def _with_project_role(agent: AgentBase, additions: AgentLaunchAdditions) -> AgentBase:
     """Apply the deployment's prompt role and project context.
 
-    An OpenHands agent takes the preset and renders the context in its own
-    ``<PROJECT>`` block. Projects do not run ACP agents, so any other agent
-    is left as it is.
+    An OpenHands agent takes the role's prompt filename and renders the
+    context in its own ``<PROJECT>`` block. Projects do not run ACP agents,
+    so any other agent is left as it is.
     """
     if not isinstance(agent, Agent):
         return agent
-    if additions.prompt_preset is not None:
-        agent = agent.model_copy(update={"prompt_preset": additions.prompt_preset})
+    if additions.system_prompt_filename is not None and agent.system_prompt is None:
+        agent = agent.model_copy(
+            update={"system_prompt_filename": additions.system_prompt_filename}
+        )
     if additions.project_context and additions.project_context.strip():
         context = _context_of(agent)
         agent = agent.model_copy(

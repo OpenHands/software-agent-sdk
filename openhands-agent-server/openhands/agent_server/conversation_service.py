@@ -86,8 +86,11 @@ from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
-from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import (
+    PROJECT_COORDINATOR_PROMPT,
+    PROJECT_WORKER_PROMPT,
+    AgentBase,
+)
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import (
@@ -348,7 +351,7 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 logger = logging.getLogger(__name__)
 
 
-_PROJECT_PRESETS = (PromptPreset.PROJECT_COORDINATOR, PromptPreset.PROJECT_WORKER)
+_PROJECT_PROMPTS = (PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT)
 
 
 def _without_project_role(agent: AgentBase) -> AgentBase:
@@ -357,8 +360,8 @@ def _without_project_role(agent: AgentBase) -> AgentBase:
     if not isinstance(agent, Agent):
         return agent
     update: dict[str, Any] = {}
-    if agent.prompt_preset in _PROJECT_PRESETS:
-        update["prompt_preset"] = None
+    if agent.system_prompt_filename in _PROJECT_PROMPTS:
+        update["system_prompt_filename"] = "system_prompt.j2"
     context = agent.agent_context
     if context is not None and context.project_context:
         update["agent_context"] = context.model_copy(update={"project_context": None})

@@ -61,7 +61,7 @@ from openhands.agent_server.project_wake import (
 )
 from openhands.agent_server.resolution_judge import make_resolution_judge
 from openhands.sdk import LLM, TextContent
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import AgentLaunchAdditions, ConversationConfig
 from openhands.sdk.conversation.types import (
@@ -576,7 +576,7 @@ class ProjectService:
             extra.pop("agent_launch_additions", None) or {}
         ).model_copy(
             update={
-                "prompt_preset": PromptPreset.PROJECT_COORDINATOR,
+                "system_prompt_filename": PROJECT_COORDINATOR_PROMPT,
                 "project_context": context,
             }
         )
@@ -644,7 +644,7 @@ class ProjectService:
             request,
             run_slot,
             additions=AgentLaunchAdditions(
-                prompt_preset=PromptPreset.PROJECT_WORKER,
+                system_prompt_filename=PROJECT_WORKER_PROMPT,
                 project_context=context,
             ),
             header=sender_header(coordinator.title, coordinator.id, role=role),
@@ -755,7 +755,7 @@ class ProjectService:
             secrets_encrypted=False,
             client_tools=[],
             agent_launch_additions=AgentLaunchAdditions(
-                prompt_preset=PromptPreset.PROJECT_WORKER,
+                system_prompt_filename=PROJECT_WORKER_PROMPT,
                 project_context=context,
             ),
             initial_message=SendMessageRequest(

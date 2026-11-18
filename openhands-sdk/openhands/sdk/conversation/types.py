@@ -32,17 +32,20 @@ the Projects feature off; project tools recognize it."""
 RESOLVED_TAG_KEY = "resolved"
 """Tag marking a conversation's work as done: ``user`` when the user resolved
 it, ``auto`` when the server judged that nothing is left for the user (see
-:data:`RESOLVE_NOTE_TAG_KEY`). A new user
-message removes it."""
+:data:`RESOLVE_NOTE_TAG_KEY`). The next message the
+conversation gets removes it, whoever sent it."""
 
 TURN_TAG_KEY = "turn"
 """Tag recording how the agent's last turn ended: ``asking`` when its final
-message waits on the user, ``finished`` otherwise. A new user message
-removes it."""
+message waits on the user, ``finished`` otherwise. The next message the
+conversation gets removes it, whoever sent it, with one exception: a message
+from another conversation (the coordinator, a worker) leaves ``asking`` in
+place, since only the user's answer closes the question. The coordinator
+passing on the user's answer counts as the user's."""
 
 ASK_TAG_KEY = "ask"
 """Tag holding the question a conversation's agent stopped on, in one short
-line, while ``turn`` is ``asking``. A new user message removes it."""
+line, while ``turn`` is ``asking``. Removed together with ``turn``."""
 
 ASK_MAX_LENGTH = 200
 """Longest ``ask``; a longer question is cut and ends with an ellipsis."""
@@ -51,7 +54,7 @@ RESOLVE_NOTE_TAG_KEY = "resolvenote"
 """Why the server resolved a conversation (``resolved=auto``), in one short
 line: the judge's probability that nothing is left for the user and what it
 thinks the user owes (``0.93 nothing``), or a critic score
-(``0.95 critic``). A new user message removes it."""
+(``0.95 critic``). Removed with ``resolved``."""
 
 BOARD_TAG_KEYS = frozenset(
     {RESOLVED_TAG_KEY, RESOLVE_NOTE_TAG_KEY, TURN_TAG_KEY, ASK_TAG_KEY}

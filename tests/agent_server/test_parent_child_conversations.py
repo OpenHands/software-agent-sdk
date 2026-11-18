@@ -37,7 +37,11 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.project_service import ProjectService
 from openhands.sdk import LLM, Agent, Message, TextContent
-from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.base import (
+    PROJECT_COORDINATOR_PROMPT,
+    PROJECT_WORKER_PROMPT,
+    AgentBase,
+)
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -454,7 +458,7 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
         tmp_path, workspace_dir, request, parent_tags={"project": _PROJECT}
     )
 
-    assert _child_agent(launch).prompt_preset == "project_worker"
+    assert _child_agent(launch).system_prompt_filename == PROJECT_WORKER_PROMPT
     header, task = _first_message(launch)
     assert header.startswith(
         f"[Sent by [Coordinator](conversation:{launch.parent_id.hex}), "
@@ -486,7 +490,7 @@ async def test_child_outside_projects_gets_no_project_guidance(tmp_path, workspa
 
     launch = await _launch_child(tmp_path, workspace_dir, request)
 
-    assert _child_agent(launch).prompt_preset != "project_worker"
+    assert _child_agent(launch).system_prompt_filename == "system_prompt.j2"
 
 
 @pytest.mark.asyncio
@@ -791,7 +795,7 @@ async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
         "file_editor",
         *PROJECT_WORKER_TOOLS,
     ]
-    assert agent.prompt_preset == "project_worker"
+    assert agent.system_prompt_filename == PROJECT_WORKER_PROMPT
     assert launch.child.parent_conversation_id == launch.parent_id
     assert launch.child.title == "Login fix"
     assert launch.result.isolation == ("worktree" if git_repo else "shared")
@@ -907,22 +911,24 @@ async def test_with_projects_off_a_members_child_is_an_ordinary_child(
 def test_an_ordinary_child_does_not_copy_a_coordinators_role():
     from openhands.agent_server.conversation_service import _without_project_role
     from openhands.sdk.context import AgentContext
-    from openhands.sdk.context.prompts.presets import PromptPreset
 
     coordinator = Agent(
         llm=LLM(model="gpt-4o", usage_id="test-llm"),
-        prompt_preset=PromptPreset.PROJECT_COORDINATOR,
+        system_prompt_filename=PROJECT_COORDINATOR_PROMPT,
         agent_context=AgentContext(
             project_context="Project: P", system_message_suffix="Cite paths."
         ),
     )
     planner = coordinator.model_copy(
-        update={"prompt_preset": PromptPreset.PLANNING, "agent_context": None}
+        update={
+            "system_prompt_filename": "system_prompt_planning.j2",
+            "agent_context": None,
+        }
     )
 
     child = cast(Agent, _without_project_role(coordinator))
 
-    assert child.prompt_preset is None
+    assert child.system_prompt_filename == "system_prompt.j2"
     assert child.agent_context is not None
     assert child.agent_context.project_context is None
     assert child.agent_context.system_message_suffix == "Cite paths."
@@ -1009,7 +1015,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
     assert info.tags == {"project": project_hex}
     assert info.title == "Cat"
     # The role is the server's to give, whatever profile the coordinator runs.
-    assert agent.prompt_preset == "project_coordinator"
+    assert agent.system_prompt_filename == PROJECT_COORDINATOR_PROMPT
     assert "<ROUTING>" in agent.static_system_message
     # Idle: it waits for the user, with no first message.
     services[info.id].send_message.assert_not_awaited()
@@ -1132,11 +1138,11 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
     (request,) = seen
     additions = request.agent_launch_additions
     assert additions.system_message_suffix_append == "<INSIDER_CONTROLLER/>"
-    assert additions.prompt_preset == "project_coordinator"
+    assert additions.system_prompt_filename == PROJECT_COORDINATOR_PROMPT
     assert request.max_iterations == 7
     agent = services[info.id].get_conversation().agent
     assert [tool.name for tool in agent.tools] == list(PROJECT_COORDINATOR_TOOLS)
-    assert agent.prompt_preset == "project_coordinator"
+    assert agent.system_prompt_filename == PROJECT_COORDINATOR_PROMPT
     assert agent.agent_context.system_message_suffix == "<INSIDER_CONTROLLER/>"
 
 

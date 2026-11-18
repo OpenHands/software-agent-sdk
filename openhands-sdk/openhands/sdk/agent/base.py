@@ -77,11 +77,16 @@ _BUILTIN_PROMPT_DIR = os.path.realpath(
 
 # Built-in ``system_prompt_filename`` values are back-compat sentinels (the .j2 files
 # were removed) that select a registry preset. ``system_prompt_planning.j2`` keeps its
-# historical name so ``get_planning_agent`` needs no change. Any other filename -- or a
-# subclass's own ``prompt_dir`` -- falls through to the Jinja escape hatch.
+# historical name so ``get_planning_agent`` needs no change. The project roles select
+# their presets the same way. Any other filename -- or a subclass's own ``prompt_dir``
+# -- falls through to the Jinja escape hatch.
+PROJECT_COORDINATOR_PROMPT = "system_prompt_project_coordinator.j2"
+PROJECT_WORKER_PROMPT = "system_prompt_project_worker.j2"
 _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
     "system_prompt.j2": PromptPreset.DEFAULT,
     "system_prompt_planning.j2": PromptPreset.PLANNING,
+    PROJECT_COORDINATOR_PROMPT: PromptPreset.PROJECT_COORDINATOR,
+    PROJECT_WORKER_PROMPT: PromptPreset.PROJECT_WORKER,
 }
 
 

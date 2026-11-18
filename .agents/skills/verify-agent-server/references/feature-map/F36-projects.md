@@ -240,7 +240,7 @@ Preconditions:
 - **Coordinator (`F36.coordinator`).**
   ```sh
   CAT=$(control-agent-server conversation start --no-run --title qa-f36-cat --tag insidercat=self \
-    --body-json '{"agent_launch_additions": {"prompt_preset": "project_coordinator"}}' \
+    --body-json '{"agent_launch_additions": {"system_prompt_filename": "system_prompt_project_coordinator.j2"}}' \
     --tools terminal,file_editor,start_child_conversation,list_project_conversations,message_project_conversation,read_project_conversation,write_artifact,read_artifact,list_artifacts,read_project_memory,update_project_memory,resolve_conversation \
     --print-id)
   P2=$(control-agent-server api POST /api/projects --json "{\"name\": \"qa-f36-two\", \"coordinator_conversation_id\": \"$CAT\"}" \

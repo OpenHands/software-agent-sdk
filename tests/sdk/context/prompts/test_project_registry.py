@@ -12,6 +12,7 @@ from typing import Final
 import pytest
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.section import Platform, PromptContext
@@ -159,18 +160,15 @@ def _agent(**kwargs: object) -> Agent:
     )
 
 
-def test_an_agent_selects_its_role_by_prompt_preset() -> None:
-    coordinator = _agent(prompt_preset="project_coordinator")
+def test_an_agent_selects_its_role_by_prompt_filename() -> None:
+    coordinator = _agent(system_prompt_filename=PROJECT_COORDINATOR_PROMPT)
     assert "<ROUTING>" in coordinator.static_system_message
     assert "<ROUTING>" not in _agent().static_system_message
-    # An inline system prompt still wins.
-    inline = _agent(prompt_preset="project_coordinator", system_prompt="Hi.")
-    assert inline.static_system_message == "Hi."
 
 
 def test_an_agent_renders_its_project_context() -> None:
     agent = _agent(
-        prompt_preset="project_worker",
+        system_prompt_filename=PROJECT_WORKER_PROMPT,
         agent_context=AgentContext(project_context="Project: Docs"),
     )
 

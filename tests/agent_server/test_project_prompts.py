@@ -8,7 +8,7 @@ from openhands.agent_server.project_prompts import (
     sender_header,
 )
 from openhands.sdk import LLM, Agent
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import PROJECT_WORKER_PROMPT
 
 
 def test_a_title_cannot_break_out_of_the_header():
@@ -96,7 +96,7 @@ def test_worker_prompt_puts_the_users_messages_above_the_coordinators():
     agent = Agent(
         llm=LLM(model="gpt-4o", usage_id="test-llm"),
         tools=[],
-        prompt_preset=PromptPreset.PROJECT_WORKER,
+        system_prompt_filename=PROJECT_WORKER_PROMPT,
     )
     text = agent.static_system_message
 
