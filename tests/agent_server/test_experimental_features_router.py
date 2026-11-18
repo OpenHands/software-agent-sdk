@@ -302,3 +302,37 @@ async def test_a_runtime_takes_its_tools_from_the_host_switches(tmp_path, monkey
         agent = event_service.get_conversation().agent
 
     assert [t.name for t in agent.tools] == ["react", "unreact"]
+
+
+def test_a_flag_check_reads_the_settings_file_only_when_it_changed(tmp_path):
+    """Item 5 of the Projects design review: a flag check is one stat."""
+    from unittest.mock import patch
+
+    from openhands.agent_server.persistence import FileSettingsStore
+
+    store = FileSettingsStore(tmp_path)
+    assert store.experimental_features() == {}
+    store.update(
+        lambda s: s.model_copy(update={"experimental_features": {"projects": True}})
+    )
+
+    with patch.object(
+        FileSettingsStore, "load", autospec=True, side_effect=FileSettingsStore.load
+    ) as load:
+        assert store.experimental_features() == {"projects": True}
+        assert store.experimental_features() == {"projects": True}
+        assert load.call_count == 1
+
+        # A change, here or by another process, shows on the next check.
+        store.update(
+            lambda s: s.model_copy(
+                update={"experimental_features": {"projects": False}}
+            )
+        )
+        load.reset_mock()
+        assert store.experimental_features() == {"projects": False}
+        assert load.call_count == 1
+
+    # Callers get a copy: changing it does not change the cache.
+    store.experimental_features()["projects"] = True
+    assert store.experimental_features() == {"projects": False}

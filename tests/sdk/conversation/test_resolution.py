@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import PrivateAttr
+from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.conversation.resolution import (
     AUTO_RESOLVE_PROBABILITY,
@@ -200,3 +200,51 @@ def test_state_carries_the_task_and_recent_earlier_requests():
 
     assert state["task"].startswith("…") and len(state["task"]) == 1000
     assert state["earlier"] == ["r3", "r4", "r5", "r6", "r7"]
+
+
+# resolution_judge: the saved "resolution_judge" profile
+
+
+def test_the_judge_saves_its_profile_from_the_conversation_llm(tmp_path):
+    from openhands.sdk.conversation.resolution import (
+        RESOLUTION_JUDGE_PROFILE_NAME,
+        resolution_judge,
+    )
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    store = LLMProfileStore(tmp_path)
+    own = LLM(model="openai/own-model", api_key="sk-own", usage_id="agent")
+
+    judge = resolution_judge(own, store)
+
+    assert [n.removesuffix(".json") for n in store.list()] == [
+        RESOLUTION_JUDGE_PROFILE_NAME
+    ]
+    saved = store.load(RESOLUTION_JUDGE_PROFILE_NAME)
+    assert saved.model == "openai/own-model"
+    assert isinstance(saved.api_key, SecretStr)
+    assert saved.api_key.get_secret_value() == "sk-own"
+    assert judge.llm.model == "openai/own-model"
+    assert judge.llm.usage_id == RESOLUTION_JUDGE_PROFILE_NAME
+    assert judge.llm.num_retries == 0
+
+
+def test_the_judge_uses_the_saved_profile_over_the_conversation_llm(tmp_path):
+    from openhands.sdk.conversation.resolution import (
+        RESOLUTION_JUDGE_PROFILE_NAME,
+        resolution_judge,
+    )
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    store = LLMProfileStore(tmp_path)
+    store.save(
+        RESOLUTION_JUDGE_PROFILE_NAME,
+        LLM(model="openai/judge-model", api_key="sk-judge", usage_id="judge"),
+        include_secrets=True,
+    )
+    own = LLM(model="openai/own-model", api_key="sk-own", usage_id="agent")
+
+    judge = resolution_judge(own, store)
+
+    assert judge.llm.model == "openai/judge-model"
+    assert store.load(RESOLUTION_JUDGE_PROFILE_NAME).model == "openai/judge-model"

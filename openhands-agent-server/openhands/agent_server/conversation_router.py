@@ -37,6 +37,7 @@ from openhands.agent_server.event_service import (
     GoalAlreadyRunning,
 )
 from openhands.agent_server.launch import launch_error
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AddMCPServersRequest,
@@ -61,6 +62,7 @@ from openhands.agent_server.models import (
     trim_conversation_response_skills,
 )
 from openhands.agent_server.persistence import run_store
+from openhands.agent_server.project_service import RESERVED_TAG_KEYS
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -83,6 +85,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -164,6 +167,14 @@ def _with_runtime_info(
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation.id)}
     )
+
+
+def _refuse_server_tags(tags: dict[str, str] | None) -> None:
+    """A client cannot start a conversation with tags the server owns: a
+    project's conversations are started by its coordinator."""
+    owned = sorted(RESERVED_TAG_KEYS & set(tags or {}))
+    if owned:
+        raise Unprocessable(f"Tags set by the server only: {', '.join(owned)}")
 
 
 @conversation_catalog_router.get("/search", include_in_schema=False)
@@ -342,6 +353,7 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     if request.conversation_runtime not in (None, "local"):
         raise Unprocessable("This server only runs local conversations")
+    _refuse_server_tags(request.tags)
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -355,7 +367,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidParentConversation, UnavailableAgentTool, SenderError) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
@@ -550,7 +562,7 @@ async def add_conversation_mcp_servers(
     }
     try:
         await event_service.add_mcp_servers(mcp_servers)
-    except ValueError as exc:
+    except (ValueError, MCPServerStartError) as exc:
         raise Invalid(str(exc)) from exc
     return Success()
 
@@ -809,7 +821,7 @@ async def update_conversation(
     removed, which resolves or reopens the conversation; prefer the project
     routes ``.../resolve`` and ``.../reopen``.
     """
-    updated = await conversation_service.update_conversation_from_client(
+    updated = await conversation_service.projects.update_conversation_from_client(
         conversation_id, request
     )
     if not updated:
@@ -881,6 +893,7 @@ async def fork_conversation(
     Calling ``run`` on the fork resumes from the copied state, meaning
     the agent has full event memory of the source conversation.
     """
+    _refuse_server_tags(request.tags)
     try:
         info = await conversation_service.fork_conversation(
             conversation_id,
@@ -912,6 +925,7 @@ async def fork_conversation(
         **error_responses(
             {
                 NotFound: "Parent conversation not found",
+                Conflict: "Parent is a project member, not its coordinator",
                 RateLimited: "Server conversation run capacity is full",
             }
         ),

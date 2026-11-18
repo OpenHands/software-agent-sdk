@@ -21,7 +21,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.mcp.definition import MCPToolObservation
-from openhands.sdk.mcp.exceptions import MCPError
+from openhands.sdk.mcp.exceptions import MCPError, MCPServerStartError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.testing import TestLLM
@@ -148,6 +148,114 @@ def test_add_mcp_servers_rejects_sse_transport(tmp_path: Path) -> None:
 
     assert provider.calls == []
     assert conversation.agent.mcp_config == {}
+    conversation.close()
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        # Exits at once, so the connection closes during the handshake.
+        (sys.executable, "Connection closed"),
+        ("/nonexistent/qa-missing-bin", "No such file or directory"),
+    ],
+    ids=["exits-at-once", "missing-executable"],
+)
+def test_add_mcp_servers_names_a_server_that_fails_to_start(
+    tmp_path: Path, command: str, reason: str
+) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    conversation._ensure_agent_ready()
+    server = MCPServer(command=command, args=["-c", "pass"])
+
+    with pytest.raises(MCPServerStartError) as raised:
+        conversation.add_mcp_servers({"dies": server})
+
+    assert isinstance(raised.value, MCPError)
+    assert raised.value.server_name == "dies"
+    assert str(raised.value).startswith("Could not start MCP server dies: ")
+    assert reason in str(raised.value)
+    assert conversation.agent.mcp_config == {}
+    conversation.close()
+
+
+class ClosingMCPClient(EmptyMCPClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = 0
+
+    def sync_close(self) -> None:
+        self.closed += 1
+
+
+class FailingSecondMCPToolProvider(RecordingMCPToolProvider):
+    """Starts the first server, then fails with an error quoting a secret."""
+
+    def __init__(self, error: str) -> None:
+        self.started = ClosingMCPClient()
+        self.started.tools = [_mcp_tool(self.started, "fetch")]
+        super().__init__(self.started)
+        self.error = error
+
+    def create_tools(
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
+    ) -> MCPClient:
+        if self.calls:
+            self.calls.append(mcp_config)
+            raise RuntimeError(self.error)
+        return super().create_tools(
+            mcp_config,
+            timeout,
+            on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
+        )
+
+
+def test_add_mcp_servers_start_failure_closes_started_servers_and_masks_secrets(
+    tmp_path: Path,
+) -> None:
+    provider = FailingSecondMCPToolProvider(
+        "refused https://mcp.example/?token=qa-secret-value"
+    )
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+        secrets={"MCP_TOKEN": "qa-secret-value"},
+    )
+    conversation._ensure_agent_ready()
+
+    with pytest.raises(MCPServerStartError) as raised:
+        conversation.add_mcp_servers(
+            {
+                "first": MCPServer(command="true"),
+                "second": MCPServer(url="https://mcp.example/?token=${MCP_TOKEN}"),
+            }
+        )
+
+    assert raised.value.server_name == "second"
+    assert "qa-secret-value" not in str(raised.value)
+    assert [set(call) for call in provider.calls] == [{"first"}, {"second"}]
+    assert provider.started.closed == 1
+    assert conversation.agent.mcp_config == {}
+    assert _mcp_tool_names(conversation) == set()
     conversation.close()
 
 

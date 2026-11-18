@@ -110,6 +110,16 @@ async def _start(
     return info.id
 
 
+async def _join(
+    service: ConversationService, project_id: str, conversation_id: UUID
+) -> None:
+    """Make a conversation a member, as the coordinator's start does."""
+    tags = await service.projects.set_conversation_tag(
+        conversation_id, "project", project_id
+    )
+    assert tags is not None
+
+
 async def _set_status(
     service: ConversationService,
     conversation_id: UUID,
@@ -171,8 +181,7 @@ async def test_create_rejects_blank_name(client):
 
 
 @pytest.mark.asyncio
-async def test_unknown_project_is_404_everywhere(client, service, tmp_path):
-    conversation_id = await _start(service, tmp_path)
+async def test_unknown_project_is_404_everywhere(client):
     missing = uuid4().hex
 
     assert (await client.get(f"/api/projects/{missing}")).status_code == 404
@@ -183,10 +192,6 @@ async def test_unknown_project_is_404_everywhere(client, service, tmp_path):
     assert (
         await client.get(f"/api/projects/{missing}/conversations")
     ).status_code == 404
-    assert (
-        await client.put(f"/api/projects/{missing}/conversations/{conversation_id.hex}")
-    ).status_code == 404
-    assert await _tags(service, conversation_id) == {}
 
 
 @pytest.mark.asyncio
@@ -211,9 +216,7 @@ async def test_delete_removes_project_and_keeps_conversations(
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     conversation_id = await _start(service, tmp_path)
-    await client.put(
-        f"/api/projects/{project['id']}/conversations/{conversation_id.hex}"
-    )
+    await _join(service, project["id"], conversation_id)
 
     response = await client.delete(f"/api/projects/{project['id']}")
 
@@ -324,12 +327,12 @@ async def test_a_coordinator_leads_one_project(client, service, tmp_path):
     as_coordinator = await client.post(
         "/api/projects", json={"name": "C", "coordinator_conversation_id": cat.hex}
     )
-    as_conversation = await client.put(
-        f"/api/projects/{second['id']}/conversations/{cat.hex}"
+    as_new_coordinator = await client.patch(
+        f"/api/projects/{second['id']}", json={"coordinator_conversation_id": cat.hex}
     )
 
     assert as_coordinator.status_code == 409
-    assert as_conversation.status_code == 409
+    assert as_new_coordinator.status_code == 409
     assert (await _tags(service, cat))["project"] == first["id"]
 
 
@@ -350,10 +353,7 @@ async def test_conversations_are_grouped_by_attention(client, service, tmp_path)
     for title, status in statuses.items():
         ids[title] = await _start(service, tmp_path, title=title)
         await _set_status(service, ids[title], status)
-        added = await client.put(
-            f"/api/projects/{project['id']}/conversations/{ids[title].hex}"
-        )
-        assert added.status_code == 204
+        await _join(service, project["id"], ids[title])
     outsider = await _start(service, tmp_path, title="outsider")
 
     response = await client.get(f"/api/projects/{project['id']}/conversations")
@@ -398,48 +398,12 @@ async def test_tagged_children_are_conversations_with_their_parent(
 
 
 @pytest.mark.asyncio
-async def test_add_conversation_is_idempotent_and_moves_between_projects(
-    client, service, tmp_path
-):
-    first = (await client.post("/api/projects", json={"name": "A"})).json()
-    second = (await client.post("/api/projects", json={"name": "B"})).json()
-    worker = await _start(service, tmp_path, tags={"insiderrole": "worker"})
-
-    for _ in range(2):
-        response = await client.put(
-            f"/api/projects/{first['id']}/conversations/{worker.hex}"
-        )
-        assert response.status_code == 204
-    moved = await client.put(f"/api/projects/{second['id']}/conversations/{worker.hex}")
-
-    assert moved.status_code == 204
-    assert await _tags(service, worker) == {
-        "insiderrole": "worker",
-        "project": second["id"],
-    }
-    first_conversations = await client.get(f"/api/projects/{first['id']}/conversations")
-    assert first_conversations.json()["conversations"] == []
-
-
-@pytest.mark.asyncio
-async def test_add_missing_conversation_is_404(client):
-    project = (await client.post("/api/projects", json={"name": "P"})).json()
-
-    response = await client.put(
-        f"/api/projects/{project['id']}/conversations/{uuid4().hex}"
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Conversation not found"
-
-
-@pytest.mark.asyncio
 async def test_remove_conversation_clears_only_the_project_tag(
     client, service, tmp_path
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     worker = await _start(service, tmp_path, tags={"insiderrole": "worker"})
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
 
     removed = await client.delete(
         f"/api/projects/{project['id']}/conversations/{worker.hex}"
@@ -460,7 +424,7 @@ async def test_remove_leaves_a_member_of_another_project_alone(
     first = (await client.post("/api/projects", json={"name": "A"})).json()
     second = (await client.post("/api/projects", json={"name": "B"})).json()
     worker = await _start(service, tmp_path)
-    await client.put(f"/api/projects/{second['id']}/conversations/{worker.hex}")
+    await _join(service, second["id"], worker)
 
     response = await client.delete(
         f"/api/projects/{first['id']}/conversations/{worker.hex}"
@@ -494,7 +458,7 @@ async def test_membership_survives_service_restart(persistence_dir, tmp_path):
     conversations_dir = tmp_path / "conversations"
     async with ConversationService(conversations_dir=conversations_dir) as service:
         worker = await _start(service, tmp_path)
-        await service.set_conversation_tag(worker, "project", "abc")
+        await service.projects.set_conversation_tag(worker, "project", "abc")
 
     async with ConversationService(conversations_dir=conversations_dir) as service:
         members = await service.list_tagged_conversations("project", "abc")
@@ -536,7 +500,7 @@ async def test_message_refuses_conversation_waiting_for_confirmation(
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     worker = await _start(service, tmp_path)
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     await _set_status(
         service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
     )
@@ -561,7 +525,7 @@ async def test_project_sender_only_reaches_its_project(client, service, tmp_path
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     cat = await _start(service, tmp_path)
     outsider = await _start(service, tmp_path)
-    await client.put(f"/api/projects/{project['id']}/conversations/{cat.hex}")
+    await _join(service, project["id"], cat)
 
     refused = await client.post(
         f"/api/conversations/{outsider.hex}/events", json=_send("hi", cat.hex)
@@ -598,7 +562,7 @@ async def test_sender_outside_any_project_is_named_as_a_conversation(
 async def test_message_runs_member_with_guard(client, service, tmp_path, monkeypatch):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     worker = await _start(service, tmp_path)
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     calls: list[dict] = []
 
     async def fake_send(self, message, run=False, **kwargs):
@@ -667,7 +631,7 @@ async def test_message_records_its_sender(
         )
     ).json()
     for member in (cat, worker):
-        await client.put(f"/api/projects/{project['id']}/conversations/{member.hex}")
+        await _join(service, project["id"], member)
     _save_without_running(monkeypatch)
 
     response = await client.post(
@@ -691,8 +655,8 @@ async def test_message_refuses_a_sender_outside_the_project(client, service, tmp
     other = (await client.post("/api/projects", json={"name": "Q"})).json()
     worker = await _start(service, tmp_path)
     outsider = await _start(service, tmp_path)
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
-    await client.put(f"/api/projects/{other['id']}/conversations/{outsider.hex}")
+    await _join(service, project["id"], worker)
+    await _join(service, other["id"], outsider)
 
     for sender in (outsider.hex, uuid4().hex, worker.hex):
         response = await client.post(
@@ -785,15 +749,19 @@ async def test_a_sender_conversation_is_always_guarded(client, service, tmp_path
     assert await _user_messages(service, worker) == 0
 
 
-def test_sender_fields_belong_to_the_events_route_only():
-    """Review: a new conversation's initial_message does not offer the sender
-    fields, which only the events route honors."""
-    from openhands.agent_server.models import ConversationMessageRequest
+def test_sender_fields_are_left_out_of_a_plain_message():
+    """The sender fields live on SendMessageRequest, but a user's own message
+    serializes exactly as before they existed."""
     from openhands.sdk.conversation.message_request import SendMessageRequest
 
-    for field in ("sender_conversation_id", "refuse_pending_confirmation"):
-        assert field not in SendMessageRequest.model_fields
-        assert field in ConversationMessageRequest.model_fields
+    plain = SendMessageRequest(content=[TextContent(text="hi")])
+    assert "sender_conversation_id" not in plain.model_dump()
+    assert "refuse_pending_confirmation" not in plain.model_dump()
+    sent = SendMessageRequest(
+        sender_conversation_id=uuid4(), refuse_pending_confirmation=True
+    ).model_dump(mode="json")
+    assert sent["refuse_pending_confirmation"] is True
+    assert "sender_conversation_id" in sent
 
 
 @pytest.mark.asyncio
@@ -898,7 +866,7 @@ async def test_failed_coordinator_tag_undoes_the_whole_patch(
     async def vanished(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(service, "set_conversation_tag", vanished)
+    monkeypatch.setattr(service.projects, "set_conversation_tag", vanished)
     response = await client.patch(
         f"/api/projects/{project['id']}",
         json={"name": "Q", "coordinator_conversation_id": new.hex},
@@ -917,12 +885,12 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         # title: (status, tags)
         "question": (
             ConversationExecutionStatus.FINISHED,
-            {"turn": "asked", "ask": "Which database?"},
+            {"turn": "asking", "ask": "Which database?"},
         ),
         "answer": (
             ConversationExecutionStatus.FINISHED,
             {
-                "turn": "answered",
+                "turn": "finished",
                 "ask": "Stale?",
                 "lastmessage": "Opened the fix.",
                 "prs": "acme/app#412,not a ref,acme/lib#9",
@@ -930,7 +898,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         ),
         "done": (
             ConversationExecutionStatus.FINISHED,
-            {"turn": "answered", "resolved": "auto"},
+            {"turn": "finished", "resolved": "auto"},
         ),
         "closed-running": (ConversationExecutionStatus.RUNNING, {"resolved": "user"}),
         "blocked": (
@@ -954,7 +922,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
 
     by_title = {t["title"]: t for t in conversations}
     assert {t: by_title[t]["attention"] for t in cases} == {
-        "question": "needs_input",
+        "question": "asking",
         "answer": "idle",
         "done": "resolved",
         "closed-running": "working",
@@ -962,7 +930,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         "nightly": "idle",
     }
     assert by_title["done"]["resolved"] == "auto"
-    assert by_title["question"]["turn"] == "asked"
+    assert by_title["question"]["turn"] == "asking"
     assert by_title["question"]["ask"] == "Which database?"
     assert by_title["answer"]["ask"] is None  # only while asked
     assert by_title["answer"]["last_message"] == "Opened the fix."
@@ -978,7 +946,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         (t["attention"] for t in conversations),
         key=[
             "needs_you",
-            "needs_input",
+            "asking",
             "working",
             "idle",
             "resolved",
@@ -1191,14 +1159,14 @@ async def test_a_finished_member_wakes_its_coordinator(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     _save_without_running(monkeypatch)
 
     sent = await notify_coordinator(
         service,
         worker,
         project["id"],
-        "asked",
+        "asking",
         "Which database should I use?",
         f"conversation:{cat.hex}",
     )
@@ -1226,10 +1194,10 @@ async def test_no_update_without_a_coordinator_or_to_itself(
 
     by_cat = f"conversation:{cat.hex}"
     assert not await notify_coordinator(
-        service, cat, project["id"], "answered", "x", by_cat
+        service, cat, project["id"], "finished", "x", by_cat
     )
     assert not await notify_coordinator(
-        service, cat, bare["id"], "answered", "x", by_cat
+        service, cat, bare["id"], "finished", "x", by_cat
     )
     assert await _user_messages(service, cat) == 0
 
@@ -1250,17 +1218,17 @@ async def test_only_the_coordinators_turns_wake_it(
         )
     ).json()
     for member in (worker, peer):
-        await client.put(f"/api/projects/{project['id']}/conversations/{member.hex}")
+        await _join(service, project["id"], member)
     runs = _record_runs(monkeypatch)
 
     for sender in (f"conversation:{peer.hex}", "someone"):
         assert not await notify_coordinator(
-            service, worker, project["id"], "answered", "x", sender
+            service, worker, project["id"], "finished", "x", sender
         )
     assert await _user_messages(service, cat) == 0
 
     assert await notify_coordinator(
-        service, worker, project["id"], "asked", "Which colour?", None
+        service, worker, project["id"], "asking", "Which colour?", None
     )
     event = await _last_user_message(service, cat)
     header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
@@ -1296,7 +1264,7 @@ async def test_the_users_message_in_a_member_reaches_the_coordinator(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
 
     assert await relay_user_message(service, worker, project["id"], "Use Postgres")
@@ -1323,7 +1291,7 @@ async def test_transcript_lists_messages_with_their_senders(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     _save_without_running(monkeypatch)
     await client.post(
         f"/api/conversations/{worker.hex}/events",
@@ -1525,7 +1493,7 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     _save_without_running(monkeypatch)
     stopped: list[UUID] = []
 
@@ -1535,7 +1503,7 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
     monkeypatch.setattr(EventService, "stop_goal_loop", stop_goal_loop)
 
     assert await notify_coordinator(
-        service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
+        service, worker, project["id"], "finished", "Done.", f"conversation:{cat.hex}"
     )
     assert await relay_user_message(service, worker, project["id"], "Use Postgres")
 
@@ -1586,14 +1554,14 @@ async def test_creating_a_project_can_start_its_coordinator(
     workspace.mkdir(exist_ok=True)
     started: list[tuple] = []
 
-    async def start_project_coordinator(project_hex, working_dir, **kwargs):
+    async def start_coordinator(project_hex, working_dir, **kwargs):
         started.append((project_hex, working_dir, kwargs))
         coordinator = await _start(
             service, tmp_path, title="Cat", tags={"project": project_hex}
         )
         return SimpleNamespace(id=coordinator)
 
-    monkeypatch.setattr(service, "start_project_coordinator", start_project_coordinator)
+    monkeypatch.setattr(service.projects, "start_coordinator", start_coordinator)
 
     response = await client.post(
         "/api/projects",
@@ -1628,10 +1596,10 @@ async def test_creating_a_project_can_start_its_coordinator(
 async def test_a_coordinator_that_cannot_start_leaves_no_project(
     client, service, tmp_path, monkeypatch
 ):
-    async def start_project_coordinator(project_hex, working_dir, **kwargs):
+    async def start_coordinator(project_hex, working_dir, **kwargs):
         raise ValueError("No agent profile to start the coordinator from")
 
-    monkeypatch.setattr(service, "start_project_coordinator", start_project_coordinator)
+    monkeypatch.setattr(service.projects, "start_coordinator", start_coordinator)
 
     response = await client.post(
         "/api/projects",
@@ -1668,7 +1636,7 @@ async def test_message_does_not_resume_work_the_user_stopped(
     (and run any actions left over from its interrupted batch)."""
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     worker = await _start(service, tmp_path)
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     await _set_status(service, worker, held)
 
     response = await client.post(
@@ -1715,7 +1683,7 @@ async def test_a_member_stopped_on_the_user_wakes_its_coordinator(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
     by_cat = f"conversation:{cat.hex}"
 
@@ -1762,7 +1730,7 @@ async def test_an_update_waits_for_a_run_slot_instead_of_being_dropped(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     original = EventService.send_message
 
     async def full(self, message, run=False, **kwargs):
@@ -1783,7 +1751,7 @@ async def test_an_update_waits_for_a_run_slot_instead_of_being_dropped(
     monkeypatch.setattr(EventService, "run_saved_message_when_free", run_when_free)
 
     assert await notify_coordinator(
-        service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
+        service, worker, project["id"], "finished", "Done.", f"conversation:{cat.hex}"
     )
     await asyncio.sleep(0)
     assert ran == []
@@ -1832,7 +1800,7 @@ async def test_a_restart_delivers_the_updates_it_missed(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
     worker_service = await service.get_event_service(worker)
     assert worker_service is not None
@@ -1908,7 +1876,7 @@ async def test_a_pause_from_a_restart_is_not_the_users(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
     worker_service = await service.get_event_service(worker)
     assert worker_service is not None
@@ -1998,7 +1966,7 @@ async def test_a_run_clears_the_shutdown_mark(service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_the_server_catches_up_on_updates_when_it_starts(tmp_path, monkeypatch):
-    from openhands.agent_server import conversation_service as module
+    from openhands.agent_server import project_service as module
 
     started = asyncio.Event()
 
@@ -2024,7 +1992,7 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
         tmp_path,
         tags={
             "project": project["id"],
-            "turn": "answered",
+            "turn": "finished",
             "resolved": "auto",
             "resolvenote": "tests pass",
         },
@@ -2034,7 +2002,7 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
     assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
     assert await _tags(service, member) == {
         "project": project["id"],
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "user",
     }
     assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
@@ -2042,13 +2010,31 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
     assert (await client.post(f"{base}/{member.hex}/reopen")).status_code == 204
     assert await _tags(service, member) == {
         "project": project["id"],
-        "turn": "answered",
+        "turn": "finished",
     }
     assert (await client.post(f"{base}/{member.hex}/reopen")).status_code == 204
 
     assert (await client.post(f"{base}/{outsider.hex}/resolve")).status_code == 404
     missing = f"/api/projects/{uuid4().hex}/conversations/{member.hex}/resolve"
     assert (await client.post(missing)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_agent_cannot_resolve_over_the_users_open_question(
+    client, service, tmp_path
+):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/conversations"
+    tags = {"project": project["id"], "turn": "asking", "ask": "Which name?"}
+    member = await _start(service, tmp_path, tags=tags)
+
+    response = await client.post(f"{base}/{member.hex}/resolve", json={"by": "agent"})
+
+    assert response.status_code == 409
+    assert "theirs to answer" in response.json()["detail"]
+    assert await _tags(service, member) == tags
+    # The user can.
+    assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
 
 
 @pytest.mark.asyncio
@@ -2059,17 +2045,17 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     base = f"/api/projects/{project['id']}/conversations"
     member = await _start(
-        service, tmp_path, tags={"project": project["id"], "turn": "answered"}
+        service, tmp_path, tags={"project": project["id"], "turn": "finished"}
     )
     agent = {"json": {"by": "agent"}}
 
     assert (
         await client.post(f"{base}/{member.hex}/resolve", **agent)
     ).status_code == 202
-    await asyncio.gather(*service._agent_resolves)
+    await asyncio.gather(*service.projects._agent_resolves)
     assert await _tags(service, member) == {
         "project": project["id"],
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "auto",
         "resolvenote": "agent",
     }
@@ -2080,7 +2066,7 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     assert (
         await client.post(f"{base}/{member.hex}/resolve", **agent)
     ).status_code == 202
-    await asyncio.gather(*service._agent_resolves)
+    await asyncio.gather(*service.projects._agent_resolves)
     assert (await _tags(service, member))["resolved"] == "user"
     assert "resolvenote" not in await _tags(service, member)
     bad = await client.post(f"{base}/{member.hex}/resolve", json={"by": "coordinator"})
@@ -2095,11 +2081,11 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     member = await _start(
         service,
         tmp_path,
-        tags={"project": "p1", "turn": "asked", "ask": "Which DB?", "env": "dev"},
+        tags={"project": "p1", "turn": "asking", "ask": "Which DB?", "env": "dev"},
     )
 
     # Stale read: no board tags, a different project, a forged resolve note.
-    await service.update_conversation_from_client(
+    await service.projects.update_conversation_from_client(
         member,
         UpdateConversationRequest(
             tags={"project": "p2", "env": "prod", "resolvenote": "x", "turn": "y"}
@@ -2107,7 +2093,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     )
     assert await _tags(service, member) == {
         "project": "p1",
-        "turn": "asked",
+        "turn": "asking",
         "ask": "Which DB?",
         "env": "prod",
     }
@@ -2115,12 +2101,12 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     # Writing resolved does nothing, either way.
     current = await _tags(service, member)
     for value in ("user", "auto"):
-        await service.update_conversation_from_client(
+        await service.projects.update_conversation_from_client(
             member, UpdateConversationRequest(tags={**current, "resolved": value})
         )
         assert "resolved" not in await _tags(service, member)
-    await service.set_resolved(member, True)
-    await service.update_conversation_from_client(
+    await service.projects.set_resolved(member, True)
+    await service.projects.update_conversation_from_client(
         member, UpdateConversationRequest(tags=current)
     )
     assert (await _tags(service, member))["resolved"] == "user"
@@ -2238,7 +2224,7 @@ async def test_a_saved_update_leaves_a_stuck_coordinator_stuck(
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await _join(service, project["id"], worker)
     await _set_status(service, cat, ConversationExecutionStatus.STUCK)
 
     assert await relay_user_message(service, worker, project["id"], "Use Postgres")

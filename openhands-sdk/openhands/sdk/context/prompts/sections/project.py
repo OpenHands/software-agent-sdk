@@ -102,7 +102,7 @@ class RoutingSection(_StaticTextSection):
     name = "routing"
     body = """\
 <ROUTING>
-* For each request, choose who handles it: the conversation that already owns that piece of work (send it a follow-up with message_project_conversation), a new conversation (start_child_conversation), or you.
+* For each request, choose who handles it: the conversation that already owns that piece of work (send it a follow-up with message_project_conversation), a new worker (start_child_conversation), or you.
 * You answer status questions, what a conversation found, and short facts. Work that takes real effort, such as code, research, documents or long tasks, goes to a worker, unless the user asks you to do it here.
 * Call list_project_conversations before you choose, so a follow-up reaches its owner instead of starting a duplicate. A previous result is not the current state.
 * One worker per piece of work. Split a request when its parts can be done and reviewed separately; keep it whole when they cannot.

@@ -35,12 +35,11 @@ from openhands.agent_server.event_service import (
     ServiceInactive,
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
-from openhands.agent_server.persistence import PersistedProjects
-from openhands.agent_server.project_board import (
-    TurnOutcome,
-    describe_action,
-    starts_turn,
+from openhands.agent_server.message_sender import (
+    SenderError,
+    sender_header as generic_sender_header,
 )
+from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_prompts import (
     RESTART_STOP,
     SenderRole,
@@ -53,19 +52,26 @@ from openhands.agent_server.project_prompts import (
     user_message_header,
     user_turn_header,
 )
+from openhands.agent_server.project_turns import (
+    TurnOutcome,
+    describe_action,
+    starts_turn,
+)
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.resolution import EARLIER_REQUESTS_KEPT
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
+    ASK_TAG_KEY,
     CONVERSATION_SENDER_PREFIX,
     HELD_FOR_USER_STATUSES,
     PROJECT_TAG_KEY,
+    RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
     conversation_sender,
 )
 from openhands.sdk.event import ActionEvent, Event, MessageEvent
-from openhands.sdk.event.ask_user import PendingAsk
+from openhands.sdk.event.ask_user import ANSWER_HEADER_PREFIX, PendingAsk
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.finish import FinishAction
 
@@ -81,10 +87,6 @@ _DELIVERY_ATTEMPTS = 3
 _DELIVERY_RETRY_SECONDS = (1.0, 5.0)
 # Runs waiting for a free slot, kept so they are not garbage collected.
 _waiting_runs: set[asyncio.Task] = set()
-
-
-class SenderError(ValueError):
-    """The ``sender_conversation_id`` of a message cannot send it."""
 
 
 async def _load_projects(service: "ConversationService") -> PersistedProjects | None:
@@ -126,12 +128,12 @@ async def sender_message_header(
     if sender is None:
         raise SenderError("Sender conversation not found")
     project_hex = sender.tags.get(PROJECT_TAG_KEY)
-    role: SenderRole = "conversation"
-    if project_hex:
-        if target_tags.get(PROJECT_TAG_KEY) != project_hex:
-            raise SenderError("Sender is not a conversation of this project")
-        coordinator = await _coordinator_id(service, project_hex) == sender_id
-        role = "coordinator" if coordinator else "member"
+    if not project_hex:
+        return generic_sender_header(sender.title, sender_id)
+    if target_tags.get(PROJECT_TAG_KEY) != project_hex:
+        raise SenderError("Sender is not a conversation of this project")
+    coordinator = await _coordinator_id(service, project_hex) == sender_id
+    role: SenderRole = "coordinator" if coordinator else "worker"
     return sender_header(sender.title, sender_id, role=role)
 
 
@@ -243,7 +245,7 @@ async def notify_coordinator(
     """Deliver a member's final message to its project's coordinator.
 
     A turn the coordinator started (its message, or the task message of a
-    child it started) wakes the coordinator: it waits for that reply. A turn
+    worker it started) wakes the coordinator: it waits for that reply. A turn
     the user started in the member is delivered without a run, for the
     coordinator to know on its next turn; the user already saw the reply.
     A turn another conversation started is not delivered, so an update the
@@ -264,7 +266,7 @@ async def notify_coordinator(
         return False
     member = await service.get_conversation(member_id)
     title = member.title if member else None
-    asked = turn == "asked"
+    asked = turn == "asking"
     card = None
     if asked and not by_user:
         member_events = await service.get_event_service(member_id)
@@ -384,13 +386,15 @@ async def pass_on_answer(
 ) -> bool:
     """Record the user's answer to a coordinator's card in the member it asks for.
 
-    A coordinator passes on a member's ``ask_user`` question with its own
-    card, naming the member in ``for_conversation``. When the user answers
-    that card, by a tap (``picked``, the option's label, and ``words``) or by
-    writing in the chat (``words``), the server records the same answer on the
-    member's own question and runs the member: the answer is the user's, so it
-    closes the member's card, which nothing the coordinator says could do.
-    ``closed_by`` is the user's event that answered the coordinator's card.
+    A coordinator passes on a member's question with its own card, naming the
+    member in ``for_conversation``. When the user answers that card, by a tap
+    (``picked``, the option's label, and ``words``) or by writing in the chat
+    (``words``), the server gives the member the user's answer and runs it:
+    on its ``ask_user`` card when it asked on one, otherwise as an answer to
+    the question its last turn asked (the ``ask`` tag). The answer is the
+    user's, so it closes the member's question, which nothing the coordinator
+    says could do. ``closed_by`` is the user's event that answered the
+    coordinator's card.
 
     Nothing happens when that card asked for no member, the member left the
     project, or the member's question was already answered, so passing the
@@ -419,7 +423,9 @@ async def pass_on_answer(
     async with _passing_lock():
         question = await asyncio.to_thread(member.pending_ask)
         if question is None:
-            return False
+            return await _answer_open_question(
+                service, member, coordinator_id, picked, words
+            )
         index, text = _matched_answer(question, picked, words)
         try:
             await member.answer_ask(
@@ -446,6 +452,49 @@ def _passing_lock() -> asyncio.Lock:
     if lock is None:
         lock = _passing_answers[loop] = asyncio.Lock()
     return lock
+
+
+async def _answer_open_question(
+    service: "ConversationService",
+    member: "EventService",
+    coordinator_id: UUID,
+    picked: str | None,
+    words: str | None,
+) -> bool:
+    """Give a member the user's answer to the question its last turn asked
+    without a card. The message carries the answer header, so the board
+    counts it as the user's answer."""
+    tags = dict(member.stored.tags)
+    if tags.get(TURN_TAG_KEY) != "asking" or RESOLVED_TAG_KEY in tags:
+        return False
+    answer = " — ".join(
+        part for part in ((picked or "").strip(), (words or "").strip()) if part
+    )
+    if not answer:
+        return False
+    question = tags.get(ASK_TAG_KEY) or "your last question"
+    # Close the question first: a second pass of the same answer then finds
+    # nothing to answer.
+    try:
+        await service.projects.set_conversation_tag(
+            member.stored.id, TURN_TAG_KEY, None, expected="asking"
+        )
+    except ValueError:
+        return False
+    await service.projects.set_conversation_tag(member.stored.id, ASK_TAG_KEY, None)
+    text = f'{ANSWER_HEADER_PREFIX}: "{question}"]\n{answer}'
+    try:
+        await member.send_message(
+            Message(role="user", content=[TextContent(text=text)]),
+            run=True,
+            sender=conversation_sender(coordinator_id),
+            refuse_pending_confirmation=True,
+            keep_goal_loop=True,
+        )
+    except HeldForUser:
+        # Saved; the member waits on the user for something else first.
+        pass
+    return True
 
 
 def _matched_answer(
@@ -576,7 +625,9 @@ async def _reconcile_member(
         coordinator_id,
     )
     if status == ConversationExecutionStatus.FINISHED.value:
-        turn: TurnOutcome = "asked" if tags.get(TURN_TAG_KEY) == "asked" else "answered"
+        turn: TurnOutcome = (
+            "asking" if tags.get(TURN_TAG_KEY) == "asking" else "finished"
+        )
         return await notify_coordinator(
             service, member_id, project_hex, turn, text, start.sender
         )

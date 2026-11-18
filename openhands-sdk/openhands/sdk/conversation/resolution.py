@@ -15,12 +15,18 @@ a problem.
 :class:`~openhands.sdk.llm.decision.DecisionModel` can answer: a decision model
 such as TypeSafe's Jev, an open model served by vLLM (both through LiteLLM),
 or a chat :class:`~openhands.sdk.llm.LLM` through :class:`LLMDecisionModel`.
+
+The judge's model is a saved LLM profile resolved by convention under the name
+``resolution_judge`` (:data:`RESOLUTION_JUDGE_PROFILE_NAME`), like ``oracle``
+and ``cleanup``. :func:`resolution_judge` creates it on first use as a copy of
+the conversation's own LLM, so it appears with the user's other profiles and
+can be pointed at another model.
 """
 
 import json
 import re
 from collections.abc import Mapping
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,8 +42,13 @@ from openhands.sdk.llm.decision import (
     Question,
 )
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.logger import get_logger
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.utils.cipher import Cipher
 
 
 logger = get_logger(__name__)
@@ -48,10 +59,12 @@ __all__ = [
     "EARLIER_REQUESTS_KEPT",
     "LLMDecisionModel",
     "Owed",
+    "RESOLUTION_JUDGE_PROFILE_NAME",
     "RESOLUTION_QUESTIONS",
     "ResolutionState",
     "ResolutionVerdict",
     "judge_resolution",
+    "resolution_judge",
     "verdict_from_judgments",
 ]
 
@@ -321,6 +334,57 @@ class LLMDecisionModel(DecisionModel):
         import asyncio
 
         return await asyncio.to_thread(self.send, state, questions)
+
+
+RESOLUTION_JUDGE_PROFILE_NAME: Final[str] = "resolution_judge"
+"""The saved LLM profile the judge runs on."""
+
+# A judge that is slow or down must not hold up whoever waits on its verdict.
+JUDGE_TIMEOUT_SECONDS: Final[int] = 60
+_JUDGE_RETRIES: Final[int] = 1
+
+
+def resolution_judge(
+    fallback: LLM,
+    store: LLMProfileStore,
+    *,
+    cipher: "Cipher | None" = None,
+) -> LLMDecisionModel:
+    """The decision model that judges resolution, on the saved
+    ``resolution_judge`` profile.
+
+    When ``store`` has no such profile yet, a copy of ``fallback`` (the
+    conversation's own LLM) is saved under that name first, with its
+    secrets (encrypted when ``cipher`` is given). The judge keeps its own
+    timeout and retries: the profile's would nest inside the judge's retry
+    loop.
+
+    Raises:
+        Exception: Whatever the store raises when the profile can be neither
+            loaded nor saved.
+    """
+    try:
+        llm = store.load(RESOLUTION_JUDGE_PROFILE_NAME, cipher=cipher)
+    except FileNotFoundError:
+        llm = fallback.model_copy(update={"usage_id": RESOLUTION_JUDGE_PROFILE_NAME})
+        store.save(
+            RESOLUTION_JUDGE_PROFILE_NAME, llm, include_secrets=True, cipher=cipher
+        )
+        logger.info(
+            "Saved the %r LLM profile from %s",
+            RESOLUTION_JUDGE_PROFILE_NAME,
+            fallback.model,
+        )
+    judge_llm = llm.model_copy(
+        update={
+            "usage_id": RESOLUTION_JUDGE_PROFILE_NAME,
+            "timeout": JUDGE_TIMEOUT_SECONDS,
+            "num_retries": 0,
+        }
+    )
+    return LLMDecisionModel(
+        llm=judge_llm, timeout=JUDGE_TIMEOUT_SECONDS, num_retries=_JUDGE_RETRIES
+    )
 
 
 _LLM_SYSTEM = (

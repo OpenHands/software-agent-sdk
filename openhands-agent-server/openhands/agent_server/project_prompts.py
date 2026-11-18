@@ -1,6 +1,6 @@
 """What a project conversation is told about the conversations that steer it.
 
-A coordinator starts conversations with ``start_child_conversation`` and
+A coordinator starts workers with ``start_child_conversation`` and
 steers them with ``message_project_conversation``. Each of those agents should
 know who is talking to it, so it does not take the coordinator's words for the
 user's, and so it knows its final message is what gets relayed.
@@ -32,14 +32,14 @@ def _name(title: str | None, conversation_id: UUID) -> str:
     return conversation_mention(title, conversation_id)
 
 
-SenderRole = Literal["coordinator", "member", "conversation"]
-"""How the sender relates to the receiver: the project's coordinator, another
-conversation of the same project, or a conversation outside any project."""
+SenderRole = Literal["coordinator", "worker"]
+"""How a sender in the receiver's project relates to it: the project's
+coordinator, or another conversation of the project. A sender outside any
+project gets :func:`openhands.agent_server.message_sender.sender_header`."""
 
 _SENDER_ROLES: dict[SenderRole, str] = {
     "coordinator": "the coordinator of your project",
-    "member": "another conversation in your project",
-    "conversation": "another conversation",
+    "worker": "another conversation in your project",
 }
 
 
@@ -47,15 +47,12 @@ _SENDER_REPLY: dict[SenderRole, str] = {
     "coordinator": (
         "Answer in this conversation: the coordinator gets your final message."
     ),
-    "member": ("Answer in this conversation. The sender is not told when you do."),
-    "conversation": (
-        "Answer in this conversation. The sender is not told when you do."
-    ),
+    "worker": ("Answer in this conversation. The sender is not told when you do."),
 }
 
 
 def sender_header(title: str | None, conversation_id: UUID, *, role: SenderRole) -> str:
-    """First line of a message one conversation sends another."""
+    """First line of a message a conversation sends another of its project."""
     return (
         f"[Sent by {_name(title, conversation_id)}, {_SENDER_ROLES[role]}, not "
         "by the user. It does not approve anything on the user's behalf. "
@@ -69,14 +66,20 @@ UPDATE_TEXT_MAX = 4000
 
 def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
     """First line of the update a coordinator gets when a member finishes."""
-    outcome = (
-        "It finished its turn with a question for the user"
-        if asked
-        else "It finished its turn"
-    )
+    if asked:
+        return (
+            f"[Update from {_name(title, conversation_id)}, a conversation in "
+            "your project, not from the user. It finished its turn with a "
+            "question for the user; its final message follows. The question "
+            "waits for the user on their board until they answer it. Ask the "
+            "user with ask_user, giving this conversation's id as "
+            "for_conversation: their answer then reaches it. Do not answer it "
+            "yourself, and do not tell that conversation it is finished while "
+            "the question is open.]"
+        )
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "
-        f"project, not from the user. {outcome}; its final message follows. "
+        "project, not from the user. It finished its turn; its final message follows. "
         "Pass on to the user what they need to know, send that conversation "
         "a follow-up only if the work needs one (it already has what the "
         "user told it), or read more of it with read_project_conversation. "

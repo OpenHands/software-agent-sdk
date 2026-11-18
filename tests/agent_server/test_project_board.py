@@ -9,20 +9,26 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from openhands.agent_server.conversation_service import (
-    RESERVED_TAG_KEYS,
-    ConversationService,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     StartConversationRequest,
 )
 from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
-    classify_turn,
-    extract_ask,
-    extract_request,
     merge_pull_requests,
+)
+from openhands.agent_server.project_service import RESERVED_TAG_KEYS
+from openhands.agent_server.project_turns import (
+    AgentSaid,
+    CardAnswered,
+    PullRequestsOpened,
+    TurnEnded,
+    TurnStarted,
+    TurnStopped,
+    TurnTracker,
+    UserWrote,
+    ask_line,
     summary_line,
 )
 from openhands.agent_server.project_wake import conversation_context
@@ -56,25 +62,27 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 
 
-# classify_turn
+# ask_line
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("Done. The tests pass.", "answered"),
-        ("Should I also update the docs?", "asked"),
-        ("I fixed it.\n\nWant me to open a PR? Let me know.", "asked"),
-        ("Which do you prefer: **A** or **B?**", "asked"),
-        ("Did that work? Then I'm done.\n\nAll tests pass.", "answered"),
-        ("See https://example.com/search?q=1 for details.", "answered"),
-        ("Here is the fix:\n\n```py\nx = a if b else c?\n```", "answered"),
-        ("", "answered"),
-        (None, "answered"),
+        ("Done.\n\nShould I also update the docs?", "Should I also update the docs?"),
+        ("Fixed it.\n\n  Want   a PR?\n", "Want a PR?"),
+        ("", None),
+        ("  \n", None),
+        (None, None),
     ],
 )
-def test_classify_turn(text, expected):
-    assert classify_turn(text) == expected
+def test_ask_line_is_the_end_of_the_reply(text, expected):
+    assert ask_line(text) == expected
+
+
+def test_a_long_ask_line_keeps_its_end():
+    line = ask_line("Should I " + "really " * 60 + "do it?")
+    assert line is not None and len(line) == 200
+    assert line.startswith("…") and line.endswith("do it?")
 
 
 # ConversationOutcomeSubscriber, with a recording set_tag
@@ -166,7 +174,8 @@ async def _feed(subscriber: ConversationOutcomeSubscriber, *events) -> None:
 @pytest.mark.asyncio
 async def test_finished_run_records_a_question():
     store = _Tags({"project": "p1"})
-    subscriber = _subscriber(store)
+    asks = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    subscriber = _judging(store, asks, [])
 
     await _feed(
         subscriber,
@@ -178,9 +187,23 @@ async def test_finished_run_records_a_question():
 
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "asked",
-        "ask": "Should I also add a test?",
+        "turn": "asking",
+        "ask": "Fixed. Should I also add a test?",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_question_mark_alone_does_not_ask():
+    """Only the judge says a reply waits on the user."""
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _subscriber(store),
+        _message("agent", "Fixed. Should I also add a test?"),
+        _status("finished"),
+    )
+
+    assert _board(store.tags) == {"project": "p1", "turn": "finished"}
 
 
 @pytest.mark.asyncio
@@ -191,7 +214,7 @@ async def test_confident_critic_resolves_without_overriding_the_user():
     await _feed(subscriber, _finish("All done.", score=0.95), _status("finished"))
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "auto",
         "resolvenote": "0.95 critic",
     }
@@ -211,13 +234,13 @@ async def test_unsure_critic_does_not_resolve():
         _subscriber(store), _finish("Done, I think.", score=0.89), _status("finished")
     )
 
-    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "finished"}
 
 
 @pytest.mark.asyncio
 async def test_new_user_message_reopens_the_conversation():
     store = _Tags(
-        {"project": "p1", "turn": "asked", "ask": "Add a test?", "resolved": "user"}
+        {"project": "p1", "turn": "asking", "ask": "Add a test?", "resolved": "user"}
     )
 
     await _feed(_subscriber(store), _message("user", "Yes, please add it"))
@@ -303,15 +326,15 @@ async def _start(
 async def test_set_tag_only_if_absent(service, tmp_path):
     cid = await _start(service, tmp_path, {"project": "p1", "resolved": "user"})
 
-    kept = await service.set_conversation_tag(
+    kept = await service.projects.set_conversation_tag(
         cid, "resolved", "auto", only_if_absent=True
     )
-    added = await service.set_conversation_tag(
-        cid, "turn", "asked", only_if_absent=True
+    added = await service.projects.set_conversation_tag(
+        cid, "turn", "asking", only_if_absent=True
     )
 
     assert kept is not None and kept["resolved"] == "user"
-    assert added is not None and added["turn"] == "asked"
+    assert added is not None and added["turn"] == "asking"
 
 
 @pytest.mark.asyncio
@@ -322,34 +345,25 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
     subscriber = ConversationOutcomeSubscriber(
         conversation_id=cid,
         tags=lambda: event_service.stored.tags,
-        set_tag=service.set_conversation_tag,
+        set_tag=service.projects.set_conversation_tag,
     )
 
-    await _feed(subscriber, _message("agent", "Shall I merge it?"), _status("finished"))
+    await _feed(subscriber, _message("agent", "Merged it."), _status("finished"))
 
     info = await service.get_conversation(cid)
     assert info is not None
-    assert _board(info.tags) == {
-        "project": "p1",
-        "turn": "asked",
-        "ask": "Shall I merge it?",
-    }
+    assert _board(info.tags) == {"project": "p1", "turn": "finished"}
 
 
 def test_board_tag_keys():
     assert BOARD_TAG_KEYS == {"resolved", "resolvenote", "turn", "ask"}
 
 
-@pytest.mark.asyncio
-async def test_service_registers_the_subscriber_for_every_conversation(
-    service, tmp_path
-):
-    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asked"})
+async def _reopened_by_a_user_message(service: ConversationService, cid: UUID) -> bool:
     event_service = await service.get_event_service(cid)
     assert event_service is not None
-
     # A user message published through the conversation's own pub/sub reaches
-    # the registered subscriber, which reopens the conversation.
+    # the board, which reopens the conversation.
     await event_service._pub_sub(_message("user", "One more thing"))
 
     async def turn_cleared() -> bool:
@@ -360,59 +374,30 @@ async def test_service_registers_the_subscriber_for_every_conversation(
         if await turn_cleared():
             break
         await asyncio.sleep(0.01)
-    assert await turn_cleared()
-
-
-def _stop_hook_feedback() -> MessageEvent:
-    return MessageEvent(
-        source="environment",
-        llm_message=Message(
-            role="user",
-            content=[TextContent(text="[Stop hook feedback] Call finish.")],
-        ),
-    )
+    return await turn_cleared()
 
 
 @pytest.mark.asyncio
-async def test_a_question_bounced_by_a_stop_hook_stays_asked():
-    store = _Tags({"project": "p1"})
+async def test_service_watches_a_project_member(service, tmp_path):
+    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asking"})
 
-    # The hook may refuse the stop before or after a FINISHED is published.
-    await _feed(
-        _subscriber(store),
-        _message("agent", "Which database should I use?"),
-        _stop_hook_feedback(),
-        _finish("Waiting for your choice."),
-        _status("finished"),
-    )
-
-    assert store.tags["turn"] == "asked"
-    assert store.tags["ask"] == "Which database should I use?"
+    assert await _reopened_by_a_user_message(service, cid)
 
 
 @pytest.mark.asyncio
-async def test_a_question_then_a_published_bounce_stays_asked():
-    store = _Tags({"project": "p1"})
-    subscriber = _subscriber(store)
+async def test_a_conversation_that_joins_a_project_is_watched_from_then_on(
+    service, tmp_path
+):
+    cid = await _start(service, tmp_path, {})
+    await service.projects.set_conversation_tag(cid, "project", "p1")
+    await service.projects.set_conversation_tag(cid, "turn", "asking")
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
 
-    await _feed(
-        subscriber,
-        _message("agent", "Which database should I use?"),
-        _status("finished"),
-        _stop_hook_feedback(),
-        _status("running"),
-        _finish("Waiting for your choice."),
-        _status("finished"),
-    )
-    assert store.tags["turn"] == "asked"
-
-    await _feed(
-        subscriber,
-        _message("user", "Postgres"),
-        _finish("Done, using Postgres."),
-        _status("finished"),
-    )
-    assert store.tags["turn"] == "answered"
+    assert await _reopened_by_a_user_message(service, cid)
+    # The board is the server's own: it does not keep the conversation from
+    # idle eviction the way a client's websocket does.
+    assert not event_service.has_external_subscribers()
 
 
 @pytest.mark.asyncio
@@ -427,7 +412,7 @@ async def test_a_rhetorical_question_mid_run_does_not_stick():
         _status("finished"),
     )
 
-    assert store.tags["turn"] == "answered"
+    assert store.tags["turn"] == "finished"
 
 
 @pytest.mark.asyncio
@@ -524,11 +509,20 @@ async def test_a_finished_member_reports_its_final_message():
     async def on_finished(project, turn, text, sender):
         reports.append((project, turn, text, sender))
 
+    verdicts = [
+        verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9}),
+        verdict_from_judgments({"handled": 1, "task_done": 1}),
+    ]
+
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        return verdicts.pop(0)
+
     subscriber = ConversationOutcomeSubscriber(
         conversation_id=uuid4(),
         tags=lambda: store.tags,
         set_tag=store.set_tag,
         on_finished=on_finished,
+        judge=judge,
     )
 
     await _feed(
@@ -542,8 +536,8 @@ async def test_a_finished_member_reports_its_final_message():
     )
 
     assert reports == [
-        ("p1", "asked", "Which database?", "conversation:cat"),
-        ("p1", "answered", "Done.", None),
+        ("p1", "asking", "Which database?", "conversation:cat"),
+        ("p1", "finished", "Done.", None),
     ]
 
 
@@ -590,36 +584,13 @@ async def test_conversations_outside_projects_report_nothing():
     assert reports == []
 
 
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Done. Which colour do you prefer?", "Which colour do you prefer?"),
-        (
-            "Fixed.\n\nShould I also:\n- **update the docs?**",
-            "Should I also: update the docs?",
-        ),
-        ("All done.", None),
-        ("See https://example.com/?q=1 for details.", None),
-        ("Ok?\n\n```py\nprint('x?')\n```", "Ok?"),
-        (None, None),
-    ],
-)
-def test_extract_ask(text, expected):
-    assert extract_ask(text) == expected
-
-
-def test_a_long_ask_is_cut():
-    ask = extract_ask("Should I " + "really " * 60 + "do it?")
-    assert ask is not None and len(ask) == 200 and ask.endswith("…")
-
-
 @pytest.mark.asyncio
 async def test_an_answered_turn_drops_a_stale_ask():
     store = _Tags({"project": "p1", "ask": "Old question?"})
 
     await _feed(_subscriber(store), _finish("All done."), _status("finished"))
 
-    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "finished"}
 
 
 @pytest.mark.asyncio
@@ -657,7 +628,7 @@ async def test_the_users_messages_are_passed_on_in_order():
 
 @pytest.mark.asyncio
 async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
-    store = _Tags({"project": "p1", "turn": "asked", "ask": "Ship it?"})
+    store = _Tags({"project": "p1", "turn": "asking", "ask": "Ship it?"})
     finished: list = []
 
     async def on_finished(*args):
@@ -673,7 +644,7 @@ async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
 
     await _feed(subscriber, note)
 
-    assert _board(store.tags) == {"project": "p1", "turn": "asked", "ask": "Ship it?"}
+    assert _board(store.tags) == {"project": "p1", "turn": "asking", "ask": "Ship it?"}
     assert finished == []
 
 
@@ -805,7 +776,7 @@ async def test_after_a_restart_the_turn_starter_is_read_from_the_log():
     )
 
     assert stops == [("p1", "stuck", None, "conversation:cat")]
-    assert finishes == [("answered", "Built.", "conversation:cat")]
+    assert finishes == [("finished", "Built.", "conversation:cat")]
 
 
 def _judging(store: _Tags, verdict: ResolutionVerdict | None, seen: list):
@@ -837,7 +808,7 @@ async def test_judge_resolves_when_nothing_is_left_for_the_user():
 
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "auto",
         "resolvenote": "0.93 nothing",
     }
@@ -867,7 +838,7 @@ async def test_judge_leaves_open_when_the_user_owes_something(verdict):
         _status("finished"),
     )
 
-    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "finished"}
 
 
 @pytest.mark.asyncio
@@ -901,13 +872,13 @@ async def test_the_turn_shows_while_the_judge_thinks():
         if "turn" in store.tags:
             break
         await asyncio.sleep(0.01)
-    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
+    assert _board(store.tags) == {"project": "p1", "turn": "finished"}
 
     release.set()
     await subscriber.drain()
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "asked",
+        "turn": "asking",
         "ask": "Tell me which you prefer.",
     }
 
@@ -929,7 +900,7 @@ async def test_judge_sends_a_question_without_a_question_mark_to_the_user():
 
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "asked",
+        "turn": "asking",
         "ask": "Tell me which you prefer.",
     }
 
@@ -949,7 +920,7 @@ async def test_judge_lets_a_pleasantry_question_resolve():
     )
 
     assert len(seen) == 1
-    assert store.tags["turn"] == "answered"
+    assert store.tags["turn"] == "finished"
     assert "ask" not in store.tags
     assert store.tags["resolved"] == "auto"
 
@@ -968,26 +939,7 @@ async def test_unfinished_work_with_no_ask_is_neither_resolved_nor_needs_you():
     )
 
     assert verdict.owed == "unfinished"
-    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
-
-
-@pytest.mark.asyncio
-async def test_a_question_from_earlier_in_the_turn_is_not_judged_away():
-    store = _Tags({"project": "p1"})
-    seen: list[ResolutionState] = []
-    await _feed(
-        _judging(store, verdict_from_judgments({"handled": 1, "task_done": 1}), seen),
-        _message("user", "Fix the bug"),
-        _status("running"),
-        _message("agent", "Should I also add a test?"),
-        _stop_hook_feedback(),
-        _finish("Fixed the bug."),
-        _status("finished"),
-    )
-
-    assert seen == []
-    assert store.tags["turn"] == "asked"
-    assert "resolved" not in store.tags
+    assert _board(store.tags) == {"project": "p1", "turn": "finished"}
 
 
 @pytest.mark.asyncio
@@ -1009,7 +961,7 @@ async def test_without_a_verdict_a_confident_critic_still_resolves():
 @pytest.mark.asyncio
 async def test_a_user_message_clears_the_resolve_note():
     store = _Tags(
-        {"project": "p1", "turn": "answered", "resolved": "auto", "resolvenote": "x"}
+        {"project": "p1", "turn": "finished", "resolved": "auto", "resolvenote": "x"}
     )
 
     await _feed(_subscriber(store), _message("user", "Wait, one more thing"))
@@ -1078,30 +1030,8 @@ async def test_conversation_context_reads_only_the_ends_of_a_long_log():
     assert log.read < 700
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        (
-            "Both PRs are ready for you to merge when you get to it. Closing out here.",
-            "Both PRs are ready for you to merge when you get to it.",
-        ),
-        (
-            "Please sign off on the plan below.\n\n- one\n- two\n\n"
-            "They're independent and can be reviewed or opened one at a time.",
-            "Please sign off on the plan below.",
-        ),
-        ("Mochi or Juniper.\n\nTell me which you prefer.", "Tell me which you prefer."),
-        ("Done. Shall I also add a test? Closing out.", "Shall I also add a test?"),
-        ("All done. Closing out here.", None),
-        (None, None),
-    ],
-)
-def test_extract_request_finds_what_the_reply_asks(text, expected):
-    assert extract_request(text) == expected
-
-
 @pytest.mark.asyncio
-async def test_a_needs_you_reply_without_a_request_line_has_no_ask():
+async def test_a_needs_you_reply_shows_its_end_as_the_ask():
     store = _Tags({"project": "p1"})
     verdict = verdict_from_judgments(
         {"handled": 1, "task_done": 1, "asks_to_check": 0.9}
@@ -1115,27 +1045,66 @@ async def test_a_needs_you_reply_without_a_request_line_has_no_ask():
         _status("finished"),
     )
 
-    assert _board(store.tags) == {"project": "p1", "turn": "asked"}
+    assert _board(store.tags) == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Fixed on the branch. Closing out here.",
+    }
 
 
 @pytest.mark.asyncio
-async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
+async def test_a_question_for_the_user_waits_for_the_user():
+    """Live F36.auto-resolve, 2026-11-18: a worker asked the user to pick in a
+    turn the coordinator started; the coordinator told it it was finished,
+    and the worker resolved itself. The question is the user's: it stays on
+    the board through the coordinator's messages until the user answers."""
     store = _Tags({"project": "p1"})
-    verdict = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    asks = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    subscriber = _judging(store, asks, [])
 
     await _feed(
-        _judging(store, verdict, []),
-        _message("user", "Build piece 2", sender="conversation:cat"),
+        subscriber,
+        _message("user", "Suggest two cat names", sender="conversation:cat"),
         _status("running"),
-        _message(
-            "agent",
-            "Piece 2 is done. Want me to hand piece 3 to a new conversation, "
-            "or leave it with you?",
-        ),
+        _message("agent", "Mochi or Juniper. Tell me which one you prefer."),
         _status("finished"),
     )
+    asked = {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Mochi or Juniper. Tell me which one you prefer.",
+    }
+    assert _board(store.tags) == asked
 
-    assert _board(store.tags) == {"project": "p1", "turn": "answered"}
+    await _feed(
+        subscriber,
+        _message("user", "You're finished, thanks.", sender="conversation:cat"),
+        _status("running"),
+        _message("agent", "Understood."),
+        _status("finished"),
+    )
+    assert _board(store.tags) == asked
+
+    await _feed(subscriber, _message("user", "Mochi"), _status("running"))
+    assert _board(store.tags) == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_the_users_answer_passed_on_by_the_coordinator_closes_the_question():
+    store = _Tags({"project": "p1", "turn": "asking", "ask": "Which name?"})
+    subscriber = _judging(store, None, [])
+
+    await _feed(
+        subscriber,
+        _message(
+            "user",
+            '[Answer to your question: "Which name?"]\nMochi',
+            sender="conversation:cat",
+        ),
+        _status("running"),
+    )
+
+    assert _board(store.tags) == {"project": "p1"}
 
 
 @pytest.mark.asyncio
@@ -1143,7 +1112,7 @@ async def test_a_worker_that_resolved_itself_is_not_judged():
     """The user says "merged", the worker reacts and resolves its own
     conversation with resolve_conversation: no judge call, and its resolve
     stands."""
-    store = _Tags({"project": "p1", "turn": "asked", "ask": "Merge it?"})
+    store = _Tags({"project": "p1", "turn": "asking", "ask": "Merge it?"})
     seen: list[ResolutionState] = []
     subscriber = _judging(
         store, ResolutionVerdict(probability=0.1, owed="review"), seen
@@ -1158,7 +1127,7 @@ async def test_a_worker_that_resolved_itself_is_not_judged():
     assert seen == []
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "auto",
         "resolvenote": "agent",
     }
@@ -1203,6 +1172,76 @@ async def test_a_user_message_does_not_wait_for_the_last_turns_judge():
     assert "resolved" not in store.tags
     assert not release.is_set()
     await subscriber.drain()
+
+
+# TurnTracker: what the events say, with nothing acted on
+
+
+def _signals(tracker: TurnTracker, *events: Event) -> list:
+    return [signal for event in events for signal in tracker.observe(event)]
+
+
+def test_tracker_reads_a_turn_from_its_events():
+    tracker = TurnTracker()
+
+    signals = _signals(
+        tracker,
+        _message("user", "Pick a database.", sender="conversation:cat"),
+        _status("running"),
+        _action("terminal", "ls"),
+        _message("agent", "Postgres or SQLite?"),
+        _status("finished"),
+    )
+
+    assert signals == [
+        TurnStarted(by_user=False),
+        AgentSaid("Postgres or SQLite?"),
+        TurnEnded(
+            turn="finished",
+            ask=None,
+            score=None,
+            text="Postgres or SQLite?",
+            sender="conversation:cat",
+            sender_known=True,
+            judged=ResolutionState(
+                request="Pick a database.",
+                reply="Postgres or SQLite?",
+                actions=["terminal: ls"],
+            ),
+        ),
+    ]
+
+
+def test_tracker_tells_a_user_message_and_its_answer_to_a_card():
+    tracker = TurnTracker()
+    message = _message("user", "Use SQLite.")
+
+    assert tracker.observe(message) == [
+        TurnStarted(by_user=True),
+        CardAnswered(message.id, None, "Use SQLite."),
+        UserWrote("Use SQLite."),
+    ]
+
+
+def test_tracker_reports_a_stop_once_and_a_finish_it_never_saw_not_at_all():
+    tracker = TurnTracker()
+
+    assert _signals(tracker, _status("finished", full=True)) == []
+    signals = _signals(
+        tracker,
+        _action("terminal", "rm -rf build"),
+        _status("waiting_for_confirmation"),
+        _status("waiting_for_confirmation"),
+    )
+
+    assert signals == [
+        TurnStopped(
+            status="waiting_for_confirmation",
+            text="terminal: rm -rf build",
+            sender=None,
+            sender_known=False,
+        )
+    ]
 
 
 # Activity: the latest line and the pull requests a member opened
@@ -1326,3 +1365,18 @@ def test_the_oldest_pull_requests_drop_off_a_full_tag():
 def test_activity_tags_are_server_owned_and_not_inherited():
     assert ACTIVITY_TAG_KEYS == {"lastmessage", "prs"}
     assert ACTIVITY_TAG_KEYS <= RESERVED_TAG_KEYS
+
+
+def test_tracker_tells_what_the_agent_said_and_the_pull_requests_it_opened():
+    opened = _terminal("gh pr create --fill", "c1")
+    signals = _signals(
+        TurnTracker(),
+        _message("agent", "**Opening** the PR now.\n\nDetails."),
+        opened,
+        _result(opened, "https://github.com/acme/app/pull/412"),
+    )
+
+    assert signals == [
+        AgentSaid("Opening the PR now."),
+        PullRequestsOpened(["acme/app#412"]),
+    ]

@@ -1,7 +1,7 @@
 """Action, observation, and tool definitions for a project's coordinator.
 
-A project coordinator starts conversations with ``start_child_conversation`` (a child
-copies the coordinator's ``project`` tag, so it joins the project). These two
+A project coordinator starts workers with ``start_child_conversation``; each
+worker joins the coordinator's project. These two
 tools cover the rest of the loop: see every conversation of the project and what it
 needs, and send one of them a follow-up.
 """
@@ -86,7 +86,7 @@ _LIST_DESCRIPTION = (
     "to: every other conversation tagged with the same project, including the "
     "ones you started with start_child_conversation.\n\n"
     "Conversations come grouped by `attention`: `needs_you` (waiting for "
-    "confirmation, paused, error or stuck), `needs_input` (finished with a "
+    "confirmation, paused, error or stuck), `asking` (finished with a "
     "question for the user, shown after `asks:`), `working` (running), "
     "`idle` (not running and not resolved) and "
     "`resolved` (the user, the conversation itself or the resolution judge "
@@ -202,7 +202,7 @@ class MessageProjectConversationObservation(Observation):
 _MESSAGE_DESCRIPTION = (
     "Send a follow-up message to another conversation in your project and "
     "ask it to run: to correct, resume or extend its task. Only conversations that "
-    "list_project_conversations reports can be messaged; start a new conversation with "
+    "list_project_conversations reports can be messaged; start a new worker with "
     "start_child_conversation for a distinct task.\n\n"
     "A running conversation receives the message in its current run; a finished "
     "or idle conversation is run to handle it. A conversation that waits on the "

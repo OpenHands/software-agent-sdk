@@ -2450,7 +2450,6 @@ describe('Auxiliary API clients', () => {
       () => json(project, 201),
       () => json({ ...project, name: 'Renamed' }),
       () => json({ project_id: 'p-1', coordinator: null, conversations: [] }),
-      () => new Response(null, { status: 204 }),
       () => json({ conversation_id: 'c-2', messages: [] }),
       () => new Response(null, { status: 204 }),
       () => new Response(null, { status: 204 }),
@@ -2466,9 +2465,11 @@ describe('Auxiliary API clients', () => {
       () => json(memory),
       () => json({ deleted: true }),
     ];
-    global.fetch = vi
-      .fn()
-      .mockImplementation(() => Promise.resolve(responses.shift()!())) as typeof fetch;
+    global.fetch = vi.fn().mockImplementation(() => {
+      const next = responses.shift();
+      if (!next) throw new Error('Unexpected fetch call');
+      return Promise.resolve(next());
+    }) as typeof fetch;
 
     const client = new ProjectsClient({ host: 'http://example.com/' });
     await expect(client.listProjects()).resolves.toEqual([project]);
@@ -2479,7 +2480,6 @@ describe('Auxiliary API clients', () => {
       coordinator: null,
       conversations: [],
     });
-    await expect(client.addConversation('p-1', 'c-2')).resolves.toBeUndefined();
     await client.readConversation('p-1', 'c-2', { limit: 5 });
     await expect(client.resolveConversation('p-1', 'c-2')).resolves.toBeUndefined();
     await expect(client.reopenConversation('p-1', 'c-2')).resolves.toBeUndefined();
@@ -2501,7 +2501,6 @@ describe('Auxiliary API clients', () => {
       'POST http://example.com/api/projects',
       'PATCH http://example.com/api/projects/p-1',
       'GET http://example.com/api/projects/p-1/conversations',
-      'PUT http://example.com/api/projects/p-1/conversations/c-2',
       'GET http://example.com/api/projects/p-1/conversations/c-2/messages?limit=5',
       'POST http://example.com/api/projects/p-1/conversations/c-2/resolve',
       'POST http://example.com/api/projects/p-1/conversations/c-2/reopen',
@@ -2514,9 +2513,9 @@ describe('Auxiliary API clients', () => {
       'DELETE http://example.com/api/projects/p-1/memory/topic.md?base_revision=r2',
     ]);
     expect(JSON.parse(calls[1][2])).toEqual({ name: 'Launch', coordinator: { working_dir: '/w' } });
-    expect(calls[10][2]).toBeInstanceOf(FormData);
-    expect((calls[10][2] as FormData).get('file')).toBeInstanceOf(File);
-    expect(JSON.parse(calls[13][2])).toEqual({ content: '- a\n', base_revision: 'r1' });
+    expect(calls[9][2]).toBeInstanceOf(FormData);
+    expect((calls[9][2] as FormData).get('file')).toBeInstanceOf(File);
+    expect(JSON.parse(calls[12][2])).toEqual({ content: '- a\n', base_revision: 'r1' });
     expect(projectIdKey('AB-CD')).toBe('abcd');
   });
 

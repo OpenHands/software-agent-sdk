@@ -125,7 +125,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 Preconditions:
 
 - A baseline run is live and exported (`launch --new`), `doctor` is ok, and
-  `$DEEPSEEK_API_KEY` is set; the block below saves the DeepSeek profiles.
+  `$DEEPSEEK_API_KEY` (or the proxy's `$LLM_BASE_URL` and `$LLM_API_KEY`) is
+  set; the block below saves the DeepSeek profiles and keeps the active
+  model in `$MODEL`, which differs through the proxy.
 - `git` is installed (worktree fixture). No `tmux` or browser is needed: every
   agent here has `tools: []` (`--tools none`), which keeps only the built-in
   `finish` and `think` tools.
@@ -144,7 +146,7 @@ Preconditions:
   called; the real-model run is `F04.run-real`.
 
 ```sh
-control-agent-server llm preset deepseek
+MODEL=$(control-agent-server llm preset deepseek --print-model)
 F="$AGENT_SERVER_VERIFY_RUN/fixtures"
 W="$F/qa-f04-ws"
 mkdir -p "$W"
@@ -193,14 +195,14 @@ EOF
   START=$(control-agent-server conversation start --tools none --no-autotitle --tag qa=f04 --workspace "$W" --save F04.create-settings/start)
   CID=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); assert d["status"] == 201 and d["execution_status"] == "idle", d; print(d["id"])' "$START")
   control-agent-server api GET "/api/conversations/$CID" --expect 200 --check execution_status eq idle \
-    --check agent.kind eq Agent --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+    --check agent.kind eq Agent --check agent.llm.model eq "$MODEL" --check agent.tools len-eq 0 \
     --check agent.llm.api_key ne "$DEEPSEEK_API_KEY" --check tags.qa eq f04 --check title missing \
     --check workspace.working_dir eq "$W" --save F04.create-settings/get
   control-agent-server api GET /api/conversations/count --check . eq $((N1 + 1))
   control-agent-server state cat "server/workspace/conversations/${CID//-/}/meta.json" --max-chars 200 \
     --check agent missing --check secrets_encrypted eq true --check autotitle eq false --check tags.qa eq f04
   control-agent-server state cat "server/workspace/conversations/${CID//-/}/base_state.json" --max-chars 200 \
-    --check agent.llm.model eq deepseek/deepseek-flash --check execution_status eq idle
+    --check agent.llm.model eq "$MODEL" --check execution_status eq idle
   ```
   The create is 201 and `idle`, the count grows by one, `meta.json` has no
   `agent` and `base_state.json` holds it.
@@ -227,10 +229,10 @@ EOF
   AID=$(control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent_profile_id\": \"$PID\", \"autotitle\": false}" \
     --expect 201 --check launched_agent_profile.agent_profile_id eq "$PID" \
-    --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+    --check agent.llm.model eq "$MODEL" --check agent.tools len-eq 0 \
     --save F04.create-agent-profile/start --field id)
   control-agent-server api GET "/api/conversations/$AID" --check launched_agent_profile.agent_profile_id eq "$PID" \
-    --check launched_agent_profile.revision exists --check agent.llm.model eq deepseek/deepseek-flash
+    --check launched_agent_profile.revision exists --check agent.llm.model eq "$MODEL"
   ```
   The conversation records the profile id and runs the profile's model.
 - **Create validation (`F04.create-validation`).** Every bad request is
@@ -436,7 +438,7 @@ EOF
   RID=$(control-agent-server conversation start --tools none --workspace "$W/qa-real" \
     --prompt 'Reply with the single word: pong' --wait --until finished --timeout 300 --save F04.run-real/start --print-id)
   control-agent-server api GET "/api/conversations/$RID" --check execution_status eq finished \
-    --check agent.llm.model eq deepseek/deepseek-flash --check stats.usage_to_metrics.default.model_name exists --save F04.run-real/get
+    --check agent.llm.model eq "$MODEL" --check stats.usage_to_metrics.default.model_name exists --save F04.run-real/get
   control-agent-server ws listen "/sockets/events/$RID" --query resend_mode=all --until-kind ConversationStateUpdateEvent \
     --until key=execution_status --until value=finished --duration 20 --save F04.run-real/replay
   control-agent-server conversation events "$RID" --kinds MessageEvent --contains 'single word: pong'
@@ -768,7 +770,7 @@ EOF
     control-agent-server api GET "/api/conversations/$CCHILD" --expect 200 \
       --check parent_conversation_id eq "$CPARENT" --check title eq "QA F04 child $CHILD_CASE" \
       --check tags.qa eq f04-child --check max_iterations eq 7 \
-      --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+      --check agent.llm.model eq "$MODEL" --check agent.tools len-eq 0 \
       --check secret_registry.secret_sources.QA_F04_CHILD_TOKEN.kind eq StaticSecret \
       --check secret_registry.secret_sources.QA_F04_CHILD_TOKEN.value ne qa-f04-child-value \
       --check workspace.working_dir eq "$CHILD_EXPECTED_WS" --save "F04.child-start/$CHILD_CASE-child"

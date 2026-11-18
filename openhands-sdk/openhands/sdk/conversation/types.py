@@ -23,7 +23,7 @@ TAG_VALUE_MAX_LENGTH = 256
 
 PROJECT_TAG_KEY = "project"
 """Tag whose value is the id (hex) of the agent-server project a conversation
-belongs to. Child conversations copy their parent's tags, so they join it too."""
+belongs to. The workers a project's coordinator starts get it too."""
 
 PROJECTS_OFF_DETAIL = "Projects are turned off"
 """Detail of the 404 every ``/api/projects`` route answers while the user has
@@ -36,13 +36,13 @@ it, ``auto`` when the server judged that nothing is left for the user (see
 message removes it."""
 
 TURN_TAG_KEY = "turn"
-"""Tag recording how the agent's last turn ended: ``asked`` when its final
-message asked the user something, ``answered`` otherwise. A new user message
+"""Tag recording how the agent's last turn ended: ``asking`` when its final
+message waits on the user, ``finished`` otherwise. A new user message
 removes it."""
 
 ASK_TAG_KEY = "ask"
 """Tag holding the question a conversation's agent stopped on, in one short
-line, while ``turn`` is ``asked``. A new user message removes it."""
+line, while ``turn`` is ``asking``. A new user message removes it."""
 
 ASK_MAX_LENGTH = 200
 """Longest ``ask``; a longer question is cut and ends with an ellipsis."""
@@ -78,7 +78,7 @@ them."""
 
 CONVERSATION_SENDER_PREFIX = "conversation:"
 """Prefix of a user message's ``sender`` when another conversation sent it: a
-parent delivering a child's task, or a project coordinator steering a member.
+parent delivering a child's task, or a project coordinator steering a worker.
 The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
 the user wrote the message."""
 

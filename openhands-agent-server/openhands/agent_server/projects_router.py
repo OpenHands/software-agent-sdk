@@ -8,8 +8,8 @@ client connected to the same server sees the same list.
 
 Membership lives on the conversations, not in the project record: a
 conversation belongs to a project when its ``project`` tag holds the project's
-id. Child conversations copy their parent's tags, so the conversations a coordinator
-starts with ``start_child_conversation`` join its project without another call.
+id. The workers a coordinator starts with ``start_child_conversation`` get
+that tag, so they join its project without another call.
 
 Two limits. Projects are local to this server: the record, its files and its
 memory live in this server's persistence folder, and a conversation running in
@@ -68,11 +68,7 @@ from openhands.agent_server.project_artifacts import (
     open_workspace_file,
     valid_artifact_name,
 )
-from openhands.agent_server.project_board import (
-    AGENT_RESOLVE_NOTE,
-    ResolvedBy,
-    TurnOutcome,
-)
+from openhands.agent_server.project_board import AGENT_RESOLVE_NOTE, ResolvedBy
 from openhands.agent_server.project_memory import (
     MEMORY_INDEX,
     MemoryConflict,
@@ -82,6 +78,7 @@ from openhands.agent_server.project_memory import (
     ProjectMemoryStore,
     valid_memory_name,
 )
+from openhands.agent_server.project_turns import TurnOutcome
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.conversation.request import AgentLaunchAdditions
@@ -145,12 +142,12 @@ class ProjectAttention(str, Enum):
     """What a conversation needs from the user.
 
     Derived from the execution status, then refined by the conversation's tags: a
-    finished conversation whose last message asked something needs input, and a
+    finished conversation whose last message asked something is asking, and a
     resolved conversation is resolved unless it is blocked on the user.
     """
 
     NEEDS_YOU = "needs_you"
-    NEEDS_INPUT = "needs_input"
+    ASKING = "asking"
     WORKING = "working"
     IDLE = "idle"
     RESOLVED = "resolved"
@@ -338,15 +335,15 @@ class ProjectConversation(BaseModel):
     turn: TurnOutcome | None = Field(
         default=None,
         description=(
-            "How the agent's last run ended: `asked` when its final message "
-            "asked the user something, `answered` otherwise. Backed by the "
+            "How the agent's last run ended: `asking` when its final message "
+            "waits on the user, `finished` otherwise. Backed by the "
             "`turn` tag; a new user message clears it."
         ),
     )
     ask: str | None = Field(
         default=None,
         description=(
-            "While `turn` is `asked`: the question the agent stopped on, in one "
+            "While `turn` is `asking`: the question the agent stopped on, in one "
             "short line (at most 200 characters). Backed by the `ask` tag; a "
             "new user message clears it."
         ),
@@ -385,7 +382,7 @@ class ProjectConversationsResponse(BaseModel):
         default_factory=list,
         description=(
             "Every other member conversation, grouped by attention "
-            "(needs_you, needs_input, working, finished, idle, resolved) and "
+            "(needs_you, asking, working, idle, resolved) and "
             "newest-updated first within each group."
         ),
     )
@@ -480,7 +477,7 @@ async def _join(
     service: ConversationService, project_id: UUID, conversation_id: UUID
 ) -> bool:
     """Tag the conversation as a member; ``False`` when it does not exist."""
-    tags = await service.set_conversation_tag(
+    tags = await service.projects.set_conversation_tag(
         conversation_id, PROJECT_TAG, project_id.hex
     )
     return tags is not None
@@ -537,8 +534,8 @@ def _attention(
     if resolved is not None:
         return ProjectAttention.RESOLVED
     # A finished turn that asked something; an idle (reloaded) one stays idle.
-    if execution_status == ConversationExecutionStatus.FINISHED and turn == "asked":
-        return ProjectAttention.NEEDS_INPUT
+    if execution_status == ConversationExecutionStatus.FINISHED and turn == "asking":
+        return ProjectAttention.ASKING
     return attention
 
 
@@ -546,7 +543,7 @@ def _conversation(
     stored: StoredConversation, execution_status: ConversationExecutionStatus
 ) -> ProjectConversation:
     resolved = _tag_value(stored.tags, RESOLVED_TAG_KEY, ("user", "auto"))
-    turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asked", "answered"))
+    turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asking", "finished"))
     return ProjectConversation(
         conversation_id=stored.id,
         title=stored.title,
@@ -557,7 +554,7 @@ def _conversation(
         if resolved == "auto"
         else None,
         turn=turn,
-        ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asked" else None,
+        ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asking" else None,
         last_message=stored.tags.get(LAST_MESSAGE_TAG_KEY) or None,
         pull_requests=_pull_requests(stored.tags.get(PULL_REQUESTS_TAG_KEY)),
         automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
@@ -643,7 +640,7 @@ async def _start_new_coordinator(
 ) -> ProjectItem:
     """Start the coordinator after the record exists; drop the record if it fails."""
     try:
-        info = await service.start_project_coordinator(
+        info = await service.projects.start_coordinator(
             project.id.hex,
             new.working_dir,
             agent_profile_id=new.agent_profile_id,
@@ -831,34 +828,6 @@ async def list_project_conversations(
     )
 
 
-@projects_router.put(
-    "/{project_id}/conversations/{conversation_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        404: {"description": "Project or conversation not found"},
-        409: {"description": "Conversation is the coordinator of another project"},
-    },
-)
-async def add_project_conversation(
-    project_id: UUID,
-    conversation_id: UUID,
-    stores: _Stores,
-    service: ConversationService = Depends(get_conversation_service),
-) -> Response:
-    """Add an existing conversation to a project. Idempotent.
-
-    Sets the conversation's ``project`` tag and keeps its other tags. A
-    conversation belongs to at most one project, so this moves it from any
-    other project, unless it coordinates that one.
-    """
-    persisted = await _load(_store(stores))
-    _find(persisted, project_id)
-    _check_not_coordinating_elsewhere(persisted, project_id, conversation_id)
-    if not await _join(service, project_id, conversation_id):
-        raise NotFound("Conversation not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
 @projects_router.delete(
     "/{project_id}/conversations/{conversation_id}",
     response_model=DeleteResponse,
@@ -875,14 +844,14 @@ async def remove_project_conversation(
 ) -> DeleteResponse:
     """Remove a conversation from a project by clearing its ``project`` tag.
 
-    The conversation itself is not changed otherwise. Child conversations keep
+    The conversation itself is not changed otherwise. Workers it started keep
     their own tag. Clear the coordinator before removing it.
     """
     project = _find(await _load(_store(stores)), project_id)
     if project.coordinator_conversation_id == conversation_id:
         raise Conflict("Conversation is the project's coordinator")
     try:
-        tags = await service.set_conversation_tag(
+        tags = await service.projects.set_conversation_tag(
             conversation_id, PROJECT_TAG, None, expected=project_id.hex
         )
     except ValueError:
@@ -916,12 +885,22 @@ async def _set_member_resolved(
     info = await service.get_conversation(conversation_id)
     if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
         raise NotFound("Conversation not in project")
+    if (
+        resolved
+        and by == "agent"
+        and info.tags.get(TURN_TAG_KEY) == "asking"
+        and RESOLVED_TAG_KEY not in info.tags
+    ):
+        raise Conflict(
+            "This conversation asked the user a question they have not answered "
+            "yet. It is theirs to answer: end your turn without resolving."
+        )
     if resolved and by == "agent":
         # The agent is inside its own tool call: answer at once (see
-        # ConversationService.resolve_for_agent).
-        service.resolve_for_agent(conversation_id)
+        # ProjectService.resolve_for_agent).
+        service.projects.resolve_for_agent(conversation_id)
         return Response(status_code=status.HTTP_202_ACCEPTED)
-    if await service.set_resolved(conversation_id, resolved, by=by) is None:
+    if await service.projects.set_resolved(conversation_id, resolved, by=by) is None:
         raise NotFound("Conversation not in project")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -931,6 +910,10 @@ async def _set_member_resolved(
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         202: {"description": "`by=agent`: accepted; the tags change at once"},
+        409: {
+            "description": "`by=agent`: the user has not answered the "
+            "conversation's question yet"
+        },
         404: {"description": "Project not found, or conversation not a member"},
     },
 )

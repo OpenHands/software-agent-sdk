@@ -44,7 +44,7 @@ def test_worker_context_names_the_project_and_who_started_it():
 
 def test_a_member_started_worker_is_not_promised_a_relay():
     text = project_context(
-        "P", "", started_by=("Worker", uuid4(), "member"), memory=None
+        "P", "", started_by=("Worker", uuid4(), "worker"), memory=None
     )
 
     assert "another conversation in this project." in text

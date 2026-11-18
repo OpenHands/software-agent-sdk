@@ -72,7 +72,8 @@ may be running the same script: edit a copy, run its tests and
 ```sh
 export AGENT_SERVER_VERIFY_RUN=$(control-agent-server launch --new --print-run)
 control-agent-server doctor                     # read-only; must be ok before driving
-control-agent-server llm preset deepseek        # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY
+control-agent-server llm preset deepseek        # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY,
+                                                # or, with $LLM_BASE_URL and $LLM_API_KEY, deepseek-flash through that LiteLLM proxy
 CID=$(control-agent-server conversation start --prompt 'Create hello.txt containing hi' --wait --print-id)
 control-agent-server conversation events "$CID" --kinds ObservationEvent --contains hello.txt
 control-agent-server api GET "/api/conversations/$CID" --expect 200 --save F03.get/after-run

@@ -25,10 +25,8 @@ from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import ServerStores
-from openhands.agent_server.project_board import (
-    ConversationOutcomeSubscriber,
-    card_text,
-)
+from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_turns import card_text
 from openhands.agent_server.project_wake import notify_coordinator, pass_on_answer
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent
@@ -180,14 +178,14 @@ async def test_a_turn_ending_on_a_card_is_asked_and_reported():
 
     assert _board(store.tags) == {
         "project": "p1",
-        "turn": "asked",
+        "turn": "asking",
         "ask": "Which database should config.yaml use?",
     }
     # Asked on a card: the user owes the answer even in a turn the
     # coordinator started, so the judge has nothing to decide.
     assert judged == []
     ((project, turn, text, sender),) = finished
-    assert (project, turn, sender) == ("p1", "asked", cat)
+    assert (project, turn, sender) == ("p1", "asking", cat)
     assert text is not None and text.startswith("Question: Which database")
 
 
@@ -214,7 +212,7 @@ async def test_a_failed_card_then_a_finish_is_not_asked():
 
     await _feed(subscriber, _user("Write it"), _ask(_DATABASE), finish, _finished())
 
-    assert store.tags.get("turn") == "answered"
+    assert store.tags.get("turn") == "finished"
     assert "ask" not in store.tags
 
 
@@ -294,7 +292,8 @@ async def _project(client, service, tmp_path) -> tuple[str, UUID, UUID]:
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    # As the coordinator's start does.
+    await service.projects.set_conversation_tag(worker, "project", project["id"])
     return project["id"], cat, worker
 
 
@@ -364,7 +363,7 @@ async def test_the_coordinator_gets_the_members_card(client, service, tmp_path):
     _, text = card_text(asked)  # type: ignore[misc]
 
     assert await notify_coordinator(
-        service, worker, project, "asked", text, f"conversation:{cat.hex}"
+        service, worker, project, "asking", text, f"conversation:{cat.hex}"
     )
 
     (update,) = [e for e in await _events(service, cat) if isinstance(e, MessageEvent)]
@@ -494,6 +493,46 @@ async def test_the_users_words_in_the_coordinator_answer_the_member(
         e for e in await _events(service, worker) if isinstance(e, AskUserAnswerEvent)
     ]
     assert (answer.option_index, answer.text) == (None, "SQLite.")
+
+
+@pytest.mark.asyncio
+async def test_the_users_answer_reaches_a_question_asked_without_a_card(
+    client, service, tmp_path
+):
+    """A worker asked in its final message; the coordinator asks the user on
+    a card for it, and the user's answer reaches the worker as theirs."""
+    project, cat, worker = await _project(client, service, tmp_path)
+    await service.projects.set_conversation_tag(worker, "turn", "asking")
+    await service.projects.set_conversation_tag(worker, "ask", "Which name?")
+    passed = _ask(
+        AskUserForConversationAction(
+            question="Which name for the cat?",
+            options=[
+                AskUserOption(label="Mochi", consequence="Short."),
+                AskUserOption(label="Juniper", consequence="Longer."),
+            ],
+            for_conversation=str(worker),
+        )
+    )
+    await _record(service, cat, passed, _shown(passed))
+    tap = AskUserAnswerEvent(ask_id=passed.id, option_index=0, option_label="Mochi")
+    await _record(service, cat, tap)
+
+    for _ in range(200):
+        if [e for e in await _events(service, worker) if isinstance(e, MessageEvent)]:
+            break
+        await asyncio.sleep(0.025)
+    (message,) = [
+        e for e in await _events(service, worker) if isinstance(e, MessageEvent)
+    ]
+    assert message.sender == f"conversation:{cat.hex}"
+    assert message.llm_message.content[0].text == (  # type: ignore[union-attr]
+        '[Answer to your question: "Which name?"]\nMochi'
+    )
+    info = await service.get_conversation(worker)
+    assert info is not None and "turn" not in info.tags
+    # Answered: a second pass has nothing left to close.
+    assert not await pass_on_answer(service, cat, project, tap.id, "Mochi", None)
 
 
 @pytest.mark.asyncio

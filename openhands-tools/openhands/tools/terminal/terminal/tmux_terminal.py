@@ -357,6 +357,13 @@ class TmuxTerminal(TerminalInterface):
             # (e.g., "can't find session" error from tmux)
             # Also handles ImportError during Python shutdown
             logger.debug(f"Error closing tmux session (may already be dead): {e}")
+        # This terminal owns its server, which outlives the session when
+        # exit-empty is off.
+        try:
+            if hasattr(self, "server"):
+                self.server.kill()
+        except Exception as e:
+            logger.debug(f"Error killing tmux server (may already be dead): {e}")
         self._closed: bool = True
 
     def send_keys(self, text: str, enter: bool = True) -> None:

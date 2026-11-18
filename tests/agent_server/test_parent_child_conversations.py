@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import project_service
 from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -24,23 +25,35 @@ from openhands.agent_server.event_service import (
     EventService,
     RunSlot,
 )
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     ConversationInfo,
+    SendMessageRequest,
     StartChildConversationRequest,
     StartChildConversationResponse,
     StartConversationRequest,
 )
-from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.persistence import (
+    PersistedProjects,
+    ProjectItem,
+    ServerStores,
+)
+from openhands.agent_server.project_service import ProjectService
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.errors import Conflict
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.workspace import LocalWorkspace
+
+
+_PROJECT = "0123456789abcdef0123456789abcdef"
 
 
 def _start_request(
@@ -321,12 +334,14 @@ async def _launch_child(
     request: StartChildConversationRequest,
     *,
     parent_tags: dict[str, str] | None = None,
+    project: ProjectItem | None = None,
     grandchild: bool = False,
 ) -> _ChildLaunch:
     """Start a parent in *workspace_dir*, then launch a child from it.
 
-    With ``grandchild``, the launched child is in turn the parent of the child
-    reported as ``result``/``child``.
+    A parent with a ``project`` tag is made that project's coordinator
+    (``project``, or a plain record), the one member that starts others.
+    With ``grandchild``, the launched child in turn starts a child.
     """
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
@@ -334,7 +349,7 @@ async def _launch_child(
         # The parent's own resolved/turn state must not carry over.
         update={
             "tags": parent_tags
-            or {"source": "test", "resolved": "user", "turn": "asked"},
+            or {"source": "test", "resolved": "user", "turn": "asking"},
         }
     )
     with patch(
@@ -347,6 +362,19 @@ async def _launch_child(
             stores=ServerStores.from_config(Config()),
         ) as service:
             parent_info, _ = await service.start_conversation(parent_request)
+            project_hex = (parent_tags or {}).get("project")
+            if project_hex is not None:
+                record = project or ProjectItem(id=UUID(hex=project_hex), name="P")
+                assert service.stores is not None
+                service.stores.projects.save(
+                    PersistedProjects(
+                        projects=[
+                            record.model_copy(
+                                update={"coordinator_conversation_id": parent_info.id}
+                            )
+                        ]
+                    )
+                )
             parent_service = services[parent_info.id]
             parent_service.stored = parent_service.stored.model_copy(
                 update={"title": "Coordinator"}
@@ -423,7 +451,7 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
     request = StartChildConversationRequest(task="Write the docs")
 
     launch = await _launch_child(
-        tmp_path, workspace_dir, request, parent_tags={"project": "p1"}
+        tmp_path, workspace_dir, request, parent_tags={"project": _PROJECT}
     )
 
     assert _child_agent(launch).prompt_preset == "project_worker"
@@ -435,22 +463,21 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
 
 
 @pytest.mark.asyncio
-async def test_a_workers_child_is_told_the_worker_started_it(tmp_path, workspace_dir):
+async def test_only_the_coordinator_starts_conversations_in_its_project(
+    tmp_path, workspace_dir
+):
+    """A worker's start is refused: each member's turns are the
+    coordinator's to follow."""
     request = StartChildConversationRequest(task="Write the docs")
 
-    launch = await _launch_child(
-        tmp_path,
-        workspace_dir,
-        request,
-        parent_tags={"project": "p1"},
-        grandchild=True,
-    )
-
-    assert launch.result is not None
-    header, _ = _first_message(launch)
-    assert launch.result.parent_conversation_id.hex in header
-    assert launch.parent_id.hex not in header
-    assert _child_agent(launch).prompt_preset == "project_worker"
+    with pytest.raises(Conflict):
+        await _launch_child(
+            tmp_path,
+            workspace_dir,
+            request,
+            parent_tags={"project": _PROJECT},
+            grandchild=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -676,7 +703,6 @@ async def test_project_child_gets_the_project_memory(
 ):
     from uuid import uuid4
 
-    from openhands.agent_server import conversation_service as module
     from openhands.agent_server.persistence import ProjectItem
     from openhands.agent_server.project_memory import ProjectMemoryStore
 
@@ -687,16 +713,12 @@ async def test_project_child_gets_the_project_memory(
         project_id, "MEMORY.md", "- Engel prefers squash merges.", None
     )
     project = ProjectItem(id=project_id, name="Docs", description="Ship the docs.")
-    monkeypatch.setattr(
-        module,
-        "_load_project",
-        lambda stores, project_hex: project if project_hex == project_id.hex else None,
-    )
     launch = await _launch_child(
         tmp_path,
         workspace_dir,
         StartChildConversationRequest(task="Write the docs"),
         parent_tags={"project": project_id.hex},
+        project=project,
     )
 
     # The memory index is in the worker's <PROJECT> block, not its brief.
@@ -733,7 +755,7 @@ async def _launch_worker(tmp_path, workspace_dir, monkeypatch, profile_id):
     async def worker_profile(self, stored):
         return profile_id
 
-    monkeypatch.setattr(ConversationService, "_project_worker_profile", worker_profile)
+    monkeypatch.setattr(ProjectService, "_worker_profile", worker_profile)
     launch = await _launch_child(
         tmp_path,
         workspace_dir,
@@ -748,7 +770,7 @@ async def _launch_worker(tmp_path, workspace_dir, monkeypatch, profile_id):
 async def test_a_project_worker_runs_its_profile_not_the_parents_agent(
     tmp_path, workspace_dir, monkeypatch, git_repo
 ):
-    from openhands.agent_server.conversation_service import PROJECT_WORKER_TOOLS
+    from openhands.agent_server.project_service import PROJECT_WORKER_TOOLS
 
     if git_repo:
         workspace_dir = tmp_path / "repo"
@@ -822,7 +844,6 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
     without = ProjectItem(name="B")
     server_stores.projects.save(PersistedProjects(projects=[with_profile, without]))
     server_stores.settings.save(PersistedSettings(active_agent_profile_id=str(active)))
-    from openhands.agent_server import conversation_service as module
 
     def stored(tags):
         return StoredConversation(
@@ -833,13 +854,13 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
 
     predefined: list[UUID | None] = [None]
     monkeypatch.setattr(
-        module, "ensure_project_profile", lambda role, stores: predefined[0]
+        project_service, "ensure_project_profile", lambda role, stores: predefined[0]
     )
 
     service = ConversationService(
         conversations_dir=tmp_path / "conversations", stores=server_stores
     )
-    pick = service._project_worker_profile
+    pick = service.projects._worker_profile
 
     assert await pick(stored({"project": with_profile.id.hex})) == named
     assert await pick(stored({"project": without.id.hex})) == active
@@ -858,7 +879,7 @@ async def test_with_projects_off_a_members_child_is_an_ordinary_child(
     request = StartChildConversationRequest(task="Write the docs")
 
     launch = await _launch_child(
-        tmp_path, workspace_dir, request, parent_tags={"project": "p1"}
+        tmp_path, workspace_dir, request, parent_tags={"project": _PROJECT}
     )
 
     assert launch.child is not None
@@ -905,9 +926,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
     tmp_path, workspace_dir, monkeypatch
 ):
     from openhands.agent_server import conversation_service as module
-    from openhands.agent_server.conversation_service import (
-        PROJECT_COORDINATOR_TOOLS,
-    )
+    from openhands.agent_server.project_service import PROJECT_COORDINATOR_TOOLS
 
     profile_id = uuid4()
     sources: list = []
@@ -931,7 +950,7 @@ async def test_a_new_projects_coordinator_runs_a_profile_with_coordinator_tools(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=ServerStores.from_config(Config()),
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 project_hex,
                 str(workspace_dir),
                 agent_profile_id=profile_id,
@@ -985,7 +1004,7 @@ async def test_a_new_coordinator_can_pass_on_its_members_questions(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=stores,
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 uuid4().hex, str(workspace_dir), agent_profile_id=uuid4()
             )
 
@@ -1000,16 +1019,19 @@ async def test_a_new_coordinator_can_pass_on_its_members_questions(
 
 @pytest.mark.asyncio
 async def test_a_new_coordinator_needs_a_profile(tmp_path, workspace_dir, monkeypatch):
-    from openhands.agent_server import conversation_service as module
 
-    monkeypatch.setattr(module, "_active_agent_profile_id", lambda stores: None)
-    monkeypatch.setattr(module, "ensure_project_profile", lambda role, stores: None)
+    monkeypatch.setattr(
+        project_service, "_active_agent_profile_id", lambda stores: None
+    )
+    monkeypatch.setattr(
+        project_service, "ensure_project_profile", lambda role, stores: None
+    )
     async with ConversationService(
         conversations_dir=tmp_path / "conversations",
         stores=ServerStores.from_config(Config()),
     ) as service:
         with pytest.raises(ValueError, match="No agent profile"):
-            await service.start_project_coordinator(uuid4().hex, str(workspace_dir))
+            await service.projects.start_coordinator(uuid4().hex, str(workspace_dir))
 
 
 @pytest.mark.asyncio
@@ -1019,9 +1041,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
     """A client such as Insider starts its Cat with its own id, tags and
     system-prompt addition; the server still adds the project tag and tools."""
     from openhands.agent_server import conversation_service as module
-    from openhands.agent_server.conversation_service import (
-        PROJECT_COORDINATOR_TOOLS,
-    )
+    from openhands.agent_server.project_service import PROJECT_COORDINATOR_TOOLS
     from openhands.sdk.conversation.request import AgentLaunchAdditions
 
     seen: list = []
@@ -1043,7 +1063,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=ServerStores.from_config(Config()),
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 project_hex,
                 str(workspace_dir),
                 agent_profile_id=uuid4(),
@@ -1057,7 +1077,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
                 },
             )
             with pytest.raises(ValueError, match="already exists"):
-                await service.start_project_coordinator(
+                await service.projects.start_coordinator(
                     project_hex,
                     str(workspace_dir),
                     agent_profile_id=uuid4(),
@@ -1091,10 +1111,10 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
         roles.append(role)
         return predefined
 
-    monkeypatch.setattr(module, "ensure_project_profile", ensure)
+    monkeypatch.setattr(project_service, "ensure_project_profile", ensure)
     project = ProjectItem(name="Ship docs", description="Docs for 1.0")
     monkeypatch.setattr(
-        module,
+        project_service,
         "_load_project",
         lambda stores, project_hex: project if project_hex == project.id.hex else None,
     )
@@ -1115,7 +1135,7 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
             conversation_worktree_root=tmp_path / "worktrees",
             stores=ServerStores.from_config(Config()),
         ) as service:
-            info = await service.start_project_coordinator(
+            info = await service.projects.start_coordinator(
                 project.id.hex, str(workspace_dir)
             )
 
@@ -1158,7 +1178,7 @@ async def test_two_projects_cannot_share_a_reserved_coordinator_id(
         ) as service:
             results = await asyncio.gather(
                 *(
-                    service.start_project_coordinator(
+                    service.projects.start_coordinator(
                         uuid4().hex,
                         str(workspace_dir),
                         agent_profile_id=uuid4(),
@@ -1173,3 +1193,81 @@ async def test_two_projects_cannot_share_a_reserved_coordinator_id(
     refused = [r for r in results if isinstance(r, ValueError)]
     assert [info.id for info in started] == [reserved]
     assert len(refused) == 1 and "already exists" in str(refused[0])
+
+
+# ---------------------------------------------------------------------------
+# A first message sent by another conversation (initial_message sender)
+# ---------------------------------------------------------------------------
+
+
+def _first_message_from(
+    workspace_dir: Path, sender_id: UUID, conversation_id: UUID | None = None
+) -> StartConversationRequest:
+    request = _start_request(workspace_dir, conversation_id=conversation_id)
+    return request.model_copy(
+        update={
+            "initial_message": SendMessageRequest(
+                content=[TextContent(text="Write the changelog.")],
+                sender_conversation_id=sender_id,
+            )
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_message_records_the_sending_conversation(tmp_path, workspace_dir):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        sender_info, _ = await service.start_conversation(_start_request(workspace_dir))
+        with patch.object(EventService, "run", AsyncMock(return_value=None)):
+            info, _ = await service.start_conversation(
+                _first_message_from(workspace_dir, sender_info.id)
+            )
+
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        page = await event_service.search_events(kind="MessageEvent")
+        (first,) = page.items
+        assert isinstance(first, MessageEvent)
+        assert first.sender == f"conversation:{sender_info.id.hex}"
+        header, text = first.llm_message.content
+        assert isinstance(header, TextContent) and isinstance(text, TextContent)
+        assert header.text.startswith(
+            f"[Sent by [untitled conversation](conversation:{sender_info.id.hex}), "
+            "another "
+            "conversation, not by the user."
+        )
+        assert text.text == "Write the changelog."
+
+
+@pytest.mark.asyncio
+async def test_first_message_from_an_unknown_conversation_is_refused(
+    tmp_path, workspace_dir
+):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        with pytest.raises(SenderError, match="Sender conversation not found"):
+            await service.start_conversation(
+                _first_message_from(workspace_dir, uuid4())
+            )
+        assert (await service.search_conversations()).items == []
+
+
+def test_router_maps_an_unknown_sender_to_422(tmp_path):
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.include_router(conversation_router, prefix="/api")
+    service = AsyncMock(spec=ConversationService)
+    service.start_conversation.side_effect = SenderError(
+        "Sender conversation not found"
+    )
+    app.dependency_overrides[get_conversation_service] = lambda: service
+    client = TestClient(app)
+
+    payload = _first_message_from(tmp_path, uuid4()).model_dump(mode="json")
+    response = client.post("/api/conversations", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Sender conversation not found"

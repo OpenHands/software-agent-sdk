@@ -24,7 +24,7 @@ from openhands.agent_server.dependencies import (
     get_event_service,
     get_settings_store,
 )
-from openhands.agent_server.errors import error_responses
+from openhands.agent_server.errors import GatewayTimeout, error_responses
 from openhands.agent_server.event_service import (
     EventService,
     HeldForUser,
@@ -35,10 +35,10 @@ from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
 )
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     AskUserAnswerRequest,
     ConfirmationResponseRequest,
-    ConversationMessageRequest,
     EventSortOrder,
     MessageRunOutcome,
     ReactionRequest,
@@ -49,11 +49,10 @@ from openhands.agent_server.models import (
 from openhands.agent_server.openai.usage import token_usage_delta
 from openhands.agent_server.persistence import (
     FileSettingsStore,
-    PersistedSettings,
     SettingsStore,
     run_store,
 )
-from openhands.agent_server.project_wake import SenderError, sender_message_header
+from openhands.agent_server.project_wake import sender_message_header
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -65,7 +64,6 @@ from openhands.sdk.errors import (
     RateLimited,
     Unavailable,
     Unprocessable,
-    UpstreamTimeout,
 )
 from openhands.sdk.event import Event, ReactionEvent
 from openhands.sdk.event.ask_user import AskUserAnswerEvent
@@ -262,6 +260,22 @@ async def batch_get_conversation_events(
     return events
 
 
+@event_read_router.post("/batch")
+async def batch_get_conversation_events_via_post(
+    event_ids: list[str],
+    event_service: EventService = Depends(get_event_service),
+) -> list[Event | None]:
+    """Browser-safe form of the batch get above.
+
+    The canonical batch endpoint is a GET with a required JSON body, which
+    `fetch` and browsers reject, so browser clients cannot call it. This POST
+    alias carries the same bare JSON array of event ids and returns the same
+    ordered list, with null for any missing item. The GET route is unchanged.
+    """
+    events = await event_service.batch_get_events(event_ids)
+    return events
+
+
 @event_write_router.post(
     "",
     response_model_exclude_none=True,
@@ -281,7 +295,7 @@ async def batch_get_conversation_events(
 )
 async def send_message(
     conversation_id: UUID,
-    request: ConversationMessageRequest,
+    request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
     context: ServerContext = Depends(get_server_context),
 ) -> SendMessageResponse:
@@ -389,6 +403,10 @@ async def _gateway_run_endpoint(
     request: SendMessageRequest,
     context: tuple[EventService, float] = Depends(_gateway_context),
 ) -> dict[str, Any]:
+    if request.sender_conversation_id is not None:
+        raise Unprocessable("A gateway turn is not sent by another conversation")
+    if request.refuse_pending_confirmation:
+        raise Unprocessable("A gateway turn does not take refuse_pending_confirmation")
     event_service, deadline = context
     return await run_gateway_message(request, event_service, deadline=deadline)
 
@@ -410,7 +428,7 @@ async def run_gateway_message(
                 timeout=deadline - time.monotonic(),
             )
         except TimeoutError as exc:
-            raise UpstreamTimeout("Agent run timed out") from exc
+            raise GatewayTimeout(retry_safe=True) from exc
         try:
             return await _run_gateway_message(request, event_service, deadline)
         finally:
@@ -429,14 +447,16 @@ async def _run_gateway_message(
                 timeout=max(0, deadline - time.monotonic())
             )
         except TimeoutError as exc:
-            raise UpstreamTimeout("Agent run timed out") from exc
+            raise GatewayTimeout(retry_safe=True) from exc
+
     state_before = await event_service.get_state()
     min_event_count = len(state_before.events) + 1
     usage_before = state_before.stats.get_combined_metrics().accumulated_token_usage
     run_slot = await event_service.reserve_run_slot()
     try:
         if time.monotonic() >= deadline:
-            raise UpstreamTimeout("Agent run timed out")
+            raise GatewayTimeout(retry_safe=True)
+
         await event_service.send_message(
             request.create_message(), run=True, run_slot=run_slot
         )
@@ -446,11 +466,12 @@ async def _run_gateway_message(
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise UpstreamTimeout("Agent run timed out")
+            raise GatewayTimeout(retry_safe=False)
         try:
             run_status = await event_service.wait_for_run_completion(timeout=remaining)
         except TimeoutError as exc:
-            raise UpstreamTimeout("Agent run timed out") from exc
+            raise GatewayTimeout(retry_safe=False) from exc
+
         state = await event_service.get_state()
         if len(state.events) > min_event_count and (
             run_status.is_terminal()
@@ -506,10 +527,10 @@ async def require_feature_enabled(
     if host_experimental_features() is not None:
         return
     try:
-        settings = await run_store(settings_store.load) or PersistedSettings()
+        features = await run_store(settings_store.experimental_features)
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
-    if not is_enabled(settings.experimental_features, key):
+    if not is_enabled(features, key):
         raise Conflict(off_detail)
 
 
