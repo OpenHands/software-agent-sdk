@@ -144,6 +144,57 @@ class TestTmuxPoolRecovery:
         assert after.exit_code == 0
         assert "after_rebuild" in after.text
 
+    def test_shell_exit_with_server_surviving_rebuilds_pool(self, pool_executor):
+        """A real tmux server can briefly outlive its last session.
+
+        With the standard tmux ``exit-empty`` option set to ``off`` on the
+        pool's own server, the server genuinely survives with zero
+        sessions after the sole real pane's shell really exits. The next
+        real ``capture-pane`` against that real, running server then gets
+        real tmux stderr ``"no current target"`` (not fabricated), which
+        must be classified as recoverable the same way the plain
+        single-pane-exit case above is.
+        """
+        # Warm up so the pool's real session/server/pane exist before we
+        # flip the option.
+        warm = pool_executor(TerminalAction(command="true", timeout=5.0))
+        assert not warm.is_error
+
+        old_pool = pool_executor._pool
+        assert old_pool is not None
+        old_server = old_pool._server
+        assert old_server is not None
+
+        try:
+            # Real, standard tmux server option (tmux(1)); default is
+            # "on". This is the pool's own isolated server, never a
+            # shared one.
+            old_server.cmd("set-option", "-g", "exit-empty", "off")
+
+            obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
+
+            assert obs.is_error
+            assert obs.exit_code == -1
+            assert "rebuilt the terminal pool" in obs.text
+            assert "top-level `exit`" in obs.text
+            assert "Original tmux error:" in obs.text
+
+            after = pool_executor(
+                TerminalAction(command="echo after_rebuild", timeout=5.0)
+            )
+            assert not after.is_error
+            assert after.exit_code == 0
+            assert "after_rebuild" in after.text
+        finally:
+            # exit-empty=off means the old server lingers with zero
+            # sessions even after recovery replaces pool_executor's
+            # pool with a fresh one; clean up only this test-owned
+            # leftover server explicitly.
+            try:
+                old_server.cmd("kill-server")
+            except Exception:
+                pass
+
     def test_shell_exit_beside_a_busy_pane_rebuilds_pool(self, pool_executor):
         # The busy pane keeps the tmux server up, so the exited pane is gone
         # while the server still answers.
