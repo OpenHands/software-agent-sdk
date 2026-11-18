@@ -2197,8 +2197,7 @@ class EventService:
 
         def _require_answered() -> None:
             with conversation._state:
-                pending = find_pending_ask_back(conversation._state.walk_back())
-                if pending is not None:
+                if find_pending_ask_back(conversation._state.walk_back()) is not None:
                     raise ValueError("pending_ask")
 
         await self.run_state_op(_require_answered)
