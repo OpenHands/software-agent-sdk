@@ -22,7 +22,7 @@ conversations, long-running bash, slow webhooks, websocket back-pressure, etc.
 
 ### Running stress tests
 
-The suite is **excluded from default collection** via `addopts = -m 'not stress and not acp_live'`
+The suite is **excluded from default collection** via `addopts = -m 'not stress and not acp_live and not docker_live'`
 in `pyproject.toml`. Override the filter with `-m stress`:
 
 ```bash
@@ -107,12 +107,23 @@ enough that a single new test function (or a few assertions added to an existing
 test) captures the expected behaviour.
 
 
+## Verifying API changes against a real server
+
+To prove an API change the way a consumer sees it (a real server process, real
+sockets, restarts and a real model), use the
+[`verify-agent-server`](../.agents/skills/verify-agent-server/SKILL.md) skill:
+`control-agent-server map owners --changed origin/main...HEAD` names the
+affected feature families, and `control-agent-server map run --file Fnn --fresh`
+replays a family's recipes. A new or changed route needs an owner in the
+feature map (`control-agent-server map coverage`).
+
+
 ## Concurrency / async safety
 
 - `ConversationState` uses a synchronous `FIFOLock`. In async agent-server code, never do `with conversation._state` directly on the event loop when the conversation may be running.
 - WebSocket reconnects call `EventService.subscribe_to_events()` immediately; if initial state snapshot creation blocks on the state lock in async context, the whole FastAPI event loop can stop serving `/ready` and similar probes.
 - The same rule applies to metadata updates in `ConversationService.update_conversation()`: keep the locked mutation/snapshot semantics, but move the synchronous lock wait into a worker thread first.
-- In async routes/services, move state-lock acquisition into `run_in_executor(...)` (or another worker-thread boundary) before awaiting network I/O.
+- In async routes/services, move state-lock acquisition into `EventService.run_state_op(...)` before awaiting network I/O. It runs on the conversation's own executor: a run holds the lock for a whole tool step, and waiters on asyncio's default executor (`run_in_executor(None, ...)`, `asyncio.to_thread`) take the threads that event reads of every conversation need.
 
 
 ## REST API compatibility & deprecation policy

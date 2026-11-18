@@ -14,7 +14,10 @@ from openhands.agent_server.canvas_extensions.bridge import (
 from openhands.agent_server.canvas_extensions_router import (
     CANVAS_EXTENSION_NAME_PATTERN,
 )
-from openhands.agent_server.dependencies import check_session_api_key
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import check_session_api_key, get_config
+from openhands.agent_server.errors import error_responses
+from openhands.sdk.errors import Conflict, Forbidden, Unauthenticated, Unavailable
 
 
 app_backend_bridge_router = APIRouter(tags=["Canvas App Backends"])
@@ -33,17 +36,20 @@ AppBackendNamePath = Annotated[
     "/app-backends/{extension_name}/session",
     response_model=AppBackendSessionResponse,
     dependencies=[Depends(check_session_api_key)],
-    responses={
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
-        403: {"description": "Origin is not allowed"},
-        409: {"description": "Ingress does not use a separate browser origin"},
-        503: {"description": "Backend is unavailable or ingress is not configured"},
-    },
+    responses=error_responses(
+        {
+            Unauthenticated: "Missing or invalid X-Session-API-Key header",
+            Forbidden: "Origin is not allowed",
+            Conflict: "Ingress does not use a separate browser origin",
+            Unavailable: "Backend is unavailable or ingress is not configured",
+        }
+    ),
 )
 async def create_app_backend_session_endpoint(
     extension_name: AppBackendNamePath,
     request: Request,
     response: Response,
+    config: Config = Depends(get_config),
 ) -> AppBackendSessionResponse:
     """Issue a short-lived HttpOnly session for one ready app backend.
 
@@ -53,7 +59,7 @@ async def create_app_backend_session_endpoint(
     (``credentials: include``); third-party iframe deployments require HTTPS and
     browser support for partitioned cookies.
     """
-    return await create_app_backend_session(request, response, extension_name)
+    return await create_app_backend_session(request, response, extension_name, config)
 
 
 @app_backend_bridge_router.delete(
@@ -62,26 +68,41 @@ async def create_app_backend_session_endpoint(
     dependencies=[Depends(check_session_api_key)],
     responses={
         204: {"description": "Browser session revoked and cookie cleared"},
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
-        403: {"description": "Origin is not allowed"},
+        **error_responses(
+            {
+                Unauthenticated: "Missing or invalid X-Session-API-Key header",
+                Forbidden: "Origin is not allowed",
+            }
+        ),
     },
 )
 async def delete_app_backend_session_endpoint(
     extension_name: AppBackendNamePath,
     request: Request,
     response: Response,
+    config: Config = Depends(get_config),
 ) -> Response:
     """Revoke the current app-scoped browser session."""
-    await delete_app_backend_session(request, response, extension_name)
+    await delete_app_backend_session(request, response, extension_name, config)
     response.status_code = 204
     return response
 
 
+# The root routes have no ``{path}`` segment, so they take no ``path`` argument:
+# FastAPI would bind it from a ``?path=`` query parameter instead.
 @app_backend_bridge_router.api_route(
     "/app-backends/{extension_name}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     include_in_schema=False,
 )
+async def proxy_app_backend_http_root_endpoint(
+    extension_name: AppBackendNamePath,
+    request: Request,
+    config: Config = Depends(get_config),
+) -> Response:
+    return await proxy_app_backend_http(request, extension_name, "", config)
+
+
 @app_backend_bridge_router.api_route(
     "/app-backends/{extension_name}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
@@ -90,16 +111,26 @@ async def delete_app_backend_session_endpoint(
 async def proxy_app_backend_http_endpoint(
     extension_name: AppBackendNamePath,
     request: Request,
-    path: str = "",
+    path: str,
+    config: Config = Depends(get_config),
 ) -> Response:
-    return await proxy_app_backend_http(request, extension_name, path)
+    return await proxy_app_backend_http(request, extension_name, path, config)
 
 
 @app_backend_bridge_router.websocket("/app-backends/{extension_name}")
+async def proxy_app_backend_websocket_root_endpoint(
+    extension_name: AppBackendNamePath,
+    websocket: WebSocket,
+    config: Config = Depends(get_config),
+) -> None:
+    await proxy_app_backend_websocket(websocket, extension_name, "", config)
+
+
 @app_backend_bridge_router.websocket("/app-backends/{extension_name}/{path:path}")
 async def proxy_app_backend_websocket_endpoint(
     extension_name: AppBackendNamePath,
     websocket: WebSocket,
-    path: str = "",
+    path: str,
+    config: Config = Depends(get_config),
 ) -> None:
-    await proxy_app_backend_websocket(websocket, extension_name, path)
+    await proxy_app_backend_websocket(websocket, extension_name, path, config)

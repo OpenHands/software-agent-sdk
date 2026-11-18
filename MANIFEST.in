@@ -13,6 +13,7 @@ include uv.lock
 include openhands-sdk/pyproject.toml
 recursive-include openhands-sdk *.py
 recursive-include openhands-sdk *.j2
+recursive-include openhands-sdk schemas/*.json
 recursive-include openhands-sdk py.typed
 
 # ==============================================================================
@@ -43,6 +44,9 @@ include openhands-agent-server/openhands/agent_server/docker/wallpaper.svg
 
 # PyInstaller spec
 include openhands-agent-server/openhands/agent_server/agent-server.spec
+
+# code-server proxy bundled into the frozen binary by the spec
+include openhands-agent-server/openhands/agent_server/code_server_proxy.cjs
 
 # VSCode extensions
 recursive-include openhands-agent-server/openhands/agent_server/vscode_extensions *

@@ -37,7 +37,7 @@ def create_mock_mcp_tool(name: str) -> MCPToolDefinition:
     mock_mcp_tool = mcp.types.Tool(
         name=name,
         description=f"A test MCP tool named {name}",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Query parameter"}
@@ -432,6 +432,6 @@ def test_include_default_tools_serialization_default() -> None:
     agent_json = agent.model_dump_json()
     agent_dict = json.loads(agent_json)
 
-    # Default should include both FinishTool and ThinkTool as strings
+    # Default should include FinishTool only; ThinkTool is opt-in
     assert "include_default_tools" in agent_dict
-    assert set(agent_dict["include_default_tools"]) == {"FinishTool", "ThinkTool"}
+    assert set(agent_dict["include_default_tools"]) == {"FinishTool"}

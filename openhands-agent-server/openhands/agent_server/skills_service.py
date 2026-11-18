@@ -48,6 +48,7 @@ from openhands.sdk.skills.skill import (
     PUBLIC_SKILLS_REPO,
     _invalidate_public_skills_cache,
     load_skills_from_dir,
+    public_catalog_enabled,
 )
 from openhands.sdk.skills.utils import (
     get_skills_cache_dir,
@@ -354,8 +355,13 @@ def load_all_skills(
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
     registered_marketplaces: list[MarketplaceRegistration] | None = None,
+    load_registered_marketplaces: bool | None = None,
 ) -> SkillLoadResult:
-    """Merge skills: sandbox < marketplace < public < user < org < project."""
+    """Merge skills: sandbox < marketplace < public < user < org < project.
+
+    ``load_registered_marketplaces=None`` keeps the legacy coupling of
+    registered-marketplace loading to ``load_public``.
+    """
     sources: dict[str, int] = {}
     skill_lists: list[list[Skill]] = []
 
@@ -368,6 +374,8 @@ def load_all_skills(
     sources["sandbox"] = len(sandbox_skills)
     skill_lists.append(sandbox_skills)
 
+    if load_registered_marketplaces is None:
+        load_registered_marketplaces = load_public
     auto_load_registrations = [
         registration
         for registration in registered_marketplaces or []
@@ -375,7 +383,7 @@ def load_all_skills(
     ]
 
     marketplace_skills: list[Skill] = []
-    if load_public and auto_load_registrations:
+    if load_registered_marketplaces and auto_load_registrations:
         marketplace_skills = load_registered_marketplace_skills(auto_load_registrations)
     sources["registered_marketplaces"] = len(marketplace_skills)
     skill_lists.append(marketplace_skills)
@@ -436,7 +444,7 @@ def discover_profile_skills() -> list[Skill]:
     """Skill catalog an OpenHands profile launches with (#4017).
 
     Returns the merged user + public skills — the deterministic sources of
-    :func:`load_all_skills`. ``resolve_agent_profile`` keeps all of them except
+    :func:`load_all_skills`. ``openhands.sdk.launch.resolve`` keeps all of them except
     the profile's ``disabled_skills`` deny-list. ``load_all_skills`` already
     absorbs and logs benign per-source failures, so this does not swallow errors:
     an unexpected failure propagates rather than silently resolving the profile
@@ -459,6 +467,16 @@ def discover_profile_skills() -> list[Skill]:
     )
 
 
+def discover_public_skill_names() -> set[str]:
+    """Names of the public tier of :func:`discover_profile_skills`.
+
+    A user skill that shadows a public one by name belongs to the user tier, as
+    it does in the merged catalog.
+    """
+    names = load_available_skills(include_public=True)
+    return set(names) - set(load_available_skills(include_user=True))
+
+
 def sync_public_skills() -> tuple[bool, str]:
     """Force refresh of public skills from GitHub repository.
 
@@ -470,12 +488,15 @@ def sync_public_skills() -> tuple[bool, str]:
     """
     try:
         cache_dir = get_skills_cache_dir()
+        # strict: a failed fetch must not be reported as a sync. The stale
+        # clone stays on disk for offline skill loading.
         result = update_skills_repository(
-            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
+            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir, strict=True
         )
 
         if result:
             _invalidate_public_skills_cache()
+            _invalidate_catalog_cache()
             return (True, "Skills repository synced successfully")
         else:
             return (False, "Failed to sync skills repository")
@@ -501,8 +522,8 @@ def service_install_skill(
     Args:
         source: Skill source - git URL, GitHub shorthand, or local path.
             Supports formats like:
-            - GitHub URL: https://github.com/OpenHands/extensions/tree/main/skills/github
             - GitHub shorthand: github:OpenHands/extensions/skills/github
+            - Git URL plus repo_path: https://github.com/OpenHands/extensions.git
             - Local path: /path/to/skill
         ref: Optional branch, tag, or commit to install.
         repo_path: Subdirectory path within the repository (for monorepos).
@@ -647,7 +668,8 @@ class MarketplaceSkillInfo(BaseModel):
 #
 # Only the catalog structure (name, description, source) is cached; the
 # `installed` field is always derived fresh from the local FS so that
-# install/uninstall actions are reflected immediately.
+# install/uninstall actions are reflected immediately. Empty results are not
+# cached, and a successful sync_public_skills clears the cache.
 #
 # Thread safety: concurrent cache misses (cold start or TTL expiry) may
 # trigger parallel git fetches, but each fetch is idempotent and produces
@@ -658,6 +680,12 @@ class MarketplaceSkillInfo(BaseModel):
 _CatalogEntry = tuple[str, str | None, str]
 _catalog_cache: tuple[float, list[_CatalogEntry]] | None = None
 _CATALOG_TTL_SECONDS = 300  # 5 minutes
+
+
+def _invalidate_catalog_cache() -> None:
+    """Drop the cached marketplace catalog so the next call re-reads the clone."""
+    global _catalog_cache
+    _catalog_cache = None
 
 
 def service_get_marketplace_catalog(
@@ -684,12 +712,18 @@ def service_get_marketplace_catalog(
     """
     global _catalog_cache
 
+    if not public_catalog_enabled():
+        return []
+
     now = monotonic()
     if _catalog_cache is not None and now - _catalog_cache[0] < _CATALOG_TTL_SECONDS:
         entries = _catalog_cache[1]
     else:
         entries = _fetch_catalog_entries(marketplace_path)
-        _catalog_cache = (now, entries)
+        # Only cache non-empty results so a transient fetch failure does not
+        # blank the catalog for the whole TTL.
+        if entries:
+            _catalog_cache = (now, entries)
 
     # Always-fresh installed check — local FS scan, not a network call.
     installed_names = {
@@ -721,15 +755,19 @@ def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
         logger.warning("Failed to access public skills repository")
         return []
 
-    marketplace_file = repo_path / marketplace_path
-    if not marketplace_file.exists():
-        logger.warning(f"Marketplace file not found: {marketplace_file}")
-        return []
-
+    # Manifest discovery (``.plugin/marketplace.json``, the current
+    # OpenHands/extensions layout) comes first; the explicit
+    # ``marketplace_path`` file is only a fallback, as in the plugin catalog.
     try:
         marketplace = Marketplace.load(repo_path)
     except (FileNotFoundError, ValueError) as e:
-        # Fallback to loading from specific path
+        marketplace_file = repo_path / marketplace_path
+        if not marketplace_file.exists():
+            logger.warning(
+                f"Failed to load marketplace via manifest discovery ({e}); "
+                f"fallback file not found: {marketplace_file}"
+            )
+            return []
         try:
             with open(marketplace_file, encoding="utf-8") as f:
                 data = json.load(f)

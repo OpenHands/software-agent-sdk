@@ -1,7 +1,8 @@
 """OpenHands Agent SDK — Image Input Example.
 
-This script mirrors the basic setup from ``examples/01_hello_world.py`` but adds
-vision support by sending an image to the agent alongside text instructions.
+This script mirrors the basic setup from
+``examples/01_standalone_sdk/01_hello_world.py`` but adds vision support by
+sending an image to the agent alongside text instructions.
 
 It also demonstrates multi-image input with base64-encoded images that exercise
 the Anthropic many-image resizing path (>20 images are automatically downscaled

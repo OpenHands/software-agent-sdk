@@ -11,12 +11,14 @@ and that the registered hook actually feeds the SDK's re-resolution path.
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Literal
+from uuid import uuid4
 
 import pytest
 from litellm import ModelResponse
 from litellm.exceptions import AuthenticationError
 from pydantic import SecretStr
 
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.managed_llm_key import (
     REFRESH_BASE_URLS_ENV,
     REFRESH_HEADERS_ENV,
@@ -24,12 +26,15 @@ from openhands.agent_server.managed_llm_key import (
     _load_headers,
     register_managed_llm_key_refresh,
 )
+from openhands.agent_server.models import StoredConversation
 from openhands.sdk import LLM, Agent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.secret import (
     register_local_secret_resolver,
     unregister_local_secret_resolver,
 )
+from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.workspace import LocalWorkspace
 
 
 MANAGED_BASE_URL = "https://llm-proxy.example/v1"
@@ -266,3 +271,49 @@ def test_headers_bare_dollar_reference_expands(monkeypatch):
     assert _load_headers('{"X-Session-API-Key": "$OH_SESSION_API_KEYS_0"}') == {
         "X-Session-API-Key": "sess-xyz"
     }
+
+
+@pytest.mark.asyncio
+async def test_switched_llm_keeps_refresh_hook(monkeypatch, tmp_path):
+    """switch_llm on a loaded conversation re-registers the hook (#5890)."""
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    service = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=str(workspace)),
+            confirmation_policy=NeverConfirm(),
+        ),
+        agent=_agent(_llm("loaded", MANAGED_BASE_URL)),
+        conversations_dir=tmp_path / "conversations",
+    )
+    await service.start()
+    try:
+        conversation = service.get_conversation()
+
+        conversation.switch_llm(_llm("switched", MANAGED_BASE_URL))
+        switched = conversation.agent.llm
+        assert switched.usage_id == "switched"
+        with _served_key(REFRESH_URL, "fresh_key"):
+            refreshed = switched._resolve_refreshed_api_key(_auth_error())
+        assert refreshed is not None
+        assert refreshed.get_secret_value() == "fresh_key"
+
+        # A switch to a BYOK base_url still gets no managed hook.
+        conversation.switch_llm(_llm("byok", BYOK_BASE_URL))
+        byok = conversation.agent.llm
+        assert byok.usage_id == "byok"
+        with _served_key(REFRESH_URL, "fresh_key"):
+            assert byok._resolve_refreshed_api_key(_auth_error()) is None
+
+        # Not opted in: a switch registers nothing.
+        monkeypatch.delenv(REFRESH_URL_ENV)
+        conversation.switch_llm(_llm("off", MANAGED_BASE_URL))
+        off = conversation.agent.llm
+        assert off.usage_id == "off"
+        with _served_key(REFRESH_URL, "fresh_key"):
+            assert off._resolve_refreshed_api_key(_auth_error()) is None
+    finally:
+        await service.close()

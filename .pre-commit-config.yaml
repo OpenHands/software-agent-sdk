@@ -1,4 +1,5 @@
 ---
+exclude: ^\.pr/
 repos:
     - repo: https://github.com/jumanjihouse/pre-commit-hook-yamlfmt
       rev: 0.2.1 # or other specific tag
@@ -45,6 +46,13 @@ repos:
             files: ^openhands-sdk/.*\.py$
             pass_filenames: false
             always_run: true
+          - id: check-execution-status-writes
+            name: Route execution_status writes through ConversationState.transition
+            entry: uv run python scripts/check_execution_status_writes.py
+            language: system
+            files: ^openhands-(sdk|agent-server|tools|workspace)/.*\.py$
+            pass_filenames: true
+            always_run: false
           - id: check-import-rules
             name: Check import dependency rules
             entry: uv
@@ -59,5 +67,21 @@ repos:
             args: [run, python, scripts/check_tool_registration.py]
             language: system
             types: [python]
+            pass_filenames: true
+            always_run: false
+          - id: check-async-store-access
+            name: Keep blocking store I/O off the agent-server event loop
+            entry: uv
+            args: [run, python, scripts/check_async_store_access.py]
+            language: system
+            files: ^openhands-agent-server/.*\.py$
+            pass_filenames: true
+            always_run: false
+          - id: check-secret-fields
+            name: Keep secrets on SecretField
+            entry: uv
+            args: [run, python, scripts/check_secret_fields.py]
+            language: system
+            files: ^openhands-(sdk|agent-server|tools|workspace)/openhands/.*\.py$
             pass_filenames: true
             always_run: false

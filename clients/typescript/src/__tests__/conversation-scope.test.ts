@@ -31,6 +31,11 @@ describe('conversation-scoped requests', () => {
         );
         return;
       }
+      if (req.url?.includes('/file/download?')) {
+        res.setHeader('content-type', 'text/plain');
+        res.end('file contents');
+        return;
+      }
       if (
         req.url === '/api/conversations' ||
         req.url === '/api/conversations/created' ||
@@ -61,6 +66,9 @@ describe('conversation-scoped requests', () => {
     scoped = true;
     discoveryStatus = 200;
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it.each([false, true])('routes workspace commands with scoped support=%s', async (supported) => {
     scoped = supported;
     const workspace = new RemoteWorkspace({
@@ -88,6 +96,36 @@ describe('conversation-scoped requests', () => {
     await new RemoteWorkspace({ ...options, workingDir: '/workspace' }).gitChanges('/workspace');
     expect(urls.pop()).toBe('/api/conversations/selected/git/changes?path=%2Fworkspace');
   });
+  it.each([
+    ['FileClient', true],
+    ['FileClient', false],
+    ['RemoteWorkspace', true],
+    ['RemoteWorkspace', false],
+  ] as const)(
+    '%s bypasses the download cache with scoped support=%s',
+    async (client, supported) => {
+      scoped = supported;
+      const fetchSpy = vi.spyOn(global, 'fetch');
+      const options = { host, conversationId: 'selected' };
+      const content =
+        client === 'FileClient'
+          ? await new FileClient(options).downloadTextFile('/workspace/a')
+          : await new RemoteWorkspace({ ...options, workingDir: '/workspace' }).downloadAsText(
+              '/workspace/a'
+            );
+      const path = supported
+        ? '/api/conversations/selected/file/download?path=%2Fworkspace%2Fa'
+        : '/api/file/download?path=%2Fworkspace%2Fa&cid=selected';
+
+      expect(content).toBe('file contents');
+      expect(urls).toEqual(['/server_info', path]);
+      expect(fetchSpy).toHaveBeenLastCalledWith(
+        `${host}${path}`,
+        expect.objectContaining({ cache: 'no-store' })
+      );
+      expect(fetchSpy.mock.calls[0][1]?.cache).toBeUndefined();
+    }
+  );
   it('rejects requests that override the selected conversation', async () => {
     const workspace = new RemoteWorkspace({
       host,

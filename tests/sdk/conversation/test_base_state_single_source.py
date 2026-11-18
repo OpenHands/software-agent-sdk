@@ -8,6 +8,7 @@ These pin the behavior behind the meta.json / base_state.json de-duplication:
   behavior (back-compat for callers that reconfigure on resume).
 """
 
+import json
 import uuid
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.io import LocalFileStore
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -79,3 +81,32 @@ def test_new_conversation_requires_agent(tmp_path):
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             file_store=LocalFileStore(str(tmp_path)),
         )
+
+
+def test_resume_drops_stored_mcp_server_without_command_or_url(tmp_path):
+    """A state stored while the settings API accepted ``{}`` still resumes."""
+    from openhands.sdk.conversation.persistence_const import BASE_STATE
+
+    file_store = LocalFileStore(str(tmp_path))
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+    cid = uuid.uuid4()
+    agent = Agent(
+        llm=LLM(model="model-a", usage_id="default"),
+        tools=[],
+        mcp_config={"good": MCPServer(command="uvx", args=["fetch"])},
+    )
+    ConversationState.create(
+        id=cid, agent=agent, workspace=workspace, file_store=file_store
+    )
+    base_state = tmp_path / BASE_STATE
+    payload = json.loads(base_state.read_text())
+    payload["agent"]["mcp_config"]["qa-empty"] = {"enabled": True}
+    base_state.write_text(json.dumps(payload))
+
+    reloaded = ConversationState.create(
+        id=cid,
+        agent=None,
+        workspace=workspace,
+        file_store=LocalFileStore(str(tmp_path)),
+    )
+    assert list(reloaded.agent.mcp_config) == ["good"]

@@ -50,7 +50,14 @@ def contract_published(version: str) -> bool:
         # Anything other than 404 is a transient failure, not "unreleased".
         if exc.code == 404:
             return False
-        raise
+        if exc.code not in {502, 503, 504}:
+            raise
+        # A transient gateway error also proves the release exists (GitHub
+        # only proxies asset downloads for published releases), and the
+        # pinned contract cannot be in the not-yet-released window that
+        # use_source_contract exists for. Treat it as published instead of
+        # failing CI on a network blip.
+        return True
 
 
 def resolve(client_root: Path, pyproject: Path) -> dict[str, str]:

@@ -78,7 +78,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         self,
         command: str,
         cwd: str | Path | None = None,
-        timeout: float = 30,
+        timeout: float = 30,  # noqa: ASYNC109 - sent to the server's command
     ) -> str:
         """Start a command and return its ID without waiting for completion."""
         return await self._execute(self._start_command_generator(command, cwd, timeout))
@@ -109,7 +109,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         self,
         command: str,
         cwd: str | Path | None = None,
-        timeout: float = 30.0,
+        timeout: float = 30.0,  # noqa: ASYNC109 - sent to the server's command
     ) -> CommandResult:
         """Execute a bash command on the remote system.
 

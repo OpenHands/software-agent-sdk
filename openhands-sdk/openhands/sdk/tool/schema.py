@@ -18,6 +18,8 @@ from openhands.sdk.utils.visualize import display_json
 if TYPE_CHECKING:
     from typing import Self
 
+    from openhands.sdk.event.base import Event
+
 logger = get_logger(__name__)
 
 S = TypeVar("S", bound="Schema")
@@ -156,9 +158,20 @@ def _process_schema_node(
     if "description" in node:
         result["description"] = node["description"]
 
+    # A type may be a list of alternatives (e.g. ``["object", "null"]``); the
+    # nested structure still belongs to the non-null member. Collapse the list
+    # to that member only when it is the only non-null type left: a list with
+    # several real types (``["string", "array"]``) tells the model both are
+    # allowed, so it keeps its meaning.
+    node_type = node.get("type")
+    type_names = node_type if isinstance(node_type, list) else [node_type]
+    non_null_types = [name for name in type_names if name != "null"]
+    collapsed_type = non_null_types[0] if len(non_null_types) == 1 else None
+
     # Handle object properties recursively
-    if node.get("type") == "object" and "properties" in node:
-        result["type"] = "object"
+    if "object" in type_names and "properties" in node:
+        if collapsed_type == "object":
+            result["type"] = "object"
         result["properties"] = {}
 
         # Process each property
@@ -172,9 +185,17 @@ def _process_schema_node(
             result["required"] = node["required"]
 
     # Handle arrays
-    if node.get("type") == "array" and "items" in node:
-        result["type"] = "array"
-        result["items"] = _process_schema_node(node["items"], defs, _visiting)
+    if "array" in type_names and "items" in node:
+        if collapsed_type == "array":
+            result["type"] = "array"
+        items = node["items"]
+        if isinstance(items, list):
+            # Draft-07 tuple form: one schema per position.
+            result["items"] = [
+                _process_schema_node(item, defs, _visiting) for item in items
+            ]
+        else:
+            result["items"] = _process_schema_node(items, defs, _visiting)
 
     # Handle enum
     if "enum" in node:
@@ -187,6 +208,8 @@ class Schema(DiscriminatedUnionMixin):
     """Base schema for input action / output observation."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+    mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {}
+    mcp_schema_alias_required: ClassVar[set[str]] = set()
 
     @classmethod
     def _discriminator_field_names(cls) -> set[str]:
@@ -221,9 +244,7 @@ class Schema(DiscriminatedUnionMixin):
                 if "required" in result and f in result["required"]:
                     result["required"].remove(f)
 
-        alias_specs: dict[str, dict[str, Any]] = getattr(
-            cls, "__mcp_schema_alias_specs__", {}
-        )
+        alias_specs: dict[str, dict[str, Any]] = cls.mcp_schema_alias_specs
         if alias_specs:
             result.setdefault("properties", {})
             for alias, spec in alias_specs.items():
@@ -232,9 +253,7 @@ class Schema(DiscriminatedUnionMixin):
                     full_schema.get("$defs", {}),
                 )
 
-            alias_required: set[str] = getattr(
-                cls, "__mcp_schema_alias_required__", set()
-            )
+            alias_required: set[str] = cls.mcp_schema_alias_required
             if alias_required:
                 required_fields = result.setdefault("required", [])
                 for alias in alias_required:
@@ -272,11 +291,12 @@ class Schema(DiscriminatedUnionMixin):
             desc: str | None = spec.get("description")
             field_name = fname
             field_alias = None
-            if fname in discriminator_fields:
+            if fname in discriminator_fields or fname.startswith("_"):
                 # MCP tool argument names are user-defined JSON object keys. If
                 # one collides with OpenHands' internal discriminator (e.g.
-                # "kind"), keep the external name as an alias and use a safe
-                # internal field name for Pydantic.
+                # "kind"), or is a name Pydantic refuses (a leading underscore
+                # means a private attribute), keep the external name as an
+                # alias and use a safe internal field name for Pydantic.
                 field_alias = fname
                 has_aliased_field = True
                 alias_specs[fname] = copy.deepcopy(spec)
@@ -327,8 +347,8 @@ class Schema(DiscriminatedUnionMixin):
                 **field_definitions,
             )
         if alias_specs:
-            setattr(model, "__mcp_schema_alias_specs__", alias_specs)
-            setattr(model, "__mcp_schema_alias_required__", alias_required)
+            model.mcp_schema_alias_specs = alias_specs
+            model.mcp_schema_alias_required = alias_required
         return model
 
 
@@ -380,6 +400,15 @@ class Observation(Schema, ABC):
     is_error: bool = Field(
         default=False, description="Whether the observation indicates an error"
     )
+
+    def follow_up_events(self) -> "Sequence[Event]":
+        """Events to record right after this observation, in order.
+
+        The agent emits them on its own thread after the tool returns, so a
+        tool can add a non-LLM event (such as a reaction) to the conversation
+        without touching the conversation from a worker thread.
+        """
+        return ()
 
     @classmethod
     def from_text(

@@ -45,16 +45,21 @@ from openhands.sdk.tool.builtins.vision_inspect import (
 from openhands.sdk.tool.tool import ToolDefinition
 
 
-# Tools attached to every agent by default. `InvokeSkillTool` is deliberately
-# *not* here: it's auto-attached by `Agent._initialize` only when an
-# AgentSkills-format skill is loaded (see BUILT_IN_TOOL_CLASSES below).
-BUILT_IN_TOOLS = [FinishTool, ThinkTool]
+# Tools attached to every agent by default. `ThinkTool` is deliberately *not*
+# here: models with native reasoning do not need it, and it competes with
+# provider-side reasoning for tokens. It stays available as an opt-in through
+# `include_default_tools=["ThinkTool"]` and the tool catalog.
+# `InvokeSkillTool` is likewise not here: it's auto-attached by
+# `Agent._initialize` only when an AgentSkills-format skill is loaded (see
+# BUILT_IN_TOOL_CLASSES below).
+BUILT_IN_TOOLS = [FinishTool]
 
 # Map of built-in tool class names to their classes. Includes optional built-ins
 # so they can be resolved by name from `include_default_tools` and the
 # conditional wiring in `Agent._initialize`.
 BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
+    ThinkTool.__name__: ThinkTool,
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
