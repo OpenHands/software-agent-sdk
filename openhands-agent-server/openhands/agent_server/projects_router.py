@@ -129,6 +129,9 @@ projects_router = APIRouter(
     prefix="/projects",
     tags=["Projects"],
     dependencies=[Depends(_require_projects)],
+    # Experimental: out of the OpenAPI schema, so the routes can still change
+    # without the REST deprecation runway (see agent_server/AGENTS.md).
+    include_in_schema=False,
 )
 
 PROJECT_TAG = PROJECT_TAG_KEY

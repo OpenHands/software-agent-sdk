@@ -65,7 +65,7 @@
         "PUT /api/projects/{}/conversations/{}",
         "PUT /api/projects/{}/memory/{}"
       ],
-      "reason": "Client-ahead API for Projects, added with the Agent Server endpoints in the same PR.",
+      "reason": "Experimental Projects routes, left out of the OpenAPI schema (include_in_schema=False) until Projects leaves experimental.",
       "owner": "OpenHands SDK maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/6602"
     },
