@@ -123,7 +123,7 @@ feature map (`control-agent-server map coverage`).
 - `ConversationState` uses a synchronous `FIFOLock`. In async agent-server code, never do `with conversation._state` directly on the event loop when the conversation may be running.
 - WebSocket reconnects call `EventService.subscribe_to_events()` immediately; if initial state snapshot creation blocks on the state lock in async context, the whole FastAPI event loop can stop serving `/ready` and similar probes.
 - The same rule applies to metadata updates in `ConversationService.update_conversation()`: keep the locked mutation/snapshot semantics, but move the synchronous lock wait into a worker thread first.
-- In async routes/services, move state-lock acquisition into `run_in_executor(...)` (or another worker-thread boundary) before awaiting network I/O.
+- In async routes/services, move state-lock acquisition into `EventService.run_state_op(...)` before awaiting network I/O. It runs on the conversation's own executor: a run holds the lock for a whole tool step, and waiters on asyncio's default executor (`run_in_executor(None, ...)`, `asyncio.to_thread`) take the threads that event reads of every conversation need.
 
 
 ## REST API compatibility & deprecation policy
