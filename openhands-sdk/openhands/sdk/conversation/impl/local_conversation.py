@@ -57,7 +57,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.ask_user import (
     AskUserAnswerEvent,
     answer_message_text,
-    find_pending_ask,
+    find_pending_ask_back,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
@@ -2484,7 +2484,7 @@ class LocalConversation(BaseConversation):
                 not exist, or the answer has neither an option nor text.
         """
         with self._state:
-            pending = find_pending_ask(self._state.active_branch())
+            pending = find_pending_ask_back(self._state.walk_back())
             if pending is None or pending.ask_id != ask_id:
                 raise ValueError("That question is not waiting for an answer.")
             if option_index is not None and not (
@@ -2617,7 +2617,7 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
-                        if find_pending_ask(self._state.active_branch()) is not None:
+                        if find_pending_ask_back(self._state.walk_back()) is not None:
                             break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
@@ -2853,7 +2853,7 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
-                        if find_pending_ask(self._state.active_branch()) is not None:
+                        if find_pending_ask_back(self._state.walk_back()) is not None:
                             break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(

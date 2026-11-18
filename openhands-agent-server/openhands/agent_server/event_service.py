@@ -82,7 +82,7 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
-from openhands.sdk.event.ask_user import AskUserAnswerEvent, find_pending_ask
+from openhands.sdk.event.ask_user import AskUserAnswerEvent, find_pending_ask_back
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -1940,7 +1940,7 @@ class EventService:
 
         def _require_answered() -> None:
             with conversation._state:
-                if find_pending_ask(conversation._state.active_branch()) is not None:
+                if find_pending_ask_back(conversation._state.walk_back()) is not None:
                     raise ValueError("pending_ask")
 
         await self.run_state_op(_require_answered)
