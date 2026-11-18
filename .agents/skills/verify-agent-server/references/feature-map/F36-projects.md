@@ -414,7 +414,7 @@ Preconditions:
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.resolved ne user --check tags.turn eq answered --until-ok 10 \
     --save F36.resolved/reopened
-  control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
+  control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 1
   ```
   A client's tag `PATCH` keeps the membership and the `turn` the server set.
   The user's resolve shows as `resolved: "user"`; a new message reopens the
@@ -428,9 +428,13 @@ Preconditions:
     --json '{"title": "qa-f36-answer", "task": "What is 17 times 23? Answer in one sentence and finish. Do not use tools.", "isolation": "shared"}' \
     --expect 201 --field conversation_id)
   A2=$(control-agent-server api POST "/api/conversations/$CAT/children" \
-    --json '{"title": "qa-f36-handoff", "task": "Suggest two names for my new cat, with one line on each. End your final message with exactly: Tell me which one you prefer. Do not use tools.", "isolation": "shared"}' \
+    --json '{"title": "qa-f36-handoff", "task": "Reply with the single word ready and finish. Do not use tools.", "isolation": "shared"}' \
     --expect 201 --field conversation_id)
   control-agent-server conversation wait "$A1" --until finished --timeout 180
+  control-agent-server conversation wait "$A2" --until finished --timeout 180
+  sleep 5
+  control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
+  control-agent-server api POST "/api/conversations/$A2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Suggest two names for my new cat, with one line on each. End your final message with exactly: Tell me which one you prefer. Do not use tools."}], "run": true}' --expect 200
   control-agent-server conversation wait "$A2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$A1" --check tags.resolved eq auto --check tags.resolvenote matches '^(0\.(8[5-9]|9\d)|1\.00) nothing$' --until-ok 30 \
     --save F36.auto-resolve/answer
@@ -438,6 +442,9 @@ Preconditions:
     --save F36.auto-resolve/handoff
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolve_note": "' --save F36.auto-resolve/board
   ```
+  The answer is the coordinator's task. The hand-off comes from the user: a
+  question in a turn the coordinator started is the coordinator's to answer,
+  never Needs you, and the woken coordinator may tell the member it is done.
   The judge runs on the conversation's own LLM (no `OH_RESOLUTION_MODEL`).
   A plain answer resolves as `auto` with a note such as `1.00 nothing`. A
   hand-off that ends without a question mark (`Tell me which one you prefer.`)
