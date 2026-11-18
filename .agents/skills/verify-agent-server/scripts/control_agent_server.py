@@ -2043,11 +2043,18 @@ def cmd_llm_preset(args: argparse.Namespace) -> dict[str, Any]:
         for p in route["profiles"]
     ]
     ok = all("error" not in r and r.get("activated", 200) < 400 for r in rows)
-    return {
+    result = {
         "ok": ok,
         "via": "proxy" if route["base_url"] else "provider",
         "profiles": rows,
     }
+    if args.print_model:
+        if not ok:
+            emit(result)
+            raise SystemExit(1)
+        print(next(p["model"] for p in route["profiles"] if p["activate"]))
+        raise SystemExit(0)
+    return result
 
 
 def cmd_llm_set(args: argparse.Namespace) -> dict[str, Any]:
@@ -5897,7 +5904,11 @@ under <run>/evidence/FEATURE/NAME.json.""",
         "preset",
         help="save a known set of profiles",
         formatter_class=Formatter,
-        epilog=f"Examples:\n  {CLI} llm preset deepseek\n  {CLI} llm preset deepseek --api-key-file ~/.deepseek",
+        epilog=(
+            f"Examples:\n  {CLI} llm preset deepseek\n"
+            f"  {CLI} llm preset deepseek --api-key-file ~/.deepseek\n"
+            f"  MODEL=$({CLI} llm preset deepseek --print-model)"
+        ),
     )
     add_run_flag(lp)
     lp.set_defaults(func=cmd_llm_preset)
@@ -5906,6 +5917,11 @@ under <run>/evidence/FEATURE/NAME.json.""",
     lp.add_argument("--api-key-file")
     lp.add_argument(
         "--no-validate", action="store_true", help="skip the one-call validation"
+    )
+    lp.add_argument(
+        "--print-model",
+        action="store_true",
+        help="print only the active profile's model (it differs through the proxy)",
     )
     ls = llm_sub.add_parser(
         "set",
