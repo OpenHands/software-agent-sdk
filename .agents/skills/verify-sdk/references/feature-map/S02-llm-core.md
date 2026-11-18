@@ -106,14 +106,14 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check final_text eq "the answer" --check final_summary.0 eq "plan the reply" --check content_text eq "the answer" \
     --check summary_as_reasoning eq "plan the reply"
   ```
-  Expected: the summary reaches the callback as `delta.reasoning_content`, as chat-path reasoning does, and the answer as `delta.content`; the final message carries both. Known failure (reproduced 2026-11-12, [#6695](https://github.com/OpenHands/software-agent-sdk/issues/6695)): no summary delta reaches the callback at all (`summary_as_reasoning` is empty; every delta is the message's `content`, chunk id `msg_1`). With the installed LiteLLM (1.105.1) a `response.reasoning_summary_text.delta` event is parsed as a `GenericEvent`, never the `ReasoningSummaryTextDeltaEvent` that `LLM._process_stream_event` looks for, and that branch would emit it as `delta.content` rather than `delta.reasoning_content`. The final message still has the summary.
+  Expected: the summary reaches the callback as `delta.reasoning_content`, as chat-path reasoning does, and the answer as `delta.content`; the final message carries both. Known failure (reproduced 2026-11-17, [#6695](https://github.com/OpenHands/software-agent-sdk/issues/6695)): no summary delta reaches the callback at all (`summary_as_reasoning` is empty; every delta is the message's `content`, chunk id `msg_1`). With the installed LiteLLM (1.105.1) a `response.reasoning_summary_text.delta` event is parsed as a `GenericEvent`, never the `ReasoningSummaryTextDeltaEvent` that `LLM._process_stream_event` looks for, and that branch would emit it as `delta.content` rather than `delta.reasoning_content`. The final message still has the summary.
 - **Cache-write tokens on the Responses path (`S02.metrics`).** The same program: the Responses reply reports `input_tokens_details.cache_write_tokens: 600`, and a Chat Completions reply reports `prompt_tokens_details.cache_creation_tokens: 600`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S02/llm_calls --arg responses-stream \
     --check chat_cache_write eq 600 --check responses_cache_read eq 200 --check responses_cache_write eq 600
   ```
-  Expected: `TokenUsage.cache_write_tokens` is 600 on both paths. Known failure (reproduced 2026-11-12, [#6691](https://github.com/OpenHands/software-agent-sdk/issues/6691)): the Responses path records 0 (`normalize_usage` reads only `cached_tokens` from `input_tokens_details`); the chat path records 600.
+  Expected: `TokenUsage.cache_write_tokens` is 600 on both paths. Known failure (reproduced 2026-11-17, [#6691](https://github.com/OpenHands/software-agent-sdk/issues/6691)): the Responses path records 0 (`normalize_usage` reads only `cached_tokens` from `input_tokens_details`); the chat path records 600.
 - **Timeouts (`S02.timeouts`).** A reply slower than `timeout=1`, a stream that stalls longer than `stream_idle_timeout=1` on `acompletion`, and the same stall inside `await conversation.arun()`. Then an endpoint that never answers, with `timeout=1` and `num_retries=5`, on `completion` and on a streamed `acompletion`; and a stream that stalls on every attempt with `stream_idle_timeout=0.3`, `timeout=30` and `num_retries=3`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -207,7 +207,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check length_capped.error missing --check length_capped.text eq "" --check length_capped.requests eq 1 \
     --check reasoning_only.reasoning eq "only thinking" --check reasoning_only.requests eq 1
   ```
-  Known failure (reproduced 2026-11-12, [#6657](https://github.com/OpenHands/software-agent-sdk/issues/6657)): the chat path behaves as documented, but on the Responses path a stream that ends without its completed event does not reach the SDK's `LLMNoResponseError` check. LiteLLM raises `APIConnectionError` first, the SDK retries it as a transient error without the temperature bump (`responses.temperatures` is `[0.0, 0.0]`), and an exhausted async call ends in `LLMServiceUnavailableError`. The unit tests mock the LiteLLM call, so they do not meet it.
+  Known failure (reproduced 2026-11-17, [#6657](https://github.com/OpenHands/software-agent-sdk/issues/6657)): the chat path behaves as documented, but on the Responses path a stream that ends without its completed event does not reach the SDK's `LLMNoResponseError` check. LiteLLM raises `APIConnectionError` first, the SDK retries it as a transient error without the temperature bump (`responses.temperatures` is `[0.0, 0.0]`), and an exhausted async call ends in `LLMServiceUnavailableError`. The unit tests mock the LiteLLM call, so they do not meet it.
 - **Error mapping (`S02.error-mapping`).** Each provider error body, as an OpenAI-compatible endpoint sends it, and a dead endpoint.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -351,7 +351,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check results.duplicate_tool_call_id.error_type eq LLMMalformedConversationHistoryError \
     --check results.parallel_wrong_order.error_type eq LLMMalformedConversationHistoryError
   ```
-  Known failure (reproduced 2026-11-12, [#6658](https://github.com/OpenHands/software-agent-sdk/issues/6658)): DeepSeek rejects all eight. Five come back as `LLMMalformedConversationHistoryError`; the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order) come back as the generic `LLMBadRequestError`, so a caller that recovers from malformed histories by catching the specific error misses them.
+  Known failure (reproduced 2026-11-17, [#6658](https://github.com/OpenHands/software-agent-sdk/issues/6658)): DeepSeek rejects all eight. Five come back as `LLMMalformedConversationHistoryError`; the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order) come back as the generic `LLMBadRequestError`, so a caller that recovers from malformed histories by catching the specific error misses them.
 - **Examples 22 and 23 and the thinking-block condenser test (`S02.anthropic-thinking`, `S02.responses-reasoning`), blocked.** Example 22 and `c01_thinking_block_condenser` need an Anthropic extended-thinking model and key; example 23 hardcodes `openhands/gpt-5-mini-2025-08-07` and needs an OpenHands provider key. The run's DeepSeek key reaches neither.
 
 ## Gotchas
