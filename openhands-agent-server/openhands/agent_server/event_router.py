@@ -25,7 +25,8 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.errors import GatewayTimeout, error_responses
-from openhands.agent_server.event_service import EventService, ServiceInactive
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,

@@ -21,7 +21,7 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.event_service import ServiceInactive
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent
