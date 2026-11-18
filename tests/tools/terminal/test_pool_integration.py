@@ -160,6 +160,28 @@ class TestTmuxPoolRecovery:
         after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
         assert "after_rebuild" in after.text
 
+    def test_recovery_when_server_survives_without_sessions(self, pool_executor):
+        # The tmux server can outlive its last session for a moment: the shell
+        # exits, the session goes with it, but the server has not torn itself
+        # down yet. In that window tmux cannot resolve the pane target and
+        # reports "no current target" instead of "no server running". The pool
+        # must treat that as recoverable too.
+        pool_executor(TerminalAction(command="echo ready", timeout=5.0))
+        pool = pool_executor._pool
+        assert pool is not None and pool._server is not None
+        pool._server.cmd("set-option", "-s", "exit-empty", "off")
+        pool._session.kill()
+
+        obs = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        assert "no current target" in obs.text
+
+        after = pool_executor(TerminalAction(command="echo recovered", timeout=5.0))
+        assert not after.is_error
+        assert "recovered" in after.text
+
     def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
         obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))
         assert obs.is_error
