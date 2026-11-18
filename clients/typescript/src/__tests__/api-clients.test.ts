@@ -2465,9 +2465,11 @@ describe('Auxiliary API clients', () => {
       () => json(memory),
       () => json({ deleted: true }),
     ];
-    global.fetch = vi
-      .fn()
-      .mockImplementation(() => Promise.resolve(responses.shift()!())) as typeof fetch;
+    global.fetch = vi.fn().mockImplementation(() => {
+      const next = responses.shift();
+      if (!next) throw new Error('Unexpected fetch call');
+      return Promise.resolve(next());
+    }) as typeof fetch;
 
     const client = new ProjectsClient({ host: 'http://example.com/' });
     await expect(client.listProjects()).resolves.toEqual([project]);
