@@ -29,6 +29,18 @@ from pydantic import BaseModel
 
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.tool.spec import Tool
+from openhands.sdk.tool.tool import ToolDefinition
+from openhands.tools.project import (
+    ListArtifactsTool,
+    ListWorkersTool,
+    MessageWorkerTool,
+    ReadArtifactTool,
+    ReadProjectMemoryTool,
+    ReadWorkerTool,
+    ResolveConversationTool,
+    UpdateProjectMemoryTool,
+    WriteArtifactTool,
+)
 
 
 if TYPE_CHECKING:
@@ -108,20 +120,21 @@ PROJECTS = ExperimentalFeatureDefinition(
     ),
 )
 
-PROJECT_TOOL_NAMES: tuple[str, ...] = (
-    "list_workers",
-    "message_worker",
-    "read_worker",
-    "write_artifact",
-    "read_artifact",
-    "list_artifacts",
-    "read_project_memory",
-    "update_project_memory",
-    "resolve_conversation",
+PROJECT_TOOLS: tuple[type[ToolDefinition], ...] = (
+    ListWorkersTool,
+    MessageWorkerTool,
+    ReadWorkerTool,
+    WriteArtifactTool,
+    ReadArtifactTool,
+    ListArtifactsTool,
+    ReadProjectMemoryTool,
+    UpdateProjectMemoryTool,
+    ResolveConversationTool,
 )
-"""Tools registered by openhands.tools.project. A client lists the coordinator's
-in its agent spec and the server adds the workers', so they are withheld from
-new conversations while Projects is off rather than added while it is on."""
+"""The tools of openhands.tools.project. A client lists the coordinator's in its
+agent spec and the server adds the workers', so they are withheld from new
+conversations while Projects is off rather than added while it is on. They are
+matched by class, so a client's own tool that shares a name keeps working."""
 
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
@@ -172,9 +185,11 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     return tools
 
 
-def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[str]:
-    """Tools a new conversation does not get, even if its spec lists them."""
-    return [] if is_enabled(features, PROJECTS.key) else list(PROJECT_TOOL_NAMES)
+def experimental_feature_withheld_tools(
+    features: Mapping[str, bool],
+) -> list[type[ToolDefinition]]:
+    """Tool classes a new conversation does not get, even if its spec lists them."""
+    return [] if is_enabled(features, PROJECTS.key) else list(PROJECT_TOOLS)
 
 
 async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:

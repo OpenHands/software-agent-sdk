@@ -1,5 +1,6 @@
 """Projects behind the ``projects`` experimental feature (off by default)."""
 
+import sys
 from uuid import uuid4
 
 import pytest
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.experimental_features import (
-    PROJECT_TOOL_NAMES,
+    PROJECT_TOOLS,
     experimental_feature_withheld_tools,
     feature_enabled_now,
     find_experimental_feature,
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.projects_off
 def test_projects_is_an_experimental_feature_off_by_default():
     assert find_experimental_feature("projects") is not None
     assert not is_enabled({}, "projects")
-    assert experimental_feature_withheld_tools({}) == list(PROJECT_TOOL_NAMES)
+    assert experimental_feature_withheld_tools({}) == list(PROJECT_TOOLS)
     assert experimental_feature_withheld_tools({"projects": True}) == []
 
 
@@ -122,6 +123,25 @@ def test_finalize_withholds_tools():
     launched = finalize(
         agent,
         LaunchRuntime(),
-        withheld_tools=PROJECT_TOOL_NAMES,
+        withheld_tools=PROJECT_TOOLS,
     )
     assert [t.name for t in launched.agent.tools] == ["terminal"]
+
+
+def test_finalize_keeps_another_tool_with_a_project_tool_name(monkeypatch):
+    """A client's own ``list_workers`` is not a project tool, so it stays."""
+
+    class ClientsListWorkers:
+        pass
+
+    monkeypatch.setattr(
+        sys.modules["openhands.sdk.launch.finalize"],
+        "registered_tool_class",
+        lambda name: ClientsListWorkers if name == "list_workers" else None,
+    )
+    agent = Agent(
+        llm=LLM(model="test-model", usage_id="test"),
+        tools=[Tool(name="list_workers")],
+    )
+    launched = finalize(agent, LaunchRuntime(), withheld_tools=PROJECT_TOOLS)
+    assert [t.name for t in launched.agent.tools] == ["list_workers"]

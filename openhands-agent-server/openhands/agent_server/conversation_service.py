@@ -34,7 +34,7 @@ from openhands.agent_server.exceptions import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.experimental_features import (
-    PROJECT_TOOL_NAMES,
+    PROJECT_TOOLS,
     experimental_feature_tools,
     experimental_feature_withheld_tools,
     host_experimental_features,
@@ -123,7 +123,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.tool import Tool
+from openhands.sdk.tool import Tool, ToolDefinition
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -2391,7 +2391,7 @@ class ConversationService:
         *,
         additions: AgentLaunchAdditions | None = None,
         header: str | None = None,
-        withheld_tools: Sequence[str] = PROJECT_TOOL_NAMES,
+        withheld_tools: Sequence[type[ToolDefinition]] = PROJECT_TOOLS,
         tags: Mapping[str, str] | None = None,
     ) -> StartChildConversationResponse:
         """A child that runs a copy of its parent's agent.

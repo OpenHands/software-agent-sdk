@@ -18,7 +18,9 @@ from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool.defaults import launch_tool_specs
+from openhands.sdk.tool.registry import registered_tool_class
 from openhands.sdk.tool.spec import Tool
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 ACPSkillSourcing = Literal["native", "openhands_managed"]
@@ -70,7 +72,7 @@ def finalize(
     extra_suffixes: Sequence[str] = (),
     client_tools: Sequence[Tool] = (),
     experimental_feature_tools: Sequence[Tool] = (),
-    withheld_tools: Collection[str] = (),
+    withheld_tools: Collection[type[ToolDefinition]] = (),
     load_memory: bool = False,
     managed_secrets: Collection[str] = (),
     launched_at: datetime | None = None,
@@ -84,9 +86,10 @@ def finalize(
 
     ``experimental_feature_tools`` are tools the user turned on through a feature flag.
     Only an OpenHands :class:`~openhands.sdk.agent.Agent` gets them: an ACP
-    agent runs its own tools, so it is left as it is. ``withheld_tools`` names
-    tools the agent does not get even when its spec lists them, such as those
-    of a feature the user turned off.
+    agent runs its own tools, so it is left as it is. ``withheld_tools`` are
+    tool classes the agent does not get even when its spec lists them, such as
+    those of a feature the user turned off. A tool is matched by the class
+    registered under its name, so another tool with the same name is kept.
     """
     if isinstance(source, ResolvedLaunch):
         settings = _settings_for_runtime(source.settings, runtime)
@@ -271,8 +274,12 @@ def _without_context_secrets(agent: AgentBase, names: Collection[str]) -> AgentB
     )
 
 
-def _without_tools(agent: AgentBase, names: Collection[str]) -> AgentBase:
-    kept = [tool for tool in agent.tools if tool.name not in names]
+def _without_tools(
+    agent: AgentBase, classes: Collection[type[ToolDefinition]]
+) -> AgentBase:
+    kept = [
+        tool for tool in agent.tools if registered_tool_class(tool.name) not in classes
+    ]
     if len(kept) == len(agent.tools):
         return agent
     return agent.model_copy(update={"tools": kept})
