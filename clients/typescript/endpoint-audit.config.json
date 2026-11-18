@@ -31,6 +31,12 @@
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/3744"
     },
     {
+      "endpoints": ["PATCH /api/workspaces", "PATCH /api/workspaces/parents"],
+      "reason": "Client-ahead API for workspace rename, added with the Agent Server endpoints in the same PR.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/6955"
+    },
+    {
       "endpoints": ["GET /api/settings/experimental", "PATCH /api/settings/experimental/{}"],
       "reason": "Client-ahead API for experimental features, added with the Agent Server endpoints in the same PR.",
       "owner": "OpenHands SDK maintainers",

@@ -15,6 +15,13 @@ export const AgentServerFeatureRequirements = {
     displayName: 'Workspaces',
     minVersion: '1.23.0',
   },
+  workspaceRename: {
+    feature: 'workspace-rename',
+    displayName: 'Workspace rename API',
+    // Ships with the release that adds PATCH /api/workspaces; correct this
+    // if release-please lands a different next minor.
+    minVersion: '1.63.0',
+  },
   hooks: {
     feature: 'hooks',
     displayName: 'Hooks API',

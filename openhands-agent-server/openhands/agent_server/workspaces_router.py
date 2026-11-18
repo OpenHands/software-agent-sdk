@@ -44,6 +44,12 @@ class AddWorkspaceParentsRequest(BaseModel):
     parents: list[WorkspaceParentItem]
 
 
+class RenameWorkspaceRequest(BaseModel):
+    # The 64-character cap the GUI applies is a product rule; the registry
+    # itself accepts anything the schema allows, including untrimmed input.
+    name: str = Field(..., min_length=1, max_length=256)
+
+
 class DeleteResponse(BaseModel):
     deleted: bool = True
 
@@ -55,6 +61,31 @@ def _to_response(persisted: PersistedWorkspaces) -> WorkspacesListResponse:
             "workspace_parents": list(persisted.workspace_parents),
         }
     )
+
+
+def _rename_entries[EntryT: (WorkspaceItem, WorkspaceParentItem)](
+    entries: list[EntryT], path: str, name: str
+) -> tuple[list[EntryT], bool, bool]:
+    """Relabel every entry at ``path``.
+
+    Returns ``(entries, matched, changed)``: ``path`` is the identity, so only
+    ``name`` moves. An entry already carrying ``name`` is left as the same
+    object, which lets the caller return the document unchanged for a no-op
+    rename and skip the write.
+    """
+    matched = False
+    changed = False
+    renamed: list[EntryT] = []
+    for entry in entries:
+        if entry.path != path:
+            renamed.append(entry)
+            continue
+        matched = True
+        if entry.name != name:
+            entry = entry.model_copy(update={"name": name})
+            changed = True
+        renamed.append(entry)
+    return renamed, matched, changed
 
 
 @workspaces_router.get(
@@ -158,6 +189,43 @@ async def delete_workspace(
     return DeleteResponse()
 
 
+@workspaces_router.patch(
+    "",
+    response_model=WorkspacesListResponse,
+    response_model_exclude_none=True,
+)
+async def rename_workspace(
+    payload: RenameWorkspaceRequest,
+    path: Annotated[str, Query(description="Absolute workspace path to rename")],
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
+) -> WorkspacesListResponse:
+    """Rename a saved workspace. ``path`` is the identity; only the label changes."""
+
+    matched = False
+
+    def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
+        nonlocal matched
+        renamed, matched, changed = _rename_entries(
+            current.workspaces, path, payload.name
+        )
+        if not changed:
+            return current
+        return current.model_copy(update={"workspaces": renamed})
+
+    try:
+        updated = await run_store(store.update, apply)
+    except RuntimeError as e:
+        logger.error(f"Workspaces rename blocked: {e}")
+        raise Conflict("Workspaces file is corrupted")
+    except (OSError, PermissionError):
+        logger.error("Workspaces rename failed - file I/O error")
+        raise OperationFailed("Failed to update workspaces")
+
+    if not matched:
+        raise NotFound("Workspace not found")
+    return _to_response(updated)
+
+
 @workspaces_router.post(
     "/parents",
     response_model=WorkspacesListResponse,
@@ -228,3 +296,40 @@ async def delete_workspace_parent(
     if not removed:
         raise NotFound("Workspace parent not found")
     return DeleteResponse()
+
+
+@workspaces_router.patch(
+    "/parents",
+    response_model=WorkspacesListResponse,
+    response_model_exclude_none=True,
+)
+async def rename_workspace_parent(
+    payload: RenameWorkspaceRequest,
+    path: Annotated[str, Query(description="Absolute workspace parent path to rename")],
+    store: FileWorkspacesStore = Depends(get_workspaces_store),
+) -> WorkspacesListResponse:
+    """Rename a workspace parent. ``path`` is the identity; only the label changes."""
+
+    matched = False
+
+    def apply(current: PersistedWorkspaces) -> PersistedWorkspaces:
+        nonlocal matched
+        renamed, matched, changed = _rename_entries(
+            current.workspace_parents, path, payload.name
+        )
+        if not changed:
+            return current
+        return current.model_copy(update={"workspace_parents": renamed})
+
+    try:
+        updated = await run_store(store.update, apply)
+    except RuntimeError as e:
+        logger.error(f"Workspace parents rename blocked: {e}")
+        raise Conflict("Workspaces file is corrupted")
+    except (OSError, PermissionError):
+        logger.error("Workspace parents rename failed - file I/O error")
+        raise OperationFailed("Failed to update workspaces")
+
+    if not matched:
+        raise NotFound("Workspace parent not found")
+    return _to_response(updated)
