@@ -45,7 +45,7 @@ Routes: none
 - `F34.ws-callback-client`: `RemoteConversation.startWebSocketClient()` in Node delivers the conversation's events to the conversation callback without errors.
 - `F34.conversation-controls`: `setTitle` and `setConfirmationPolicy` change the server's title and policy.
 - `F34.conversation-confirm`: under `AlwaysConfirm`, `sendConfirmationResponse(false, reason)` records one `UserRejectObservation` with that reason and leaves the command unrun, `sendConfirmationResponse(true)` runs the pending command, and `updateSecrets` (a string and a function value) puts both values into that command's shell without any event containing them.
-- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding events to the source.
+- `F34.conversation-branching`: `fork({title})` returns a `RemoteConversation` bound to the fork (its id, the fork's workspace and agent, the copied events), `navigateTo` refreshes the cached state to the new `leaf_event_id`, and `askAgent` answers without adding a message or action to the source: the one event it adds (just after the call resolves) is a `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`.
 - `F34.manager`: `ConversationManager` searches with paging, counts by status, batch-gets (unknown ids are `null`), lists all, loads a conversation with its server working directory, creates and deletes one, and an unknown id rejects with 404.
 - `F34.manager-update-result`: `ConversationManager.updateConversation` stores the new title and resolves with the updated `ConversationInfo` it is typed to return.
 - `F34.manager-create-options`: `ConversationManager.createConversation(agent, {maxIterations, stuckDetection})` creates the conversation with those settings.
@@ -53,6 +53,11 @@ Routes: none
 - `F34.manager-acp`: `ConversationManager.acp` creates a conversation for an inline ACP agent (with its `maxIterations`) and gets, batch-gets, lists and counts it with its ACP agent fields.
 - `F34.hooks-client`: `HooksClient.loadHooks` and `RemoteConversation.loadHooks` read a project's `.openhands/hooks.json` as a snake_case `HookConfig` the client's hook helpers understand, and `null` for a directory without hooks.
 - `F34.mcp-client`: `MCPClient.testServer` lists a stdio MCP server's tools and runs one tool call, reports a server that fails to start as `{ok: false}` with an `error_kind`, and an empty command rejects with 422.
+- `F34.events-batch-post`: `ConversationClient.batchGetEvents` posts to `POST .../events/batch` and returns the events in input order with `null` for an unknown id, exactly what the canonical GET batch returns, and rejects an unknown conversation (404) and a missing key (401) with an `HttpError`.
+- `F34.load-plugin`: `ConversationClient.loadPlugin` and `PluginsClient.loadPluginForConversation` load a plugin from a conversation's registered marketplace (its skills and hook show in `GET`), and an unknown plugin, an empty ref, an unknown conversation and a missing key reject with the server's 404, 400, 404 and 401.
+- `F34.git-commits`: `GitClient.getCommits` (with `limit`) and `getCommitChanges` (full or abbreviated SHA), through `ConversationManager.git`, `AgentServerClient.git` and a standalone `GitClient`, return the server's commit history and per-commit changes; `limit` 0 is 422, an unknown SHA 400, no key 401.
+- `F34.file-archive`: `FileClient.downloadArchiveBuffer` and `downloadArchive` return a `tar.gz` (`ArrayBuffer`) and a git-delta patch (`Blob`) of a repository, pass `useDefaultExcludes` and repeated `exclude` globs and `baseRef` through, and reject a relative path or option-shaped `baseRef` (400) and a missing key (401).
+- `F34.init-client`: `InitClient` (standalone, `AgentServerClient.init`, `ConversationManager.init`) reads a dormant server's status without a key, refuses `initialize` without or with a wrong `initApiKey` (401), initializes it with the dormant secret (`ready`), and a second `initialize` is a 400.
 - `F34.restart-reload`: after a server restart a new `ConversationManager` loads the same conversation with its status, title, events, hook config and workspace files.
 - `F34.event-stream-reconnect`: a `ConversationEventStream` with `reconnect: {enabled: true}` and `queryParams: {resend_mode: 'all'}`, on the `ws` package's constructor, reconnects by itself after a server restart, replays the history again with the same query, and delivers a message posted after the restart.
 - `F34.event-stream-reconnect-native`: the same stream on Node's global `WebSocket` also reconnects after a server restart.
@@ -69,7 +74,8 @@ Routes: none
   `assertAgentServerSupports`, the hook helpers) and the secondary entry
   `dist/clients.js` (`ServerClient`, `FileClient`, `ConversationEventStream`,
   `buildConversationEventStreamUrl`, `AgentServerClient` and every endpoint
-  client). Recipes import the built files by path from the repository root.
+  client, including `ConversationClient`, `GitClient`, `InitClient` and
+  `PluginsClient`, which the main entry does not export). Recipes import the built files by path from the repository root.
 - Server status: `ServerClient.getAlive|getHealth|getReady|getServerInfo|getRoot`
   (`GET /alive`, `/health`, `/ready`, `/server_info`, `/`).
 - Conversations: `RemoteConversation.start()` (`POST /api/conversations`, or
@@ -94,7 +100,26 @@ Routes: none
   does not call them.
 - State and events: `RemoteState` (`GET /api/conversations/{id}`, cached for
   2 seconds), `RemoteEventsList.search|count|getEventById|getEventsById|getEvents`
-  (`GET .../events/search`, `.../events/count`, `.../events/{event_id}`).
+  (`GET .../events/search`, `.../events/count`, `.../events/{event_id}`);
+  `ConversationClient.batchGetEvents(id, ids)` (`POST .../events/batch`, the
+  browser-safe form of the GET batch; `F34.events-batch-post`).
+- Plugins in a conversation: `ConversationClient.loadPlugin(id, ref)` and
+  `PluginsClient.loadPluginForConversation(id, ref)` (`POST
+  .../load_plugin` `{"plugin_ref": ref}`; `F34.load-plugin`).
+- Commits: `GitClient.getCommits(path, {limit})` (`GET /api/git/commits`) and
+  `getCommitChanges(path, sha)` (`GET /api/git/commits/{sha}/changes`), on
+  `ConversationManager.git` and `AgentServerClient.git`; with a
+  `conversationId` they go through the runtime transport like `FileClient`
+  (`F34.git-commits`).
+- Archives: `FileClient.downloadArchive(path, {format, baseRef,
+  useDefaultExcludes, exclude})` (a `Blob`) and `downloadArchiveBuffer` (an
+  `ArrayBuffer`), `GET /api/file/archive`, `exclude` sent as repeated query
+  parameters (`F34.file-archive`).
+- Deferred init: `InitClient.getStatus()` (`GET /api/init`) and
+  `initialize(request, {initApiKey})` (`POST /api/init`, the key sent as
+  `X-Init-API-Key`, never as the session key), also as
+  `AgentServerClient.init` and `ConversationManager.init`
+  (`F34.init-client`).
 - Workspace: `RemoteWorkspace.executeCommand` (`POST
   /api/bash/execute_bash_command`), `uploadText`/`fileUpload` (`POST
   /api/file/upload`), `downloadAsText`/`downloadAsBlob`/`fileDownload` (`GET
@@ -1106,12 +1131,13 @@ Preconditions:
 - **Fork, navigate and ask (`F34.conversation-branching`).** On `CID`, the
   finished DeepSeek conversation; the fork is deleted at the end.
 
-  Requires: `F34.conversation-create`
+  Requires: `F34.conversation-create`, `F34.conversation-run`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  ENVIRONMENT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --field .)
   cat > "$F34/branching.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
-  import { m, host, apiKey, F34, assert } from './lib.mjs';
+  import { m, host, apiKey, F34, assert, waitFor } from './lib.mjs';
   const [cid, total] = process.argv.slice(2);
   const conversation = new m.RemoteConversation(new m.Agent({ llm: { model: 'qa-f34/unused' } }),
     new m.RemoteWorkspace({ host, apiKey, workingDir: '/x' }), { conversationId: cid });
@@ -1130,8 +1156,16 @@ Preconditions:
   await fork.navigateTo(first.id);
   assert.equal((await fork.state.modelDump()).leaf_event_id, first.id);
   writeFileSync(`${F34}/fork-leaf`, first.id);
+  const STATE = 'ConversationStateUpdateEvent';
+  const stateBefore = await conversation.state.events.count({ kind: STATE });
   assert.equal(typeof (await conversation.askAgent('In one short sentence: which file did you create?')), 'string');
-  assert.equal(await conversation.state.events.count(), Number(total));
+  await waitFor(async () => (await conversation.state.events.count()) > Number(total), 10000, 100);
+  assert.equal(await conversation.state.events.count(), Number(total) + 1);
+  assert.equal(await conversation.state.events.count({ kind: STATE }), stateBefore + 1);
+  const [newest] = (await conversation.state.events.search({ limit: 1, sort_order: 'TIMESTAMP_DESC' })).items;
+  assert.equal(newest.kind, STATE);
+  assert.equal(newest.key, 'stats');
+  assert.ok(newest.value.usage_to_metrics['ask-agent-llm'].accumulated_token_usage.completion_tokens >= 1);
   console.log('QA_F34_BRANCHING_OK');
   JS
   control-agent-server exec --timeout 180 --expect-output QA_F34_BRANCHING_OK --save F34.conversation-branching/program -- node "$F34/branching.mjs" "$CID" "$TOTAL"
@@ -1139,7 +1173,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$FORK" --max-chars 300 --check forked_from_conversation_id eq "$CID" \
     --check title eq qa-f34-fork --check leaf_event_id eq "$(cat "$F34/fork-leaf")" --save F34.conversation-branching/fork
   control-agent-server api GET "/api/conversations/$CID" --max-chars 300 --check execution_status eq finished --check leaf_event_id ne "$(cat "$F34/fork-leaf")"
-  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$TOTAL"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$((TOTAL + 1))"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --query source=environment --check . eq "$((ENVIRONMENT + 1))"
   control-agent-server api DELETE "/api/conversations/$FORK" --expect 200
   ```
   `fork` returns a `RemoteConversation` bound to the fork: its own id,
@@ -1147,8 +1182,14 @@ Preconditions:
   agent model, and all `TOTAL` copied events. With the state cached right
   before, `navigateTo(<first event>)` leaves the cached state on the new
   HEAD, which GET confirms (the source's HEAD did not move). `askAgent`
-  resolves with a string and adds no event to the source, which is still
-  `finished`.
+  resolves with a string and adds exactly one event to the source, which is
+  still `finished`. The server appends that event from a background task, so
+  it can land a few milliseconds after `askAgent` resolves; the program waits
+  up to 10 s for the count to grow before it asserts. The newest event is a `stats`
+  `ConversationStateUpdateEvent` whose `usage_to_metrics` has an
+  `ask-agent-llm` entry with the call's tokens, and the counts of every
+  other kind are unchanged (the client's counts and REST agree: one more
+  event, from source `environment`).
 - **Confirmation and secrets (`F34.conversation-confirm`).** A DeepSeek
   conversation with the `terminal` tool under `AlwaysConfirm`; two runtime
   secrets (a string and a function value) whose hashes the first command
@@ -1376,6 +1417,201 @@ Preconditions:
   Expected: both streams come back, end at
   `{"isConnected": true, "isReconnecting": false, "attemptCount": 0}`
   and see the message posted after the restart.
+- **Batch events by POST (`F34.events-batch-post`).** `F06.batch-post`
+  reached through the client, on `SCID`'s two events, then compared with
+  the canonical GET batch over REST.
+  ```sh
+  cat > "$F34/typed-batch.mjs" <<'JS'
+  import { writeFileSync } from 'node:fs';
+  import { m, c, host, apiKey, F34, NOPE, assert } from './lib.mjs';
+  const scid = process.argv[2];
+  const conversations = new c.ConversationClient({ host, apiKey });
+  const { items } = await conversations.searchEvents(scid, { limit: 2 });
+  assert.equal(items.length, 2);
+  const [e0, e1] = items.map((e) => e.id);
+  const batch = await conversations.batchGetEvents(scid, [e1, NOPE, e0]);
+  assert.deepEqual(batch.map((e) => e && e.id), [e1, null, e0]);
+  assert.deepEqual(await new c.AgentServerClient({ host, apiKey }).conversations.batchGetEvents(scid, []), []);
+  await assert.rejects(conversations.batchGetEvents(NOPE, [e0]), (e) => m.isHttpError(e) && e.status === 404);
+  await assert.rejects(new c.ConversationClient({ host }).batchGetEvents(scid, [e0]), (e) => m.isHttpError(e) && e.status === 401);
+  writeFileSync(`${F34}/typed-batch.json`, JSON.stringify(batch));
+  writeFileSync(`${F34}/typed-batch-ids.json`, JSON.stringify([e1, NOPE, e0]));
+  console.log('QA_F34_TYPED_BATCH_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_TYPED_BATCH_OK --save F34.events-batch-post/program -- node "$F34/typed-batch.mjs" "$SCID"
+  control-agent-server api GET "/api/conversations/$SCID/events" --json "$(cat "$F34/typed-batch-ids.json")" --expect 200 --quiet \
+    --check . len-eq 3 --check 1 missing --raw-out "$F34/rest-batch.json" --save F34.events-batch-post/rest-get
+  diff <(jq -S . "$F34/rest-batch.json") <(jq -S . "$F34/typed-batch.json")
+  ```
+  The program prints `QA_F34_TYPED_BATCH_OK`: `batchGetEvents` returns the
+  events in input order with `null` for the unknown id, `[]` for `[]`
+  (also through `AgentServerClient.conversations`), and rejects an unknown
+  conversation with a 404 and a missing key with a 401 `HttpError`. What
+  it returned equals the canonical GET batch for the same ids.
+- **Load a plugin (`F34.load-plugin`).** `F09.load-plugin` reached through
+  the client: `PID` registers the `qa-f34-mkt` marketplace fixture on its
+  `agent_context` without loading it.
+  ```sh
+  MKT=$(control-agent-server fixture marketplace --name qa-f34-mkt --print-path)
+  AS=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings --unsafe-unredacted \
+    | jq -c --arg m "$MKT" '.tools = [] | .agent_context.registered_marketplaces = [{"name": "qa-f34-mkt", "source": $m}]')
+  PID=$(control-agent-server conversation start --no-autotitle --body-json "{\"agent_settings\": $AS, \"secrets_encrypted\": true}" --print-id)
+  control-agent-server api GET "/api/conversations/$PID" --query include_skills=true --quiet \
+    --check agent.agent_context.skills len-eq 0 --check hook_config missing
+  cat > "$F34/typed-plugin.mjs" <<'JS'
+  import { m, c, host, apiKey, NOPE, assert } from './lib.mjs';
+  const pid = process.argv[2];
+  const conversations = new c.ConversationClient({ host, apiKey });
+  await assert.rejects(conversations.loadPlugin(pid, 'qa-f34-nope@qa-f34-mkt'), (e) => m.isHttpError(e) && e.status === 404 &&
+    e.detail === "Plugin 'qa-f34-nope' not found in marketplace 'qa-f34-mkt'");
+  await assert.rejects(conversations.loadPlugin(pid, ''), (e) => m.isHttpError(e) && e.status === 400);
+  await assert.rejects(conversations.loadPlugin(NOPE, 'qa-f34-mkt-plugin@qa-f34-mkt'), (e) => m.isHttpError(e) && e.status === 404);
+  await assert.rejects(new c.ConversationClient({ host }).loadPlugin(pid, 'qa-f34-mkt-plugin@qa-f34-mkt'),
+    (e) => m.isHttpError(e) && e.status === 401);
+  const plugins = new c.AgentServerClient({ host, apiKey }).plugins;
+  assert.deepEqual(await plugins.loadPluginForConversation(pid, 'qa-f34-mkt-plugin@qa-f34-mkt'), { success: true });
+  assert.deepEqual(await conversations.loadPlugin(pid, 'qa-f34-mkt-plugin@qa-f34-mkt'), { success: true });
+  console.log('QA_F34_TYPED_PLUGIN_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_TYPED_PLUGIN_OK --save F34.load-plugin/program -- node "$F34/typed-plugin.mjs" "$PID"
+  control-agent-server api GET "/api/conversations/$PID" --query include_skills=true --quiet --check agent.agent_context.skills len-eq 2 \
+    --check agent.agent_context.skills contains qa-f34-mkt-plugin-skill --check agent.agent_context.skills contains 'qa-f34-mkt-plugin:qa-hello' \
+    --check hook_config.user_prompt_submit len-eq 1 --save F34.load-plugin/get
+  ```
+  The program prints `QA_F34_TYPED_PLUGIN_OK`: an unknown plugin is a 404
+  `HttpError` with the server's `detail`, an empty ref 400, an unknown
+  conversation 404, no key 401; `PluginsClient.loadPluginForConversation`
+  and then `ConversationClient.loadPlugin` (a second load) both resolve to
+  `{success: true}`. `GET` shows the plugin's skill and command skill once
+  each and its one `UserPromptSubmit` hook.
+- **Commits (`F34.git-commits`).** `F15.commits` and `F15.commit-changes`
+  reached through `GitClient` (as `ConversationManager.git`,
+  `AgentServerClient.git` and standalone), on a fresh `git-repo` fixture
+  (commits `Initial commit` and `Add util`).
+  ```sh
+  TREPO=$(control-agent-server fixture git-repo --name qa-f34-typed-repo --print-path)
+  THEAD=$(git -C "$TREPO" rev-parse HEAD)
+  TROOT=$(git -C "$TREPO" rev-parse HEAD~1)
+  cat > "$F34/typed-git.mjs" <<'JS'
+  import { writeFileSync } from 'node:fs';
+  import { m, c, host, apiKey, F34, assert } from './lib.mjs';
+  const [repo, head, root] = process.argv.slice(2);
+  const manager = new m.ConversationManager({ host, apiKey });
+  const commits = await manager.git.getCommits(repo);
+  assert.deepEqual(commits.commits.map((x) => [x.sha, x.subject]), [[head, 'Add util'], [root, 'Initial commit']]);
+  assert.equal(commits.has_more, false);
+  const first = await new c.AgentServerClient({ host, apiKey }).git.getCommits(repo, { limit: 1 });
+  assert.deepEqual([first.commits.length, first.commits[0].sha, first.has_more], [1, head, true]);
+  const changes = await manager.git.getCommitChanges(repo, head.slice(0, 7));
+  assert.deepEqual(changes, [{ status: 'ADDED', path: 'src/util.py' }]);
+  assert.deepEqual(await new c.GitClient({ host, apiKey }).getCommitChanges(repo, root),
+    [{ status: 'ADDED', path: 'README.md' }, { status: 'ADDED', path: 'src/app.py' }]);
+  await assert.rejects(manager.git.getCommits(repo, { limit: 0 }), (e) => m.isHttpError(e) && e.status === 422 &&
+    e.validationErrors[0].loc.join('.') === 'query.limit');
+  await assert.rejects(manager.git.getCommitChanges(repo, 'deadbeef'), (e) => m.isHttpError(e) && e.status === 400);
+  await assert.rejects(new c.GitClient({ host }).getCommits(repo), (e) => m.isHttpError(e) && e.status === 401);
+  writeFileSync(`${F34}/typed-commits.json`, JSON.stringify(commits));
+  console.log('QA_F34_TYPED_GIT_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_TYPED_GIT_OK --save F34.git-commits/program -- node "$F34/typed-git.mjs" "$TREPO" "$THEAD" "$TROOT"
+  control-agent-server api GET /api/git/commits --query path="$TREPO" --expect 200 --quiet --raw-out "$F34/rest-commits.json" --save F34.git-commits/rest
+  diff <(jq -S . "$F34/rest-commits.json") <(jq -S . "$F34/typed-commits.json")
+  ```
+  The program prints `QA_F34_TYPED_GIT_OK`: `getCommits` lists both commits
+  newest first with `has_more: false`, `{limit: 1}` cuts it to `HEAD` with
+  `has_more: true`, `getCommitChanges` takes an abbreviated SHA and lists
+  `ADDED src/util.py` (the root commit: both its files as `ADDED`); a
+  `limit` of 0 is a 422 on `query.limit`, an unknown SHA 400, no key 401.
+  The commits it returned equal REST's.
+- **Archives (`F34.file-archive`).** `F14.archive-tar`,
+  `F14.archive-excludes` and `F14.archive-git-delta` reached through
+  `FileClient`, on the same repository (one modified, one untracked file).
+
+  Requires: `F34.git-commits`
+  ```sh
+  cat > "$F34/typed-archive.mjs" <<'JS'
+  import { writeFileSync } from 'node:fs';
+  import { m, c, host, apiKey, F34, assert } from './lib.mjs';
+  const repo = process.argv[2];
+  const files = new c.FileClient({ host, apiKey });
+  const tar = await files.downloadArchiveBuffer(repo, { format: 'tar.gz' });
+  assert.ok(tar instanceof ArrayBuffer);
+  writeFileSync(`${F34}/typed-archive.tgz`, Buffer.from(tar));
+  const trimmed = await new c.AgentServerClient({ host, apiKey }).files.downloadArchiveBuffer(repo,
+    { format: 'tar.gz', useDefaultExcludes: false, exclude: ['notes.txt', 'src/*'] });
+  writeFileSync(`${F34}/typed-archive-trimmed.tgz`, Buffer.from(trimmed));
+  const delta = await files.downloadArchive(repo, { baseRef: 'HEAD' });
+  assert.ok(delta instanceof Blob);
+  writeFileSync(`${F34}/typed-archive.patch`, Buffer.from(await delta.arrayBuffer()));
+  await assert.rejects(files.downloadArchive('qa-relative'), (e) => m.isHttpError(e) && e.status === 400);
+  await assert.rejects(files.downloadArchive(repo, { baseRef: '-qa' }), (e) => m.isHttpError(e) && e.status === 400);
+  await assert.rejects(new c.FileClient({ host }).downloadArchiveBuffer(repo), (e) => m.isHttpError(e) && e.status === 401);
+  console.log('QA_F34_TYPED_ARCHIVE_OK');
+  JS
+  control-agent-server exec --timeout 60 --expect-output QA_F34_TYPED_ARCHIVE_OK --save F34.file-archive/program -- node "$F34/typed-archive.mjs" "$TREPO"
+  tar -tzf "$F34/typed-archive.tgz" > "$F34/typed-archive.list"
+  grep -qx 'qa-f34-typed-repo/notes.txt' "$F34/typed-archive.list"
+  grep -qx 'qa-f34-typed-repo/src/util.py' "$F34/typed-archive.list"
+  grep -qx 'qa-f34-typed-repo/archive_manifest.json' "$F34/typed-archive.list"
+  if grep -q '/\.git/' "$F34/typed-archive.list"; then false; fi
+  tar -tzf "$F34/typed-archive-trimmed.tgz" > "$F34/typed-archive-trimmed.list"
+  grep -qx 'qa-f34-typed-repo/.git/HEAD' "$F34/typed-archive-trimmed.list"
+  if grep -Eq 'notes\.txt|src/.+' "$F34/typed-archive-trimmed.list"; then false; fi
+  tar -xzOf "$F34/typed-archive-trimmed.tgz" qa-f34-typed-repo/archive_manifest.json > "$F34/typed-archive-manifest.json"
+  control-agent-server assert --json "$F34/typed-archive-manifest.json" --check excludes len-eq 2 --check excludes.0 eq notes.txt --check excludes.1 eq 'src/*'
+  grep -q '^+Modified, not committed\.' "$F34/typed-archive.patch"
+  grep -q '^+++ b/notes.txt' "$F34/typed-archive.patch"
+  ```
+  The program prints `QA_F34_TYPED_ARCHIVE_OK`: `downloadArchiveBuffer`
+  with `format: 'tar.gz'` resolves to an `ArrayBuffer` holding the
+  repository with its manifest and without `.git/`; with
+  `useDefaultExcludes: false` and two `exclude` globs (sent as repeated
+  query parameters) `.git/` is in, `notes.txt` and `src/*` are out, and the
+  manifest records both globs; `downloadArchive` with `baseRef: 'HEAD'`
+  resolves to a `Blob` with the git-delta patch of the uncommitted and
+  untracked changes. A relative path and an option-shaped `baseRef` are
+  400 `HttpError`s, no key 401.
+- **Deferred init (`F34.init-client`).** `F03.dormant-boot`,
+  `F03.init-key-auth`, `F03.init-success` and `F03.init-second-call-400`
+  reached through `InitClient`, on a second, dormant server launched and
+  stopped inside the bullet.
+  ```sh
+  IRUN=$(control-agent-server launch --new --no-auth --deferred-init --name f34-init --print-run)
+  trap 'control-agent-server stop --run "$IRUN" > /dev/null' EXIT
+  ISK="$(cat "$IRUN/private/secret_key")"
+  test -n "$ISK"
+  control-agent-server api GET /api/init --run "$IRUN" --auth none --expect 200 --check state eq dormant
+  cat > "$F34/typed-init.mjs" <<'JS'
+  import { m, c, host, assert } from './lib.mjs';
+  const initKey = process.argv[2];
+  const init = new c.InitClient({ host });
+  assert.deepEqual(await init.getStatus(), { state: 'dormant', error: null });
+  await assert.rejects(init.initialize({ session_api_keys: ['qa-f34-init-key'] }), (e) => m.isHttpError(e) && e.status === 401);
+  await assert.rejects(init.initialize({ session_api_keys: ['qa-f34-init-key'] }, { initApiKey: 'qa-f34-wrong' }),
+    (e) => m.isHttpError(e) && e.status === 401);
+  assert.deepEqual(await new c.AgentServerClient({ host }).init.getStatus(), { state: 'dormant', error: null });
+  assert.deepEqual(await init.initialize({ session_api_keys: ['qa-f34-init-key'] }, { initApiKey: initKey }), { state: 'ready', error: null });
+  const manager = new m.ConversationManager({ host, apiKey: 'qa-f34-init-key' });
+  assert.deepEqual(await manager.init.getStatus(), { state: 'ready', error: null });
+  assert.equal(await manager.countConversations(), 0);
+  await assert.rejects(manager.init.initialize({}, { initApiKey: initKey }), (e) => m.isHttpError(e) && e.status === 400 &&
+    e.detail.includes('already in state: ready'));
+  console.log('QA_F34_TYPED_INIT_OK');
+  JS
+  control-agent-server exec --run "$IRUN" --timeout 60 --expect-output QA_F34_TYPED_INIT_OK --save F34.init-client/program -- node "$F34/typed-init.mjs" "$ISK"
+  control-agent-server api GET /api/init --run "$IRUN" --auth none --expect 200 --check state eq ready --save F34.init-client/ready
+  control-agent-server api GET /api/settings --run "$IRUN" --auth none --header 'X-Session-API-Key: qa-f34-init-key' --expect 200
+  control-agent-server stop --run "$IRUN"
+  trap - EXIT
+  ```
+  The program prints `QA_F34_TYPED_INIT_OK`: `getStatus` (also through
+  `AgentServerClient.init`) reads `{state: 'dormant', error: null}` without
+  a key; `initialize` without `initApiKey` or with a wrong one is a 401
+  `HttpError`; with the dormant secret it sends `X-Init-API-Key` and
+  resolves to `{state: 'ready', error: null}`; a `ConversationManager`
+  with the delivered session key reads `ready` through `init` and counts
+  zero conversations, and a second `initialize` is a 400 `already in state:
+  ready`. REST agrees, and the delivered key opens `/api/settings`.
 - **Endpoint audit against this checkout (`F34.endpoint-audit`).** The
   client's own drift tooling, offline, in a fixture directory (nothing is
   written into `clients/typescript`).
@@ -1392,6 +1628,8 @@ Preconditions:
   jq -e '.clientOnly == [] and .client > 100' "$A/.audit/endpoint-audit.json"
   jq -e '[.allowedClientOnly[].endpoint] == ["GET /", "GET /alive", "GET /health", "GET /ready", "GET /server_info"]' "$A/.audit/endpoint-audit.json"
   jq -r '.serverOnly[]' "$A/.audit/endpoint-audit.json" > "$A/server-only.txt"
+  if grep -E '^(GET|POST) /api/(init|file/archive|git/commits|conversations/\{\}/(events|load_plugin))' "$A/server-only.txt"; then false; fi
+  jq -e '[.explicitlyCoveredServerOperations[].endpoint] | index("GET /api/conversations/{}/events") != null' "$A/.audit/endpoint-audit.json"
   control-agent-server exec --env AGENT_SERVER_OPENAPI_PATH="$A/openapi.json" --env AGENT_SERVER_GENERATED_OUTPUT="$A/agent-server-schema.ts" \
     --timeout 180 --save F34.endpoint-audit/generate -- node clients/typescript/scripts/generate-agent-server-api.mjs
   node clients/typescript/scripts/summarize-agent-server-api.mjs --before clients/typescript/src/generated/agent-server-schema.ts \
@@ -1407,13 +1645,18 @@ Preconditions:
   the recipe asserts `clientOnly == []` on the JSON itself. It reports no
   client-only call (every handwritten call exists on this checkout);
   `server-only.txt` lists the operations without a literal client
-  call (43 on the baseline: the conversation-scoped bash, file, git and VS
+  call (42 on this checkout: the conversation-scoped bash, file, git and VS
   Code aliases the client reaches by rewriting paths at runtime, the canvas
   extension routes, whose backend calls a helper builds, provider
-  connections, `/api/init`, the `GET .../events` batch, archives, commits,
-  `create_directory` and `load_plugin`). Regenerating the client's types
-  from this checkout removes no exported type (on the baseline the diff is
-  `+13 / -1` lines: two new fields of the canvas backend artifact).
+  connections, `create_directory`, pull-request status, the skills catalog,
+  `plugins/fetch`, conversation `children` and `mcp`). `/api/init`, the
+  global archive and commits routes and `load_plugin` have typed methods
+  now and are not in it; the `GET .../events` batch is listed under
+  `explicitlyCoveredServerOperations`, covered by `batchGetEvents` through
+  `POST .../events/batch`. Regenerating the client's types from this
+  checkout removes no exported type (the diff is large, `+1488 / -36` lines
+  on this checkout, because `src/generated/` follows the pinned release,
+  not this checkout).
 - **Old server version (`F34.version-gate-old`).** A real 1.22.0 release of
   the agent server, installed with `uvx`, attached and stopped inside the
   bullet. FastAPI is pinned to the version in the

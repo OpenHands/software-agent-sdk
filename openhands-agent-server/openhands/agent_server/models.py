@@ -31,6 +31,7 @@ from openhands.sdk.llm.message import (  # re-export
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile as LaunchedAgentProfile,
 )
@@ -473,6 +474,22 @@ class ReactionRequest(BaseModel):
     removed: bool = Field(default=False, description="True to remove the reaction.")
 
 
+class AskUserAnswerRequest(BaseModel):
+    """The user's answer to the agent's pending ``ask_user`` question."""
+
+    ask_id: EventID = Field(
+        description="Id of the agent's `ask_user` call (its ActionEvent) answered."
+    )
+    option_index: int | None = Field(
+        default=None, ge=0, description="The option picked, counted from 0."
+    )
+    text: str | None = Field(
+        default=None,
+        max_length=10_000,
+        description="The user's own words, instead of an option or with one.",
+    )
+
+
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
@@ -491,6 +508,15 @@ class FileUploadResult(Success):
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
+
+
+class AddMCPServersRequest(BaseModel):
+    """Payload to add modern MCP servers to a running conversation."""
+
+    mcp_servers: dict[str, MCPServer] = Field(
+        default_factory=dict,
+        description="MCP servers to add to this conversation by server name.",
+    )
 
 
 class UpdateSecretsRequest(BaseModel):

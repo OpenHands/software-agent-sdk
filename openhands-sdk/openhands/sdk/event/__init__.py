@@ -18,6 +18,7 @@ from openhands.sdk.event.llm_convertible import (
     SystemPromptEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.message_edit import MessageEditEvent
 from openhands.sdk.event.reaction import (
     REACTION_EMOJI,
     ReactionEmoji,
@@ -49,6 +50,7 @@ __all__ = [
     "RejectionSource",
     "InterruptEvent",
     "PauseEvent",
+    "MessageEditEvent",
     "ReactionEvent",
     "ReactionEmoji",
     "REACTION_EMOJI",
