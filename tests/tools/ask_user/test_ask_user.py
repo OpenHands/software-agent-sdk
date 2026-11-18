@@ -25,6 +25,7 @@ from openhands.sdk.event.ask_user import (
     ANSWER_HEADER_PREFIX,
     AskUserAnswerEvent,
     find_pending_ask,
+    find_pending_ask_back,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
@@ -486,6 +487,51 @@ def test_an_out_of_range_recommendation_is_dropped():
     )
     pending = find_pending_ask([action, shown])
     assert pending is not None and pending.recommended is None
+
+
+def _question_events() -> tuple[ActionEvent, ObservationEvent]:
+    action = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=AskUserAction.model_construct(
+            question="Q?", options=[AskUserOption(label="A")], recommended=0
+        ),
+        tool_name="ask_user",
+        tool_call_id="c",
+        tool_call=MessageToolCall(
+            id="c", name="ask_user", arguments="{}", origin="completion"
+        ),
+        llm_response_id="r",
+    )
+    shown = ObservationEvent(
+        source="environment",
+        observation=AskUserObservation.from_text("shown"),
+        action_id=action.id,
+        tool_name="ask_user",
+        tool_call_id="c",
+    )
+    return action, shown
+
+
+def _newest_first_then_fail(*events):
+    """Yields ``events`` newest first, then fails: nothing older may be read."""
+    yield from events
+    raise AssertionError("read past where the answer was already known")
+
+
+def test_the_walk_back_stops_at_the_question():
+    action, shown = _question_events()
+    pending = find_pending_ask_back(_newest_first_then_fail(shown, action))
+    assert pending is not None and pending.ask_id == action.id
+
+
+def test_the_walk_back_stops_at_the_user_s_message():
+    _, shown = _question_events()
+    user = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    assert find_pending_ask_back(_newest_first_then_fail(user, shown)) is None
 
 
 # One question per response, and no confirmation for it
