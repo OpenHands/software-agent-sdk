@@ -2306,6 +2306,8 @@ class ConversationService:
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
+                # The parent's agent wrote the task, not the user.
+                initial_sender=conversation_sender(parent_id),
             )
 
         return StartChildConversationResponse(
