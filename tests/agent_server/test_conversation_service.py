@@ -1350,6 +1350,31 @@ async def test_search_refreshes_cached_info_on_metadata_only_update(
 
 
 @pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_a_tags_only_update(
+    persisted_conversation,
+):
+    """New tags in meta.json show on a cached row before the state is saved."""
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        initial = await service.search_conversations()
+        assert initial.items[0].tags == {}
+        assert service._conversation_records[conversation_id].cached_info is not None
+
+        # Change only the tags in meta.json; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(
+            update={"tags": {"resolved": "user"}}
+        )
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert page.items[0].tags == {"resolved": "user"}
+
+
+@pytest.mark.asyncio
 async def test_waiting_hydration_cannot_restore_deleted_conversation(
     persisted_conversation,
 ):
