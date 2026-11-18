@@ -53,6 +53,9 @@ from openhands.sdk.tool.spec import Tool
 from openhands.sdk.workspace import LocalWorkspace
 
 
+pytestmark = pytest.mark.projects_on
+
+
 _PROJECT = "0123456789abcdef0123456789abcdef"
 
 
@@ -346,7 +349,7 @@ async def _launch_child(
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
     parent_request = _start_request(workspace_dir).model_copy(
-        # The parent's own resolved/turn state must not carry over.
+        # Project keys on a conversation outside a project are ordinary tags.
         update={
             "tags": parent_tags
             or {"source": "test", "resolved": "user", "turn": "asking"},
@@ -499,7 +502,8 @@ async def test_start_child_conversation_inherits_parent_configuration(
 
     assert launch.result is not None
     child_stored = launch.services[launch.result.conversation_id].stored
-    assert child_stored.tags == {"source": "test"}
+    # Outside a project these are the client's own tags: the child keeps all.
+    assert child_stored.tags == {"source": "test", "resolved": "user", "turn": "asking"}
     assert child_stored.title == "Docs"
     assert launch.result.title == "Docs"
 
@@ -838,11 +842,21 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
         PersistedSettings,
         ProjectItem,
     )
+    from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 
-    named, active = uuid4(), uuid4()
+    def saved(profile):
+        server_stores.agent_profiles.save(profile)
+        return profile.id
+
+    named = saved(OpenHandsAgentProfile(name="named", llm_profile_ref="default"))
+    active = saved(OpenHandsAgentProfile(name="active", llm_profile_ref="default"))
+    acp = saved(ACPAgentProfile(name="acp", acp_server="claude-code"))
     with_profile = ProjectItem(name="A", worker_agent_profile_id=named)
     without = ProjectItem(name="B")
-    server_stores.projects.save(PersistedProjects(projects=[with_profile, without]))
+    with_acp = ProjectItem(name="C", worker_agent_profile_id=acp)
+    server_stores.projects.save(
+        PersistedProjects(projects=[with_profile, without, with_acp])
+    )
     server_stores.settings.save(PersistedSettings(active_agent_profile_id=str(active)))
 
     def stored(tags):
@@ -865,6 +879,12 @@ async def test_the_worker_profile_is_the_projects_or_else_the_active_one(
     assert await pick(stored({"project": with_profile.id.hex})) == named
     assert await pick(stored({"project": without.id.hex})) == active
     assert await pick(stored({})) is None
+    # An ACP agent takes no worker prompt or tools: the worker copies the
+    # coordinator's agent instead.
+    assert await pick(stored({"project": with_acp.id.hex})) is None
+    server_stores.settings.save(PersistedSettings(active_agent_profile_id=str(acp)))
+    assert await pick(stored({"project": without.id.hex})) is None
+    server_stores.settings.save(PersistedSettings(active_agent_profile_id=str(active)))
     # The predefined worker profile comes before the active one.
     predefined[0] = uuid4()
     assert await pick(stored({"project": without.id.hex})) == predefined[0]
@@ -883,7 +903,33 @@ async def test_with_projects_off_a_members_child_is_an_ordinary_child(
     )
 
     assert launch.child is not None
-    assert "project" not in launch.child.tags
+    # Copied as on main: with Projects off the tag means nothing.
+    assert launch.child.tags == {"project": _PROJECT}
+
+
+def test_an_ordinary_child_does_not_copy_a_coordinators_role():
+    from openhands.agent_server.conversation_service import _without_project_role
+    from openhands.sdk.context import AgentContext
+    from openhands.sdk.context.prompts.presets import PromptPreset
+
+    coordinator = Agent(
+        llm=LLM(model="gpt-4o", usage_id="test-llm"),
+        prompt_preset=PromptPreset.PROJECT_COORDINATOR,
+        agent_context=AgentContext(
+            project_context="Project: P", system_message_suffix="Cite paths."
+        ),
+    )
+    planner = coordinator.model_copy(
+        update={"prompt_preset": PromptPreset.PLANNING, "agent_context": None}
+    )
+
+    child = cast(Agent, _without_project_role(coordinator))
+
+    assert child.prompt_preset is None
+    assert child.agent_context is not None
+    assert child.agent_context.project_context is None
+    assert child.agent_context.system_message_suffix == "Cite paths."
+    assert _without_project_role(planner) is planner
 
 
 @pytest.mark.projects_off

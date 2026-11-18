@@ -40,7 +40,10 @@ from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
 )
 from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
-from openhands.agent_server.project_profiles import ensure_project_profile
+from openhands.agent_server.project_profiles import (
+    ensure_project_profile,
+    runs_in_a_project,
+)
 from openhands.agent_server.project_prompts import (
     SenderRole,
     project_context,
@@ -67,7 +70,7 @@ from openhands.sdk.conversation.types import (
     RESOLVED_TAG_KEY,
     conversation_sender,
 )
-from openhands.sdk.errors import Conflict
+from openhands.sdk.errors import Conflict, Unprocessable
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool
@@ -109,10 +112,13 @@ PROJECT_COORDINATOR_TOOLS = (
 
 
 RESERVED_TAG_KEYS = BOARD_TAG_KEYS | {PROJECT_TAG_KEY}
-"""Tags the server owns: project membership and the board's state.
+"""Tags the server owns on a project's members: membership and the board's
+state.
 
-A client's tag ``PATCH`` keeps their current values (see :func:`_client_tags`);
-the projects routes change them.
+Only on a conversation whose ``project`` tag names an existing project, with
+Projects on (:meth:`ProjectService.member_of`). There a client's tag ``PATCH``
+keeps their current values (see :func:`_client_tags`), and the projects routes
+change them. On any other conversation they are ordinary client tags.
 """
 
 
@@ -155,6 +161,13 @@ def _coordinator_profile_id(stores: ServerStores) -> UUID | None:
     return ensure_project_profile("coordinator", stores) or _active_agent_profile_id(
         stores
     )
+
+
+def _project_profile(stores: ServerStores, profile_id: UUID | None) -> UUID | None:
+    """``profile_id`` when it can run in a project (not an ACP agent)."""
+    if profile_id is None or not runs_in_a_project(stores, profile_id):
+        return None
+    return profile_id
 
 
 def _active_agent_profile_id(stores: ServerStores) -> UUID | None:
@@ -245,6 +258,20 @@ class ProjectService:
             "projects", self.stores.settings if self.stores else None
         )
 
+    async def member_of(self, tags: Mapping[str, str]) -> ProjectItem | None:
+        """The project a conversation with ``tags`` is a member of.
+
+        A member's ``project`` tag names an existing project, and Projects is
+        on. Only a member has board state, reserved tags and workers; any
+        other ``project`` tag (a client's own metadata, or a deleted project)
+        is an ordinary tag.
+        """
+        project_hex = tags.get(PROJECT_TAG_KEY)
+        stores = self.stores
+        if not project_hex or stores is None or not await self.enabled():
+            return None
+        return await asyncio.to_thread(_load_project, stores, project_hex)
+
     # Lifecycle
 
     def catch_up(self) -> None:
@@ -281,6 +308,8 @@ class ProjectService:
         conversation_id = event_service.stored.id
         if self._watched.get(conversation_id) is event_service:
             return
+        if await self.member_of(event_service.stored.tags) is None:
+            return
         self._watched[conversation_id] = event_service
         service = self.conversations
         board = ConversationOutcomeSubscriber(
@@ -296,7 +325,7 @@ class ProjectService:
             ),
             on_user_answer=functools.partial(pass_on_answer, service, conversation_id),
             turn_sender_lookup=functools.partial(_logged_turn_sender, event_service),
-            projects_enabled=self.enabled,
+            is_member=functools.partial(self._is_member, event_service),
             judge=make_resolution_judge(
                 functools.partial(_agent_llm, event_service),
                 lambda: self.stores,
@@ -308,6 +337,9 @@ class ProjectService:
         except BaseException:
             self._watched.pop(conversation_id, None)
             raise
+
+    async def _is_member(self, event_service: EventService) -> bool:
+        return await self.member_of(event_service.stored.tags) is not None
 
     # Tags
 
@@ -373,14 +405,42 @@ class ProjectService:
                 await self.watch(event_service)
             return dict(event_service.stored.tags)
 
+    async def release_members(self, project_hex: str) -> None:
+        """Remove a deleted project's tags from its conversations: the
+        ``project`` tag and the board's state. Their other tags stay."""
+        members = await self.conversations.list_tagged_conversations(
+            PROJECT_TAG_KEY, project_hex
+        )
+        for stored, _ in members:
+            async with self._tag_lock(stored.id):
+                event_service = await self.conversations.get_event_service(stored.id)
+                if event_service is None:
+                    continue
+                tags = event_service.stored.tags
+                if tags.get(PROJECT_TAG_KEY) != project_hex:
+                    continue
+                await self.conversations.update_conversation(
+                    stored.id,
+                    UpdateConversationRequest(
+                        tags={
+                            k: v for k, v in tags.items() if k not in RESERVED_TAG_KEYS
+                        }
+                    ),
+                )
+
     async def update_conversation_from_client(
         self, conversation_id: UUID, request: UpdateConversationRequest
     ) -> bool:
         """``update_conversation`` for a client's ``PATCH``.
 
-        Its tags are merged under the conversation's tag lock, so the
-        server-owned keys (:data:`RESERVED_TAG_KEYS`) keep their values; see
-        :func:`_client_tags`.
+        On a project's member, its tags are merged under the conversation's
+        tag lock, so the server-owned keys (:data:`RESERVED_TAG_KEYS`) keep
+        their values; see :func:`_client_tags`. No other conversation joins a
+        project this way: only its coordinator starts a project's
+        conversations.
+
+        Raises:
+            Unprocessable: If the tags would make the conversation a member.
         """
         if request.tags is None:
             return await self.conversations.update_conversation(
@@ -390,7 +450,16 @@ class ProjectService:
             event_service = await self.conversations.get_event_service(conversation_id)
             if event_service is None:
                 return False
-            tags = _client_tags(event_service.stored.tags, request.tags)
+            current = event_service.stored.tags
+            if await self.member_of(current) is not None:
+                tags = _client_tags(current, request.tags)
+            elif await self.member_of(request.tags) is not None:
+                raise Unprocessable(
+                    "A conversation joins a project only when the project's "
+                    "coordinator starts it"
+                )
+            else:
+                tags = dict(request.tags)
             return await self.conversations.update_conversation(
                 conversation_id, request.model_copy(update={"tags": tags})
             )
@@ -491,6 +560,14 @@ class ProjectService:
                 "No agent profile to start the coordinator from: pass "
                 "agent_profile_id or set an active agent profile"
             )
+        if (
+            stores is not None
+            and await asyncio.to_thread(runs_in_a_project, stores, profile_id) is False
+        ):
+            raise ValueError(
+                f"Agent profile {profile_id} cannot coordinate a project: an "
+                "ACP agent takes neither the coordinator's prompt nor its tools"
+            )
         extra = dict(options or {})
         tags = {**extra.pop("tags", {}), PROJECT_TAG_KEY: project_hex}
         context, _ = await _project_prompt(stores, project_hex, None)
@@ -571,7 +648,9 @@ class ProjectService:
             ),
             header=sender_header(coordinator.title, coordinator.id, role=role),
             withheld_tools=(),
-            extra_tags={PROJECT_TAG_KEY: project_hex},
+            # A worker joins the project and nothing else, as one started
+            # from a profile.
+            tags={PROJECT_TAG_KEY: project_hex},
         )
 
     async def _require_coordinator(self, coordinator: StoredConversation) -> None:
@@ -619,12 +698,14 @@ class ProjectService:
                 ),
                 None,
             )
+            # An ACP agent takes neither the worker's prompt nor its tools;
+            # without another profile the worker copies the coordinator's agent.
             if project is not None and project.worker_agent_profile_id is not None:
-                return project.worker_agent_profile_id
+                return _project_profile(stores, project.worker_agent_profile_id)
             predefined = ensure_project_profile("worker", stores)
             if predefined is not None:
                 return predefined
-            return _active_agent_profile_id(stores)
+            return _project_profile(stores, _active_agent_profile_id(stores))
 
         try:
             return await asyncio.to_thread(lookup)

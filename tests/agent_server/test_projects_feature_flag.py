@@ -102,7 +102,7 @@ async def test_no_wake_ups_while_off():
         on_finished=tell,
         on_user_message=tell,
         on_stopped=tell,
-        projects_enabled=off,
+        is_member=off,
     )
     await subscriber(
         MessageEvent(

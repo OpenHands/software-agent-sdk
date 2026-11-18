@@ -14,6 +14,7 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     StartConversationRequest,
 )
+from openhands.agent_server.persistence import PersistedProjects, ProjectItem
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
 from openhands.agent_server.project_turns import (
     CardAnswered,
@@ -45,6 +46,9 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
 from openhands.sdk.workspace import LocalWorkspace
+
+
+pytestmark = pytest.mark.projects_on
 
 
 # ask_line
@@ -356,19 +360,38 @@ async def _reopened_by_a_user_message(service: ConversationService, cid: UUID) -
     return await turn_cleared()
 
 
+def _saved_project(service: ConversationService) -> str:
+    project = ProjectItem(name="P")
+    assert service.stores is not None
+    service.stores.projects.save(PersistedProjects(projects=[project]))
+    return project.id.hex
+
+
 @pytest.mark.asyncio
 async def test_service_watches_a_project_member(service, tmp_path):
-    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asking"})
+    p1 = _saved_project(service)
+    cid = await _start(service, tmp_path, {"project": p1, "turn": "asking"})
 
     assert await _reopened_by_a_user_message(service, cid)
+
+
+@pytest.mark.asyncio
+async def test_a_project_tag_naming_no_project_gets_no_board(service, tmp_path):
+    """A client's own ``project`` tag, or a deleted project's, is an ordinary
+    tag: nothing watches the conversation or writes its tags."""
+    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asking"})
+
+    assert cid not in service.projects._watched
+    assert not await _reopened_by_a_user_message(service, cid)
 
 
 @pytest.mark.asyncio
 async def test_a_conversation_that_joins_a_project_is_watched_from_then_on(
     service, tmp_path
 ):
+    p1 = _saved_project(service)
     cid = await _start(service, tmp_path, {})
-    await service.projects.set_conversation_tag(cid, "project", "p1")
+    await service.projects.set_conversation_tag(cid, "project", p1)
     await service.projects.set_conversation_tag(cid, "turn", "asking")
     event_service = await service.get_event_service(cid)
     assert event_service is not None
@@ -421,7 +444,7 @@ async def test_with_projects_off_a_member_run_records_nothing():
 
     subscriber = _subscriber(store)
     subscriber.judge = judge
-    subscriber.projects_enabled = _projects_switch(False)
+    subscriber.is_member = _projects_switch(False)
     await _feed(
         subscriber,
         _message("user", "Fix the test"),
@@ -437,7 +460,7 @@ async def test_with_projects_off_a_member_run_records_nothing():
 async def test_with_projects_off_a_member_stays_resolved():
     store = _Tags({"project": "p1", "resolved": "user"})
     subscriber = _subscriber(store)
-    subscriber.projects_enabled = _projects_switch(False)
+    subscriber.is_member = _projects_switch(False)
 
     await _feed(subscriber, _message("user", "One more thing"))
 
@@ -448,7 +471,7 @@ async def test_with_projects_off_a_member_stays_resolved():
 async def test_with_projects_on_a_member_is_reopened():
     store = _Tags({"project": "p1", "resolved": "user"})
     subscriber = _subscriber(store)
-    subscriber.projects_enabled = _projects_switch(True)
+    subscriber.is_member = _projects_switch(True)
 
     await _feed(subscriber, _message("user", "One more thing"))
 

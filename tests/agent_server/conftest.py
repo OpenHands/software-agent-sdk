@@ -193,10 +193,13 @@ def install_test_context(
 
 @pytest.fixture(autouse=True)
 def _projects_feature_on(request, monkeypatch):
-    """Projects is an experimental feature, off by default; most tests here
-    exercise it, so they run with it on. Mark a test ``projects_off`` to keep
-    the shipped default."""
-    if request.node.get_closest_marker("projects_off"):
+    """Projects is an experimental feature, off by default, and the tests here
+    run the shipped default. A Projects test file marks itself ``projects_on``
+    (``pytestmark``) to run with it on; ``projects_off`` on one of its tests
+    keeps that test at the default."""
+    if not request.node.get_closest_marker(
+        "projects_on"
+    ) or request.node.get_closest_marker("projects_off"):
         return
     from openhands.agent_server import experimental_features
 

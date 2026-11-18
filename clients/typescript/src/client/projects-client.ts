@@ -37,7 +37,7 @@ export interface ProjectsListResponse {
 /** What a conversation needs from the user, most urgent first. */
 export const PROJECT_ATTENTION_ORDER = [
   'needs_you',
-  'needs_input',
+  'asking',
   'working',
   'idle',
   'resolved',
@@ -54,9 +54,9 @@ export interface ProjectConversation {
   resolved: 'user' | 'auto' | null;
   /** Why the server resolved it, such as `0.95 critic`. */
   resolve_note?: string | null;
-  /** Whether the agent's last message asked the user something. */
-  turn: 'asked' | 'answered' | null;
-  /** The question, in one line, while `turn` is `asked`. */
+  /** How the agent's last run ended: `asking` when its final message waits on the user. */
+  turn: 'asking' | 'finished' | null;
+  /** The question, in one line, while `turn` is `asking`. */
   ask: string | null;
   automation_id: string | null;
   parent_conversation_id: string | null;

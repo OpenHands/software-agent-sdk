@@ -168,13 +168,12 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 async def test_every_feature_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
-    # The test conftest turns Projects (#6602) on for every agent-server test.
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
         ("conversation_reactions", False),
         ("ask_user", False),
         ("conversation_mentions", False),
         ("message_edits", False),
-        ("projects", True),
+        ("projects", False),
     ]
 
 

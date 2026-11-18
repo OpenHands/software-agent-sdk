@@ -79,9 +79,10 @@ from openhands.agent_server.telemetry import (
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message, TextContent
-from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import (
@@ -97,7 +98,6 @@ from openhands.sdk.conversation.title_utils import (
     generate_title_from_message,
 )
 from openhands.sdk.conversation.types import (
-    BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
     conversation_sender,
 )
@@ -359,6 +359,23 @@ class InvalidParentConversation(ValueError):
 class UnavailableAgentTool(ValueError):
     """The agent names a tool whose ``tool_module_qualnames`` module the server
     cannot import, so the agent could never be built."""
+
+
+_PROJECT_PRESETS = (PromptPreset.PROJECT_COORDINATOR, PromptPreset.PROJECT_WORKER)
+
+
+def _without_project_role(agent: AgentBase) -> AgentBase:
+    """A copy of a project member's agent for an ordinary child: the default
+    prompt, and no project context."""
+    if not isinstance(agent, Agent):
+        return agent
+    update: dict[str, Any] = {}
+    if agent.prompt_preset in _PROJECT_PRESETS:
+        update["prompt_preset"] = None
+    context = agent.agent_context
+    if context is not None and context.project_context:
+        update["agent_context"] = context.model_copy(update={"project_context": None})
+    return agent.model_copy(update=update) if update else agent
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
@@ -2367,12 +2384,10 @@ class ConversationService:
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
-            # With Projects off, a project member starts an ordinary child, not
-            # a worker: no project tag, tools, guidance or memory (the parent
-            # keeps its own).
-            if PROJECT_TAG_KEY in parent_stored.tags and (
-                await self.projects.enabled()
-            ):
+            # Only a member of an existing project, with Projects on, starts
+            # workers; any other conversation starts an ordinary child, with no
+            # project tools, guidance or memory (the parent keeps its own).
+            if await self.projects.member_of(parent_stored.tags) is not None:
                 return await self.projects.start_worker(
                     parent_service, request, run_slot
                 )
@@ -2387,16 +2402,18 @@ class ConversationService:
         additions: AgentLaunchAdditions | None = None,
         header: str | None = None,
         withheld_tools: Sequence[str] = PROJECT_TOOL_NAMES,
-        extra_tags: Mapping[str, str] | None = None,
+        tags: Mapping[str, str] | None = None,
     ) -> StartChildConversationResponse:
         """A child that runs a copy of its parent's agent.
 
-        It keeps the parent's tags except project membership and board state;
-        ``extra_tags`` adds to them. ``header`` opens the task message.
+        It has ``tags``, or else a copy of the parent's. ``header`` opens the
+        task message.
         """
         parent_stored = parent_service.stored
         parent_id = parent_stored.id
         parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+        if additions is None:
+            parent_agent = _without_project_role(parent_agent)
         # A child spends under the same cap as its parent.
         max_budget_per_run = parent_service.get_conversation().max_budget_per_run
         child_id = uuid4()
@@ -2446,14 +2463,7 @@ class ConversationService:
                 "parent_conversation_id": parent_id,
                 "forked_from_conversation_id": None,
                 "forked_from_event_id": None,
-                "tags": {
-                    **{
-                        key: value
-                        for key, value in parent_stored.tags.items()
-                        if key not in BOARD_TAG_KEYS and key != PROJECT_TAG_KEY
-                    },
-                    **(extra_tags or {}),
-                },
+                "tags": dict(parent_stored.tags if tags is None else tags),
             }
         )
         info, _ = await self._launch_prepared_conversation(

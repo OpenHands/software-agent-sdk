@@ -19,6 +19,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.persistence.models import ProjectItem
 from openhands.agent_server.project_service import ProjectService
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Tool
@@ -41,6 +42,7 @@ def client():
 def mock_conversation_service():
     service = AsyncMock(spec=ConversationService)
     service.projects = AsyncMock(spec=ProjectService)
+    service.projects.member_of.return_value = None
     return service
 
 
@@ -327,47 +329,79 @@ async def test_event_service_start_forwards_observability_span_name(tmp_path):
         assert call_kwargs["observability_span_name"] == "pr_review_evaluation"
 
 
-@pytest.mark.parametrize("key", ["project", "turn", "resolved"])
-def test_start_conversation_refuses_server_owned_tags(
-    client, mock_conversation_service, key
+_PROJECT_KEYS = {
+    "project": "0123456789abcdef0123456789abcdef",
+    "turn": "asking",
+    "ask": "Which one?",
+    "resolved": "user",
+    "resolvenote": "0.9 nothing",
+}
+
+
+def _start_with_tags(client, tags: dict[str, str]):
+    return client.post(
+        "/api/conversations",
+        json={
+            "agent": {
+                "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+                "tools": [],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "tags": tags,
+        },
+    )
+
+
+def test_a_client_cannot_start_or_fork_a_project_member(
+    client, mock_conversation_service
 ):
     """A project's conversations are started by its coordinator, never a client."""
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
     )
+    mock_conversation_service.projects.member_of.return_value = ProjectItem(name="P")
 
     try:
-        response = client.post(
-            "/api/conversations",
-            json={
-                "agent": {
-                    "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
-                    "tools": [],
-                },
-                "workspace": {"working_dir": "/tmp/test"},
-                "tags": {key: "0123456789abcdef0123456789abcdef"},
-            },
+        started = _start_with_tags(client, _PROJECT_KEYS)
+        forked = client.post(
+            f"/api/conversations/{uuid4()}/fork", json={"tags": _PROJECT_KEYS}
         )
 
-        assert response.status_code == 422
-        assert key in response.json()["detail"]
+        assert started.status_code == 422
+        assert "coordinator" in started.json()["detail"]
+        assert forked.status_code == 422
         mock_conversation_service.start_conversation.assert_not_awaited()
+        mock_conversation_service.fork_conversation.assert_not_awaited()
     finally:
         client.app.dependency_overrides.clear()
 
 
-def test_fork_refuses_server_owned_tags(client, mock_conversation_service):
+def test_project_keys_are_ordinary_tags_outside_a_project(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """With Projects off, or a project tag naming no project, the five keys
+    are a client's own tags, as on main."""
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
     )
+    mock_conversation_service.projects.member_of.return_value = None
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    mock_conversation_service.fork_conversation.return_value = sample_conversation_info
 
     try:
-        response = client.post(
-            f"/api/conversations/{uuid4()}/fork",
-            json={"tags": {"project": "0123456789abcdef0123456789abcdef"}},
+        started = _start_with_tags(client, _PROJECT_KEYS)
+        forked = client.post(
+            f"/api/conversations/{uuid4()}/fork", json={"tags": _PROJECT_KEYS}
         )
 
-        assert response.status_code == 422
-        mock_conversation_service.fork_conversation.assert_not_awaited()
+        assert started.status_code == 201, started.text
+        assert forked.status_code == 201, forked.text
+        request = mock_conversation_service.start_conversation.await_args.args[0]
+        assert request.tags == _PROJECT_KEYS
+        fork_kwargs = mock_conversation_service.fork_conversation.await_args.kwargs
+        assert fork_kwargs["tags"] == _PROJECT_KEYS
     finally:
         client.app.dependency_overrides.clear()

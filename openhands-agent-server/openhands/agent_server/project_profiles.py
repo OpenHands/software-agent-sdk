@@ -22,7 +22,7 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.logger import get_logger
-from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.agent_profile_store import ProfileLimitExceeded
 from openhands.sdk.tool.spec import Tool
 
@@ -107,3 +107,17 @@ def ensure_project_profile(role: ProjectRole, stores: ServerStores) -> UUID | No
             return None
     logger.info("Created the %s agent profile (id=%s)", name, profile.id)
     return profile.id
+
+
+def runs_in_a_project(stores: ServerStores, profile_id: UUID) -> bool | None:
+    """Whether a profile can run a project's coordinator or worker, ``None``
+    when there is no such profile.
+
+    An ACP agent cannot: it builds its own prompt and takes no server tools,
+    so it would get neither the role's prompt nor the project tools.
+    """
+    store = stores.agent_profiles
+    name = store.name_for_id(profile_id)
+    if name is None:
+        return None
+    return not isinstance(store.load(name), ACPAgentProfile)

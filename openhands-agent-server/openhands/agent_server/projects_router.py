@@ -40,7 +40,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
@@ -77,6 +77,7 @@ from openhands.agent_server.project_memory import (
     ProjectMemoryStore,
     valid_memory_name,
 )
+from openhands.agent_server.project_profiles import runs_in_a_project
 from openhands.agent_server.project_turns import TurnOutcome
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import utc_now
@@ -191,7 +192,8 @@ class NewProjectCoordinator(BaseModel):
         description="More tags for the coordinator; the server adds `project`.",
     )
     conversation_runtime: ConversationRuntime | None = Field(
-        default=None, description="As in a conversation start request."
+        default=None,
+        description="As in a conversation start request; only `local` runs here.",
     )
     agent_launch_additions: AgentLaunchAdditions | None = Field(
         default=None,
@@ -212,6 +214,17 @@ class NewProjectCoordinator(BaseModel):
         gt=0,
         description="As in a conversation start request. Unset, the default.",
     )
+
+    @field_validator("conversation_runtime")
+    @classmethod
+    def _local_runtime_only(
+        cls, value: ConversationRuntime | None
+    ) -> ConversationRuntime | None:
+        # The coordinator starts in a LocalWorkspace, as every conversation
+        # this server runs; refuse here, before the project is saved.
+        if value not in (None, "local"):
+            raise ValueError("This server only runs local conversations")
+        return value
 
     def start_options(self) -> dict[str, Any]:
         """The fields passed on to the coordinator's start request."""
@@ -629,13 +642,16 @@ async def _start_new_coordinator(
 
 
 async def _require_agent_profile(stores: ServerStores, profile_id: UUID) -> None:
-    store = stores.agent_profiles
-
-    def exists() -> bool:
-        return store.name_for_id(profile_id) is not None
-
-    if not await asyncio.to_thread(exists):
+    """A profile for a project's coordinator or workers: it exists and is not
+    an ACP agent."""
+    runs = await asyncio.to_thread(runs_in_a_project, stores, profile_id)
+    if runs is None:
         raise NotFound(f"Agent profile {profile_id} not found")
+    if not runs:
+        raise Unprocessable(
+            f"Agent profile {profile_id} runs an ACP agent, which cannot take "
+            "the project's prompt and tools"
+        )
 
 
 @projects_router.get(
@@ -706,9 +722,8 @@ async def update_project(
             # Undo only our own change: a later write to this project wins.
             if _find_or_none(current, project_id) != saved:
                 return current
-            restore = previous.model_dump(
-                include={"name", "description", "coordinator_conversation_id"}
-            )
+            # Every field this request changed.
+            restore = previous.model_dump(include=set(update))
             former = previous.coordinator_conversation_id
             if former is not None and any(
                 p.coordinator_conversation_id == former
@@ -727,11 +742,16 @@ async def update_project(
     response_model=DeleteResponse,
     responses={404: {"description": "Project not found"}},
 )
-async def delete_project(project_id: UUID, stores: _Stores) -> DeleteResponse:
+async def delete_project(
+    project_id: UUID,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> DeleteResponse:
     """Delete a project.
 
-    Conversations are left as they are, including their ``project`` tag; the
-    project's conversations endpoint answers 404 afterwards. The project's artifacts
+    Its conversations stay, without the ``project`` tag and the board's tags
+    (``turn``, ``ask``, ``resolved``, ``resolvenote``); the project's
+    conversations endpoint answers 404 afterwards. The project's artifacts
     are deleted.
     """
     removed = False
@@ -745,6 +765,7 @@ async def delete_project(project_id: UUID, stores: _Stores) -> DeleteResponse:
     await _update(_store(stores), apply)
     if not removed:
         raise NotFound("Project not found")
+    await service.projects.release_members(project_id.hex)
     await asyncio.to_thread(_artifacts(stores).delete_project, project_id)
     return DeleteResponse()
 

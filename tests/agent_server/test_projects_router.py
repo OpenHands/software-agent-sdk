@@ -32,7 +32,12 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.persistence import (
+    PersistedProjects,
+    PersistedSettings,
+    ProjectItem,
+    ServerStores,
+)
 from openhands.agent_server.project_wake import (
     notify_coordinator,
     notify_coordinator_of_stop,
@@ -42,9 +47,14 @@ from openhands.agent_server.project_wake import (
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import Unprocessable
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.workspace import LocalWorkspace
 from tests.agent_server.conftest import install_test_context, update_test_context
+
+
+pytestmark = pytest.mark.projects_on
 
 
 @pytest.fixture
@@ -215,8 +225,9 @@ async def test_delete_removes_project_and_keeps_conversations(
     client, service, tmp_path
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
-    conversation_id = await _start(service, tmp_path)
+    conversation_id = await _start(service, tmp_path, tags={"env": "dev"})
     await _join(service, project["id"], conversation_id)
+    await service.projects.set_conversation_tag(conversation_id, "turn", "asking")
 
     response = await client.delete(f"/api/projects/{project['id']}")
 
@@ -224,7 +235,8 @@ async def test_delete_removes_project_and_keeps_conversations(
     assert response.json() == {"deleted": True}
     assert (await client.get("/api/projects")).json() == {"projects": []}
     assert await service.get_conversation(conversation_id) is not None
-    assert await _tags(service, conversation_id) == {"project": project["id"]}
+    # The project's tags go with it; the conversation's own stay.
+    assert await _tags(service, conversation_id) == {"env": "dev"}
 
 
 @pytest.mark.asyncio
@@ -283,6 +295,55 @@ async def test_create_with_missing_coordinator_writes_nothing(client, persistenc
 
     assert response.status_code == 404
     assert not (persistence_dir / "projects.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_docker_coordinator_is_refused_before_the_project_is_saved(
+    client, persistence_dir, tmp_path
+):
+    response = await client.post(
+        "/api/projects",
+        json={
+            "name": "P",
+            "coordinator": {
+                "working_dir": str(tmp_path),
+                "conversation_runtime": "docker",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert "only runs local conversations" in str(response.json()["detail"])
+    assert not (persistence_dir / "projects.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_acp_coordinator_is_refused_before_the_project_is_saved(
+    client, stores, persistence_dir, tmp_path
+):
+    acp = ACPAgentProfile(name="acp", acp_server="claude-code")
+    stores.agent_profiles.save(acp)
+    stores.settings.save(PersistedSettings(active_agent_profile_id=str(acp.id)))
+
+    named = await client.post(
+        "/api/projects",
+        json={
+            "name": "P",
+            "coordinator": {
+                "working_dir": str(tmp_path),
+                "agent_profile_id": acp.id.hex,
+            },
+        },
+    )
+    active = await client.post(
+        "/api/projects",
+        json={"name": "P", "coordinator": {"working_dir": str(tmp_path)}},
+    )
+
+    assert named.status_code == 422
+    assert active.status_code == 422
+    assert "ACP agent" in active.json()["detail"]
+    assert (await client.get("/api/projects")).json()["projects"] == []
 
 
 @pytest.mark.asyncio
@@ -853,8 +914,10 @@ async def test_a_guarded_acp_follow_up_resumes_its_own_interrupt(service, tmp_pa
 
 @pytest.mark.asyncio
 async def test_failed_coordinator_tag_undoes_the_whole_patch(
-    client, service, tmp_path, monkeypatch
+    client, service, stores, tmp_path, monkeypatch
 ):
+    worker = OpenHandsAgentProfile(name="worker", llm_profile_ref="default")
+    stores.agent_profiles.save(worker)
     old = await _start(service, tmp_path)
     new = await _start(service, tmp_path)
     project = (
@@ -869,13 +932,18 @@ async def test_failed_coordinator_tag_undoes_the_whole_patch(
     monkeypatch.setattr(service.projects, "set_conversation_tag", vanished)
     response = await client.patch(
         f"/api/projects/{project['id']}",
-        json={"name": "Q", "coordinator_conversation_id": new.hex},
+        json={
+            "name": "Q",
+            "coordinator_conversation_id": new.hex,
+            "worker_agent_profile_id": worker.id.hex,
+        },
     )
 
     assert response.status_code == 404
     current = (await client.get(f"/api/projects/{project['id']}")).json()
     assert current["name"] == "P"
     assert current["coordinator_conversation_id"] == old.hex
+    assert current["worker_agent_profile_id"] is None
 
 
 @pytest.mark.asyncio
@@ -1503,13 +1571,17 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
 
 @pytest.mark.asyncio
 async def test_a_project_names_its_workers_agent_profile(client, stores):
-    known = uuid4()
-    stores._built["agent_profiles"] = SimpleNamespace(
-        name_for_id=lambda pid: "worker" if pid == known else None
-    )
+    worker = OpenHandsAgentProfile(name="worker", llm_profile_ref="default")
+    stores.agent_profiles.save(worker)
+    known = worker.id
+    acp = ACPAgentProfile(name="acp", acp_server="claude-code")
+    stores.agent_profiles.save(acp)
 
     unknown = await client.post(
         "/api/projects", json={"name": "P", "worker_agent_profile_id": str(uuid4())}
+    )
+    refused = await client.post(
+        "/api/projects", json={"name": "P", "worker_agent_profile_id": str(acp.id)}
     )
     project = (
         await client.post(
@@ -1526,6 +1598,8 @@ async def test_a_project_names_its_workers_agent_profile(client, stores):
     ).json()
 
     assert unknown.status_code == 404
+    assert refused.status_code == 422
+    assert "ACP agent" in refused.json()["detail"]
     assert project["worker_agent_profile_id"] == known.hex
     assert renamed["worker_agent_profile_id"] == known.hex
     assert cleared["worker_agent_profile_id"] is None
@@ -2062,14 +2136,15 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
 
 
 @pytest.mark.asyncio
-async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
+async def test_a_client_patch_keeps_the_tags_the_server_owns(client, service, tmp_path):
     """Review S6/N2: a full-set PATCH built from tags read a moment ago cannot
     undo a board update, set board state or change membership. Resolving goes
     through the resolve and reopen routes only."""
+    p1 = (await client.post("/api/projects", json={"name": "P"})).json()["id"]
     member = await _start(
         service,
         tmp_path,
-        tags={"project": "p1", "turn": "asking", "ask": "Which DB?", "env": "dev"},
+        tags={"project": p1, "turn": "asking", "ask": "Which DB?", "env": "dev"},
     )
 
     # Stale read: no board tags, a different project, a forged resolve note.
@@ -2080,7 +2155,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
         ),
     )
     assert await _tags(service, member) == {
-        "project": "p1",
+        "project": p1,
         "turn": "asking",
         "ask": "Which DB?",
         "env": "prod",
@@ -2098,6 +2173,71 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
         member, UpdateConversationRequest(tags=current)
     )
     assert (await _tags(service, member))["resolved"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_a_client_patch_cannot_join_a_project(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()["id"]
+    conversation = await _start(service, tmp_path, tags={"env": "dev"})
+
+    with pytest.raises(Unprocessable):
+        await service.projects.update_conversation_from_client(
+            conversation,
+            UpdateConversationRequest(tags={"project": project, "turn": "asking"}),
+        )
+    assert await _tags(service, conversation) == {"env": "dev"}
+
+
+@pytest.mark.asyncio
+async def test_project_keys_naming_no_project_are_the_clients_own(
+    client, service, tmp_path
+):
+    """A project tag from before Projects, or of a deleted project, is an
+    ordinary tag: no board, and the client sets and clears all five keys."""
+    tags = {
+        "project": uuid4().hex,
+        "turn": "asking",
+        "ask": "Mine",
+        "resolved": "user",
+        "resolvenote": "note",
+    }
+    conversation = await _start(service, tmp_path, tags=tags)
+
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags={"env": "x"})
+    )
+    assert await _tags(service, conversation) == {"env": "x"}
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags=tags)
+    )
+    assert await _tags(service, conversation) == tags
+    assert conversation not in service.projects._watched
+
+
+@pytest.mark.projects_off
+@pytest.mark.asyncio
+async def test_with_projects_off_a_patch_sets_and_clears_the_project_keys(
+    service, stores, tmp_path
+):
+    project = ProjectItem(name="P")
+    stores.projects.save(PersistedProjects(projects=[project]))
+    tags = {
+        "project": project.id.hex,
+        "turn": "asking",
+        "ask": "Mine",
+        "resolved": "user",
+        "resolvenote": "note",
+    }
+    conversation = await _start(service, tmp_path)
+
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags=tags)
+    )
+    assert await _tags(service, conversation) == tags
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags={})
+    )
+    assert await _tags(service, conversation) == {}
 
 
 @pytest.mark.parametrize(
@@ -2222,3 +2362,23 @@ async def test_a_saved_update_leaves_a_stuck_coordinator_stuck(
     state = await cat_service.get_state()
     assert state.execution_status == ConversationExecutionStatus.STUCK
     assert cat_service._run_task is None
+
+
+def test_a_workspace_file_opens_where_files_cannot_be_nonblocking(
+    tmp_path, monkeypatch
+):
+    """Windows has no O_NONBLOCK, and set_blocking fails on a regular file."""
+    import os
+
+    from openhands.agent_server.project_artifacts import open_workspace_file
+
+    (tmp_path / "notes.md").write_bytes(b"hello")
+    monkeypatch.delattr(os, "O_NONBLOCK", raising=False)
+
+    def refuse(fd, blocking):
+        raise OSError("not a pipe")
+
+    monkeypatch.setattr(os, "set_blocking", refuse)
+
+    with open_workspace_file(tmp_path, "notes.md") as file:
+        assert file.read() == b"hello"

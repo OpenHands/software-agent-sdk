@@ -101,6 +101,7 @@ def mock_conversation_service():
     """Create a mock ConversationService for testing."""
     service = AsyncMock(spec=ConversationService)
     service.projects = AsyncMock(spec=ProjectService)
+    service.projects.member_of.return_value = None
     return service
 
 

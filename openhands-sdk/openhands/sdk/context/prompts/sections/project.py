@@ -24,7 +24,10 @@ from openhands.sdk.context.prompts.sections.static import (
     VersionControlSection,
     _StaticTextSection,
 )
+from openhands.sdk.logger import get_logger
 
+
+logger = get_logger(__name__)
 
 __all__ = [
     "BriefsSection",
@@ -48,21 +51,29 @@ __all__ = [
 ]
 
 
+# These edit the default prompt's wording. When that wording changes, an edit
+# that no longer applies is skipped with a warning, never an error: this module
+# loads with every prompt preset. The project snapshot tests show the change.
+
+
 def _substitute(body: str, *pairs: tuple[str, str]) -> str:
-    """``body`` with each ``(old, new)`` replaced; every ``old`` must occur."""
+    """``body`` with each ``(old, new)`` replaced, where ``old`` occurs."""
     for old, new in pairs:
         if old not in body:
-            raise ValueError(f"Default prompt text changed; cannot find {old!r}")
+            logger.warning("Default prompt text changed; cannot find %r", old)
+            continue
         body = body.replace(old, new)
     return body
 
 
 def _insert_before_close(block: str, tag: str, text: str) -> str:
-    """``block`` with ``text`` added as the last lines inside ``</tag>``."""
+    """``block`` with ``text`` added as the last lines inside ``</tag>``, or
+    at its end when there is no ``</tag>``."""
     close = f"</{tag}>"
     head, sep, tail = block.rpartition(close)
     if not sep:
-        raise ValueError(f"Default prompt text changed; no {close}")
+        logger.warning("Default prompt text changed; no %s", close)
+        return f"{block.rstrip()}\n{text}"
     return f"{head.rstrip()}\n{text}\n{close}{tail}"
 
 

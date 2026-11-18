@@ -24,6 +24,7 @@ then, from its event log.
 import asyncio
 import weakref
 from collections.abc import Iterator
+from datetime import datetime
 from itertools import islice
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -423,9 +424,19 @@ async def pass_on_answer(
     async with _passing_lock():
         question = await asyncio.to_thread(member.pending_ask)
         if question is None:
+            # The member's open question must be the one the card passed on:
+            # a turn started after the card means the user, or the
+            # coordinator, already went on with the member.
+            turn_start = await latest_turn_start(member)
+            if turn_start is not None and _later(turn_start.timestamp, card.asked_at):
+                return False
             return await _answer_open_question(
                 service, member, coordinator_id, picked, words
             )
+        if _later(question.asked_at, card.asked_at):
+            # The member asked again after the card; this answer is not for
+            # its new question.
+            return False
         index, text = _matched_answer(question, picked, words)
         try:
             await member.answer_ask(
@@ -438,6 +449,11 @@ async def pass_on_answer(
             # Answered in the meantime, by the user in the member.
             return False
     return True
+
+
+def _later(timestamp: str, than: str) -> bool:
+    """Whether one event timestamp is later than another."""
+    return datetime.fromisoformat(timestamp) > datetime.fromisoformat(than)
 
 
 _passing_answers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (

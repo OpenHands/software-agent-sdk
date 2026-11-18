@@ -95,11 +95,12 @@ TurnSenderLookup = Callable[[], Awaitable[str | None]]
 """Reads who started the current turn from the event log, for a subscriber
 that did not see the turn's first message (a server restart in between)."""
 
-ProjectsEnabled = Callable[[], Awaitable[bool]]
-"""Whether the user has the ``projects`` experimental feature on right now.
+IsMember = Callable[[], Awaitable[bool]]
+"""Whether the conversation is a member of an existing project, with the
+``projects`` experimental feature on, right now.
 
 The subscriber is Projects' one hook into a conversation's events, so this is
-its one check: while it is off the board is left as it is (no outcome, judge or
+its one check: otherwise the board is left as it is (no outcome, judge or
 reopen) and the coordinator hears nothing."""
 
 
@@ -123,7 +124,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     on_user_answer: OnUserAnswer | None = None
     turn_sender_lookup: TurnSenderLookup | None = None
     judge: ResolutionJudge | None = None
-    projects_enabled: ProjectsEnabled | None = None
+    is_member: IsMember | None = None
     tracker: TurnTracker = field(default_factory=TurnTracker)
     _tail: asyncio.Task | None = field(default=None, init=False)
     _notify_tail: asyncio.Task | None = field(default=None, init=False)
@@ -212,12 +213,12 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
         self._tail = asyncio.create_task(run())
 
-    async def _enabled(self) -> bool:
-        return self.projects_enabled is None or await self.projects_enabled()
+    async def _member(self) -> bool:
+        return self.is_member is None or await self.is_member()
 
     async def _reopen(self, *, keep_question: bool) -> None:
         # Only a project member's board state is the server's to clear.
-        if PROJECT_TAG_KEY not in self.tags() or not await self._enabled():
+        if PROJECT_TAG_KEY not in self.tags() or not await self._member():
             return
         keys = set(BOARD_TAG_KEYS)
         if keep_question and self._question_open():
@@ -236,7 +237,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         return tags.get(TURN_TAG_KEY) == "asking" and RESOLVED_TAG_KEY not in tags
 
     async def _record(self, project: str, ended: TurnEnded) -> None:
-        if not await self._enabled():
+        if not await self._member():
             return
         turn, ask, text = ended.turn, ended.ask, ended.text
         if self._question_open():
@@ -346,7 +347,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if previous is not None:
                 await asyncio.gather(previous, return_exceptions=True)
             try:
-                if await self._enabled():
+                if await self._member():
                     await step()
             except Exception:
                 logger.warning(
