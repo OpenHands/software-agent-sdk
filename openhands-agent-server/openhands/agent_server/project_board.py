@@ -8,8 +8,9 @@ when a turn leaves nothing for the user to do, marks it resolved
 (``resolved=auto``). Two signals can resolve a turn: the resolution judge
 (:mod:`openhands.sdk.conversation.resolution`), which asks whether anything is
 left for the user, and a confident critic score. A turn that asked the user
-something is never resolved automatically. When the agent stopped on a
-question, the question itself is saved, in one short line, as ``ask``. A new
+something is never resolved automatically. Only the judge says a reply
+waits on the user (or a question card, by construction); the end of that
+reply is saved, in one short line, as ``ask``. A new
 user message removes these tags, since the conversation is open again. It also
 tells the coordinator what it needs to hear: finished turns, stops on the
 user, the user's own messages and answers to cards.
@@ -33,7 +34,7 @@ from openhands.agent_server.project_turns import (
     TurnStopped,
     TurnTracker,
     UserWrote,
-    extract_request,
+    ask_line,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk.conversation.resolution import ResolutionState, ResolutionVerdict
@@ -250,30 +251,29 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         verdict = None
         shown = False
         if ended.judged is not None and RESOLVED_TAG_KEY not in self.tags():
-            # The judge can take a while; the board shows the heuristic's
-            # outcome meanwhile rather than no outcome at all.
+            # The judge can take a while; the board shows the turn as
+            # answered meanwhile rather than no outcome at all.
             await self._set_turn(turn, ask)
             shown = True
             judging = asyncio.ensure_future(self._judge(ended.judged))
             self._judging = judging
             await asyncio.wait({judging})
             self._judging = None
-            # Cancelled by a new user message: keep the heuristic's outcome.
+            # Cancelled by a new user message: keep it answered.
             verdict = None if judging.cancelled() else judging.result()
-        heuristic = (turn, ask)
+        shown_turn = (turn, ask)
         if verdict is not None:
-            # The judge decides whether the reply waits on the user, also
-            # when it asks without a question mark or ends on a pleasantry.
+            # The judge alone decides whether the reply waits on the user.
             # A question for the user goes on the board in a turn the
             # coordinator started too: the coordinator gets the reply, and
             # passes it on, but the question is the user's.
             if verdict.needs_user:
                 turn = "asked"
-                ask = ask or extract_request(text)
+                ask = ask or ask_line(text)
             else:
                 turn = "answered"
                 ask = None
-        if not shown or (turn, ask) != heuristic:
+        if not shown or (turn, ask) != shown_turn:
             await self._set_turn(turn, ask)
         self._notify_finished(project, turn, ended)
         # A turn that asked the user something is theirs to answer, and a

@@ -5,14 +5,10 @@ should make of it: ``resolved`` (nothing left for the user), ``needs_user``
 (the user owes an answer, a review, a choice or a check), or ``open``
 (neither: work is left, but not the user's).
 
-The cases run only against a real model:
-
-- ``OH_RESOLUTION_MODEL`` (with ``OH_RESOLUTION_API_KEY`` or ``JEV_API_KEY``,
-  and ``OH_RESOLUTION_BASE_URL``): a decision model, as the server uses it,
-  e.g. ``typesafe/jev-latest``.
-- ``RESOLUTION_EVAL_LLM`` (with ``RESOLUTION_EVAL_API_KEY``): a chat model
-  answering the same questions, as the server's fallback does, e.g.
-  ``deepseek/deepseek-flash``.
+The cases run only against a real model: ``RESOLUTION_EVAL_LLM`` (with
+``RESOLUTION_EVAL_API_KEY`` and, for a proxy, ``RESOLUTION_EVAL_BASE_URL``), a
+chat model answering the questions as the server's ``resolution_judge``
+profile does, e.g. ``deepseek/deepseek-flash``.
 
 Run with ``uv run pytest tests/agent_server/test_resolution_eval.py -v``.
 
@@ -28,7 +24,6 @@ from typing import Literal
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.resolution_judge import decision_model_from_env
 from openhands.sdk.conversation.resolution import (
     LLMDecisionModel,
     ResolutionState,
@@ -169,9 +164,6 @@ CASES: dict[str, tuple[ResolutionState, Expected]] = {
 
 
 def _model() -> DecisionModel | None:
-    model = decision_model_from_env()
-    if model is not None:
-        return model
     name = os.getenv("RESOLUTION_EVAL_LLM", "").strip()
     if not name:
         return None
@@ -179,6 +171,7 @@ def _model() -> DecisionModel | None:
     llm = LLM(
         model=name,
         api_key=SecretStr(key) if key else None,
+        base_url=os.getenv("RESOLUTION_EVAL_BASE_URL") or None,
         usage_id="resolution-eval",
         num_retries=0,
     )
@@ -193,7 +186,7 @@ def _outcome(verdict: ResolutionVerdict) -> Expected:
 
 @pytest.mark.skipif(
     _model() is None,
-    reason="needs OH_RESOLUTION_MODEL or RESOLUTION_EVAL_LLM (a live model)",
+    reason="needs RESOLUTION_EVAL_LLM (a live model)",
 )
 @pytest.mark.parametrize("name", list(CASES))
 @pytest.mark.asyncio

@@ -8,14 +8,10 @@ tested by feeding it events. The project board
 (:mod:`openhands.agent_server.project_board`) acts on the signals.
 """
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 from openhands.agent_server.project_prompts import AWARENESS_PREFIXES
-from openhands.sdk.conversation.impl.local_conversation import (
-    ACP_STOP_HOOK_FEEDBACK_PREFIX as STOP_HOOK_FEEDBACK_PREFIX,
-)
 from openhands.sdk.conversation.resolution import ResolutionState
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
@@ -45,94 +41,18 @@ from openhands.sdk.tool.builtins.finish import FinishAction
 TurnOutcome = Literal["asked", "answered"]
 
 _EXECUTION_STATUS_KEY: Final[str] = "execution_status"
-# A question mark that ends a sentence: followed by space, closing markup or
-# quotes, or the end of the text. Leaves out "?" inside URLs and code.
-_QUESTION_END = re.compile(r"\?(?=[\s*_)\]\"'`»”’]|$)")
-_CODE_BLOCK = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 
 
-def classify_turn(text: str | None) -> TurnOutcome:
-    """Say whether an agent's final message asks the user something.
-
-    Looks at the last paragraph outside code blocks: it asks when a sentence
-    there ends with a question mark. This is a heuristic; it errs towards
-    ``answered``, which keeps a conversation out of the "needs input" group.
-    """
-    if not text:
-        return "answered"
-    prose = _CODE_BLOCK.sub("", text).strip()
-    if not prose:
-        return "answered"
-    last_paragraph = re.split(r"\n\s*\n", prose)[-1]
-    return "asked" if _QUESTION_END.search(last_paragraph) else "answered"
-
-
-_SENTENCE_BREAK = re.compile(r"(?<=[.!?:])\s+|\n")
-_MARKUP = re.compile(r"^[\s>*_#`-]+|[*_`]+")
-
-
-def extract_ask(text: str | None) -> str | None:
-    """The question an agent's final message ends on, as one short line.
-
-    Takes the last sentence ending with a question mark in the last paragraph
-    outside code blocks (where :func:`classify_turn` looks), drops simple
-    Markdown, and cuts it to :data:`ASK_MAX_LENGTH` characters. ``None`` when
-    there is no such question.
-    """
-    if not text:
+def ask_line(text: str | None) -> str | None:
+    """The end of an agent's final message, as one short line for the
+    board's ``ask``: its last paragraph, whitespace collapsed, clipped from
+    the front to :data:`ASK_MAX_LENGTH` characters."""
+    if not text or not text.strip():
         return None
-    prose = _CODE_BLOCK.sub("", text).strip()
-    if not prose:
-        return None
-    last_paragraph = re.split(r"\n\s*\n", prose)[-1]
-    parts = [p for p in _SENTENCE_BREAK.split(last_paragraph) if p.strip()]
-    asking = [i for i, part in enumerate(parts) if _QUESTION_END.search(part)]
-    if not asking:
-        return None
-    start = asking[-1]
-    # A list item answers to the line that introduces it ("Should I also:").
-    if start > 0 and parts[start - 1].rstrip().endswith(":"):
-        start -= 1
-    ask = " ".join(
-        " ".join(_MARKUP.sub("", part).split())
-        for part in parts[start : asking[-1] + 1]
-    )
-    if not ask:
-        return None
-    if len(ask) > ASK_MAX_LENGTH:
-        ask = ask[: ASK_MAX_LENGTH - 1].rstrip() + "…"
-    return ask
-
-
-_REQUEST_MARKERS = re.compile(
-    r"\b(let me know|tell me|please|could you|can you|would you|confirm|"
-    r"approve|sign[- ]off|review|merge|choose|pick|decide|which (one|of)|"
-    r"your call|up to you|waiting (on|for) you)\b",
-    re.IGNORECASE,
-)
-
-
-def extract_request(text: str | None) -> str | None:
-    """The sentence in a reply that asks something of its reader, as one short
-    line: the last one ending with a question mark, else the last one that
-    reads as a request ("please review", "let me know", "which one").
-    ``None`` when no sentence does: a closing line is never the ask.
-    """
-    if not text:
-        return None
-    prose = _CODE_BLOCK.sub("", text).strip()
-    sentences = [
-        " ".join(_MARKUP.sub("", part).split())
-        for part in _SENTENCE_BREAK.split(prose)
-        if part.strip()
-    ]
-    asking = [s for s in sentences if _QUESTION_END.search(s)]
-    requesting = [s for s in sentences if _REQUEST_MARKERS.search(s)]
-    line = (asking or requesting or [None])[-1]
-    if not line:
-        return None
+    paragraphs = [p for p in text.strip().split("\n\n") if p.strip()]
+    line = " ".join(paragraphs[-1].split())
     if len(line) > ASK_MAX_LENGTH:
-        line = line[: ASK_MAX_LENGTH - 1].rstrip() + "…"
+        line = "…" + line[-(ASK_MAX_LENGTH - 1) :].lstrip()
     return line
 
 
@@ -158,13 +78,6 @@ def starts_turn(event: Event) -> bool:
         and event.sender != GOAL_LOOP_SENDER
         and not _is_awareness_note(event)
     )
-
-
-def _is_stop_hook_feedback(event: MessageEvent) -> bool:
-    if event.source != "environment":
-        return False
-    text = extract_message_text(event) or ""
-    return text.startswith(STOP_HOOK_FEEDBACK_PREFIX)
 
 
 def _status(event: ConversationStateUpdateEvent) -> str | None:
@@ -258,8 +171,9 @@ class TurnStopped:
 @dataclass(frozen=True)
 class TurnEnded:
     """A run the tracker saw finished. ``judged`` is what the resolution judge
-    needs, or ``None`` when the turn already says it waits on the user (a
-    card, or a question asked earlier in the turn)."""
+    needs, or ``None`` when the turn ended on a question card, which waits on
+    the user by construction. Otherwise ``turn`` is ``answered`` until the
+    judge says the reply waits on the user."""
 
     turn: TurnOutcome
     ask: str | None
@@ -288,13 +202,6 @@ class TurnTracker:
     _last_text: str | None = field(default=None, init=False)
     _last_score: float | None = field(default=None, init=False)
     _seen_agent_output: bool = field(default=False, init=False)
-    # The agent stopped on a question since the last user message. A Stop
-    # hook that refuses to let it stop on a plain message pushes it on to a
-    # ``finish`` whose text may not repeat the question; the user still
-    # owes an answer.
-    _asked_since_user: bool = field(default=False, init=False)
-    # The question that made the turn ``asked``, kept for the same reason.
-    _ask: str | None = field(default=None, init=False)
     # The question of the ``ask_user`` card the turn ended on: the user owes
     # an answer, so the judge is not asked, also in a turn a coordinator
     # started.
@@ -339,15 +246,8 @@ class TurnTracker:
             self._note_agent_output(extract_message_text(event), event)
             return []
         if event.source != "user":
-            if _is_stop_hook_feedback(event):
-                # The agent tried to stop here; a question counts as asked.
-                if classify_turn(self._last_text) == "asked":
-                    self._asked_since_user = True
-                    self._ask = extract_ask(self._last_text) or self._ask
             return []
         self._reset()
-        self._asked_since_user = False
-        self._ask = None
         self._turn_sender = event.sender
         self._turn_known = True
         self._turn_request = extract_message_text(event)
@@ -399,26 +299,18 @@ class TurnTracker:
         if not self._seen_agent_output:
             return []
         card = self._card
-        turn = "asked" if card else classify_turn(self._last_text)
-        if card:
-            self._ask = card
-        elif turn == "asked":
-            self._ask = extract_ask(self._last_text) or self._ask
-        # Asked in an earlier message of this turn, which the final one does
-        # not repeat, or on a card: the judge has nothing to decide.
-        carried = card is not None or (self._asked_since_user and turn == "answered")
-        if self._asked_since_user:
-            turn = "asked"
-        self._asked_since_user = turn == "asked"
+        # A card asks the user by construction; any other reply is the
+        # judge's to read, and counts as answered until it has.
+        turn: TurnOutcome = "asked" if card else "answered"
         ended = TurnEnded(
             turn=turn,
-            ask=self._ask if turn == "asked" else None,
+            ask=card,
             score=self._last_score,
             text=self._last_text,
             sender=self._turn_sender,
             sender_known=self._turn_known,
             judged=None
-            if carried
+            if card is not None
             else ResolutionState(
                 request=self._turn_request,
                 reply=self._last_text,

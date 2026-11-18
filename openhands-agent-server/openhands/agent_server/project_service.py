@@ -299,6 +299,7 @@ class ProjectService:
             projects_enabled=self.enabled,
             judge=make_resolution_judge(
                 functools.partial(_agent_llm, event_service),
+                lambda: self.stores,
                 functools.partial(conversation_context, event_service),
             ),
         )

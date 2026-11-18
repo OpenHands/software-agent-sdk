@@ -102,20 +102,18 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   `resolvenote` when an answered turn leaves nothing for the user (never
   over `resolved=user`, never on an `asked` turn). The resolution judge
   (`openhands.sdk.conversation.resolution`, `resolution_judge.py`) asks typed
-  questions of `OH_RESOLUTION_MODEL` (a LiteLLM decision model such as
-  `typesafe/jev-latest` or `hosted_vllm/<model>`, key in
-  `OH_RESOLUTION_API_KEY` or `JEV_API_KEY`), else of the conversation's own
-  LLM. It sees the turn plus the conversation's first message and earlier
+  questions of the saved LLM profile `resolution_judge`, which the first
+  judged turn creates as a copy of the conversation's own LLM (edit it in
+  `/api/profiles` to use another model). It sees the turn plus the conversation's first message and earlier
   requests. The model answers seven narrow yes/no judgments (handled,
   task_done, asks_user, hands_off_review, offers_choice, asks_to_check,
   reports_problem) and code decides: resolved when handled and task_done are
   >= 0.85 and every hand-off < 0.2 (`resolvenote` like `0.93 nothing`). A
   substantive question, choice, review or check (>= 0.5) makes the turn
-  `asked` (Needs you) even without a question mark, with the reply's last
-  sentence as `ask`; work left that waits on no one stays `answered` and
-  unresolved (Idle). A question asked earlier in the turn and not repeated is
-  not judged. `OH_RESOLUTION_MODEL=off` disables it;
-  without a verdict a critic score >= 0.9 still resolves (`0.95 critic`).
+  `asked` (Needs you), with the reply's last paragraph as `ask`; work left
+  that waits on no one stays `answered` and unresolved (Idle). There are no
+  text heuristics: without a verdict (no judge, or it failed) a turn is
+  `answered`, and a critic score >= 0.9 still resolves (`0.95 critic`).
   The board shows the note as `resolve_note`.
   Clients resolve with `POST /api/projects/{id}/conversations/{cid}/resolve`
   and reopen with `.../reopen` (both 204, idempotent, and both clear
@@ -434,23 +432,24 @@ Preconditions:
   control-agent-server conversation wait "$A2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$A1" --check tags.resolved eq auto --check tags.resolvenote matches '^(0\.(8[5-9]|9\d)|1\.00) nothing$' --until-ok 30 \
     --save F36.auto-resolve/answer
-  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask eq 'Tell me which one you prefer.' --check tags not-contains resolved --until-ok 30 \
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask matches 'Tell me which one you prefer\.$' --check tags not-contains resolved --until-ok 30 \
     --save F36.auto-resolve/handoff
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolve_note": "' --save F36.auto-resolve/board
+  control-agent-server api GET /api/profiles --check profiles contains '"name": "resolution_judge"' --save F36.auto-resolve/judge-profile
   control-agent-server api POST "/api/projects/$P2/conversations/$A2/resolve" --json '{"by": "agent"}' --expect 409 --save F36.auto-resolve/agent-refused
   control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
   control-agent-server api POST "/api/conversations/$A2/events" --json "{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"You are finished, thanks. Reply with the single word ok.\"}], \"run\": true, \"sender_conversation_id\": \"$CAT\"}" --expect 200
   control-agent-server conversation wait "$A2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask eq 'Tell me which one you prefer.' --check tags not-contains resolved --until-ok 30 \
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask matches 'Tell me which one you prefer\.$' --check tags not-contains resolved --until-ok 30 \
     --save F36.auto-resolve/still-asked
   ```
-  Both are the coordinator's tasks. The judge runs on the conversation's own
-  LLM (no `OH_RESOLUTION_MODEL`). A question for the user stays theirs, also
+  Both are the coordinator's tasks. The judge runs on the `resolution_judge`
+  profile, created from the conversation's own LLM. A question for the user stays theirs, also
   in a turn the coordinator started: the member cannot resolve over it (409),
   and a coordinator's message ("you are finished") leaves it on Needs you.
   A plain answer resolves as `auto` with a note such as `1.00 nothing`. A
   hand-off that ends without a question mark (`Tell me which one you prefer.`)
-  becomes `turn=asked` with that sentence as `ask` (Needs you).
+  becomes `turn=asked` with the reply's last paragraph as `ask` (Needs you).
 - **Unfinished work stays open (`F36.needs-you`).**
   Requires: `F36.auto-resolve`
   Needs: `llm`
@@ -709,10 +708,9 @@ Preconditions:
   coordinator keep it open, and the member's `resolve_conversation` is 409.
 - `attention` comes from `execution_status`, refined by the `turn` and
   `resolved` tags. `idle` means nothing runs, not that the task
-  succeeded. `turn` is a heuristic: the last paragraph of the agent's final
-  message, outside code, ends a sentence with `?`. Once the agent stops on a
-  question it stays `asked` until a user message, so a Stop hook that makes
-  it call `finish` after a plain message does not hide the question. The tags are written just
+  succeeded. `turn` is the judge's: `asked` when it says the final reply
+  waits on the user (or the turn ended on an `ask_user` card), else
+  `answered`, which is also shown while the judge runs. The tags are written just
   after the run's final state update, so poll (`--until-ok`) rather than read
   once. There is no per-conversation "ask" text or task progress yet.
 - A `resolved` conversation is listed as `resolved` unless it is running
