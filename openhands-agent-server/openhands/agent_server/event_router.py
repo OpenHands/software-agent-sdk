@@ -269,7 +269,6 @@ async def batch_get_conversation_events_via_post(
         {
             Conflict: "Gateway run in progress; message not saved",
             RateLimited: "Message saved but server run capacity is full",
-            Unprocessable: "The sender conversation cannot send this message",
         }
     ),
 )
