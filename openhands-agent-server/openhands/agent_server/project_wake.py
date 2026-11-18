@@ -29,8 +29,8 @@ from itertools import islice
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from openhands.agent_server.event_service import (
-    PAUSED_BY_SHUTDOWN_MARKER,
+from openhands.agent_server.event_service import PAUSED_BY_SHUTDOWN_MARKER
+from openhands.agent_server.exceptions import (
     ConversationRunLimitExceeded,
     HeldForUser,
     ServiceInactive,

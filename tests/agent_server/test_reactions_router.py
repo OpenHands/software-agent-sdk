@@ -15,7 +15,7 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.event_service import ServiceInactive
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     RUNTIME_EXPERIMENTAL_FEATURES_ENV,
 )

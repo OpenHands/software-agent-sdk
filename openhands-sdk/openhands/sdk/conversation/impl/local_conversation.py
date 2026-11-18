@@ -3628,10 +3628,11 @@ class LocalConversation(BaseConversation):
             )
             self.llm_registry.add(question_llm)
 
-        # Pass agent tools so LLM can understand tool_calls in conversation history
+        # Tool schemas are part of the cached prefix even for a text-only question.
         response = question_llm.generate(
             messages=messages,
             tools=list(self.agent.tools_map.values()),
+            add_security_risk_prediction=True,
             store=False,
             call_context=self._llm_call_context,
         )

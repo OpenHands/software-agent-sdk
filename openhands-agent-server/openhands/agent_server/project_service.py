@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
-from openhands.agent_server.event_service import EventService, RunSlot, ServiceInactive
+from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     ASK_USER,
     feature_enabled_now,

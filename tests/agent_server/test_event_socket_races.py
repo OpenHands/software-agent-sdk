@@ -13,7 +13,8 @@ from starlette.websockets import WebSocketState
 
 from openhands.agent_server import session_socket, sockets
 from openhands.agent_server.config import Config
-from openhands.agent_server.event_service import EventService, ServiceInactive
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_context import build_server_context

@@ -15,10 +15,10 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import (
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import (
     CondensationUnavailable,
     ConversationAlreadyRunning,
-    EventService,
     GoalAlreadyRunning,
     ServiceInactive,
 )
@@ -3354,7 +3354,7 @@ def test_start_conversation_unavailable_agent_tool_returns_422(
     client, mock_conversation_service
 ):
     """An agent tool whose module the server cannot import yields 422, not 500."""
-    from openhands.agent_server.conversation_service import UnavailableAgentTool
+    from openhands.agent_server.exceptions import UnavailableAgentTool
 
     mock_conversation_service.start_conversation.side_effect = UnavailableAgentTool(
         "The agent uses tools whose modules the agent server cannot import: "

@@ -24,10 +24,8 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.event_service import (
-    ConversationRunLimitExceeded,
-    EventService,
-)
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
@@ -2263,10 +2261,10 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
 ):
     """Review S3/F2: the guard for other conversations and Voice's
     send_message_if_idle are one rule, differing only in who may resume."""
-    from openhands.agent_server.event_service import (
+    from openhands.agent_server.event_service import admission_refusal
+    from openhands.agent_server.exceptions import (
         ConversationAlreadyRunning,
         HeldForUser,
-        admission_refusal,
     )
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.event import ActionEvent

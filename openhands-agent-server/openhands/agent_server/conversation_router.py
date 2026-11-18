@@ -19,11 +19,7 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    InvalidParentConversation,
-    UnavailableAgentTool,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_cipher,
     get_conversation_registry,
@@ -31,10 +27,12 @@ from openhands.agent_server.dependencies import (
     get_llm_profile_store,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import (
+from openhands.agent_server.exceptions import (
     CondensationUnavailable,
     ConversationAlreadyRunning,
     GoalAlreadyRunning,
+    InvalidParentConversation,
+    UnavailableAgentTool,
 )
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.message_sender import SenderError

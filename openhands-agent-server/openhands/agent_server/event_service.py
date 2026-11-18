@@ -22,6 +22,15 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
 )
+from openhands.agent_server.exceptions import (
+    CondensationUnavailable,
+    ConversationAlreadyRunning,
+    ConversationRunLimitExceeded,
+    CredentialBindingActivationTooLate,
+    GoalAlreadyRunning,
+    HeldForUser,
+    ServiceInactive,
+)
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -79,7 +88,6 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
     VersionedCredentialBinding,
 )
-from openhands.sdk.errors import RateLimited
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
@@ -150,53 +158,8 @@ def _without_skill_bodies(
     return event
 
 
-class ConversationRunLimitExceeded(RateLimited, RuntimeError):
-    """The server has no capacity to start another conversation run."""
-
-
-class CondensationUnavailable(ValueError):
-    """The conversation's agent has no condenser that handles requests."""
-
-
-class ConversationAlreadyRunning(ValueError):
-    """A run was refused because the conversation is running already."""
-
-    def __init__(self) -> None:
-        super().__init__("conversation_already_running")
-
-
-class GoalAlreadyRunning(ValueError):
-    """A goal loop was refused because one is running already."""
-
-    def __init__(self) -> None:
-        super().__init__("goal_already_running")
-
-
-class HeldForUser(ValueError):
-    """A run was refused because the conversation waits on the user.
-
-    ``status`` is one of :data:`HELD_FOR_USER_STATUSES`. Only the user may run
-    the conversation from here; the refused message, if any, stays saved.
-    """
-
-    def __init__(self, status: str) -> None:
-        super().__init__(status)
-        self.status = status
-
-
 RunRefusal = ConversationAlreadyRunning | HeldForUser
 """Why :func:`admission_refusal` refuses a run."""
-
-
-class ServiceInactive(ValueError):
-    """The service is not running: not started yet, or closing or closed.
-
-    It stays a ``ValueError`` with the message ``"inactive_service"``, so
-    routes and clients see the same error as before; callers catch the type.
-    """
-
-    def __init__(self) -> None:
-        super().__init__("inactive_service")
 
 
 class _RunPermit:
@@ -276,10 +239,6 @@ class RunSlot:
 
     def __exit__(self, *_exc) -> None:
         self.release()
-
-
-class CredentialBindingActivationTooLate(RuntimeError):
-    pass
 
 
 def _log_emit_failure(event_kind: str, future: "asyncio.Future[None]") -> None:
