@@ -47,6 +47,25 @@ class TerminalCommandStatus(Enum):
     HARD_TIMEOUT = "hard_timeout"
 
 
+# Internal heredoc completion sentinel. The id is regenerated per command, but a
+# stale sentinel can still be on screen when the next command's output is read,
+# so every instance must be scrubbed, not just the current command's.
+_BOUNDARY_SENTINEL = "__OH_COMMAND_FINISHED_"
+
+
+def _remove_boundary_sentinel_lines(command_output: str) -> str:
+    """Drop lines carrying the internal heredoc completion sentinel.
+
+    Only the generated boundary wrapper and the marker it prints contain the
+    sentinel, so a line carrying it is always an internal artifact.
+    """
+    return "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if _BOUNDARY_SENTINEL not in line
+    )
+
+
 def _normalize_echo_line(line: str) -> str:
     """Collapse an echoed line for comparison against what was sent.
 
@@ -529,7 +548,11 @@ class TerminalSession(TerminalSessionBase):
             terminal_content = _remove_command_prefix(
                 terminal_content, self._wrapper_echo
             )
-        return terminal_content
+        # A stale sentinel from a previous heredoc command can still be on screen
+        # when the current command's output is read (the next prompt may not have
+        # arrived when the previous command completed), so scrub every instance
+        # rather than only the current command's id.
+        return _remove_boundary_sentinel_lines(terminal_content)
 
     def _combine_outputs_between_matches(
         self,

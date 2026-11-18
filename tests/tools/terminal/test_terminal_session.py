@@ -1429,3 +1429,37 @@ def test_closing_the_session_stops_waiting_on_a_running_command(terminal_type):
     assert obs.is_error
     assert obs.exit_code == -1
     assert "terminal was closed" in obs.text
+
+
+def test_stale_boundary_sentinel_lines_are_removed():
+    """A sentinel left by a previous heredoc command must not leak.
+
+    The next prompt may not have arrived when a heredoc command completes, so
+    the previous command's completion wrapper can still be on screen when the
+    following command's output is read. Stripping only the current command's id
+    would let the stale wrapper and marker leak into the observation.
+    """
+    stale_wrapper = (
+        "(__openhands_status=$?; printf '\\n%s%s%s\\n' "
+        "'__OH_COMMAND_FINISHED_deadbeefdeadbeefdeadbeefdeadbeef_' "
+        '"$__openhands_status" \'__\' > /dev/tty; exit "$__openhands_status")'
+    )
+    stale_marker = "__OH_COMMAND_FINISHED_deadbeefdeadbeefdeadbeefdeadbeef_0__"
+    output = "\n".join(
+        [
+            stale_wrapper,
+            "",
+            stale_marker,
+            "",
+            "cat <<EOF",
+            "body",
+            "EOF",
+            "body",
+        ]
+    )
+
+    cleaned = session_module._remove_boundary_sentinel_lines(output)
+
+    assert "__OH_COMMAND_FINISHED_" not in cleaned
+    assert "__openhands_status" not in cleaned
+    assert "body" in cleaned
