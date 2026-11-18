@@ -9,7 +9,9 @@ executor) and /alive (pure loop).
 
 Reports: did A finish, how long, probe latencies on B and /alive.
 
-usage: bench_lock_starvation.py <cpu_count> <K> [sleep_s] [label]
+usage: bench_lock_starvation.py <cpu_count> <K> [sleep_s] [label] [ntools] [ws|patch]
+
+`patch` sends K tag PATCHes to A instead of WebSocket connects.
 """
 
 import asyncio
@@ -54,6 +56,20 @@ async def ws_client(stack: Stack, cid: str, opened: list, stop: asyncio.Event):
         opened.append(("err", type(e).__name__))
 
 
+async def patch_client(stack: Stack, cid: str, opened: list, stop: asyncio.Event):
+    # A tag PATCH updates state and composes the webhook snapshot under the lock.
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(base_url=stack.base) as c:
+            r = await c.patch(
+                f"/api/conversations/{cid}", json={"tags": {"bench": "x"}}, timeout=60
+            )
+            r.raise_for_status()
+            opened.append(time.perf_counter() - t0)
+    except Exception as e:  # noqa: BLE001
+        opened.append(("err", type(e).__name__))
+
+
 class contextlib_suppress:
     def __enter__(self):
         return self
@@ -81,6 +97,8 @@ async def main():
     sleep_s = float(sys.argv[3]) if len(sys.argv) > 3 else 4.0
     label = sys.argv[4] if len(sys.argv) > 4 else "run"
     ntools = int(sys.argv[5]) if len(sys.argv) > 5 else 2
+    mode = sys.argv[6] if len(sys.argv) > 6 else "ws"
+    client = {"ws": ws_client, "patch": patch_client}[mode]
     async with Stack(cpu_count=cpu) as st:
         b = await st.create("SLEEP 0")
         assert await st.wait_status(b, {"finished"}, 60), "B did not finish"
@@ -97,7 +115,7 @@ async def main():
         ]
         t_start = time.monotonic()
         opened: list = []
-        clients = [asyncio.create_task(ws_client(st, a, opened, stop)) for _ in range(K)]
+        clients = [asyncio.create_task(client(st, a, opened, stop)) for _ in range(K)]
 
         timeout = sleep_s * 2 + 25
         done = await st.wait_status(a, {"finished", "error"}, timeout)
@@ -119,6 +137,7 @@ async def main():
             "label": label,
             "cpu_count": cpu,
             "default_executor_workers": min(32, cpu + 4),
+            "client_mode": mode,
             "K_ws_clients": K,
             "tool_sleep_s": sleep_s,
             "A_final_status": done or "STUCK (timeout)",

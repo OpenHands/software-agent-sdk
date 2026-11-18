@@ -14,3 +14,6 @@ Runs a real `python -m openhands.agent_server` plus a mock OpenAI-compatible LLM
 ```
 
 `results_*.jsonl` are the runs quoted in the PR (main = 8dc712f, fix12 = this branch).
+`results_starvation_patch.jsonl` sends 6 tag PATCHes instead of WebSocket connects
+(`... bench_lock_starvation.py 2 6 3 label 2 patch`); `patch-main-cs` is this branch
+with main's `conversation_service.py`.
