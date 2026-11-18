@@ -555,6 +555,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
         mode="json",
         include={
             "title",
+            "tags",
             "metrics",
             "created_at",
             "updated_at",
