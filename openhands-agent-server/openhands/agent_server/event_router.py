@@ -30,9 +30,11 @@ from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
 )
+from openhands.agent_server.message_sender import SenderError, sender_message_header
 from openhands.agent_server.models import (
     AskUserAnswerRequest,
     ConfirmationResponseRequest,
+    ConversationMessageRequest,
     EventSortOrder,
     ReactionRequest,
     SendMessageRequest,
@@ -45,13 +47,17 @@ from openhands.agent_server.persistence import (
     SettingsStore,
     run_store,
 )
-from openhands.sdk import Message
+from openhands.agent_server.server_context import ServerContext, get_server_context
+from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import conversation_sender
 from openhands.sdk.errors import (
     Conflict,
     Invalid,
     NotFound,
     RateLimited,
+    Unavailable,
+    Unprocessable,
 )
 from openhands.sdk.event import Event, ReactionEvent
 from openhands.sdk.event.ask_user import AskUserAnswerEvent
@@ -263,26 +269,50 @@ async def batch_get_conversation_events_via_post(
         {
             Conflict: "Gateway run in progress; message not saved",
             RateLimited: "Message saved but server run capacity is full",
+            Unprocessable: "The sender conversation cannot send this message",
         }
     ),
 )
 async def send_message(
-    request: SendMessageRequest,
+    conversation_id: UUID,
+    request: ConversationMessageRequest,
     event_service: EventService = Depends(get_event_service),
+    context: ServerContext = Depends(get_server_context),
 ) -> Success:
     """Send a message to a conversation.
 
     A 409 response means a gateway run is active and the message was not saved.
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
+
+    With ``sender_conversation_id``, the saved message records
+    ``sender: "conversation:<id hex>"`` and opens with a line telling the
+    receiving agent which conversation sent it, so agents and UIs can tell it
+    from the user's words. The sender must be another existing conversation
+    (422 otherwise).
     """
-    message = Message(role=request.role, content=request.content)
+    content = list(request.content)
+    sender: str | None = None
+    if request.sender_conversation_id is not None:
+        if context.conversation_service is None:
+            raise Unavailable("Conversation service is not available")
+        try:
+            header = await sender_message_header(
+                context.conversation_service,
+                request.sender_conversation_id,
+                conversation_id,
+            )
+        except SenderError as e:
+            raise Unprocessable(str(e))
+        content.insert(0, TextContent(text=header))
+        sender = conversation_sender(request.sender_conversation_id)
+    message = Message(role=request.role, content=content)
     # The inner gateway route holds the lock for its whole turn; refuse before
     # waiting on it so a direct event fails fast instead of queuing behind it.
     _refuse_during_gateway_run(event_service)
     async with event_service._gateway_run_lock:
         _refuse_during_gateway_run(event_service)
-        await event_service.send_message(message, request.run)
+        await event_service.send_message(message, request.run, sender=sender)
     return Success()
 
 

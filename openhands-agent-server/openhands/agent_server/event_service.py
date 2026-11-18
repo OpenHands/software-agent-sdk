@@ -953,7 +953,13 @@ class EventService:
         _from_goal_loop: bool = False,
         *,
         run_slot: RunSlot | None = None,
+        sender: str | None = None,
     ):
+        """Append a message and, with ``run``, start a run to handle it.
+
+        ``sender`` is recorded on the saved event; see
+        :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
+        """
         if not self._conversation:
             raise ServiceInactive()
         # A normal user message supersedes any active /goal loop in this
@@ -962,9 +968,11 @@ class EventService:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
+        if _from_goal_loop and sender is None:
+            sender = "goal"
         send_message = (
-            partial(self._conversation.send_message, sender="goal")
-            if _from_goal_loop
+            partial(self._conversation.send_message, sender=sender)
+            if sender is not None
             else self._conversation.send_message
         )
         await loop.run_in_executor(None, send_message, message)
