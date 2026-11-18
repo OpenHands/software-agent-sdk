@@ -264,9 +264,7 @@ def _without_agent_context_secret(
     )
 
 
-def admission_refusal(
-    state: ConversationState, *, from_user: bool
-) -> RunRefusal | None:
+def admission_refusal(state: ConversationState) -> RunRefusal | None:
     """Why a message may not start a run of this conversation now, or ``None``.
 
     One rule for every sender that runs a conversation it does not watch:
@@ -279,8 +277,6 @@ def admission_refusal(
     - Another conversation (the project tools, coordinator updates) may run
       only an idle or finished one; ``paused``, ``error`` and ``stuck`` are
       the user's to look at, refused with :class:`HeldForUser` and the status.
-    - The user's own words through another channel (Voice's
-      ``send_message_if_idle``) may also resume a paused conversation.
 
     The caller holds the state lock, and should hold the run lock so the
     answer cannot change before the run starts.
@@ -294,8 +290,6 @@ def admission_refusal(
     ):
         return HeldForUser(ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value)
     admitted = {ConversationExecutionStatus.IDLE, ConversationExecutionStatus.FINISHED}
-    if from_user:
-        admitted.add(ConversationExecutionStatus.PAUSED)
     return None if status in admitted else HeldForUser(status.value)
 
 
@@ -901,11 +895,11 @@ class EventService:
             timestamp__lt,
         )
 
-    def _admission_refusal_sync(self, *, from_user: bool) -> RunRefusal | None:
+    def _admission_refusal_sync(self) -> RunRefusal | None:
         if not self._conversation:
             raise ServiceInactive()
         with self._conversation._state as state:
-            return admission_refusal(state, from_user=from_user)
+            return admission_refusal(state)
 
     def _send_keeping_stuck_sync(
         self, send: Callable[[Message], None], message: Message
@@ -1114,11 +1108,11 @@ class EventService:
                         != explicit_interrupt_generation
                     ):
                         return outcome
+                    # Replaces the prompt that was running a moment ago, as
+                    # on main: Projects never message an ACP conversation.
                     started = await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
-                        refuse_pending_confirmation=refuse_pending_confirmation,
-                        _resuming_internal_acp_pause=True,
                     )
                     self._acp_internal_rerun_requested = False
                     outcome = "started" if started else "not_run"
@@ -1775,7 +1769,6 @@ class EventService:
         run_slot: RunSlot | None = None,
         wait_for_capacity: bool = False,
         refuse_pending_confirmation: bool = False,
-        _resuming_internal_acp_pause: bool = False,
     ) -> bool:
         """Run the conversation asynchronously in the background.
 
@@ -1796,10 +1789,6 @@ class EventService:
                 other than the user (a coordinator steering another
                 conversation, a server wake-up) set this. The check is made
                 under the run lock, where no other run can change the status.
-            _resuming_internal_acp_pause: Set by :meth:`send_message` for the
-                run that replaces an ACP prompt it just interrupted. The pause
-                that interrupt left is the server's own, not the user's, so a
-                guarded run may resume it. Pending actions are still refused.
 
         Returns:
             ``True`` when a run was scheduled; ``False`` when a stop that
@@ -1837,12 +1826,7 @@ class EventService:
             if refuse_pending_confirmation:
                 # HeldForUser with the status: "waiting_for_confirmation",
                 # "paused", "error" or "stuck".
-                refusal = await self.run_state_op(
-                    functools.partial(
-                        self._admission_refusal_sync,
-                        from_user=_resuming_internal_acp_pause,
-                    )
-                )
+                refusal = await self.run_state_op(self._admission_refusal_sync)
                 if refusal is not None:
                     raise refusal
             if self._closing:

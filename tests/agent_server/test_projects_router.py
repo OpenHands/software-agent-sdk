@@ -874,43 +874,6 @@ async def test_send_reports_not_run_when_a_stop_lands_first(
 
 
 @pytest.mark.asyncio
-async def test_a_guarded_acp_follow_up_resumes_its_own_interrupt(service, tmp_path):
-    """Review: a follow-up to a running ACP conversation interrupts the prompt
-    (paused) and starts a replacement run, which the guard must not refuse.
-    A pause the user made, or pending actions, still refuse."""
-    worker = await _start(service, tmp_path)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    conversation = event_service._conversation
-    assert conversation is not None
-    ran = asyncio.Event()
-
-    async def arun() -> None:
-        ran.set()
-
-    conversation.arun = arun  # type: ignore[method-assign]
-    await _set_status(service, worker, ConversationExecutionStatus.PAUSED)
-
-    with pytest.raises(ValueError, match="paused"):
-        await event_service.run(refuse_pending_confirmation=True)
-    started = await event_service.run(
-        refuse_pending_confirmation=True, _resuming_internal_acp_pause=True
-    )
-
-    assert started is True
-    await asyncio.wait_for(ran.wait(), 5)
-    await event_service.wait_for_run_completion(timeout=5)
-
-    await _set_status(
-        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-    )
-    with pytest.raises(ValueError, match="waiting_for_confirmation"):
-        await event_service.run(
-            refuse_pending_confirmation=True, _resuming_internal_acp_pause=True
-        )
-
-
-@pytest.mark.asyncio
 async def test_failed_coordinator_tag_undoes_the_whole_patch(
     client, service, stores, tmp_path, monkeypatch
 ):
@@ -2189,28 +2152,25 @@ async def test_with_projects_off_a_patch_sets_and_clears_the_project_keys(
 
 
 @pytest.mark.parametrize(
-    "status, unconfirmed, from_user, refusal",
+    "status, unconfirmed, refusal",
     [
-        ("idle", False, False, None),
-        ("finished", False, False, None),
-        ("running", False, False, "conversation_already_running"),
-        ("waiting_for_confirmation", False, False, "waiting_for_confirmation"),
-        ("paused", False, False, "paused"),
-        ("error", False, False, "error"),
-        ("stuck", False, False, "stuck"),
+        ("idle", False, None),
+        ("finished", False, None),
+        ("running", False, "conversation_already_running"),
+        ("waiting_for_confirmation", False, "waiting_for_confirmation"),
+        ("paused", False, "paused"),
+        ("error", False, "error"),
+        ("stuck", False, "stuck"),
         # Actions left unconfirmed would run, which approves them.
-        ("paused", True, True, "waiting_for_confirmation"),
-        ("idle", True, False, "waiting_for_confirmation"),
-        # The user's own words (Voice) may resume their paused conversation.
-        ("paused", False, True, None),
-        ("error", False, True, "error"),
+        ("paused", True, "waiting_for_confirmation"),
+        ("idle", True, "waiting_for_confirmation"),
     ],
 )
 def test_one_admission_rule_for_senders_that_are_not_watching(
-    tmp_path, status, unconfirmed, from_user, refusal
+    tmp_path, status, unconfirmed, refusal
 ):
-    """Review S3/F2: the guard for other conversations and Voice's
-    send_message_if_idle are one rule, differing only in who may resume."""
+    """Review S3/F2: one rule for every sender that runs a conversation it
+    does not watch."""
     from openhands.agent_server.event_service import admission_refusal
     from openhands.agent_server.exceptions import (
         ConversationAlreadyRunning,
@@ -2249,7 +2209,7 @@ def test_one_admission_rule_for_senders_that_are_not_watching(
         "active_branch",
         side_effect=AssertionError("read the whole branch"),
     ):
-        got = admission_refusal(state, from_user=from_user)
+        got = admission_refusal(state)
     if refusal is None:
         assert got is None
     elif refusal == "conversation_already_running":

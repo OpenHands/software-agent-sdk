@@ -350,7 +350,7 @@ async def send_message(
         # a conversation already waiting. The guarded run is the safeguard.
         state = await event_service.get_state()
         previous_status = state.execution_status
-        refusal = admission_refusal(state, from_user=False)
+        refusal = admission_refusal(state)
         if isinstance(refusal, HeldForUser):
             raise Conflict(
                 _HELD_DETAIL[refusal.status], extra={"status": refusal.status}

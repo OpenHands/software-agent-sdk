@@ -135,7 +135,7 @@ class AgentLaunchAdditions(BaseModel):
             "Deployment-assigned role: the built-in system prompt the resolved "
             "OpenHands agent uses, whatever its profile says, such as "
             "`project_coordinator` for a project's coordinator. None keeps the "
-            "agent's own. An ACP agent builds its own prompt and ignores it."
+            "agent's own. Not for ACP agents, which Projects do not run."
         ),
     )
     project_context: str | None = Field(
@@ -144,8 +144,8 @@ class AgentLaunchAdditions(BaseModel):
         exclude_if=lambda value: value is None,
         description=(
             "The project the conversation belongs to, rendered into its "
-            "<PROJECT> prompt block. An ACP agent gets it appended to its "
-            "system-message suffix instead."
+            "<PROJECT> prompt block. Not for ACP agents, which Projects do "
+            "not run."
         ),
     )
 

@@ -255,7 +255,8 @@ def test_a_deployment_role_sets_the_preset_and_the_project_block():
     assert context.system_message_suffix == "PROFILE"
 
 
-def test_an_acp_agent_gets_the_project_block_in_its_suffix():
+def test_an_acp_agent_takes_no_project_role():
+    """Projects do not run ACP agents; finalize leaves one as it is."""
     agent = ACPAgent(acp_command=["true"])
 
     launched = finalize(
@@ -267,5 +268,4 @@ def test_an_acp_agent_gets_the_project_block_in_its_suffix():
     )
 
     context = launched.agent.agent_context
-    assert context is not None
-    assert context.system_message_suffix == "<PROJECT>\nProject: Docs\n</PROJECT>"
+    assert context is None or not context.system_message_suffix

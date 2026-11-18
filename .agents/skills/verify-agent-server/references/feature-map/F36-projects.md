@@ -61,7 +61,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.coordinator-missing`: an unknown coordinator id is 404 and creates no project.
 - `F36.coordinator-unique`: a conversation that coordinates one project cannot coordinate another (409), and its tag is unchanged.
 - `F36.start-member`: only the coordinator starts conversations in its project: its `POST .../children` starts a member tagged `project=<id>`, and a member's own `POST .../children` is 409.
-- `F36.client-tags`: a client cannot start or fork a conversation with a tag the server owns (`project`, `turn`, `ask`, `resolved`, `resolvenote`): 422, and nothing is created.
+- `F36.client-tags`: a client cannot start or fork a conversation whose `project` tag names an existing project: 422, and nothing is created. The other project keys (`turn`, `ask`, `resolved`, `resolvenote`), or a `project` tag naming no project, are ordinary client tags.
 - `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `idle` (finished or never run), newest-updated first within a group; non-members are left out.
 - `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
@@ -75,7 +75,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
 - `F36.memory-tool`: an agent with `read_project_memory` and `update_project_memory` reads `MEMORY.md` and adds a line to it with the revision it read; a child a project member starts gets `MEMORY.md` in its first message, marked as data.
 - `F36.persist-restart`: projects and membership survive a server restart.
-- `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
+- `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations lose the `project` tag and the board's tags (their other tags stay).
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
 - `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
 - `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the user writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the user in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
@@ -295,12 +295,14 @@ Preconditions:
   Requires: `F36.coordinator`, `F36.unknown-project`
   ```sh
   if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag "project=$P2" --print-id; then false; fi
-  if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag turn=asking --print-id; then false; fi
   control-agent-server api POST "/api/conversations/$W1/fork" --json "{\"tags\": {\"project\": \"$P2\"}}" --expect 422 \
-    --check detail eq 'Tags set by the server only: project' --save F36.client-tags/fork
+    --check detail contains 'started by its coordinator' --save F36.client-tags/fork
   control-agent-server api GET "/api/projects/$P2/conversations" --check . not-contains qa-f36-claim
+  OWN=$(control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-own-tags --tag turn=asking --tag "project=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')" --print-id)
+  control-agent-server api GET "/api/conversations/$OWN" --check tags.turn eq asking --save F36.client-tags/own
   ```
-  A start or fork carrying a server-owned tag is 422 and creates nothing.
+  A start or fork that would join an existing project is 422 and creates
+  nothing; project keys that name no project are the client's own tags.
 - **Attention groups (`F36.attention`).**
   Requires: `F36.start-member`
   Needs: `llm`, `tmux`
@@ -579,10 +581,10 @@ Preconditions:
   control-agent-server api DELETE "/api/projects/$P1" --expect 200 --check deleted eq true --save F36.delete/delete
   control-agent-server api GET "/api/projects/$P1" --expect 404
   control-agent-server api GET "/api/projects/$P1/conversations" --expect 404
-  control-agent-server api GET "/api/conversations/$W1" --check tags.project eq "$P1"
+  control-agent-server api GET "/api/conversations/$W1" --check tags.project missing
   control-agent-server state cat "$PJ" --not-contains "$P1" --check projects len-eq 1
   ```
-  The record is gone; the conversation is untouched, tag included.
+  The record is gone; the conversation stays, without the project's tags.
 - **Model-backed: start and list (`F36.tool-start-and-list`).**
   Requires: `F36.coordinator`
   Needs: `llm`
