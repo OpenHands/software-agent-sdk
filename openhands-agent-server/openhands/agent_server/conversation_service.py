@@ -42,6 +42,7 @@ from openhands.agent_server.launch import (
     launch_source,
     live_launch_runtime,
     scoped_secrets,
+    scoped_terminal_credential_bindings,
     server_launch_stores,
 )
 from openhands.agent_server.local_storage import (
@@ -1659,6 +1660,12 @@ class ConversationService:
             self.cipher,
         )
         secrets = scoped_secrets(request.secrets, source)
+        bindings = (
+            request.terminal_credential_bindings
+            if "terminal_credential_bindings" in request.model_fields_set
+            else settings.conversation_settings.terminal_credential_bindings
+        )
+        bindings = scoped_terminal_credential_bindings(bindings, source)
         managed_codex_credential = is_codex_source(source) and (
             CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
             or await self._has_local_codex_credential()
@@ -1778,6 +1785,7 @@ class ConversationService:
         request_data = request.model_copy(
             update={
                 "secrets": secrets,
+                "terminal_credential_bindings": bindings,
                 "workspace": workspace,
                 "tool_module_qualnames": tool_module_qualnames,
             }

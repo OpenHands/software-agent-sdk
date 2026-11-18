@@ -207,7 +207,9 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
 
     sections = {s.key: s for s in schema.sections}
     general_fields = {f.key: f for f in sections["general"].fields}
-    assert set(general_fields) == {"max_iterations"}
+    assert set(general_fields) == {"max_iterations", "terminal_credential_bindings"}
+    assert general_fields["terminal_credential_bindings"].default == []
+    assert general_fields["terminal_credential_bindings"].value_type == "array"
     assert general_fields["max_iterations"].default == 500
     assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
 

@@ -12,9 +12,11 @@ from openhands.sdk.secret.secrets import (
     register_local_secret_resolver,
     unregister_local_secret_resolver,
 )
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBinding
 
 
 __all__ = [
+    "TerminalCredentialBinding",
     "LocalSecretResolver",
     "SecretSource",
     "StaticSecret",

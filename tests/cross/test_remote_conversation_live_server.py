@@ -4037,3 +4037,55 @@ def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
             assert llm_calls == 18
     finally:
         conv.close()
+
+
+def test_terminal_credential_bindings_settings_and_launch(server_env):
+    host, workspace_path = server_env["host"], server_env["workspace_path"]
+    binding = {
+        "consumer": "custom-cli",
+        "adapter": "environment",
+        "env_var": "API_KEY",
+        "secret_ref": "WORK_PAT",
+        "host": None,
+        "username": None,
+    }
+    with httpx.Client(base_url=host, timeout=30) as client:
+        response = client.patch(
+            "/api/settings",
+            json={
+                "conversation_settings_diff": {
+                    "terminal_credential_bindings": [binding]
+                },
+            },
+        )
+        response.raise_for_status()
+        assert client.get("/api/settings").json()["conversation_settings"][
+            "terminal_credential_bindings"
+        ] == [binding]
+        agent = Agent(llm=LLM(model="test-model"), tools=[])
+        payload = {
+            "agent": agent.model_dump(mode="json"),
+            "workspace": {"kind": "LocalWorkspace", "working_dir": str(workspace_path)},
+        }
+        response = client.post("/api/conversations", json=payload)
+        response.raise_for_status()
+        conversation_id = response.json()["id"]
+        assert response.json()["terminal_credential_bindings"] == [binding]
+        response = client.post(
+            "/api/conversations",
+            json={
+                **payload,
+                "terminal_credential_bindings": [],
+            },
+        )
+        response.raise_for_status()
+        assert response.json()["terminal_credential_bindings"] == []
+        client.patch(
+            "/api/settings",
+            json={
+                "conversation_settings_diff": {"terminal_credential_bindings": []},
+            },
+        ).raise_for_status()
+        response = client.get(f"/api/conversations/{conversation_id}")
+        response.raise_for_status()
+        assert response.json()["terminal_credential_bindings"] == [binding]

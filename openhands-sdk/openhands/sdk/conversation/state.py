@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self, cast
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr, TypeAdapter, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
@@ -34,6 +34,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import drop_mcp_servers_without_endpoint
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -268,6 +269,11 @@ class ConversationState(OpenHandsModel):
     )
 
     # Secret registry for handling sensitive data
+    terminal_credential_bindings: TerminalCredentialBindings = Field(
+        default_factory=list,
+        description="Terminal credential consumers with secret references, not values.",
+    )
+
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",
@@ -624,6 +630,7 @@ class ConversationState(OpenHandsModel):
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
         max_budget_per_run: float | None = None,
+        terminal_credential_bindings: TerminalCredentialBindings | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -669,6 +676,10 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
+        if terminal_credential_bindings is not None:
+            terminal_credential_bindings = TypeAdapter(
+                TerminalCredentialBindings
+            ).validate_python(terminal_credential_bindings)
         if file_store is None:
             if persistence_dir:
                 file_store = LocalFileStore(
@@ -724,6 +735,8 @@ class ConversationState(OpenHandsModel):
             if agent is not None:
                 agent.verify(state.agent, events=state._events)
                 state.agent = agent
+            if terminal_credential_bindings is not None:
+                state.terminal_credential_bindings = terminal_credential_bindings
             state.workspace = workspace
             state.max_iterations = max_iterations
             if max_budget_per_run is not None:
@@ -750,6 +763,7 @@ class ConversationState(OpenHandsModel):
             max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
+            terminal_credential_bindings=terminal_credential_bindings or [],
             ambient_plugin_skills=[],
             ambient_plugin_mcp_servers=[],
         )

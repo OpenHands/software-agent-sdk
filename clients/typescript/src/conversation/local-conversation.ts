@@ -50,6 +50,8 @@ export type ConversationTokenCallback = (event: TokenStreamEvent) => void;
  * Options for creating a LocalConversation instance.
  */
 export interface LocalConversationOptions extends BaseConversationOptions {
+  /** Credential bindings require RemoteConversation and its native terminal. */
+  terminalCredentialBindings?: never;
   /** The LLM instance to use for the conversation */
   llm: ILLM;
   /** Optional system prompt for the agent */
@@ -340,6 +342,11 @@ export class LocalConversation implements IConversation {
   private securityAnalyzer?: SecurityAnalyzer;
 
   constructor(agent: AgentBase, workspace: IWorkspace, options: LocalConversationOptions) {
+    if (options.terminalCredentialBindings !== undefined) {
+      throw new Error(
+        'Terminal credential bindings require a remote-native terminal via RemoteConversation.'
+      );
+    }
     this.agent = agent;
     this.workspace = workspace;
     this.llm = options.llm;

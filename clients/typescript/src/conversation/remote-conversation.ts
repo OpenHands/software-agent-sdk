@@ -21,6 +21,7 @@ import {
 } from '../types/base';
 import {
   ConversationInfo,
+  TerminalCredentialBinding,
   SendMessageRequest,
   ConfirmationResponseRequest,
   CreateConversationRequest,
@@ -42,6 +43,8 @@ import type { HookConfig } from '../hooks';
  * Options for creating a RemoteConversation instance.
  */
 export interface RemoteConversationOptions extends BaseConversationOptions {
+  /** Bind secret references to consumers in the remote native terminal only. */
+  terminalCredentialBindings?: TerminalCredentialBinding[];
   /**
    * Positive USD limit on accumulated conversation cost, including earlier runs.
    * Null means unbounded. A completed agent step may overshoot the limit.
@@ -100,6 +103,7 @@ export class RemoteConversation implements IConversation {
   private maxIterations?: number;
   private maxBudgetPerRun?: number | null;
   private stuckDetection?: boolean;
+  private terminalCredentialBindings?: TerminalCredentialBinding[];
 
   constructor(
     agent: AgentBase,
@@ -116,6 +120,7 @@ export class RemoteConversation implements IConversation {
     this.maxIterations = options.maxIterations;
     this.maxBudgetPerRun = options.maxBudgetPerRun;
     this.stuckDetection = options.stuckDetection;
+    this.terminalCredentialBindings = options.terminalCredentialBindings;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -149,6 +154,7 @@ export class RemoteConversation implements IConversation {
 
   async start(
     options: {
+      terminalCredentialBindings?: TerminalCredentialBinding[];
       initialMessage?: string;
       maxIterations?: number;
       maxBudgetPerRun?: number | null;
@@ -181,6 +187,8 @@ export class RemoteConversation implements IConversation {
 
     const request: CreateConversationRequest = {
       agent: this.agent,
+      terminal_credential_bindings:
+        options.terminalCredentialBindings ?? this.terminalCredentialBindings,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || this.maxIterations || 500,
       max_budget_per_run:

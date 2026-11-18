@@ -15,6 +15,7 @@ from openhands.sdk.tool import ToolExecutor
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
 from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
+from openhands.tools.terminal.credential_runtime import TerminalCredentialRuntime
 from openhands.tools.terminal.definition import (
     _LITERAL_ARG_HINT_TEMPLATE,
     TerminalAction,
@@ -122,6 +123,8 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._session: TerminalSession | None = None
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
+        self._credential_runtimes: dict[int, TerminalCredentialRuntime] = {}
+        self._credential_lock = threading.Lock()
         self._pool_recovery_lock = threading.Lock()
         # Pool mode: the pane whose last command is still running, which
         # follow-up calls (input, an empty command, a key like C-c) target.
@@ -187,6 +190,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             with self._sessions_lock:
                 self._sessions.clear()
             self._unfinished_pane = None
+            self._close_credentials()
             self._initialize_pool()
 
     @staticmethod
@@ -254,6 +258,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         with self._sessions_lock:
             session = self._sessions.pop(id(terminal), None)
             if session is not None:
+                with self._credential_lock:
+                    runtime = self._credential_runtimes.pop(id(session), None)
+                    if runtime:
+                        runtime.close()
                 session._closed = True
                 # Also mark the terminal so the pooled close() is a no-op
                 terminal._closed = True
@@ -369,13 +377,14 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             try:
                 secret_registry = conversation.state.secret_registry
                 env_vars = secret_registry.get_secrets_as_env_vars(action.command)
+
             except Exception:
                 env_vars = {}
 
+        target = session or self.session
+        self._prepare_credentials(target, conversation)
         if not env_vars:
             return
-
-        target = session or self.session
         exports_cmd = self._build_env_exports(env_vars, target)
 
         if not exports_cmd:
@@ -390,6 +399,53 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 timeout=action.timeout,
             )
         )
+
+    def _prepare_credentials(
+        self, session: TerminalSession, conversation: "LocalConversation | None"
+    ) -> None:
+        if conversation is None:
+            return
+        bindings = tuple(conversation.state.terminal_credential_bindings)
+        registry = conversation.state.secret_registry
+        with self._credential_lock:
+            previous = self._credential_runtimes.get(id(session))
+            if (
+                previous
+                and previous.bindings == bindings
+                and previous.registry is registry
+            ):
+                return
+            if previous:
+                previous.close()
+                del self._credential_runtimes[id(session)]
+            if not bindings:
+                return
+            runtime = TerminalCredentialRuntime(
+                bindings,
+                registry,
+                executable_path=self._env.get("PATH") if self._env else None,
+            )
+            directory = str(runtime.directory)
+            if session.terminal.is_powershell():
+                command = (
+                    f"$env:PATH = {self._powershell_quote(directory)} + ';' + $env:PATH"
+                )
+            else:
+                command = f'export PATH={self._bash_quote(directory)}:"$PATH"; hash -r'
+            try:
+                result = session.execute(TerminalAction(command=command))
+                if result.exit_code != 0:
+                    raise RuntimeError("Could not install terminal credential adapters")
+            except BaseException:
+                runtime.close()
+                raise
+            self._credential_runtimes[id(session)] = runtime
+
+    def _close_credentials(self) -> None:
+        with self._credential_lock:
+            for runtime in self._credential_runtimes.values():
+                runtime.close()
+            self._credential_runtimes.clear()
 
     def _mask_observation(
         self,
@@ -433,6 +489,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         original_no_change_timeout = self._session.no_change_timeout_seconds
 
         self._session.close()
+        self._close_credentials()
         self._session = create_terminal_session(
             work_dir=original_work_dir,
             username=original_username,
@@ -654,6 +711,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
     def close(self) -> None:
         """Close the terminal session and clean up resources."""
+        self._close_credentials()
         if self._pool is not None:
             self._pool.close()
             with self._sessions_lock:

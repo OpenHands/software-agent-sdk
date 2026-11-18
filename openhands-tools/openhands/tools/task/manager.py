@@ -328,6 +328,9 @@ class TaskManager:
             return LocalConversation(
                 agent=worker_agent,
                 secrets=parent.state.secret_registry.secret_sources,
+                terminal_credential_bindings=list(
+                    parent.state.terminal_credential_bindings
+                ),
                 workspace=parent.state.workspace.working_dir,
                 visualizer=visualizer,
                 persistence_dir=self._persistence_dir,

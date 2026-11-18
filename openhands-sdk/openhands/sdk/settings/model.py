@@ -52,6 +52,7 @@ from openhands.sdk.mcp.config import (
     drop_mcp_servers_without_endpoint,
 )
 from openhands.sdk.plugin import PluginSource
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, ClassifyAndSwitchLLMTool
@@ -1196,6 +1197,17 @@ class ConversationSettings(BaseModel):
         description="Optional named child span to emit under the conversation root.",
     )
 
+    terminal_credential_bindings: TerminalCredentialBindings = Field(
+        default_factory=list,
+        description="Terminal credential consumers with secret references, not values.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Terminal credential bindings",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
+
     # --- persisted fields ---------------------------------------------------
     max_iterations: int = Field(
         default=500,
@@ -1447,6 +1459,9 @@ class ConversationSettings(BaseModel):
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())
         payload.setdefault("security_analyzer", self._build_security_analyzer())
         payload.setdefault("max_iterations", self.max_iterations)
+        payload.setdefault(
+            "terminal_credential_bindings", self.terminal_credential_bindings
+        )
         return payload
 
     def create_request(

@@ -50,6 +50,7 @@ from openhands.sdk.llm.meta_profile_store import (
 )
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.settings.model import (
     ACPAgentSettings,
     validate_agent_settings,
@@ -223,6 +224,14 @@ def scoped_secrets(
     return {name: value for name, value in secrets.items() if name in allowed}
 
 
+def scoped_terminal_credential_bindings(
+    bindings: TerminalCredentialBindings, source: LaunchSource
+) -> TerminalCredentialBindings:
+    """Filter consumer authorization without expanding a profile's secret selection."""
+    allowed = source.allowed_secrets if isinstance(source, ResolvedLaunch) else None
+    return [b for b in bindings if allowed is None or b.secret_ref in allowed]
+
+
 def is_codex_source(source: LaunchSource) -> bool:
     if isinstance(source, ResolvedLaunch):
         settings = source.settings
@@ -249,6 +258,14 @@ def forward_to_runtime(
     forwarded = request.model_copy(
         update={"secrets": materialize_secrets(scoped), "secrets_encrypted": True}
     )
+    if source is not None:
+        forwarded = forwarded.model_copy(
+            update={
+                "terminal_credential_bindings": scoped_terminal_credential_bindings(
+                    request.terminal_credential_bindings, source
+                )
+            }
+        )
     sources = {"agent", "agent_settings", "agent_profile_id"}
     payload = forwarded.model_dump(
         mode="json",

@@ -231,11 +231,20 @@ class SecretRegistry(OpenHandsModel):
             return {}
 
         logger.debug(f"Found secrets in command: {found_secrets}")
+        return self.get_env_vars_for_keys(found_secrets)
 
+    def get_env_vars_for_keys(self, keys: Collection[str]) -> dict[str, str]:
+        """Resolve the given registered secret keys to environment variables.
+
+        Unknown keys, failed lookups and empty values are skipped. Resolved
+        values are tracked for output masking.
+        """
         env_vars = {}
-        for key in found_secrets:
+        for key in keys:
+            source = self.secret_sources.get(key)
+            if source is None:
+                continue
             try:
-                source = self.secret_sources[key]
                 value = source.get_value()
                 if value:
                     env_vars[key] = value

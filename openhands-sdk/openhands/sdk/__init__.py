@@ -49,6 +49,7 @@ from openhands.sdk.mcp import (
     create_mcp_tools,
 )
 from openhands.sdk.plugin import Plugin
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBinding
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
@@ -120,6 +121,7 @@ _print_banner(__version__)
 
 
 __all__ = [
+    "TerminalCredentialBinding",
     "LLM",
     "DecisionModel",
     "DecisionResult",

@@ -258,6 +258,7 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     assert "headers" not in servers["remote"]
     assert body["conversation_settings"] == {
         "schema_version": CONVERSATION_SETTINGS_SCHEMA_VERSION,
+        "terminal_credential_bindings": [],
         "max_iterations": 42,
         "confirmation_mode": True,
         "security_analyzer": "llm",

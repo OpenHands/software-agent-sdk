@@ -38,7 +38,19 @@ export interface ConversationRuntimeInfo {
   runtime_error: ConversationRuntimeError | null;
 }
 
+/** Secret references for the remote native terminal; never credential values. */
+export interface TerminalCredentialBinding {
+  consumer: string;
+  adapter?: 'environment' | 'git_helper';
+  env_var?: string | null;
+  host?: string | null;
+  secret_ref: string;
+  /** Required and nonempty for git_helper; validated by the server. */
+  username?: string | null;
+}
+
 export interface ConversationInfo {
+  terminal_credential_bindings?: TerminalCredentialBinding[];
   id: ConversationID;
   /** Availability of the execution runtime backing this catalog entry. */
   runtime_info?: ConversationRuntimeInfo | null;
@@ -120,6 +132,7 @@ export interface ConfirmationResponseRequest {
 }
 
 export interface CreateConversationRequest {
+  terminal_credential_bindings?: TerminalCredentialBinding[];
   agent: AgentBase;
   initial_message?: Message;
   max_iterations: number;

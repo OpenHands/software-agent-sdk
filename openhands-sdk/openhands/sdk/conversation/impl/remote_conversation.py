@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 import websockets
 from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+from pydantic import TypeAdapter
 from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
@@ -68,6 +69,7 @@ from openhands.sdk.observability.laminar import (
     observability_parent_span_context_from_env,
     observe,
 )
+from openhands.sdk.secret.terminal_credentials import TerminalCredentialBindings
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -814,6 +816,7 @@ class RemoteConversation(BaseConversation):
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        terminal_credential_bindings: TerminalCredentialBindings | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -906,6 +909,11 @@ class RemoteConversation(BaseConversation):
                     )
                 attached_tool_module_qualnames = info.get("tool_module_qualnames") or {}
 
+        if terminal_credential_bindings is not None:
+            terminal_credential_bindings = TypeAdapter(
+                TerminalCredentialBindings
+            ).validate_python(terminal_credential_bindings)
+
         if should_create:
             # Import here to avoid circular imports
             from openhands.sdk.subagent.registry import get_registered_agent_definitions
@@ -921,6 +929,16 @@ class RemoteConversation(BaseConversation):
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context=client_context("plaintext")
+                ),
+                **(
+                    {
+                        "terminal_credential_bindings": [
+                            b.model_dump(mode="json")
+                            for b in terminal_credential_bindings
+                        ]
+                    }
+                    if terminal_credential_bindings is not None
+                    else {}
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,

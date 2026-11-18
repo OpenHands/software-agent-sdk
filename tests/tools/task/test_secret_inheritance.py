@@ -13,6 +13,7 @@ import pytest
 from openhands.sdk import Agent, LocalConversation, Tool
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.secret import TerminalCredentialBinding
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task.definition import TaskAction
@@ -171,6 +172,11 @@ def test_task_secret_delivery_and_masking(
 @pytest.mark.parametrize("resume", [False, True], ids=["initial", "resume"])
 def test_sources_available_before_agent_initialization(tmp_path: Path, resume: bool):
     token = secrets.token_hex(32)
+    binding = TerminalCredentialBinding(
+        consumer="custom-cli",
+        env_var="CUSTOM_TOKEN",
+        secret_ref="TASK_PROBE_TOKEN",
+    )
     register_agent("probe", lambda llm: Agent(llm=llm), "Secret source probe")
     manager = TaskManager()
     with closing(
@@ -180,6 +186,7 @@ def test_sources_available_before_agent_initialization(tmp_path: Path, resume: b
             persistence_dir=tmp_path / "persist",
             visualizer=None,
             secrets={"TASK_PROBE_TOKEN": token},
+            terminal_credential_bindings=[binding],
         )
     ) as parent:
         manager.attach_parent(parent)
@@ -195,6 +202,7 @@ def test_sources_available_before_agent_initialization(tmp_path: Path, resume: b
             assert child.state.secret_registry.secret_sources == (
                 parent.state.secret_registry.secret_sources
             )
+            assert child.state.terminal_credential_bindings == [binding]
             child.update_secrets({"CHILD_ONLY": secrets.token_hex(32)})
             assert set(parent.state.secret_registry.secret_sources) == {
                 "TASK_PROBE_TOKEN"
