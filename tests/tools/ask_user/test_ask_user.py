@@ -17,7 +17,13 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.goal import GoalAsked, GoalController, run_goal
+from openhands.sdk.conversation.goal import (
+    GoalAsked,
+    GoalController,
+    GoalOutcome,
+    run_goal,
+)
+from openhands.sdk.conversation.goal.judge import GoalVerdict
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
@@ -540,3 +546,29 @@ def test_a_goal_stops_on_a_question_without_judging(tmp_path):
     assert isinstance(outcome, GoalAsked)
     assert outcome.ask_id == step.ask_id
     assert find_pending_ask(conversation.state.events) is not None
+
+
+def test_goal_ignores_question_on_abandoned_branch(tmp_path):
+    conversation, _ = _asked(tmp_path)
+    initial = next(
+        event
+        for event in conversation.state.events
+        if isinstance(event, MessageEvent) and event.source == "user"
+    )
+    conversation.navigate_to(initial.id)
+    assert find_pending_ask(conversation.state.active_branch()) is None
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=_text("Completed the new objective"),
+        ),
+        patch(
+            "openhands.sdk.conversation.goal.controller.judge_goal",
+            return_value=GoalVerdict(score=1.0, complete=True, missing=""),
+        ),
+    ):
+        outcome = run_goal(conversation, "Complete the new objective", _llm())
+
+    assert isinstance(outcome, GoalOutcome)
+    assert outcome.status == "complete"
