@@ -1927,8 +1927,36 @@ PRESETS: dict[str, dict[str, Any]] = {
                 "activate": False,
             },
         ],
+        # With $LLM_BASE_URL and $LLM_API_KEY set, the preset goes through
+        # that LiteLLM proxy instead, with the flash model it serves.
+        "proxy": {
+            "env": "LLM_API_KEY",
+            "base_url_env": "LLM_BASE_URL",
+            "profiles": [
+                {
+                    "name": "deepseek-flash",
+                    "model": "litellm_proxy/deepseek-v4.1-flash",
+                    "activate": True,
+                },
+            ],
+        },
     }
 }
+
+
+def preset_route(preset: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """The proxy variant when its base URL and key are set and no key was
+    named on the command line; otherwise the provider's own."""
+    proxy = preset.get("proxy")
+    if (
+        proxy
+        and not args.api_key_env
+        and not args.api_key_file
+        and os.environ.get(proxy["base_url_env"])
+        and os.environ.get(proxy["env"])
+    ):
+        return {**proxy, "base_url": os.environ[proxy["base_url_env"]]}
+    return {**preset, "base_url": None}
 
 
 def read_api_key(args: argparse.Namespace, default_env: str) -> str:
@@ -1999,21 +2027,26 @@ def cmd_llm_preset(args: argparse.Namespace) -> dict[str, Any]:
     preset = PRESETS.get(args.preset)
     if not preset:
         usage_error(f"Unknown preset {args.preset!r}; known: {', '.join(PRESETS)}")
-    key = read_api_key(args, str(preset["env"]))
+    route = preset_route(preset, args)
+    key = read_api_key(args, str(route["env"]))
     rows = [
         save_llm_profile(
             run,
             p["name"],
             p["model"],
             key,
-            None,
+            route["base_url"],
             p["activate"],
             not args.no_validate and p["activate"],
         )
-        for p in preset["profiles"]
+        for p in route["profiles"]
     ]
     ok = all("error" not in r and r.get("activated", 200) < 400 for r in rows)
-    return {"ok": ok, "profiles": rows}
+    return {
+        "ok": ok,
+        "via": "proxy" if route["base_url"] else "provider",
+        "profiles": rows,
+    }
 
 
 def cmd_llm_set(args: argparse.Namespace) -> dict[str, Any]:
@@ -5843,7 +5876,8 @@ under <run>/evidence/FEATURE/NAME.json.""",
         description="LLM profiles: preset | set | show",
         formatter_class=Formatter,
         epilog=f"""Examples:
-  {CLI} llm preset deepseek                 # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY
+  {CLI} llm preset deepseek                 # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY;
+                                            # with $LLM_BASE_URL and $LLM_API_KEY: deepseek-flash through that proxy
   {CLI} llm set --profile alt --model deepseek/deepseek-v4-pro --api-key-env DEEPSEEK_API_KEY --no-activate
   {CLI} llm show""",
     )
