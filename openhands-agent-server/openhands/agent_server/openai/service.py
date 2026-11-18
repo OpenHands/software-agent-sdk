@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import httpx
+from httpx import ConnectTimeout, PoolTimeout
 from pydantic import ValidationError
 
 from openhands.agent_server.agent_profiles_router import active_agent_profile
@@ -19,7 +20,7 @@ from openhands.agent_server.docker_runtime.routers import (
     _container,
     start_docker_conversation,
 )
-from openhands.agent_server.errors import ForwardedStatus
+from openhands.agent_server.errors import ForwardedStatus, GatewayTimeout
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.openai.models import (
@@ -559,11 +560,16 @@ async def _run_reused_local_agent(
         finally:
             if run_slot is not None:
                 run_slot.release()
-        status_value = await _wait_for_reused_conversation_completion(
-            event_service,
-            min_event_count=min_event_count,
-            timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
-        )
+        try:
+            status_value = await _wait_for_reused_conversation_completion(
+                event_service,
+                min_event_count=min_event_count,
+                timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
+            )
+        except UpstreamTimeout as exc:
+            raise GatewayTimeout(
+                retry_safe=False, conversation_id=conversation_id
+            ) from exc
         _raise_for_terminal_error(status_value)
         state = await event_service.get_state()
         final_response = await event_service.get_agent_final_response()
@@ -652,7 +658,9 @@ async def _run_agent(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            raise UpstreamTimeout("Agent run timed out") from None
+            raise GatewayTimeout(
+                retry_safe=False, conversation_id=conversation_id
+            ) from None
         _raise_for_terminal_error(status_value)
         state = await event_service.get_state()
         final_response = await event_service.get_agent_final_response()
@@ -719,6 +727,12 @@ async def _run_docker_agent(
                 ).model_dump(mode="json"),
             )
         if response.is_error:
+            if response.status_code == 504:
+                if response.headers.get("x-should-retry") != "true":
+                    raise GatewayTimeout(
+                        retry_safe=False, conversation_id=conversation_id
+                    )
+                raise GatewayTimeout(retry_safe=True)
             if response.status_code == 404:
                 try:
                     detail = response.json().get("detail")
@@ -745,7 +759,12 @@ async def _run_docker_agent(
             ),
         )
     except httpx.TimeoutException as exc:
-        raise UpstreamTimeout("Conversation runtime timed out") from exc
+        if isinstance(exc, (ConnectTimeout, PoolTimeout)):
+            raise UpstreamTimeout("Conversation runtime timed out") from exc
+        raise GatewayTimeout(
+            retry_safe=False, conversation_id=conversation_id, runtime_timeout=True
+        ) from exc
+
     except httpx.HTTPError as exc:
         raise UpstreamFailed("Conversation container unreachable") from exc
     finally:
