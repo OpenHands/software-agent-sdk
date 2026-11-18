@@ -387,7 +387,9 @@ class LLMProfileStore:
         - no ``provider_connection_id`` -> unchanged (byte-identical old path).
         - no provider store configured -> unchanged (inert field).
         - connection found -> its ``api_key`` / ``base_url`` win (``base_url``
-          is applied as-is, including ``None``).
+          is applied as-is, including ``None``), and a recognized connection
+          ``provider`` qualifies the model for routing
+          (:meth:`ProviderConnection.route_model`).
         - connection missing -> raise :class:`ProviderConnectionNotFound`.
 
         The inline-key fallback below is not a recovery path for the usual
@@ -426,7 +428,11 @@ class LLMProfileStore:
                 "recreate the connection."
             )
 
-        updates: dict[str, Any] = {"base_url": connection.base_url}
+        # ``model_copy`` rebuilds provider-derived state when model/base_url change.
+        updates: dict[str, Any] = {
+            "model": connection.route_model(llm.model),
+            "base_url": connection.base_url,
+        }
         api_key = connection.api_key_value()
         if api_key is not None:
             from pydantic import SecretStr

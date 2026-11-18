@@ -10,8 +10,14 @@ from openhands.sdk.launch import (
     UnresolvedProfileReferences,
     resolve,
 )
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
-from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+from openhands.sdk.llm.provider_connection_store import (
+    ProviderConnection,
+    ProviderConnectionNotFound,
+    ProviderConnectionStore,
+)
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
@@ -347,3 +353,43 @@ def test_a_failing_skill_discovery_is_a_store_error():
 def test_a_custom_acp_profile_without_a_command_is_rejected():
     with pytest.raises(AgentLaunchError, match="acp_command"):
         resolve(ACPAgentProfile(name="a", acp_server="custom"), fakes.stores())
+
+
+def _openrouter_profile_store(tmp_path, model: str) -> LLMProfileStore:
+    connections = ProviderConnectionStore(base_dir=tmp_path / "conns")
+    connections.create(
+        ProviderConnection(
+            id="or",
+            display_name="OpenRouter",
+            provider="openrouter",
+            api_key=SecretStr("sk-or"),
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    llms = LLMProfileStore(base_dir=tmp_path / "profiles", provider_store=connections)
+    llms.save("default", LLM(model=model, provider_connection_id="or"))
+    return llms
+
+
+def test_a_launch_routes_an_openrouter_linked_profile_through_openrouter(tmp_path):
+    stores = LaunchStores(
+        llm_profiles=_openrouter_profile_store(tmp_path, "z-ai/glm-4.6"),
+        mcp_config={},
+        skills=lambda: [],
+    )
+
+    settings = _openhands(resolve(_profile(), stores))
+
+    assert settings.llm.model == "openrouter/z-ai/glm-4.6"
+
+
+def test_a_launch_names_a_model_that_conflicts_with_its_connection(tmp_path):
+    stores = LaunchStores(
+        llm_profiles=_openrouter_profile_store(tmp_path, "openhands/claude-sonnet-5"),
+        mcp_config={},
+        skills=lambda: [],
+    )
+
+    with pytest.raises(AgentLaunchError, match="openhands/claude-sonnet-5"):
+        resolve(_profile(), stores)

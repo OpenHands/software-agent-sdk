@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from openhands.sdk.llm.options.common import is_openrouter
 from openhands.sdk.logger import get_logger
 
 
@@ -138,9 +139,7 @@ def _openrouter_resolver() -> ProviderResolver:
 
 
 def detect_provider(llm: LLM) -> ProviderResolver | None:
-    model = llm.model or ""
-    base_url = llm.base_url or ""
-    if model.startswith("openrouter/") or "openrouter.ai" in base_url:
+    if is_openrouter(llm):
         return _openrouter_resolver()
     return None
 

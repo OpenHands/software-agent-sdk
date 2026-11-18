@@ -19,6 +19,17 @@ OPENHANDS_SYSTEM_IDENTITY: Final[str] = (
 )
 DIGITALOCEAN_PROVIDER_PREFIX: Final[str] = "digitalocean/"
 DIGITALOCEAN_INFERENCE_BASE_URL: Final[str] = "https://inference.do-ai.run/v1"
+OPENROUTER_PROVIDER_PREFIX: Final[str] = "openrouter/"
+_OPENROUTER_HOST: Final[str] = "openrouter.ai"
+CUSTOM_OPENAI_PROVIDER_PREFIX: Final[str] = "custom_openai/"
+# LiteLLM routes that send everything after the prefix verbatim to an
+# OpenAI-compatible server, even an id like ``ollama/llama3``.
+OPENAI_COMPATIBLE_PROVIDER_PREFIXES: Final[tuple[str, ...]] = (
+    CUSTOM_OPENAI_PROVIDER_PREFIX,
+    "lm_studio/",
+    "hosted_vllm/",
+    "llamafile/",
+)
 
 # SDK provider prefix -> (LiteLLM prefix, default api_base).
 # TODO: DigitalOcean goes through ``openai/`` only as a stopgap, because
@@ -63,6 +74,23 @@ def is_openhands_proxy_base_url(base_url: str | None) -> bool:
     return _normalize_base_url(base_url) in _OPENHANDS_PROXY_BASE_URLS
 
 
+def is_openrouter_base_url(base_url: str | None) -> bool:
+    """Whether ``base_url`` is on ``openrouter.ai`` or one of its subdomains.
+
+    Matches the parsed host, so a lookalike such as ``openrouter.ai.example.com``
+    or a path containing ``openrouter.ai`` does not count.
+    """
+    if not base_url:
+        return False
+    try:
+        host = urlsplit(base_url.strip()).hostname
+    except ValueError:
+        return False
+    return host is not None and (
+        host == _OPENROUTER_HOST or host.endswith(f".{_OPENROUTER_HOST}")
+    )
+
+
 def _is_verified_openhands_model_name(model_name: str) -> bool:
     return model_name in VERIFIED_MODELS["openhands"]
 
@@ -82,6 +110,18 @@ def litellm_call_kwargs(model: str, base_url: str | None) -> LiteLLMCallKwargs:
     if base_url is not None and is_openhands_proxy_base_url(base_url):
         bare = model.split("/", 1)[-1] if "/" in model else model
         return {"model": f"{LITELLM_PROXY_PREFIX}{bare}", "api_base": base_url}
+    # An OpenRouter endpoint serves OpenRouter-native ids such as
+    # ``thinkingmachines/inkling-small:free`` or ``anthropic/claude-sonnet-4``;
+    # without the ``openrouter/`` prefix LiteLLM would infer no provider, or
+    # the wrong one, from the vendor namespace.
+    if is_openrouter_base_url(base_url) and not model.startswith(
+        (
+            OPENROUTER_PROVIDER_PREFIX,
+            LITELLM_PROXY_PREFIX,
+            *OPENAI_COMPATIBLE_PROVIDER_PREFIXES,
+        )
+    ):
+        model = f"{OPENROUTER_PROVIDER_PREFIX}{model}"
     return {"model": model, "api_base": base_url}
 
 

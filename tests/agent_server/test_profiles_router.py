@@ -516,6 +516,195 @@ def test_activate_profile_with_dangling_provider_connection_fails(client):
     assert connection_id in activated.json()["detail"]
 
 
+def _openrouter_connection(client, base_url: str | None = None) -> str:
+    return client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "OpenRouter",
+            "provider": "openrouter",
+            "api_key": "sk-or-shared",
+            "base_url": base_url,
+        },
+    ).json()["id"]
+
+
+def test_rest_profile_linked_to_openrouter_activates_with_openrouter_route(client):
+    """A profile saved through REST with an OpenRouter-native id runs through
+    OpenRouter on activation, and the stored profile keeps the id as entered."""
+    connection_id = _openrouter_connection(client)
+    model = "thinkingmachines/inkling-small:free"
+    saved = client.post(
+        "/api/profiles/inkling",
+        json={
+            "llm": {"model": model, "provider_connection_id": connection_id},
+            "include_secrets": False,
+        },
+    )
+    assert saved.status_code == 201
+
+    for _ in range(2):  # idempotent across repeated activation
+        assert client.post("/api/profiles/inkling/activate").status_code == 200
+        settings = client.get(
+            "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+        ).json()
+        llm = settings["agent_settings"]["llm"]
+        assert llm["model"] == f"openrouter/{model}"
+        assert llm["api_key"] == "sk-or-shared"
+
+    assert client.get("/api/profiles/inkling").json()["config"]["model"] == model
+
+
+def test_openrouter_connection_rejects_conflicting_route(client):
+    """Validation and activation reject the same conflicting draft with a 422
+    naming the fields, without the key."""
+    connection_id = _openrouter_connection(client)
+    llm = {
+        "model": "openhands/claude-sonnet-5",
+        "provider_connection_id": connection_id,
+    }
+
+    validated = client.post("/api/profiles/conflict/validate", json={"llm": llm})
+    client.post("/api/profiles/conflict", json={"llm": llm, "include_secrets": False})
+    activated = client.post("/api/profiles/conflict/activate")
+
+    for response in (validated, activated):
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "openhands/claude-sonnet-5" in detail
+        assert connection_id in detail
+        assert "sk-or-shared" not in detail
+
+
+@pytest.fixture
+def chat_standin():
+    """A local OpenAI-compatible server recording (path, model) per request."""
+    import json as json_module
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    seen: list[tuple[str, str]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json_module.loads(
+                self.rfile.read(int(self.headers["Content-Length"]))
+            )
+            seen.append((self.path, body["model"]))
+            payload = json_module.dumps(
+                {
+                    "id": "chat-1",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": body["model"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "pong"},
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/api/v1", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_validate_draft_linked_to_openrouter_reaches_the_connection(
+    client, chat_standin
+):
+    """Pre-flight validation dispatches through the same resolution as runtime:
+    an unprefixed OpenRouter id reaches the connection's endpoint as-is."""
+    base_url, seen = chat_standin
+    connection_id = _openrouter_connection(client, base_url)
+
+    response = client.post(
+        "/api/profiles/inkling/validate",
+        json={
+            "llm": {
+                "model": "thinkingmachines/inkling-small:free",
+                "provider_connection_id": connection_id,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "error": None}
+    assert seen == [("/api/v1/chat/completions", "thinkingmachines/inkling-small:free")]
+
+
+@pytest.mark.parametrize(
+    "llm",
+    [
+        # Advanced tab, inline base URL (OpenHands#17261, #4247).
+        {"model": "qwen", "api_key": "sk-local"},
+        {"model": "lmstudio-community/gemma-4-e4b-it-mlx", "api_key": "sk-local"},
+    ],
+)
+def test_validate_local_openai_compatible_model(client, chat_standin, llm):
+    base_url, seen = chat_standin
+
+    response = client.post(
+        "/api/profiles/local/validate",
+        json={"llm": {**llm, "base_url": base_url}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "error": None}
+    assert seen == [("/api/v1/chat/completions", llm["model"])]
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("custom", "ollama-local/qwen3-coder"),  # 9Router alias (OpenHands#17195)
+        ("custom_openai", "ollama/qwen3-coder-next"),
+    ],
+)
+def test_profile_linked_to_openai_compatible_connection_validates_and_activates(
+    client, chat_standin, provider, model
+):
+    base_url, seen = chat_standin
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Router",
+            "provider": provider,
+            "api_key": "sk-router",
+            "base_url": base_url,
+        },
+    ).json()["id"]
+    llm = {"model": model, "provider_connection_id": connection_id}
+
+    validated = client.post("/api/profiles/router/validate", json={"llm": llm})
+    client.post("/api/profiles/router", json={"llm": llm, "include_secrets": False})
+    activated = client.post("/api/profiles/router/activate")
+
+    assert validated.json() == {"valid": True, "error": None}
+    assert seen == [("/api/v1/chat/completions", model)]
+    assert activated.status_code == 200
+
+
 def test_provider_connection_rejects_extra_headers(client):
     response = client.post(
         "/api/llm/provider-connections",

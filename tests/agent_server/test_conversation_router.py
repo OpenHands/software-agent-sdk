@@ -2976,6 +2976,45 @@ def test_switch_conversation_llm_resolves_provider_connection(
         client.app.dependency_overrides.clear()
 
 
+def test_switch_conversation_llm_routes_openrouter_native_id(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A forwarded profile config linked to an OpenRouter connection is installed
+    with the OpenRouter route, not LiteLLM's guess from the vendor namespace."""
+    client_context(client).stores.provider_connections.create(
+        _provider_connection(
+            "or-conn", api_key="or-secret", base_url=None, provider="openrouter"
+        ),
+        cipher=None,
+    )
+
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": "or-conn",
+                    "usage_id": "caller-supplied-id",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        forwarded = mock_conversation.switch_llm.call_args.args[0]
+        assert forwarded.model == "openrouter/anthropic/claude-sonnet-4"
+        assert forwarded._provider_info.name == "openrouter"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_switch_conversation_llm_resolves_encrypted_provider_connection(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
@@ -3098,14 +3137,20 @@ def test_switch_conversation_llm_missing_provider_connection_rejects_before_swit
         client.app.dependency_overrides.clear()
 
 
-def _provider_connection(connection_id: str, *, api_key: str, base_url: str | None):
+def _provider_connection(
+    connection_id: str,
+    *,
+    api_key: str,
+    base_url: str | None,
+    provider: str = "custom",
+):
     from openhands.sdk.llm.provider_connection_store import ProviderConnection
 
     now = int(time.time())
     return ProviderConnection(
         id=connection_id,
         display_name=connection_id,
-        provider="custom",
+        provider=provider,
         api_key=SecretStr(api_key),
         base_url=base_url,
         created_at=now,

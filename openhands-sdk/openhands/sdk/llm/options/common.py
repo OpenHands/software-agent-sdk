@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENROUTER_PROVIDER_PREFIX,
+    litellm_call_kwargs,
+)
+
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
@@ -60,10 +65,10 @@ def apply_extra_body(user_kwargs: dict[str, Any], llm: LLM) -> dict[str, Any]:
 def is_openrouter(llm: LLM) -> bool:
     """Return whether this LLM routes through OpenRouter.
 
-    Matches the ``openrouter/`` model prefix and the ``openrouter.ai`` base URL
-    that the OpenRouter runtime-metadata resolver also keys off, so the two
-    agree on what counts as OpenRouter.
+    Uses the same LiteLLM routing as the request itself, so an ``openrouter/``
+    model and an OpenRouter-native id sent to an ``openrouter.ai`` base URL both
+    count, while a lookalike host does not.
     """
-    model = llm.model or ""
-    base_url = llm.base_url or ""
-    return model.startswith("openrouter/") or "openrouter.ai" in base_url
+    return litellm_call_kwargs(llm.model, llm.base_url)["model"].startswith(
+        OPENROUTER_PROVIDER_PREFIX
+    )
