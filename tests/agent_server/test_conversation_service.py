@@ -132,6 +132,28 @@ def sample_stored_conversation():
     )
 
 
+def test_conversation_info_takes_tags_from_the_metadata(sample_stored_conversation):
+    """A tag PATCH saves ``meta.json`` before the state, which waits for its lock.
+
+    Until the state catches up, the conversation still shows the new tags.
+    """
+    stored = sample_stored_conversation.model_copy(
+        update={"tags": {"project": "p1", "resolved": "user"}}
+    )
+    state = ConversationState(
+        id=stored.id,
+        agent=_sample_agent(),
+        workspace=stored.workspace,
+        execution_status=ConversationExecutionStatus.RUNNING,
+        confirmation_policy=stored.confirmation_policy,
+        tags={"project": "p1"},
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tags == {"project": "p1", "resolved": "user"}
+
+
 @pytest.mark.asyncio
 async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
     """End-to-end single-source-of-truth guarantee.
