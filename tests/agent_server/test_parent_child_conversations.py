@@ -20,8 +20,10 @@ from openhands.agent_server.exceptions import (
     ConversationRunLimitExceeded,
     InvalidParentConversation,
 )
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     ConversationInfo,
+    SendMessageRequest,
     StartChildConversationRequest,
     StartChildConversationResponse,
     StartConversationRequest,
@@ -32,6 +34,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.workspace import LocalWorkspace
@@ -369,7 +372,9 @@ async def test_start_child_conversation_delivers_task_as_first_message(
     assert launch.result is not None
     child_service = launch.services[launch.result.conversation_id]
     child_service.send_message.assert_awaited_once_with(
-        Message(role="user", content=[TextContent(text="Write the docs")]), False
+        Message(role="user", content=[TextContent(text="Write the docs")]),
+        False,
+        sender=None,
     )
     # The run is admitted with the slot acquired before the child was persisted.
     child_service.run.assert_awaited_once()
@@ -583,3 +588,81 @@ def test_router_rejects_child_with_empty_task():
 
     assert response.status_code == 422
     service.start_child_conversation.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# A first message sent by another conversation (initial_message sender)
+# ---------------------------------------------------------------------------
+
+
+def _first_message_from(
+    workspace_dir: Path, sender_id: UUID, conversation_id: UUID | None = None
+) -> StartConversationRequest:
+    request = _start_request(workspace_dir, conversation_id=conversation_id)
+    return request.model_copy(
+        update={
+            "initial_message": SendMessageRequest(
+                content=[TextContent(text="Write the changelog.")],
+                sender_conversation_id=sender_id,
+            )
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_message_records_the_sending_conversation(tmp_path, workspace_dir):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        sender_info, _ = await service.start_conversation(_start_request(workspace_dir))
+        with patch.object(EventService, "run", AsyncMock(return_value=None)):
+            info, _ = await service.start_conversation(
+                _first_message_from(workspace_dir, sender_info.id)
+            )
+
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        page = await event_service.search_events(kind="MessageEvent")
+        (first,) = page.items
+        assert isinstance(first, MessageEvent)
+        assert first.sender == f"conversation:{sender_info.id.hex}"
+        header, text = first.llm_message.content
+        assert isinstance(header, TextContent) and isinstance(text, TextContent)
+        assert header.text.startswith(
+            f"[Sent by [untitled conversation](conversation:{sender_info.id.hex}), "
+            "another "
+            "conversation, not by the user."
+        )
+        assert text.text == "Write the changelog."
+
+
+@pytest.mark.asyncio
+async def test_first_message_from_an_unknown_conversation_is_refused(
+    tmp_path, workspace_dir
+):
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        with pytest.raises(SenderError, match="Sender conversation not found"):
+            await service.start_conversation(
+                _first_message_from(workspace_dir, uuid4())
+            )
+        assert (await service.search_conversations()).items == []
+
+
+def test_router_maps_an_unknown_sender_to_422(tmp_path):
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.include_router(conversation_router, prefix="/api")
+    service = AsyncMock(spec=ConversationService)
+    service.start_conversation.side_effect = SenderError(
+        "Sender conversation not found"
+    )
+    app.dependency_overrides[get_conversation_service] = lambda: service
+    client = TestClient(app)
+
+    payload = _first_message_from(tmp_path, uuid4()).model_dump(mode="json")
+    response = client.post("/api/conversations", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Sender conversation not found"

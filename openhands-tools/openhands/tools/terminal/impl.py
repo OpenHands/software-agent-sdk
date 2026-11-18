@@ -58,6 +58,10 @@ _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "can't find pane",
     "could not find window_id",
     "could not find pane_id",
+    # tmux reports this when a command's target pane is already gone and
+    # the server has no current session/window/pane context to fall back
+    # to (e.g. a server that briefly outlives its last session).
+    "no current target",
 )
 
 logger = get_logger(__name__)

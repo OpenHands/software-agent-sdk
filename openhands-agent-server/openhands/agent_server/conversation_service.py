@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import importlib
 import json
 import logging
@@ -7,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -49,6 +51,7 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
+from openhands.agent_server.message_sender import sender_message_header
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -91,6 +94,7 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
+from openhands.sdk.conversation.types import conversation_sender
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
@@ -410,8 +414,13 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    state_fields = state.model_dump(mode="json", context={"use_snapshot": True})
+    # A tag PATCH writes ``meta.json`` first, then waits for the state lock to
+    # set the state's tags, which a run can hold for a whole LLM step. Rows
+    # composed meanwhile (from ``base_state.json``) must show the new tags.
+    state_fields["tags"] = dict(stored.tags)
     return ConversationInfo(
-        **state.model_dump(mode="json", context={"use_snapshot": True}),
+        **state_fields,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -521,6 +530,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
         mode="json",
         include={
             "title",
+            "tags",
             "metrics",
             "created_at",
             "updated_at",
@@ -1607,6 +1617,24 @@ class ConversationService:
                     f"to a different workspace"
                 )
 
+        initial_message = request.initial_message
+        first_message: Message | None = None
+        initial_sender: str | None = None
+        if initial_message is not None:
+            content = list(initial_message.content)
+            sender_id = initial_message.sender_conversation_id
+            if sender_id is not None:
+                content.insert(
+                    0,
+                    TextContent(
+                        text=await sender_message_header(
+                            self, sender_id, conversation_id
+                        )
+                    ),
+                )
+                initial_sender = conversation_sender(sender_id)
+            first_message = Message(role=initial_message.role, content=content)
+
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
         runtime_launched_profile = (
             LaunchedAgentProfile.model_validate_json(runtime_profile)
@@ -1784,17 +1812,13 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        initial_message = request.initial_message
         return await self._launch_prepared_conversation(
             stored,
             launched,
             run_slot=run_slot,
             gateway_run=gateway_run,
-            initial_message=(
-                Message(role=initial_message.role, content=initial_message.content)
-                if initial_message
-                else None
-            ),
+            initial_message=first_message,
+            initial_sender=initial_sender,
             reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
@@ -1806,6 +1830,7 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
         gateway_run: bool = False,
@@ -1846,7 +1871,9 @@ class ConversationService:
             )
         try:
             if initial_message is not None:
-                await event_service.send_message(initial_message, False)
+                await event_service.send_message(
+                    initial_message, False, sender=initial_sender
+                )
                 await event_service.run(run_slot=run_slot)
 
             state = await event_service.get_state()
@@ -1987,7 +2014,6 @@ class ConversationService:
         if event_service is None:
             return False
 
-        loop = asyncio.get_running_loop()
         state = await event_service.get_state()
         update: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
@@ -2002,8 +2028,8 @@ class ConversationService:
         if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
-            state = await loop.run_in_executor(
-                None, _update_state_tags_sync, state, request.tags
+            state = await event_service.run_state_op(
+                _update_state_tags_sync, state, request.tags
             )
         if budget_updated:
             # base_state.json owns the budget; the event service is loaded
@@ -2017,8 +2043,8 @@ class ConversationService:
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
         # worker thread so metadata updates cannot block the FastAPI event loop.
-        conversation_info = await loop.run_in_executor(
-            None, _compose_webhook_conversation_info_sync, event_service.stored, state
+        conversation_info = await event_service.run_state_op(
+            _compose_webhook_conversation_info_sync, event_service.stored, state
         )
         await self._notify_conversation_webhooks(conversation_info)
 
@@ -2133,12 +2159,15 @@ class ConversationService:
                 raise ValueError(f"Conversation with id {fork_id} already exists")
 
             # fork() deep-copies events and state into ``fork_dir``.
-            fork_conv = await asyncio.to_thread(
-                source_conversation.fork,
-                conversation_id=fork_conv_id,
-                tags=tags,
-                reset_metrics=reset_metrics,
-                from_event_id=from_event_id,
+            fork_conv = await source_service.run_state_op(
+                partial(
+                    contextvars.copy_context().run,
+                    source_conversation.fork,
+                    conversation_id=fork_conv_id,
+                    tags=tags,
+                    reset_metrics=reset_metrics,
+                    from_event_id=from_event_id,
+                )
             )
             # Extract the persisted data, then discard the temporary conversation.
             fork_agent = cast(AgentBase, fork_conv.agent)

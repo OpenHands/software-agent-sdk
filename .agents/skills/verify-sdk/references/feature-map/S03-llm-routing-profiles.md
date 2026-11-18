@@ -77,7 +77,7 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
     --check first_run.secondary_in_registry eq true --check first_run.usage_ids contains secondary \
     --check first_run.secondary_cost eq 0.14 --check first_run.combined_cost eq 0.42
   ```
-  Known failure (reproduced 2026-11-12, [#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)): an LLM added to `conversation.llm_registry` before the first `send_message` never reaches `conversation_stats`. The conversation subscribes the stats to its registry only when it initializes the agent (on the first message), and `subscribe` does not replay LLMs already registered, so `secondary` sits in the registry while `usage_to_metrics` has only `agent`, and its 0.14 is missing from the combined cost (0.28).
+  Known failure (reproduced 2026-11-17, [#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)): an LLM added to `conversation.llm_registry` before the first `send_message` never reaches `conversation_stats`. The conversation subscribes the stats to its registry only when it initializes the agent (on the first message), and `subscribe` does not replay LLMs already registered, so `secondary` sits in the registry while `usage_to_metrics` has only `agent`, and its 0.14 is missing from the combined cost (0.28).
 - **One LLM object in two conversations (`S03.session-per-conversation`).** The same priced `LLM` is the agent's LLM of two conversations; the first runs one turn, the second two (0.14 per call).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

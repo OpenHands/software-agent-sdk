@@ -33,6 +33,7 @@ from openhands.agent_server.exceptions import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.launch import launch_error
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AddMCPServersRequest,
@@ -79,6 +80,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -351,7 +353,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidParentConversation, UnavailableAgentTool, SenderError) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
@@ -548,7 +550,7 @@ async def add_conversation_mcp_servers(
     }
     try:
         await event_service.add_mcp_servers(mcp_servers)
-    except ValueError as exc:
+    except (ValueError, MCPServerStartError) as exc:
         raise Invalid(str(exc)) from exc
     return Success()
 

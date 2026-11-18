@@ -39,6 +39,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
@@ -1824,6 +1825,31 @@ def test_add_conversation_mcp_servers_invalid(
 
         assert response.status_code == 400
         assert response.json()["detail"] == "legacy protocol"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_mcp_servers_start_failure_is_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.side_effect = MCPServerStartError(
+        "dies", "Could not start MCP server dies: Connection closed"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"dies": {"command": "true"}}},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Could not start MCP server dies: Connection closed"
+        )
     finally:
         client.app.dependency_overrides.clear()
 
