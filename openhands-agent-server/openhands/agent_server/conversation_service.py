@@ -427,8 +427,13 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    state_fields = state.model_dump(mode="json", context={"use_snapshot": True})
+    # A tag PATCH writes ``meta.json`` first, then waits for the state lock to
+    # set the state's tags, which a run can hold for a whole LLM step. Rows
+    # composed meanwhile (from ``base_state.json``) must show the new tags.
+    state_fields["tags"] = dict(stored.tags)
     return ConversationInfo(
-        **state.model_dump(mode="json", context={"use_snapshot": True}),
+        **state_fields,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -538,6 +543,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
         mode="json",
         include={
             "title",
+            "tags",
             "metrics",
             "created_at",
             "updated_at",

@@ -132,6 +132,28 @@ def sample_stored_conversation():
     )
 
 
+def test_conversation_info_takes_tags_from_the_metadata(sample_stored_conversation):
+    """A tag PATCH saves ``meta.json`` before the state, which waits for its lock.
+
+    Until the state catches up, the conversation still shows the new tags.
+    """
+    stored = sample_stored_conversation.model_copy(
+        update={"tags": {"project": "p1", "resolved": "user"}}
+    )
+    state = ConversationState(
+        id=stored.id,
+        agent=_sample_agent(),
+        workspace=stored.workspace,
+        execution_status=ConversationExecutionStatus.RUNNING,
+        confirmation_policy=stored.confirmation_policy,
+        tags={"project": "p1"},
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tags == {"project": "p1", "resolved": "user"}
+
+
 @pytest.mark.asyncio
 async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
     """End-to-end single-source-of-truth guarantee.
@@ -1325,6 +1347,31 @@ async def test_search_refreshes_cached_info_on_metadata_only_update(
         assert page.items[0].title == "Generated Title"
         assert service._event_services is not None
         assert set(service._event_services) == {conversation_id}
+
+
+@pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_a_tags_only_update(
+    persisted_conversation,
+):
+    """New tags in meta.json show on a cached row before the state is saved."""
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        initial = await service.search_conversations()
+        assert initial.items[0].tags == {}
+        assert service._conversation_records[conversation_id].cached_info is not None
+
+        # Change only the tags in meta.json; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(
+            update={"tags": {"resolved": "user"}}
+        )
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert page.items[0].tags == {"resolved": "user"}
 
 
 @pytest.mark.asyncio
