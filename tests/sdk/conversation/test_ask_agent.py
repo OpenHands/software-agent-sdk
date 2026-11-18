@@ -28,9 +28,8 @@ from openhands.sdk.llm import (
     MetricsSnapshot,
     TextContent,
 )
-from openhands.sdk.tool import Action, Observation, Tool
+from openhands.sdk.tool import Action, Observation
 from openhands.sdk.workspace import RemoteWorkspace
-from openhands.tools.file_editor import FileEditorTool
 from tests.sdk.conversation.conftest import create_mock_http_client
 
 
@@ -249,7 +248,7 @@ def create_mock_model_response(content: str) -> ModelResponse:
 def test_ask_agent_reuses_normal_tool_schemas(mock_transport, tmp_path, agent):
     mock_transport.return_value = create_mock_model_response("Done.")
     conv = Conversation(
-        agent=Agent(llm=agent.llm, tools=[Tool(name=FileEditorTool.name)]),
+        agent=Agent(llm=agent.llm, tools=[], include_default_tools=["SwitchLLMTool"]),
         workspace=str(tmp_path),
         visualizer=None,
     )
@@ -262,7 +261,7 @@ def test_ask_agent_reuses_normal_tool_schemas(mock_transport, tmp_path, agent):
     finally:
         conv.close()
 
-    assert any(tool["function"]["name"] == FileEditorTool.name for tool in normal_tools)
+    assert any(tool["function"]["name"] == "switch_llm" for tool in normal_tools)
     assert question_tools == normal_tools
 
 
