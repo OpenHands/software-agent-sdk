@@ -7,6 +7,7 @@ material — neither plaintext nor recoverable Fernet ciphertext.
 
 import json
 from pathlib import Path
+from typing import Final
 
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
@@ -20,6 +21,9 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 TRAJECTORY_SECRET_FIELDS: frozenset[str] = frozenset(
     (*LLM_SECRET_FIELDS, "llm_api_key")
 )
+
+# Suffix of newline-delimited JSON files: one JSON document per line.
+_JSON_LINES_SUFFIX: Final[str] = ".jsonl"
 
 
 def _is_secret_value(key: object, value: object) -> bool:
@@ -60,23 +64,31 @@ def redact_secrets_in_obj(obj: object) -> bool:
     return changed
 
 
-def redacted_file_bytes(path: Path) -> bytes | None:
-    """Return redacted bytes for a JSON/JSONL file, or ``None`` if unchanged.
+def should_redact(path: Path) -> bool:
+    """Return True if exports pass ``path``'s content through redaction.
 
-    Persisted conversation files are JSON (``*.json``) or newline-delimited
-    JSON (``*.jsonl``/the per-event log files). Anything that does not parse as
-    JSON is left untouched (returns ``None``) so the archive is byte-identical
-    for non-secret content.
+    Persisted conversation payloads are JSON (``*.json``) or newline-delimited
+    JSON (``*.jsonl``/the per-event log files); those are the files whose
+    bytes go through ``redacted_json_bytes``. Every other file is exported as
+    it is.
     """
-    suffix = path.suffix.lower()
-    if suffix not in (".json", ".jsonl"):
-        return None
+    return path.suffix.lower() in (".json", _JSON_LINES_SUFFIX)
+
+
+def redacted_json_bytes(data: bytes, path: Path) -> bytes | None:
+    """Return redacted ``data``, or ``None`` if nothing needed redacting.
+
+    ``data`` is the content of ``path``, a file ``should_redact`` selected;
+    a ``.jsonl`` path is parsed one JSON document per line. Content that is not
+    UTF-8 or does not parse as JSON is left untouched (returns ``None``) so the
+    archive is byte-identical for non-secret content.
+    """
     try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        raw = data.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
-    if suffix == ".jsonl":
+    if path.suffix.lower() == _JSON_LINES_SUFFIX:
         changed = False
         out_lines: list[str] = []
         for line in raw.splitlines(keepends=True):

@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import Field
 
@@ -64,6 +64,8 @@ Examples:
 
 class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     """A ToolDefinition subclass that automatically initializes a GlobExecutor."""
+
+    catalog_description: ClassVar[str] = "Find files by name pattern, such as **/*.ts."
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Declare resource usage based on the active backend.

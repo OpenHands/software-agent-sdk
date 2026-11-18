@@ -71,8 +71,9 @@ class SyncFrame(SessionFrameBase):
 class DurableFrame(SessionFrameBase):
     """One persisted event, after it is safely on disk.
 
-    ``seq`` is its index in the log, already on disk as the ``{idx:05d}``
-    filename component, so exposing it needs no migration.
+    ``seq`` is its on-disk index, the ``{idx:05d}`` filename component, so
+    exposing it needs no migration and it survives a restart, even one that
+    finds an earlier event file lost.
     """
 
     type: Literal["durable"] = "durable"

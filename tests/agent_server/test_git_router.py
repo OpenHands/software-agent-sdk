@@ -2,13 +2,16 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.git_provider_service import GitProviderAPIError
+from openhands.agent_server.runtime_router import create_runtime_router
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.models import (
     GitChange,
@@ -16,7 +19,10 @@ from openhands.sdk.git.models import (
     GitCommit,
     GitCommitsPage,
     GitDiff,
+    GitProviderRepository,
+    GitProviderRepositoryPage,
 )
+from openhands.sdk.workspace.repo import GitProvider
 
 
 @pytest.fixture
@@ -24,6 +30,119 @@ def client():
     """Create a test client for the FastAPI app without authentication."""
     config = Config(session_api_keys=[])  # Disable authentication
     return TestClient(create_app(config), raise_server_exceptions=False)
+
+
+def test_git_repositories_search_success(client):
+    """GET /api/git/repositories/search proxies provider repository results."""
+    page = GitProviderRepositoryPage(
+        items=[
+            GitProviderRepository(
+                id="123",
+                full_name="OpenHands/software-agent-sdk",
+                git_provider="github",
+                is_public=True,
+                stargazers_count=7,
+                pushed_at="2026-09-29T12:00:00Z",
+                main_branch="main",
+            )
+        ],
+        next_page_id="2",
+        missing_token=False,
+    )
+
+    with patch(
+        "openhands.agent_server.git_router.search_provider_repositories",
+        new_callable=AsyncMock,
+    ) as search_provider_repositories:
+        search_provider_repositories.return_value = page
+
+        response = client.get(
+            "/api/git/repositories/search",
+            params={"provider": "github", "limit": 30, "page_id": "1"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "id": "123",
+                "full_name": "OpenHands/software-agent-sdk",
+                "git_provider": "github",
+                "is_public": True,
+                "stargazers_count": 7,
+                "pushed_at": "2026-09-29T12:00:00Z",
+                "main_branch": "main",
+            }
+        ],
+        "next_page_id": "2",
+        "missing_token": False,
+    }
+    search_provider_repositories.assert_awaited_once()
+    await_args = search_provider_repositories.await_args
+    assert await_args is not None
+    _, provider = await_args.args
+    assert provider.value == "github"
+    assert await_args.kwargs == {
+        "query": None,
+        "limit": 30,
+        "page_id": "1",
+    }
+
+
+def test_git_repositories_search_reports_missing_token(client):
+    """Repository discovery can report a missing provider token."""
+    page = GitProviderRepositoryPage(items=[], next_page_id=None, missing_token=True)
+
+    with patch(
+        "openhands.agent_server.git_router.search_provider_repositories",
+        new_callable=AsyncMock,
+    ) as search_provider_repositories:
+        search_provider_repositories.return_value = page
+
+        response = client.get(
+            "/api/git/repositories/search", params={"provider": "github"}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "next_page_id": None,
+        "missing_token": True,
+    }
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 502, 504])
+def test_git_repositories_search_preserves_provider_error_status(client, status_code):
+    """Provider auth/retry failures should stay distinguishable."""
+    with patch(
+        "openhands.agent_server.git_router.search_provider_repositories",
+        new_callable=AsyncMock,
+    ) as search_provider_repositories:
+        search_provider_repositories.side_effect = GitProviderAPIError(
+            "GitHub repository search failed", status_code=status_code
+        )
+
+        response = client.get(
+            "/api/git/repositories/search", params={"provider": "github"}
+        )
+
+    assert response.status_code == status_code
+    if status_code < 500:
+        assert response.json() == {"detail": "GitHub repository search failed"}
+
+
+def test_runtime_git_router_excludes_repository_search():
+    """Repository search uses the global secrets store, not conversation secrets."""
+    paths = {
+        route.path
+        for route in create_runtime_router().routes
+        if isinstance(route, APIRoute)
+    }
+
+    assert (
+        "/conversations/{runtime_conversation_id}/git/repositories/search" not in paths
+    )
+    assert "/conversations/{runtime_conversation_id}/git/changes" in paths
 
 
 # =============================================================================
@@ -182,6 +301,34 @@ async def test_git_changes_query_param_ref_head_on_empty_repo_returns_200(
     # Assert
     assert response.status_code == 200
     assert response.json() == [{"status": "ADDED", "path": "untracked.txt"}]
+
+
+def test_git_changes_lists_repo_below_non_repo_path(client, tmp_path):
+    """A non-repository path holding a repository lists that repository's changes.
+
+    Real git (no mock): the ``{base}/{repo}`` workspace of a repository-backed
+    conversation used to answer ``200 []``.
+    """
+    repo = tmp_path / "proj"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    (repo / "README.md").write_text("hello\n")
+    git("add", "README.md")
+    git("-c", "user.name=qa", "-c", "user.email=qa@example.com", "commit", "-qm", "i")
+    (repo / "README.md").write_text("hello\nedit\n")
+    (repo / "notes.txt").write_text("note\n")
+
+    response = client.get("/api/git/changes", params={"path": str(tmp_path)})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"status": "UPDATED", "path": "proj/README.md"},
+        {"status": "ADDED", "path": "proj/notes.txt"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -564,3 +711,104 @@ def test_git_commit_endpoints_in_openapi(client):
     assert commit_param is not None
     assert commit_param["in"] == "query"
     assert commit_param.get("required", False) is False
+
+
+@pytest.mark.parametrize("endpoint", ["changes", "diff", "commits"])
+def test_git_empty_path_is_rejected(client, tmp_path, monkeypatch, endpoint):
+    monkeypatch.chdir(tmp_path)
+
+    response = client.get(f"/api/git/{endpoint}", params={"path": ""})
+
+    assert response.status_code == 400
+
+
+_PR_PATH = "/api/git/repositories/o/r/pull-requests/7"
+
+
+def test_git_pull_request_status_success(client):
+    """GET .../repositories/{owner}/{repo}/pull-requests/{number} returns a badge."""
+    from openhands.sdk.git.models import (
+        GitPullRequestChecks,
+        GitPullRequestState,
+        GitPullRequestStatus,
+    )
+
+    status = GitPullRequestStatus(
+        git_provider="github",
+        repository="o/r",
+        number=7,
+        state=GitPullRequestState.OPEN,
+        draft=False,
+        title="Add projects",
+        url="https://github.com/o/r/pull/7",
+        head_sha="abc",
+        checks=GitPullRequestChecks.PENDING,
+    )
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+    ) as get_pr:
+        get_pr.return_value = status
+        response = client.get(_PR_PATH, params={"provider": "github"})
+
+    assert response.status_code == 200
+    assert response.json() == status.model_dump(mode="json")
+    await_args = get_pr.await_args
+    assert await_args is not None
+    assert await_args.args[1:] == (GitProvider.GITHUB, "o", "r", 7)
+
+
+def test_git_pull_request_status_requires_provider(client):
+    assert client.get(_PR_PATH).status_code == 422
+
+
+def test_git_pull_request_status_without_token_is_409_with_code(client):
+    from openhands.agent_server.git_provider_service import (
+        MissingGitProviderTokenError,
+    )
+
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+        side_effect=MissingGitProviderTokenError("No github token is configured"),
+    ):
+        response = client.get(_PR_PATH, params={"provider": "github"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "missing_provider_token",
+        "message": "No github token is configured",
+    }
+
+
+def test_git_pull_request_status_rate_limit_is_429(client):
+    """The route sets GitHub's Retry-After on the exception (kept by #6706)."""
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+        side_effect=GitProviderAPIError(
+            "GitHub rate limit reached", status_code=429, retry_after="30"
+        ),
+    ):
+        response = client.get(_PR_PATH, params={"provider": "github"})
+
+    assert response.status_code == 429
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/git/repositories/o%20x/r/pull-requests/7",
+        "/api/git/repositories/o/%2E%2E/pull-requests/7",
+        "/api/git/repositories/%2E/r/pull-requests/7",
+        "/api/git/repositories/o/r/pull-requests/0",
+    ],
+)
+def test_git_pull_request_status_rejects_bad_path(client, path):
+    with patch(
+        "openhands.agent_server.git_router.get_provider_pull_request",
+        new_callable=AsyncMock,
+    ) as get_pr:
+        response = client.get(path, params={"provider": "github"})
+    assert response.status_code in {404, 422}
+    get_pr.assert_not_awaited()

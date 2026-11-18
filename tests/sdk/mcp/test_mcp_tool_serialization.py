@@ -21,7 +21,7 @@ def create_mock_mcp_tool(name: str) -> mcp.types.Tool:
     return mcp.types.Tool(
         name=name,
         description=f"A test MCP tool named {name}",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Query parameter"}
@@ -114,7 +114,7 @@ def test_mcp_tool_essential_properties() -> None:
     mock_mcp_tool = mcp.types.Tool(
         name="essential_tool",
         description="Tool with essential properties",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"param1": {"type": "string"}, "param2": {"type": "integer"}},
             "required": ["param1"],
@@ -130,7 +130,7 @@ def test_mcp_tool_essential_properties() -> None:
     assert mcp_tool.name == "essential_tool"
     assert mcp_tool.description == "Tool with essential properties"
     assert mcp_tool.mcp_tool.name == "essential_tool"
-    assert mcp_tool.mcp_tool.inputSchema is not None
+    assert mcp_tool.mcp_tool.input_schema is not None
 
     # Verify action type was created correctly
     assert mcp_tool.action_type is not None and issubclass(

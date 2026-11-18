@@ -18,6 +18,7 @@ __all__ = [
     "PromptBlocks",
     "PromptContext",
     "PromptSection",
+    "SecretInfo",
 ]
 
 
@@ -49,12 +50,27 @@ class Platform(StrEnum):
         return cls.OTHER
 
 
+class SecretInfo(NamedTuple):
+    """One advertised secret entry, consumed by ``CustomSecretsSection``.
+
+    ``scope`` groups secrets when rendering (the SDK attaches no meaning to the
+    value); ``scope_description`` is shown once above the group. Both default
+    to ``None`` to preserve the legacy flat rendering when no secret carries a
+    scope.
+    """
+
+    name: str
+    description: str | None = None
+    scope: str | None = None
+    scope_description: str | None = None
+
+
 class PromptContext(BaseModel):
     """Frozen snapshot of everything that shapes a system prompt.
 
     ``template_kwargs`` is the resolved kwarg dict for the static, cache-stable
-    block; the other fields snapshot per-conversation signals. ``enable_browser``
-    / ``model_family`` / ``cli_mode`` are typed views over ``template_kwargs``.
+    block; the other fields snapshot per-conversation signals. ``model_family`` /
+    ``cli_mode`` are typed views over ``template_kwargs``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -63,6 +79,7 @@ class PromptContext(BaseModel):
         default_factory=dict, validate_default=True
     )
     tool_names: tuple[str, ...] = Field(default_factory=tuple)
+    tool_guidance: tuple[str, ...] = Field(default_factory=tuple)
     platform: Platform = Field(default_factory=Platform.current)
     working_dir: str | None = None
     now: str | None = None
@@ -70,12 +87,12 @@ class PromptContext(BaseModel):
     secret_names: tuple[str, ...] = Field(default_factory=tuple)
     # Resolved dynamic-tier data (skills gated + secrets merged before assembly),
     # consumed by the dynamic sections. ``repo_skills`` is (name, content) pairs;
-    # ``secret_infos`` is (name, description) pairs.
+    # ``secret_infos`` carries name, description, scope, and scope_description.
     repo_skills: tuple[tuple[str, str], ...] = Field(default_factory=tuple)
     available_skills_prompt: str | None = None
     custom_suffix: str | None = None
     memory_context: str | None = None
-    secret_infos: tuple[tuple[str, str | None], ...] = Field(default_factory=tuple)
+    secret_infos: tuple[SecretInfo, ...] = Field(default_factory=tuple)
 
     @field_validator("template_kwargs", mode="after")
     @classmethod
@@ -87,10 +104,6 @@ class PromptContext(BaseModel):
         return MappingProxyType(dict(value))
 
     @property
-    def enable_browser(self) -> bool:
-        return bool(self.template_kwargs.get("enable_browser", False))
-
-    @property
     def model_family(self) -> str | None:
         value = self.template_kwargs.get("model_family")
         return value if isinstance(value, str) else None
@@ -98,6 +111,11 @@ class PromptContext(BaseModel):
     @property
     def cli_mode(self) -> bool:
         return bool(self.template_kwargs.get("cli_mode", False))
+
+    @property
+    def persona(self) -> str | None:
+        value = self.template_kwargs.get("persona")
+        return value if isinstance(value, str) and value.strip() else None
 
 
 @runtime_checkable
@@ -109,17 +127,20 @@ class PromptSection(Protocol):
     :meth:`guard` decides whether the section applies (if ``False`` it is
     skipped and :meth:`render` never runs), then :meth:`render` produces the
     text. The split is intentional -- ``guard`` returning ``False`` means "not
-    applicable here" (e.g. browser disabled, wrong platform), while ``render``
-    returning ``None`` means "applicable, but nothing to add right now" (e.g. no
-    skills present).
+    applicable here" (e.g. security policy disabled), while ``render`` returning
+    ``None`` means "applicable, but nothing to add right now" (e.g. no skills
+    present).
 
     Both must be pure -- read-only on ``ctx``, no I/O -- so sections are
     testable in isolation. ``name`` is the registry's unique key for
     dedup/override; ``cache_tier`` selects the static or dynamic block.
     """
 
-    name: str
-    cache_tier: CacheTier
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def cache_tier(self) -> CacheTier: ...
 
     def guard(self, ctx: PromptContext) -> bool:
         """Return ``True`` if this section applies to ``ctx``."""

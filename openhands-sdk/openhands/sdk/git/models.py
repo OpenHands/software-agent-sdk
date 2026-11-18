@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 
 from pydantic import BaseModel, field_serializer
@@ -39,3 +39,48 @@ class GitCommit(BaseModel):
 class GitCommitsPage(BaseModel):
     commits: list[GitCommit]
     has_more: bool
+
+
+class GitProviderRepository(BaseModel):
+    id: str
+    full_name: str
+    git_provider: str
+    is_public: bool
+    stargazers_count: int | None = None
+    pushed_at: str | None = None
+    main_branch: str | None = None
+
+
+class GitProviderRepositoryPage(BaseModel):
+    items: list[GitProviderRepository]
+    next_page_id: str | None = None
+    missing_token: bool = False
+
+
+class GitPullRequestState(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    MERGED = "merged"
+
+
+class GitPullRequestChecks(StrEnum):
+    """Combined CI result of a pull request's head commit."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    PENDING = "pending"
+    NONE = "none"
+
+
+class GitPullRequestStatus(BaseModel):
+    """Live state of one pull request on a git provider, for status badges."""
+
+    git_provider: str
+    repository: str
+    number: int
+    state: GitPullRequestState
+    draft: bool = False
+    title: str
+    url: str
+    head_sha: str | None = None
+    checks: GitPullRequestChecks

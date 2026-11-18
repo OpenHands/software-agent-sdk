@@ -1,27 +1,41 @@
 """Tmux-based terminal backend implementation."""
 
 import logging
+import os
+import shlex
+import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from pathlib import Path
 
 import libtmux
+from filelock import FileLock
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
+    TMUX_SOCKET_CREATION_LOCK,
     TMUX_SOCKET_NAME,
+    TMUX_SOCKET_OWNER_OPTION,
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
+    ensure_utf8_locale,
     normalize_terminal_env,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 from openhands.tools.terminal.terminal.interface import parse_ctrl_key
+from openhands.tools.terminal.terminal.process_priority import (
+    process_priority_prefix,
+)
 
 
 logger = get_logger(__name__)
@@ -68,6 +82,129 @@ def _install_libtmux_redaction_filter() -> None:
             libtmux_logger.addFilter(_SecretRedactFilter())
 
 
+@contextmanager
+def _socket_creation_lock(socket_dir: Path | None = None) -> Iterator[None]:
+    """Serialize socket creation with the agent-server's startup cleanup.
+
+    A tmux socket exists between ``new-session`` and the recording of its owner
+    option. Startup cleanup in a sibling agent-server treats an ownerless socket
+    as reclaimable, so without this lock it can kill a socket whose live owner
+    has not finished initializing. The lock file lives in the tmux socket
+    directory, which is the one path every process sharing ``TMUX_TMPDIR``
+    agrees on even while tmux has not created any socket yet.
+    """
+    if socket_dir is None:
+        socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    # tmux refuses a socket directory that is group/world accessible, and
+    # FileLock would create it with the umask default, so create it 0700 first.
+    socket_dir.mkdir(parents=True, exist_ok=True)
+    with suppress(OSError):
+        socket_dir.chmod(0o700)
+    with FileLock(socket_dir / TMUX_SOCKET_CREATION_LOCK):
+        yield
+
+
+def mark_socket_owner(server: libtmux.Server) -> None:
+    """Record this process as the owner of *server*'s socket.
+
+    The agent-server's startup cleanup reads this to tell a live sibling's
+    socket apart from a stale one when a shared ``TMUX_TMPDIR`` is in use.
+    Best-effort: a failure here only loses the ownership hint, so it must
+    never break terminal setup.
+    """
+    with suppress(Exception):
+        server.set_option(
+            TMUX_SOCKET_OWNER_OPTION, str(os.getpid()), global_=True, scope=None
+        )
+
+
+# tmux rejects a client message above ~16 KiB ("command too long").
+_TMUX_BATCH_BYTES = 8000
+
+
+def run_tmux_commands(server: libtmux.Server, commands: list[list[str]]) -> None:
+    """Run tmux commands in as few tmux processes as the size limit allows.
+
+    tmux reads an argument ending in ``;`` as a command separator, so a command
+    with such an argument runs on its own, exactly as a single call would.
+    """
+    batch: list[str] = []
+
+    def run(args: list[str]) -> None:
+        if args:
+            result = server.cmd(*args)
+            if result.stderr:
+                raise ValueError(f"tmux {args[0]} stderr: {result.stderr}")
+
+    for command in commands:
+        if any(arg.endswith(";") for arg in command):
+            run(batch[:-1])
+            batch = []
+            run(command)
+            continue
+        size = sum(len(os.fsencode(a)) + 1 for a in batch + command)
+        if batch and size > _TMUX_BATCH_BYTES:
+            run(batch[:-1])
+            batch = []
+        batch += [*command, ";"]
+    run(batch[:-1])
+
+
+def _new_owned_session(
+    env: Mapping[str, str],
+    *,
+    session_name: str,
+    start_directory: str,
+    x: int,
+    y: int,
+) -> tuple[libtmux.Server, libtmux.Session]:
+    """Create a tmux session on a fresh socket owned by this process.
+
+    The socket only starts to exist once the session is created, so the session
+    is created and its owner recorded while holding the cross-process creation
+    lock. Startup cleanup in another process takes the same lock, so it can
+    never observe the socket before its owner is published.
+    """
+    socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    socket_path = socket_dir / socket_name
+    # sun_path includes a NUL byte; limits are 108 on Linux and 104 on macOS/BSD.
+    max_socket_path = 107 if sys.platform.startswith("linux") else 103
+    fallback = (
+        os.name == "posix"
+        and len(os.fsencode(os.path.realpath(socket_path))) > max_socket_path
+    )
+    if fallback:
+        socket_dir = Path("/tmp") / f"tmux-{os.getuid()}"
+        # libtmux resolves socket_name using the process-wide TMUX_TMPDIR, so
+        # use an explicit path without changing other sessions' environment.
+        logger.warning("tmux socket path is too long; using %s", socket_dir)
+
+    with _socket_creation_lock(socket_dir):
+        server = libtmux.Server(
+            socket_name=None if fallback else socket_name,
+            socket_path=str(socket_dir / socket_name) if fallback else None,
+        )
+        session = server.new_session(
+            session_name=session_name,
+            start_directory=start_directory,
+            kill_session=True,
+            x=x,
+            y=y,
+        )
+        mark_socket_owner(server)
+    # A tmux server starts with this process's environment rather than *env*,
+    # and new windows inherit it, so unset what sanitization removed.
+    run_tmux_commands(
+        server,
+        [
+            ["set-environment", "-g", "-u", key]
+            for key in os.environ.keys() - env.keys()
+        ],
+    )
+    return server, session
+
+
 # Map normalized special key names to tmux key names.
 _TMUX_SPECIALS: dict[str, str] = {
     "ENTER": "Enter",
@@ -86,6 +223,7 @@ _TMUX_SPECIALS: dict[str, str] = {
     "C-D": "C-d",
     "C-C": "C-c",
 }
+_SHELL_PROMPT_TIMEOUT_SECONDS = 10
 
 
 class TmuxTerminal(TerminalInterface):
@@ -117,31 +255,37 @@ class TmuxTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        # Before building env, so the shell gets the same locale as tmux.
+        ensure_utf8_locale()
         env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.
         env.setdefault("GIT_PAGER", "cat")
         env.setdefault("PAGER", "cat")
-        # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
-        self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
-        _shell_command = "/bin/bash"
+        shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
-            _shell_command = f"su {self.username} -"
+            shell_command = ["su", self.username, "-"]
 
-        window_command = _shell_command
+        window_command = shlex.join([*process_priority_prefix(env), *shell_command])
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
+        # Never reuse a socket: tmux numeric IDs restart at zero after server exit.
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
-        self.session = self.server.new_session(
+        self.server, self.session = _new_owned_session(
+            env,
             session_name=session_name,
             start_directory=self.work_dir,
-            kill_session=True,
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
-        for k, v in env.items():
-            self.session.set_environment(k, v)
+        run_tmux_commands(
+            self.server,
+            [
+                ["set-environment", "-t", str(self.session.session_id), k, v]
+                for k, v in env.items()
+            ],
+        )
 
         # Set history limit to a large number to avoid losing history
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
@@ -161,16 +305,45 @@ class TmuxTerminal(TerminalInterface):
         logger.debug(f"pane: {self.pane}; history_limit: {self.session.history_limit}")
         _initial_window.kill()
 
-        # Configure bash to use simple PS1 and disable PS2
-        # Disable history expansion to avoid ! mangling
-        self.pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
-        )
-        time.sleep(0.1)  # Wait for command to take effect
+        try:
+            self._initialize_shell()
+        except Exception:
+            self.session.kill()
+            raise
 
         logger.debug(f"Tmux terminal initialized with work dir: {self.work_dir}")
         self._initialized: bool = True
-        self.clear_screen()
+
+    def _initialize_shell(self) -> None:
+        """Configure Bash and wait until its prompt is ready for input."""
+        command = (
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+            'export PS2=""; clear'
+        )
+        self._run_shell_command_and_wait(command)
+        self.pane.cmd("clear-history")
+
+    def _run_shell_command_and_wait(self, command: str) -> None:
+        marker_id = uuid.uuid4().hex
+        marker_start = f"__OH_TMUX_READY_{marker_id}_"
+        marker_end = "__"
+        self.pane.send_keys(
+            f'{command}; printf "%s%s\\n" "{marker_start}" "{marker_end}" > /dev/tty'
+        )
+
+        deadline = time.monotonic() + _SHELL_PROMPT_TIMEOUT_SECONDS
+        marker = marker_start + marker_end
+        while time.monotonic() < deadline:
+            content = self._capture_pane(self.pane)
+            marker_position = content.find(marker)
+            if (
+                marker_position >= 0
+                and content.find(CMD_OUTPUT_PS1_END, marker_position + len(marker)) >= 0
+            ):
+                return
+            time.sleep(0.01)
+
+        raise RuntimeError("Timed out waiting for the tmux shell prompt")
 
     def close(self) -> None:
         """Clean up the tmux session."""
@@ -184,6 +357,13 @@ class TmuxTerminal(TerminalInterface):
             # (e.g., "can't find session" error from tmux)
             # Also handles ImportError during Python shutdown
             logger.debug(f"Error closing tmux session (may already be dead): {e}")
+        # This terminal owns its server, which outlives the session when
+        # exit-empty is off.
+        try:
+            if hasattr(self, "server"):
+                self.server.kill()
+        except Exception as e:
+            logger.debug(f"Error killing tmux server (may already be dead): {e}")
         self._closed: bool = True
 
     def send_keys(self, text: str, enter: bool = True) -> None:
@@ -219,9 +399,39 @@ class TmuxTerminal(TerminalInterface):
 
         # 3) Plain text — use literal=True so tmux doesn't split on
         #    whitespace or interpret special tokens.
-        self.pane.send_keys(text, enter=False, literal=True)
         if enter and not text.endswith("\n"):
-            self.pane.send_keys("Enter", enter=False)
+            self._send_then_enter("-l", "--", text)
+        else:
+            self.pane.send_keys(text, enter=False, literal=True)
+
+    def _send_then_enter(self, *send_keys_args: str) -> None:
+        """Send keys and then Enter in one tmux process.
+
+        tmux would read a last argument ending in ``;`` as a command separator,
+        so such text takes two processes, as ``pane.send_keys`` does.
+        """
+        assert isinstance(self.pane, libtmux.Pane)
+        if send_keys_args[-1].endswith(";"):
+            self.pane.cmd("send-keys", *send_keys_args)
+            self.pane.enter()
+            return
+        self.pane.cmd(
+            "send-keys",
+            *send_keys_args,
+            ";",
+            "send-keys",
+            "-t",
+            str(self.pane.pane_id),
+            "Enter",
+        )
+
+    @staticmethod
+    def _capture_pane(pane: libtmux.Pane) -> str:
+        result = pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.stderr:
+            # E.g. the shell exited and took the pane (or the server) with it.
+            raise LibTmuxException(*result.stderr)
+        return "\n".join(line.rstrip() for line in result.stdout)
 
     def read_screen(self) -> str:
         """Read the current tmux pane content.
@@ -232,14 +442,7 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        content = "\n".join(
-            map(
-                # avoid double newlines
-                lambda line: line.rstrip(),
-                self.pane.cmd("capture-pane", "-J", "-pS", "-").stdout,
-            )
-        )
-        return content
+        return self._capture_pane(self.pane)
 
     def clear_screen(self) -> None:
         """Clear the tmux pane screen and history.
@@ -254,7 +457,7 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("clear", enter=True)
+        self._send_then_enter("clear")
         time.sleep(0.1)
         self.pane.cmd("clear-history")
 
@@ -285,8 +488,6 @@ class TmuxTerminal(TerminalInterface):
         try:
             content = self.read_screen()
             # If the screen ends with our PS1 prompt, no command is running
-            from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
-
             return not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
         except Exception:
             return False

@@ -311,7 +311,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
             headers=self._api_headers,
         )
         data = resp.json()
-        pod_status = data.get("pod_status", "").lower()
+        pod_status = (data.get("pod_status") or "").lower()
         logger.info(f"Pod status: {pod_status}")
 
         # Log additional details for debugging

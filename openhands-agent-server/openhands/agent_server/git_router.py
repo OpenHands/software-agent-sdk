@@ -4,10 +4,22 @@ import asyncio
 import functools
 import logging
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query
+from fastapi import APIRouter, Depends, Path as PathParam, Query
 
+from openhands.agent_server.dependencies import get_secrets_store
+from openhands.agent_server.errors import error_for_status, error_responses
+from openhands.agent_server.git_provider_service import (
+    GitProviderAPIError,
+    MissingGitProviderTokenError,
+    UnsupportedGitProviderError,
+    get_provider_pull_request,
+    search_provider_repositories,
+)
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.sdk.errors import Conflict, Invalid, RateLimited, Unprocessable
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_commits import (
@@ -16,10 +28,18 @@ from openhands.sdk.git.git_commits import (
     get_git_commits,
 )
 from openhands.sdk.git.git_diff import get_git_diff
-from openhands.sdk.git.models import GitChange, GitCommitsPage, GitDiff
+from openhands.sdk.git.models import (
+    GitChange,
+    GitCommitsPage,
+    GitDiff,
+    GitProviderRepositoryPage,
+    GitPullRequestStatus,
+)
+from openhands.sdk.workspace.repo import GitProvider
 
 
 git_router = APIRouter(prefix="/git", tags=["Git"])
+runtime_git_router = APIRouter(prefix="/git", tags=["Git"])
 logger = logging.getLogger(__name__)
 
 
@@ -40,13 +60,20 @@ _COMMIT_QUERY_DESCRIPTION = (
 _SHA_PATTERN = r"^[0-9a-fA-F]{4,64}$"
 
 
+def _repo_path(path: str) -> Path:
+    """Reject an empty path, which Path() would turn into the server's own cwd."""
+    if not path:
+        raise Invalid("'path' must not be empty")
+    return Path(path)
+
+
 async def _get_git_changes(path: str, ref: str | None) -> list[GitChange]:
     """Internal helper to get git changes for a given path."""
     update_last_execution_time()
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_git_changes, Path(path), ref=ref)
+            None, functools.partial(get_git_changes, _repo_path(path), ref=ref)
         )
     except GitRepositoryError:
         # A non-repo workspace has no git changes to report; respond with an
@@ -61,7 +88,7 @@ async def _get_git_diff(path: str, ref: str | None) -> GitDiff:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_git_diff, Path(path), ref=ref)
+            None, functools.partial(get_git_diff, _repo_path(path), ref=ref)
         )
     except GitRepositoryError:
         # Only collapse the not-a-repo case to an empty diff; file-level
@@ -77,7 +104,7 @@ async def _get_git_commits(path: str, limit: int) -> GitCommitsPage:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_git_commits, Path(path), limit=limit)
+            None, functools.partial(get_git_commits, _repo_path(path), limit=limit)
         )
     except GitRepositoryError:
         # A non-repo workspace has no commits to report; respond with an
@@ -92,7 +119,7 @@ async def _get_commit_changes(path: str, sha: str) -> list[GitChange]:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_commit_changes, Path(path), sha)
+            None, functools.partial(get_commit_changes, _repo_path(path), sha)
         )
     except GitRepositoryError:
         logger.debug("Path %s is not a git repository; returning no changes", path)
@@ -105,14 +132,88 @@ async def _get_commit_file_diff(path: str, commit: str) -> GitDiff:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, functools.partial(get_commit_file_diff, Path(path), commit)
+            None, functools.partial(get_commit_file_diff, _repo_path(path), commit)
         )
     except GitRepositoryError:
         logger.debug("Path %s is not in a git repository; returning empty diff", path)
         return GitDiff(modified=None, original=None)
 
 
+@git_router.get("/repositories/search", response_model=GitProviderRepositoryPage)
+async def git_repositories_search(
+    provider: Annotated[GitProvider, Query(description="Git provider to search")],
+    query: Annotated[
+        str | None, Query(description="Optional repository name filter")
+    ] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=100, description="Maximum repositories to return")
+    ] = 100,
+    page_id: Annotated[
+        str | None, Query(description="Provider-specific page cursor")
+    ] = None,
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
+) -> GitProviderRepositoryPage:
+    """List repositories accessible to a configured git provider token."""
+    try:
+        return await search_provider_repositories(
+            secrets_store,
+            provider,
+            query=query,
+            limit=limit,
+            page_id=page_id,
+        )
+    except UnsupportedGitProviderError as e:
+        raise Invalid(str(e)) from e
+    except GitProviderAPIError as e:
+        raise error_for_status(e.status_code, str(e)) from e
+
+
+# One path segment of a GitHub owner or repository name. "." and ".." also
+# match, and the handler refuses them so the provider URL cannot climb out of
+# /repos/{owner}/{repo} (the pattern engine has no lookahead).
+_OWNER_REPO_PATTERN = r"^[A-Za-z0-9_.-]+$"
+_DOT_SEGMENTS = frozenset({".", ".."})
+MISSING_PROVIDER_TOKEN_CODE = "missing_provider_token"
+
+
+@git_router.get(
+    "/repositories/{owner}/{repo}/pull-requests/{number}",
+    response_model=GitPullRequestStatus,
+    responses=error_responses(
+        {
+            Conflict: "No token is configured for the provider. The detail is "
+            f'{{"code": "{MISSING_PROVIDER_TOKEN_CODE}", "message": ...}}, '
+            "so a client can hide the status instead of showing an error.",
+            RateLimited: "The provider's rate limit was reached.",
+        }
+    ),
+)
+async def git_pull_request_status(
+    owner: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
+    repo: Annotated[str, PathParam(pattern=_OWNER_REPO_PATTERN)],
+    number: Annotated[int, PathParam(ge=1)],
+    provider: Annotated[
+        GitProvider, Query(description="Git provider hosting the repository")
+    ],
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
+) -> GitPullRequestStatus:
+    """Read a pull request's state and the combined CI result of its head commit."""
+    if owner in _DOT_SEGMENTS or repo in _DOT_SEGMENTS:
+        raise Unprocessable("'owner' and 'repo' must not be '.' or '..'")
+    try:
+        return await get_provider_pull_request(
+            secrets_store, provider, owner, repo, number
+        )
+    except UnsupportedGitProviderError as e:
+        raise Invalid(str(e)) from e
+    except MissingGitProviderTokenError as e:
+        raise Conflict({"code": MISSING_PROVIDER_TOKEN_CODE, "message": str(e)}) from e
+    except GitProviderAPIError as e:
+        raise error_for_status(e.status_code, str(e), retry_after=e.retry_after) from e
+
+
 @git_router.get("/changes")
+@runtime_git_router.get("/changes")
 async def git_changes_query(
     path: str = Query(..., description="The git repository path"),
     ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
@@ -125,10 +226,11 @@ async def git_changes_query(
         # Any remaining GitError subclass (e.g. GitCommandError) surfaces as
         # 400 so the client can show an actionable error instead of an
         # opaque 500.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))
 
 
 @git_router.get("/diff")
+@runtime_git_router.get("/diff")
 async def git_diff_query(
     path: str = Query(..., description="The file path to get diff for"),
     ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
@@ -138,9 +240,7 @@ async def git_diff_query(
 ) -> GitDiff:
     """Get git diff using query parameter (preferred method)."""
     if ref is not None and commit is not None:
-        raise HTTPException(
-            status_code=400, detail="'ref' and 'commit' are mutually exclusive"
-        )
+        raise Invalid("'ref' and 'commit' are mutually exclusive")
     try:
         if commit is not None:
             return await _get_commit_file_diff(path, commit)
@@ -150,10 +250,11 @@ async def git_diff_query(
         # empty diff). Any remaining GitError subclass (e.g. GitCommandError,
         # GitPathError) surfaces as 400 so the client can show an actionable
         # error instead of an opaque 500.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))
 
 
 @git_router.get("/commits")
+@runtime_git_router.get("/commits")
 async def git_commits_query(
     path: str = Query(..., description="The git repository path"),
     limit: int = Query(50, ge=1, le=200, description="Maximum commits to return"),
@@ -164,10 +265,11 @@ async def git_commits_query(
     except GitError as e:
         # GitRepositoryError is already handled in the helper (returns an
         # empty page). Any remaining GitError subclass surfaces as 400.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))
 
 
 @git_router.get("/commits/{sha}/changes")
+@runtime_git_router.get("/commits/{sha}/changes")
 async def git_commit_changes_query(
     sha: str = PathParam(..., pattern=_SHA_PATTERN, description="Commit SHA"),
     path: str = Query(..., description="The git repository path"),
@@ -178,4 +280,4 @@ async def git_commit_changes_query(
     except GitError as e:
         # GitRepositoryError is already handled in the helper (returns []).
         # An unknown/unresolvable sha raises GitCommandError -> 400.
-        raise HTTPException(status_code=400, detail=str(e))
+        raise Invalid(str(e))

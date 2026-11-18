@@ -1,4 +1,5 @@
 from browser_use.dom.markdown_extractor import extract_clean_markdown
+from browser_use.dom.service import DomService
 
 from openhands.sdk import get_logger
 from openhands.tools.browser_use.logging_fix import LogSafeBrowserUseServer
@@ -259,10 +260,27 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         if not self.browser_session:
             return "Error: No browser session active"
 
-        # Extract clean markdown using the new method
+        target_id = self.browser_session.agent_focus_target_id
+        if not target_id:
+            return "Error: No active page"
+
+        # Read a fresh DOM tree. The session path reuses the tree cached by the
+        # last browser_get_state, which is stale after clicks, timers or
+        # history navigation. A separate DomService leaves that cache and its
+        # element indices untouched.
+        profile = self.browser_session.browser_profile
+        dom_service = DomService(
+            browser_session=self.browser_session,
+            cross_origin_iframes=profile.cross_origin_iframes,
+            paint_order_filtering=profile.paint_order_filtering,
+            max_iframes=profile.max_iframes,
+            max_iframe_depth=profile.max_iframe_depth,
+        )
         try:
             content, content_stats = await extract_clean_markdown(
-                browser_session=self.browser_session, extract_links=extract_links
+                dom_service=dom_service,
+                target_id=target_id,
+                extract_links=extract_links,
             )
         except Exception as e:
             logger.exception(

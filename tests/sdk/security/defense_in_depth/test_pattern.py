@@ -162,53 +162,40 @@ class TestNormalization:
     def test_fullwidth_ascii(self):
         assert "rm" in _normalize("\uff52\uff4d")
 
-    def test_zero_width_stripped(self):
-        assert _normalize("r\u200bm") == "rm"
-
-    def test_bidi_controls_stripped(self):
-        assert _normalize("r\u202em") == "rm"
-
-    def test_c0_controls_stripped(self):
-        assert _normalize("r\x01m") == "rm"
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("r\u200bm", "rm", id="zero_width"),
+            pytest.param("r\u202em", "rm", id="bidi_controls"),
+            pytest.param("r\x01m", "rm", id="c0_controls"),
+            pytest.param("r\x7fm", "rm", id="del"),
+            pytest.param("rm   -rf   /", "rm -rf /", id="whitespace_collapsed"),
+            pytest.param("\ufeffrm", "rm", id="bom"),
+            # Expanded invisible character set (navi-sanitize informed).
+            # U+00AD soft hyphen is invisible in most renderers.
+            pytest.param("r\u00adm", "rm", id="soft_hyphen"),
+            # U+009B (CSI) is equivalent to ESC+[.
+            pytest.param("r\u009bm", "rm", id="c1_controls"),
+            # U+FE00-FE0F are invisible glyph modifiers.
+            pytest.param("r\ufe01m", "rm", id="variation_selector"),
+            # U+E0020 tag characters are used in tag smuggling attacks.
+            pytest.param("r\U000e0020m", "rm", id="tag_block"),
+            # U+2061 invisible function application.
+            pytest.param("r\u2061m", "rm", id="format_chars"),
+            # Null bytes are removed in stage 1.
+            pytest.param("r\x00m", "rm", id="null_byte"),
+            # U+2060 Word Joiner breaks word boundaries.
+            pytest.param("r\u2060m", "rm", id="word_joiner"),
+            # U+180B Mongolian Free Variation Selector.
+            pytest.param("r\u180bm", "rm", id="mongolian_fvs"),
+        ],
+    )
+    def test_invisible_chars_stripped(self, raw: str, expected: str):
+        assert _normalize(raw) == expected
 
     def test_tab_newline_preserved_then_collapsed(self):
         result = _normalize("a\tb\nc")
         assert result == "a b c"
-
-    def test_del_stripped(self):
-        assert _normalize("r\x7fm") == "rm"
-
-    def test_whitespace_collapsed(self):
-        assert _normalize("rm   -rf   /") == "rm -rf /"
-
-    def test_bom_stripped(self):
-        assert _normalize("\ufeffrm") == "rm"
-
-    # --- Expanded invisible character set (navi-sanitize informed) ---
-
-    def test_soft_hyphen_stripped(self):
-        """U+00AD soft hyphen is invisible in most renderers."""
-        assert _normalize("r\u00adm") == "rm"
-
-    def test_c1_controls_stripped(self):
-        """U+009B (CSI) is equivalent to ESC+[."""
-        assert _normalize("r\u009bm") == "rm"
-
-    def test_variation_selector_stripped(self):
-        """U+FE00-FE0F are invisible glyph modifiers."""
-        assert _normalize("r\ufe01m") == "rm"
-
-    def test_tag_block_stripped(self):
-        """U+E0020 tag characters used in tag smuggling attacks."""
-        assert _normalize("r\U000e0020m") == "rm"
-
-    def test_format_chars_stripped(self):
-        """U+2061 invisible function application."""
-        assert _normalize("r\u2061m") == "rm"
-
-    def test_null_byte_stripped_explicitly(self):
-        """Null bytes removed in stage 1."""
-        assert _normalize("r\x00m") == "rm"
 
     def test_idempotent(self):
         """Second normalize pass is a no-op."""
@@ -216,14 +203,6 @@ class TestNormalization:
         once = _normalize(text)
         twice = _normalize(once)
         assert once == twice
-
-    def test_word_joiner_stripped(self):
-        """U+2060 Word Joiner breaks word boundaries."""
-        assert _normalize("r\u2060m") == "rm"
-
-    def test_mongolian_fvs_stripped(self):
-        """U+180B Mongolian Free Variation Selector."""
-        assert _normalize("r\u180bm") == "rm"
 
 
 # ---------------------------------------------------------------------------
@@ -376,19 +355,15 @@ def test_pattern_boundary_not_high(command: str, desc: str):
 # Unicode evasion -- end-to-end through PatternSecurityAnalyzer
 
 
-def test_fullwidth_evasion_detected():
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("\uff52\uff4d -rf /", id="fullwidth"),
+        pytest.param("r\u202em -rf /", id="bidi"),
+        pytest.param("r\u200bm -rf /", id="zero_width"),
+    ],
+)
+def test_unicode_evasion_detected(command: str):
     analyzer = PatternSecurityAnalyzer()
-    risk = analyzer.security_risk(make_action("\uff52\uff4d -rf /"))
-    assert risk == SecurityRisk.HIGH
-
-
-def test_bidi_evasion_detected():
-    analyzer = PatternSecurityAnalyzer()
-    risk = analyzer.security_risk(make_action("r\u202em -rf /"))
-    assert risk == SecurityRisk.HIGH
-
-
-def test_zero_width_evasion_detected():
-    analyzer = PatternSecurityAnalyzer()
-    risk = analyzer.security_risk(make_action("r\u200bm -rf /"))
+    risk = analyzer.security_risk(make_action(command))
     assert risk == SecurityRisk.HIGH

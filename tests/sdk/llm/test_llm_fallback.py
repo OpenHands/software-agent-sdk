@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from litellm.exceptions import (
     APIConnectionError,
+    APIError,
     ContextWindowExceededError,
     RateLimitError,
 )
@@ -15,13 +16,18 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
+from openhands.sdk.llm import (
+    LLM,
+    FallbackStrategy,
+    LLMCallContext,
+    Message,
+    TextContent,
+)
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
     LLMRateLimitError,
     LLMServiceUnavailableError,
 )
-from openhands.sdk.llm.llm import LLMCallContext
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
@@ -220,6 +226,66 @@ async def test_transient_quota_rate_limit_still_retries(
     assert mock_comp.call_args.kwargs["model"] == "fallback-model"
     if use_async:
         assert mock_acomp.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("denied_model", ["gpt-4o", "fallback-model"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"error":{"type":"budget_exceeded","message":"Team limit reached"}}',
+        "Budget has been exceeded! User=u, Team=t. Current cost: 2, Max budget: 1",
+    ],
+)
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm_completion")
+async def test_budget_denial_stops_retries_and_fallbacks(
+    mock_comp, mock_acomp, use_async, denied_model, message
+):
+    attempted_models = []
+
+    def complete(**kwargs):
+        model = kwargs["model"]
+        attempted_models.append(model)
+        if model == denied_model:
+            raise RateLimitError(message=message, llm_provider="openai", model=model)
+        if model == "gpt-4o":
+            raise APIConnectionError(message="down", llm_provider="openai", model=model)
+        return _get_mock_response("must not bypass the budget", model=model)
+
+    mock_comp.side_effect = complete
+    mock_acomp.side_effect = complete
+    primary = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("k"),
+        usage_id="test-budget",
+        fallback_strategy=FallbackStrategy(fallback_llms=["first", "second"]),
+        num_retries=3 if denied_model == "gpt-4o" else 1,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    first_fallback = LLM(
+        model="fallback-model",
+        api_key=SecretStr("k"),
+        usage_id="test-budget-fallback",
+        num_retries=3,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    _patch_resolve(primary, [first_fallback, _get_llm("second-fallback")])
+
+    with pytest.raises(LLMRateLimitError, match="budget|Budget"):
+        if use_async:
+            await primary.acompletion(_MSGS)
+        else:
+            primary.completion(_MSGS)
+
+    assert attempted_models == (
+        ["gpt-4o"] if denied_model == "gpt-4o" else ["gpt-4o", "fallback-model"]
+    )
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -725,3 +791,19 @@ async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
     fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
     assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
     assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.parametrize(
+    "status", [408, 409, 429, 501, 505, 520, 522, 524, 599, 402, 403, 405, 406, 410]
+)
+def test_fallback_respects_provider_http_status(status):
+    strategy = FallbackStrategy(fallback_llms=["backup"])
+    error = APIError(
+        status_code=status,
+        message="Provider request failed",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    assert strategy.should_fallback(error) is (
+        status in (408, 409, 429) or status >= 500
+    )

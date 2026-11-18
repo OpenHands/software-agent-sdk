@@ -60,7 +60,10 @@ def _softmax_normalize(probs: dict[str, float]) -> dict[str, float]:
         return {}
 
     values = list(probs.values())
-    exp_values = [math.exp(v) for v in values]
+    # Subtracting the max leaves the ratios unchanged and keeps exp in range:
+    # a logit of 1000 would otherwise raise OverflowError.
+    largest = max(values)
+    exp_values = [math.exp(v - largest) for v in values]
     exp_sum = sum(exp_values)
     normalized = [exp_v / exp_sum for exp_v in exp_values]
 

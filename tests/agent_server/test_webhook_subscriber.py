@@ -844,6 +844,138 @@ async def test_concurrent_event_delivery_has_one_request_in_flight(
 
 
 @pytest.mark.asyncio
+async def test_events_published_during_post_are_sent_once_buffer_is_full(
+    mock_event_service, sample_event, sample_conversation_id
+):
+    """A buffer that fills again during an in-flight POST is posted at once."""
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=2,
+        flush_delay=3600,
+        num_retries=0,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+
+    first_request_started = asyncio.Event()
+    release_first_request = asyncio.Event()
+    batches: list[list[dict]] = []
+
+    async def request(*args, **kwargs):
+        batches.append(kwargs["json"])
+        if len(batches) == 1:
+            first_request_started.set()
+            await release_first_request.wait()
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        return response
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.request = request
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        await subscriber(sample_event)
+        first_post = asyncio.create_task(subscriber(sample_event))
+        await asyncio.wait_for(first_request_started.wait(), timeout=1)
+
+        # Two more events fill the buffer while the first batch is in flight.
+        await subscriber(sample_event)
+        await subscriber(sample_event)
+        release_first_request.set()
+        await asyncio.wait_for(first_post, timeout=1)
+
+        # Without waiting for flush_delay (1 h) or close().
+        assert [len(batch) for batch in batches] == [2, 2]
+        assert subscriber.queue == []
+        # The timer started during the first POST is not left running.
+        assert subscriber._flush_timer is None
+
+
+@pytest.mark.asyncio
+async def test_failed_follow_up_batch_keeps_a_flush_timer(
+    mock_event_service, sample_event, sample_conversation_id
+):
+    """A follow-up batch that fails after the flush timer fired is retried."""
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=2,
+        flush_delay=3600,
+        num_retries=0,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+    fire_timer = asyncio.Event()
+    timer_sleeps = 0
+
+    async def controlled_sleep(delay):
+        nonlocal timer_sleeps
+        timer_sleeps += 1
+        if timer_sleeps == 1:
+            await fire_timer.wait()
+        else:
+            await asyncio.Event().wait()
+
+    subscriber._sleep = controlled_sleep
+
+    first_request_started = asyncio.Event()
+    release_first_request = asyncio.Event()
+    second_request_started = asyncio.Event()
+    release_second_request = asyncio.Event()
+    batches: list[list[dict]] = []
+
+    async def request(*args, **kwargs):
+        batches.append(kwargs["json"])
+        response = MagicMock()
+        if len(batches) == 1:
+            first_request_started.set()
+            await release_first_request.wait()
+            response.raise_for_status.return_value = None
+        else:
+            second_request_started.set()
+            await release_second_request.wait()
+            response.raise_for_status.side_effect = RuntimeError("503")
+        return response
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.request = request
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        await subscriber(sample_event)
+        first_post = asyncio.create_task(subscriber(sample_event))
+        await asyncio.wait_for(first_request_started.wait(), timeout=1)
+
+        # Two events refill the buffer during the first POST: a timer starts.
+        await subscriber(sample_event)
+        await subscriber(sample_event)
+        timer = subscriber._flush_timer
+        assert timer is not None
+        release_first_request.set()
+        await asyncio.wait_for(second_request_started.wait(), timeout=1)
+
+        # The timer fires during the follow-up POST and finds an empty queue.
+        fire_timer.set()
+        await asyncio.wait_for(timer, timeout=1)
+        assert subscriber._flush_timer is None
+
+        # The follow-up POST fails: its events must not be left without a timer.
+        release_second_request.set()
+        await asyncio.wait_for(first_post, timeout=1)
+
+        assert len(subscriber.queue) == 2
+        assert subscriber._flush_timer is not None
+        assert not subscriber._flush_timer.done()
+        await subscriber.close()
+
+
+@pytest.mark.asyncio
 @patch("httpx.AsyncClient")
 async def test_post_events_splits_batches_by_serialized_bytes(
     mock_client_class, mock_event_service, sample_conversation_id

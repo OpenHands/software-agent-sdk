@@ -1,13 +1,14 @@
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from pydantic import ConfigDict, Field, field_validator
 from rich.text import Text
 
 from openhands.sdk.event.types import ROOT_PARENT_ID, EventID, SourceType
 from openhands.sdk.llm import ImageContent, Message, TextContent
+from openhands.sdk.utils.masking import SkipSecretMasking
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -25,7 +26,7 @@ class Event(DiscriminatedUnionMixin, ABC):
         default_factory=lambda: str(uuid.uuid4()),
         description="Unique event id (ULID/UUID)",
     )
-    timestamp: str = Field(
+    timestamp: Annotated[str, SkipSecretMasking()] = Field(
         default_factory=lambda: datetime.now().isoformat(),
         description="Event timestamp",
     )  # consistent with V1

@@ -1,6 +1,9 @@
 import json
 import os
+import signal
 import socket
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import cast
@@ -29,6 +32,35 @@ def _expire_lease(conversation_dir: Path) -> None:
     payload = json.loads(lease_path.read_text())
     payload["expires_at"] = 0
     lease_path.write_text(json.dumps(payload))
+
+
+def test_lease_lock_waiters_poll_briefly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiter (the event loop, for a meta.json write) must not sleep 50 ms
+    for a lock that is held for a few milliseconds."""
+    polls: list[float] = []
+    real_acquire = conversation_lease_module.FileLock.acquire
+
+    def recording_acquire(self, timeout=None, poll_interval=0.05, **kwargs):
+        polls.append(poll_interval)
+        return real_acquire(self, timeout, poll_interval, **kwargs)
+
+    monkeypatch.setattr(
+        conversation_lease_module.FileLock, "acquire", recording_acquire
+    )
+    lease = ConversationLease(
+        conversation_dir=tmp_path / "conversation", owner_instance_id="primary"
+    )
+
+    claim = lease.claim()
+    lease.renew(claim.generation)
+    with lease.guarded_write(claim.generation):
+        pass
+    lease.release(claim.generation)
+
+    assert len(polls) == 4
+    assert all(poll <= 0.005 for poll in polls)
 
 
 def test_claim_and_renew_persist_same_owner_generation(tmp_path: Path) -> None:
@@ -265,6 +297,8 @@ def test_owner_pid_check_treats_unknown_errors_as_alive(
         raise OSError("EPERM-like error from a sandbox")
 
     monkeypatch.setattr(conversation_lease_module.os, "kill", _raise_oserror)
+    # Only os.kill decides here: no /proc state or start time is available.
+    monkeypatch.setattr(conversation_lease_module, "_read_proc_stat", lambda _: None)
 
     # Forge the lease so it points at a PID that is NOT this process
     # (otherwise the same-process short-circuit kicks in before
@@ -304,3 +338,86 @@ def test_claim_self_pid_match_is_not_treated_as_dead(tmp_path: Path) -> None:
     )
     with pytest.raises(ConversationLeaseHeldError):
         secondary.claim()
+
+
+linux_proc_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="needs /proc/<pid>/stat"
+)
+
+
+def _forge_owner(conversation_dir: Path, **fields: object) -> None:
+    payload = dict(_read_lease_payload(conversation_dir))
+    payload.update(fields)
+    (conversation_dir / LEASE_FILE_NAME).write_text(json.dumps(payload))
+
+
+@linux_proc_only
+def test_claim_records_owner_process_start_time(tmp_path: Path) -> None:
+    conversation_dir = tmp_path / "conversation"
+    ConversationLease(conversation_dir=conversation_dir, owner_instance_id="a").claim()
+
+    started_at = _read_lease_payload(conversation_dir).get("owner_started_at")
+    stat = Path(f"/proc/{os.getpid()}/stat").read_text()
+    assert started_at == stat[stat.rfind(")") + 2 :].split()[19]
+
+
+@linux_proc_only
+def test_claim_takes_over_when_restarted_server_reuses_owner_pid(
+    tmp_path: Path,
+) -> None:
+    """An agent-server restarted in the same container often gets the same PID.
+
+    The PID is alive (it is us), but the process that wrote the lease is gone.
+    """
+    conversation_dir = tmp_path / "conversation"
+    previous = ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="previous",
+        ttl_seconds=3600.0,
+    )
+    previous_claim = previous.claim()
+    _forge_owner(conversation_dir, owner_started_at="1")
+
+    restarted = ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="restarted",
+    )
+    claim = restarted.claim()
+
+    assert claim.takeover is True
+    assert claim.generation == previous_claim.generation + 1
+    assert _read_lease_payload(conversation_dir)["owner_instance_id"] == "restarted"
+
+
+@linux_proc_only
+def test_claim_takes_over_from_killed_but_unreaped_owner(tmp_path: Path) -> None:
+    """``os.kill(pid, 0)`` succeeds for a zombie, so check the process state."""
+    conversation_dir = tmp_path / "conversation"
+    ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="crashed",
+        ttl_seconds=3600.0,
+    ).claim()
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        stat = Path(f"/proc/{child.pid}/stat").read_text()
+        _forge_owner(
+            conversation_dir,
+            owner_pid=child.pid,
+            owner_started_at=stat[stat.rfind(")") + 2 :].split()[19],
+        )
+        os.kill(child.pid, signal.SIGKILL)
+        deadline = time.time() + 5
+        while Path(f"/proc/{child.pid}/stat").read_text().split(") ")[1][0] != "Z":
+            assert time.time() < deadline
+            time.sleep(0.01)
+
+        claim = ConversationLease(
+            conversation_dir=conversation_dir,
+            owner_instance_id="restarted",
+        ).claim()
+        assert claim.takeover is True
+    finally:
+        child.kill()
+        child.wait()
