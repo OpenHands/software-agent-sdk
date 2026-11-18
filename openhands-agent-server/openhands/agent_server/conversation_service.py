@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import importlib
 import json
 import logging
@@ -7,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -2103,7 +2105,6 @@ class ConversationService:
         if event_service is None:
             return False
 
-        loop = asyncio.get_running_loop()
         state = await event_service.get_state()
         update: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
@@ -2118,8 +2119,8 @@ class ConversationService:
         if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
-            state = await loop.run_in_executor(
-                None, _update_state_tags_sync, state, request.tags
+            state = await event_service.run_state_op(
+                _update_state_tags_sync, state, request.tags
             )
         if budget_updated:
             # base_state.json owns the budget; the event service is loaded
@@ -2133,8 +2134,8 @@ class ConversationService:
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
         # worker thread so metadata updates cannot block the FastAPI event loop.
-        conversation_info = await loop.run_in_executor(
-            None, _compose_webhook_conversation_info_sync, event_service.stored, state
+        conversation_info = await event_service.run_state_op(
+            _compose_webhook_conversation_info_sync, event_service.stored, state
         )
         await self._notify_conversation_webhooks(conversation_info)
 
@@ -2272,12 +2273,15 @@ class ConversationService:
                 raise ValueError(f"Conversation with id {fork_id} already exists")
 
             # fork() deep-copies events and state into ``fork_dir``.
-            fork_conv = await asyncio.to_thread(
-                source_conversation.fork,
-                conversation_id=fork_conv_id,
-                tags=tags,
-                reset_metrics=reset_metrics,
-                from_event_id=from_event_id,
+            fork_conv = await source_service.run_state_op(
+                partial(
+                    contextvars.copy_context().run,
+                    source_conversation.fork,
+                    conversation_id=fork_conv_id,
+                    tags=tags,
+                    reset_metrics=reset_metrics,
+                    from_event_id=from_event_id,
+                )
             )
             # Extract the persisted data, then discard the temporary conversation.
             fork_agent = cast(AgentBase, fork_conv.agent)

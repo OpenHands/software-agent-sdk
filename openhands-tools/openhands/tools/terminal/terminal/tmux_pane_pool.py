@@ -175,6 +175,14 @@ class TmuxPanePool:
         except Exception as e:
             logger.warning(f"Error killing pool session: {e}")
 
+        # This pool owns its server, which outlives the session when
+        # exit-empty is off.
+        try:
+            if self._server is not None:
+                self._server.kill()
+        except Exception as e:
+            logger.debug(f"Error killing pool tmux server (may already be dead): {e}")
+
     def _create_pane(self) -> PooledTmuxTerminal:
         """Create a new PooledTmuxTerminal within the shared session."""
         assert self._session is not None
