@@ -285,7 +285,8 @@ async def _project(client, service, tmp_path) -> tuple[str, UUID, UUID]:
             "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
         )
     ).json()
-    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    # As the coordinator's start does.
+    await service.projects.set_conversation_tag(worker, "project", project["id"])
     return project["id"], cat, worker
 
 

@@ -786,34 +786,6 @@ async def list_project_conversations(
     )
 
 
-@projects_router.put(
-    "/{project_id}/conversations/{conversation_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        404: {"description": "Project or conversation not found"},
-        409: {"description": "Conversation is the coordinator of another project"},
-    },
-)
-async def add_project_conversation(
-    project_id: UUID,
-    conversation_id: UUID,
-    stores: _Stores,
-    service: ConversationService = Depends(get_conversation_service),
-) -> Response:
-    """Add an existing conversation to a project. Idempotent.
-
-    Sets the conversation's ``project`` tag and keeps its other tags. A
-    conversation belongs to at most one project, so this moves it from any
-    other project, unless it coordinates that one.
-    """
-    persisted = await _load(_store(stores))
-    _find(persisted, project_id)
-    _check_not_coordinating_elsewhere(persisted, project_id, conversation_id)
-    if not await _join(service, project_id, conversation_id):
-        raise NotFound("Conversation not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
 @projects_router.delete(
     "/{project_id}/conversations/{conversation_id}",
     response_model=DeleteResponse,

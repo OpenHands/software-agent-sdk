@@ -222,14 +222,6 @@ export class ProjectsClient {
     };
   }
 
-  /**
-   * Add an existing conversation; it leaves any other project. Idempotent. A
-   * conversation that coordinates another project cannot move (409).
-   */
-  async addConversation(projectId: string, conversationId: string): Promise<void> {
-    await this.client.put(conversationPath(projectId, conversationId));
-  }
-
   /** Take a conversation out of the project. The coordinator cannot leave (409). */
   async removeConversation(
     projectId: string,

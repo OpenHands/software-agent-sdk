@@ -31,7 +31,11 @@ from openhands.agent_server.models import (
     StartChildConversationResponse,
     StartConversationRequest,
 )
-from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.persistence import (
+    PersistedProjects,
+    ProjectItem,
+    ServerStores,
+)
 from openhands.agent_server.project_service import ProjectService
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
@@ -39,10 +43,14 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.errors import Conflict
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.workspace import LocalWorkspace
+
+
+_PROJECT = "0123456789abcdef0123456789abcdef"
 
 
 def _start_request(
@@ -323,12 +331,14 @@ async def _launch_child(
     request: StartChildConversationRequest,
     *,
     parent_tags: dict[str, str] | None = None,
+    project: ProjectItem | None = None,
     grandchild: bool = False,
 ) -> _ChildLaunch:
     """Start a parent in *workspace_dir*, then launch a child from it.
 
-    With ``grandchild``, the launched child is in turn the parent of the child
-    reported as ``result``/``child``.
+    A parent with a ``project`` tag is made that project's coordinator
+    (``project``, or a plain record), the one member that starts others.
+    With ``grandchild``, the launched child in turn starts a child.
     """
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
@@ -349,6 +359,19 @@ async def _launch_child(
             stores=ServerStores.from_config(Config()),
         ) as service:
             parent_info, _ = await service.start_conversation(parent_request)
+            project_hex = (parent_tags or {}).get("project")
+            if project_hex is not None:
+                record = project or ProjectItem(id=UUID(hex=project_hex), name="P")
+                assert service.stores is not None
+                service.stores.projects.save(
+                    PersistedProjects(
+                        projects=[
+                            record.model_copy(
+                                update={"coordinator_conversation_id": parent_info.id}
+                            )
+                        ]
+                    )
+                )
             parent_service = services[parent_info.id]
             parent_service.stored = parent_service.stored.model_copy(
                 update={"title": "Coordinator"}
@@ -425,7 +448,7 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
     request = StartChildConversationRequest(task="Write the docs")
 
     launch = await _launch_child(
-        tmp_path, workspace_dir, request, parent_tags={"project": "p1"}
+        tmp_path, workspace_dir, request, parent_tags={"project": _PROJECT}
     )
 
     assert _child_agent(launch).prompt_preset == "project_worker"
@@ -437,22 +460,21 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
 
 
 @pytest.mark.asyncio
-async def test_a_workers_child_is_told_the_worker_started_it(tmp_path, workspace_dir):
+async def test_only_the_coordinator_starts_conversations_in_its_project(
+    tmp_path, workspace_dir
+):
+    """A worker's start is refused: each member's turns are the
+    coordinator's to follow."""
     request = StartChildConversationRequest(task="Write the docs")
 
-    launch = await _launch_child(
-        tmp_path,
-        workspace_dir,
-        request,
-        parent_tags={"project": "p1"},
-        grandchild=True,
-    )
-
-    assert launch.result is not None
-    header, _ = _first_message(launch)
-    assert launch.result.parent_conversation_id.hex in header
-    assert launch.parent_id.hex not in header
-    assert _child_agent(launch).prompt_preset == "project_worker"
+    with pytest.raises(Conflict):
+        await _launch_child(
+            tmp_path,
+            workspace_dir,
+            request,
+            parent_tags={"project": _PROJECT},
+            grandchild=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -688,16 +710,12 @@ async def test_project_child_gets_the_project_memory(
         project_id, "MEMORY.md", "- Engel prefers squash merges.", None
     )
     project = ProjectItem(id=project_id, name="Docs", description="Ship the docs.")
-    monkeypatch.setattr(
-        project_service,
-        "_load_project",
-        lambda stores, project_hex: project if project_hex == project_id.hex else None,
-    )
     launch = await _launch_child(
         tmp_path,
         workspace_dir,
         StartChildConversationRequest(task="Write the docs"),
         parent_tags={"project": project_id.hex},
+        project=project,
     )
 
     # The memory index is in the worker's <PROJECT> block, not its brief.
@@ -858,7 +876,7 @@ async def test_with_projects_off_a_members_child_is_an_ordinary_child(
     request = StartChildConversationRequest(task="Write the docs")
 
     launch = await _launch_child(
-        tmp_path, workspace_dir, request, parent_tags={"project": "p1"}
+        tmp_path, workspace_dir, request, parent_tags={"project": _PROJECT}
     )
 
     assert launch.child is not None

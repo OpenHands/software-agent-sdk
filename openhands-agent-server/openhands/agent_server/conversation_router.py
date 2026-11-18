@@ -61,6 +61,7 @@ from openhands.agent_server.models import (
     trim_conversation_response_skills,
 )
 from openhands.agent_server.persistence import run_store
+from openhands.agent_server.project_service import RESERVED_TAG_KEYS
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -165,6 +166,14 @@ def _with_runtime_info(
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation.id)}
     )
+
+
+def _refuse_server_tags(tags: dict[str, str] | None) -> None:
+    """A client cannot start a conversation with tags the server owns: a
+    project's conversations are started by its coordinator."""
+    owned = sorted(RESERVED_TAG_KEYS & set(tags or {}))
+    if owned:
+        raise Unprocessable(f"Tags set by the server only: {', '.join(owned)}")
 
 
 @conversation_catalog_router.get("/search", include_in_schema=False)
@@ -343,6 +352,7 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     if request.conversation_runtime not in (None, "local"):
         raise Unprocessable("This server only runs local conversations")
+    _refuse_server_tags(request.tags)
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -882,6 +892,7 @@ async def fork_conversation(
     Calling ``run`` on the fork resumes from the copied state, meaning
     the agent has full event memory of the source conversation.
     """
+    _refuse_server_tags(request.tags)
     try:
         info = await conversation_service.fork_conversation(
             conversation_id,
@@ -913,6 +924,7 @@ async def fork_conversation(
         **error_responses(
             {
                 NotFound: "Parent conversation not found",
+                Conflict: "Parent is a project member, not its coordinator",
                 RateLimited: "Server conversation run capacity is full",
             }
         ),

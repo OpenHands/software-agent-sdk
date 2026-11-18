@@ -67,6 +67,7 @@ from openhands.sdk.conversation.types import (
     RESOLVED_TAG_KEY,
     conversation_sender,
 )
+from openhands.sdk.errors import Conflict
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool
@@ -538,10 +539,18 @@ class ProjectService:
         request: StartChildConversationRequest,
         run_slot: RunSlot,
     ) -> StartChildConversationResponse:
-        """A project member's child: a worker from an agent profile, or, with
+        """A project's new member: a worker from an agent profile, or, with
         no profile to start from, a copy of the parent's agent that still runs
-        the worker's prompt, project context and tools."""
+        the worker's prompt, project context and tools.
+
+        Only the project's coordinator starts conversations in a project, so
+        each member's work is the coordinator's to follow.
+
+        Raises:
+            Conflict: If the parent is not the project's coordinator.
+        """
         parent_stored = parent_service.stored
+        await self._require_coordinator(parent_stored)
         worker_profile = await self._worker_profile(parent_stored)
         if worker_profile is not None:
             return await self._start_worker(
@@ -564,10 +573,23 @@ class ProjectService:
             extra_tags={PROJECT_TAG_KEY: project_hex},
         )
 
-    async def _worker_profile(self, parent_stored: StoredConversation) -> UUID | None:
-        """The agent profile a project member's new conversation starts from.
+    async def _require_coordinator(self, parent_stored: StoredConversation) -> None:
+        stores = self.stores
+        project_hex = parent_stored.tags[PROJECT_TAG_KEY]
+        project = (
+            await asyncio.to_thread(_load_project, stores, project_hex)
+            if stores is not None
+            else None
+        )
+        if project is None or project.coordinator_conversation_id != parent_stored.id:
+            raise Conflict(
+                "Only the project's coordinator starts conversations in a project"
+            )
 
-        A conversation a project member starts is a normal conversation of
+    async def _worker_profile(self, parent_stored: StoredConversation) -> UUID | None:
+        """The agent profile a project's new member starts from.
+
+        A conversation the coordinator starts is a normal conversation of
         the user's, not a copy of its parent: it runs the project's
         ``worker_agent_profile_id``, or else the user's active agent
         profile. ``None`` (no project, no profile, or a workspace a normal
