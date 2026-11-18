@@ -101,7 +101,7 @@ Preconditions:
     --check quick_timeout.classification.kind eq transient --check quick_timeout.classification.retryable eq true \
     --check quick_timeout.classification.user_action eq retry
   ```
-  Expected: the stalls never come near the LLM timeout, so the event stays `transient`, retryable, `user_action=retry`, like any timeout that did not use the whole LLM timeout. Known failure (reproduced 2026-11-15, [#6864](https://github.com/OpenHands/software-agent-sdk/issues/6864), fix in [#6866](https://github.com/OpenHands/software-agent-sdk/pull/6866)): all three attempts run, but the final `LLMTimeoutError` reads `LLM stream idle timeout after 0.3 seconds. The model did not return a complete response within the LLM timeout of 30s (gave up after 3 attempts, 1s in total). ... or a higher timeout in the LLM settings.`, and the event is classified `config`, not retryable, `user_action=settings`: every timeout that runs out of attempts gets the hard-timeout summary, and the classifier keys on that summary.
+  Expected: the stalls never come near the LLM timeout, so the event stays `transient`, retryable, `user_action=retry`, like any timeout that did not use the whole LLM timeout.
 - **Concurrent appends (`S05.event-log-append`).** Four threads append 40 events to a finished conversation's log, as two parts of one program would.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

@@ -126,3 +126,4 @@ Preconditions:
   points at that variable, not at the flag.
 - The flag picks the tools when a conversation starts: switching it on does
   not give an open conversation the tools. Start a new one.
+- Agent Canvas does not render mentions yet: its markdown sanitizer drops the `conversation:` scheme, so a mention shows as a link with an empty `href` (follow-up [OpenHands/OpenHands#19814](https://github.com/OpenHands/OpenHands/issues/19814)).

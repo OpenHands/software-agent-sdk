@@ -40,7 +40,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - `F23.conn-create`: `POST /api/llm/provider-connections` answers 201 with a server-minted 32-hex `id`, the fields, equal `created_at`/`updated_at` and `api_key_set: true`, never the key; `provider` defaults to `custom`; the list shows the same entries in creation order.
 - `F23.conn-key-encrypted`: the connection file `home/.openhands/provider-connections/provider_connections.json` is mode `600` with `schema_version` 1 and a Fernet `gAAAAA` token as `api_key`; the plaintext key appears in no response and in no file under the server's home.
 - `F23.no-cipher`: on a server with neither `OH_SECRET_KEY` nor a session key (no cipher), a connection's key is stored in plaintext in the `600` file, the list still never returns it, and activating a linked profile applies it.
-- `F23.conn-create-validation`: a missing or empty `api_key` or `display_name`, an empty `provider`, a 129-character `display_name`, and any extra field (`extra_headers`, a client-chosen `id`) are 422 and create nothing.
+- `F23.conn-create-validation`: a missing or empty `api_key` or `display_name`, an empty `provider`, a 129-character `display_name`, and any extra field (`extra_headers`, a client-chosen `id`) are 422 and create nothing; an empty `api_key` reports `value_error` `The secret must be a real value, not blank or redacted`.
 - `F23.conn-create-blank-key`: a whitespace-only or redacted-placeholder (`**********`) `api_key` is refused like an empty one instead of creating a keyless connection.
 - `F23.linked-run`: a profile saved with `provider_connection_id` stores no inline key; activating it writes the connection's key into `agent_settings.llm`, and a conversation started from those settings runs on the connection's DeepSeek key and finishes.
 - `F23.conn-update`: `PATCH` renames a connection and sets or clears (`null`) its `base_url`, keeping `id`, `created_at` and the key; the list shows the change, and the next activation of a linked profile applies the connection's `base_url` (and clears it).
@@ -49,7 +49,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - `F23.conn-rotate-key`: rotating `api_key` leaves already-activated settings on the old key; the next activation (`PATCH /api/settings` `active_profile` or `POST /api/profiles/{name}/activate`) applies the new key, which is what the provider then receives, and rotating back makes conversations finish again.
 - `F23.validate-linked-draft`: `POST /api/profiles/{name}/validate` of a draft that references a connection checks it with the connection's key, so a connection holding a working DeepSeek key validates `valid: true` like the same key inline.
 - `F23.persist-restart`: connections (ids, names, timestamps, `api_key_set`) survive a restart unchanged, and a linked profile still resolves the key afterwards.
-- `F23.strict-decrypt`: after the server's secret key changes, list, create, update and delete answer 400 `api_key is encrypted but cannot be decrypted with the current cipher` and leave the file byte-identical; with the old key back everything works and the key is intact.
+- `F23.strict-decrypt`: after the server's secret key changes, list, create, update and delete answer 400 with a validation report per stored key, `The secret is encrypted but no configured key can decrypt it`, naming `OH_SECRET_KEY` and `OH_PREVIOUS_SECRET_KEYS`, and leave the file byte-identical; with the old key back everything works and the key is intact.
 - `F23.corrupt-file`: a connection file that is not valid JSON, or has a newer `schema_version`, makes the routes answer 400 without rewriting the file; restoring it restores the connections.
 - `F23.store-busy`: while another process holds the store's lock, a create waits out the 30-second lock timeout and answers 503 `Profile store is busy. Please retry.` without creating anything.
 - `F23.store-busy-responsive`: while a connection request waits for the store lock, the server keeps answering other requests (`GET /alive` within 3 seconds).
@@ -321,7 +321,8 @@ Preconditions:
   control-agent-server api POST /api/llm/provider-connections --json '{"api_key": "sk-qa-f23-bad"}' --expect 422 \
     --check detail.0.type eq missing --check detail.0.loc contains display_name
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "qa-f23-bad", "api_key": ""}' --expect 422 \
-    --check detail.0.type eq too_short --check detail.0.loc contains api_key
+    --check detail.0.type eq value_error --check detail.0.loc contains api_key \
+    --check detail.0.msg contains 'The secret must be a real value, not blank or redacted' --save F23.conn-create-validation/empty-key
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "", "api_key": "sk-qa-f23-bad"}' --expect 422 \
     --check detail.0.type eq string_too_short --check detail.0.loc contains display_name
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "qa-f23-bad", "provider": "", "api_key": "sk-qa-f23-bad"}' --expect 422 \
@@ -536,19 +537,20 @@ Preconditions:
 - **Secret key changed (`F23.strict-decrypt`).** Restart with a new
   `OH_SECRET_KEY`, try every connection route, then restore the old key.
 
-  Requires: `F23.conn-create`
+  Requires: `F23.conn-create`, `F23.linked-run`
   ```sh
   SUM=$(sha256sum "$CF" | cut -d' ' -f1)
   control-agent-server restart --rotate-secret-key
   control-agent-server api GET /api/llm/provider-connections --expect 400 \
-    --check detail contains 'api_key is encrypted but cannot be decrypted with the current cipher' \
-    --check detail contains OH_SECRET_KEY --save F23.strict-decrypt/list
+    --check detail contains 'connections.0.api_key' --check detail contains 'connections.1.api_key' \
+    --check detail contains 'The secret is encrypted but no configured key can decrypt it' \
+    --check detail contains OH_SECRET_KEY --check detail contains OH_PREVIOUS_SECRET_KEYS --save F23.strict-decrypt/list
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "qa-f23-rotated", "api_key": "sk-qa-f23-rotated"}' \
-    --expect 400 --check detail contains 'cannot be decrypted with the current cipher'
+    --expect 400 --check detail contains 'no configured key can decrypt it'
   control-agent-server api PATCH "/api/llm/provider-connections/$CONN" --json '{"display_name": "qa-f23-rotated"}' \
-    --expect 400 --check detail contains 'cannot be decrypted with the current cipher'
+    --expect 400 --check detail contains 'no configured key can decrypt it'
   control-agent-server api DELETE "/api/llm/provider-connections/$DEF" --expect 400 \
-    --check detail contains 'cannot be decrypted with the current cipher' --save F23.strict-decrypt/delete
+    --check detail contains 'no configured key can decrypt it' --save F23.strict-decrypt/delete
   test "$(sha256sum "$CF" | cut -d' ' -f1)" = "$SUM"
   control-agent-server restart --restore-secret-key
   control-agent-server api GET /api/llm/provider-connections --expect 200 --check . len-eq 2 --check 0.display_name eq qa-f23-deepseek
@@ -556,7 +558,9 @@ Preconditions:
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --max-chars 200 \
     --check agent_settings.llm.api_key eq "$DEEPSEEK_API_KEY" --save F23.strict-decrypt/restored
   ```
-  Under the new key all four answers are 400 naming `OH_SECRET_KEY`, and
+  Under the new key all four answers are 400 whose `detail` is the
+  validation report of the stored file (one entry per connection key,
+  naming `OH_SECRET_KEY` and `OH_PREVIOUS_SECRET_KEYS`), and
   the file's SHA-256 is unchanged (nothing was rewritten or dropped). With
   the old key back both connections are listed and the DeepSeek key still
   resolves.
