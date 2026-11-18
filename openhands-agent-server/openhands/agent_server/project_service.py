@@ -648,9 +648,10 @@ class ProjectService:
         It keeps what makes it part of the project: the ``project`` tag, the
         coordinator's workspace (in a worktree when asked), the parent link to
         the coordinator, the user's confirmation policy, plugins, hooks and
-        secrets, the coordinator as sender of the task (with a header saying so), the worker's prompt
-        and project context, and the project tools a worker uses.
-        It does not take the coordinator's agent, launch additions or client tools.
+        secrets, the coordinator as sender of the task (with a header saying
+        so), the worker's prompt and project context, and the project tools a
+        worker uses. It does not take the coordinator's agent, launch
+        additions or client tools.
         """
         coordinator = coordinator_service.stored
         coordinator_id = coordinator.id
