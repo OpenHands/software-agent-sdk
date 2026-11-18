@@ -484,10 +484,13 @@ class HookExecutor:
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
             hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
+        hook_env.pop("CLAUDE_PLUGIN_ROOT", None)
         if hook.plugin_root:
             # Set after the inherited environment so a parent-process value
             # cannot shadow the owning plugin's root.
             hook_env["PLUGIN_ROOT"] = hook.plugin_root
+            if hook.plugin_format == "claude-code":
+                hook_env["CLAUDE_PLUGIN_ROOT"] = hook.plugin_root
 
         if env:
             hook_env.update(env)
@@ -611,6 +614,15 @@ class HookExecutor:
                             hook_result.additional_context = str(
                                 output_data["additionalContext"]
                             )
+                        else:
+                            hook_specific_output = output_data.get("hookSpecificOutput")
+                            if (
+                                isinstance(hook_specific_output, dict)
+                                and "additionalContext" in hook_specific_output
+                            ):
+                                hook_result.additional_context = str(
+                                    hook_specific_output["additionalContext"]
+                                )
                         if "continue" in output_data:
                             if not output_data["continue"]:
                                 hook_result.blocked = True

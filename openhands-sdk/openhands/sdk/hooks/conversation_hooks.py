@@ -325,12 +325,12 @@ class HookEventProcessor:
             return False
         return message_id in self._conversation_state.blocked_messages
 
-    def run_session_start(self) -> None:
+    def run_session_start(self, source: str = "startup") -> None:
         """Run SessionStart hooks. Call after conversation is created."""
         hooks = self.hook_manager.config.get_hooks_for_event(
-            HookEventType.SESSION_START
+            HookEventType.SESSION_START, source=source
         )
-        results = self.hook_manager.run_session_start()
+        results = self.hook_manager.run_session_start(source=source)
 
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
