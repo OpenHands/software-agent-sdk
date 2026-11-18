@@ -1193,3 +1193,37 @@ def test_without_a_run_errors_are_one_json_object(tmp_path, monkeypatch, capsys)
     assert code == 3
     assert payload["ok"] is False
     assert "launch --new --print-run" in payload["hint"]
+
+
+def _preset_args(**kwargs):
+    import argparse
+
+    return argparse.Namespace(**{"api_key_env": None, "api_key_file": None, **kwargs})
+
+
+def test_deepseek_preset_goes_through_the_llm_proxy_when_one_is_set(monkeypatch):
+    preset = cas.PRESETS["deepseek"]
+    monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("LLM_API_KEY", "proxy-key")
+
+    route = cas.preset_route(preset, _preset_args())
+
+    assert route["base_url"] == "https://proxy.example"
+    assert route["env"] == "LLM_API_KEY"
+    assert [(p["name"], p["model"]) for p in route["profiles"]] == [
+        ("deepseek-flash", "litellm_proxy/deepseek-v4.1-flash")
+    ]
+    # A key named on the command line keeps the provider's own route.
+    named = cas.preset_route(preset, _preset_args(api_key_env="DEEPSEEK_API_KEY"))
+    assert named["base_url"] is None
+    assert named["profiles"][0]["model"] == "deepseek/deepseek-flash"
+
+
+def test_deepseek_preset_without_a_proxy_uses_deepseek(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "proxy-key")
+
+    route = cas.preset_route(cas.PRESETS["deepseek"], _preset_args())
+
+    assert route["base_url"] is None
+    assert route["env"] == "DEEPSEEK_API_KEY"
