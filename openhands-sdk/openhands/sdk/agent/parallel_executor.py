@@ -22,6 +22,7 @@ import asyncio
 import contextvars
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.cancellation import CancellationToken
@@ -46,6 +47,14 @@ logger = get_logger(__name__)
 
 #: Unexpected internal failure - should surface as a diagnostic, not an outcome.
 _INTERNAL = ErrorClassification(kind=FailureKind.INTERNAL, retryable=False)
+
+
+class _ToolBatchCancelled(asyncio.CancelledError):
+    """Cancellation carrying only results completed before batch teardown."""
+
+    def __init__(self, results_by_id: dict[str, list[Event]]) -> None:
+        super().__init__()
+        self.results_by_id = results_by_id
 
 
 class ParallelToolExecutor:
@@ -158,37 +167,60 @@ class ParallelToolExecutor:
         def _resolve(ae: ActionEvent) -> ToolDefinition | None:
             return tools.get(ae.tool_name) if tools else None
 
-        if len(action_events) == 1 or self._max_workers == 1:
-            return [
-                await self._arun_safe(
-                    action,
-                    tool_runner,
-                    _resolve(action),
-                    cancel_token,
-                    span_owner=span_owner,
-                )
-                for action in action_events
-            ]
+        completed: dict[str, list[Event]] = {}
+        completed_lock = Lock()
 
-        with ThreadPoolExecutor(
-            max_workers=self._max_workers,
-            thread_name_prefix="aexecute_batch",
-        ) as pool:
-            return list(
-                await asyncio.gather(
-                    *[
-                        self._arun_safe(
-                            action,
-                            tool_runner,
-                            _resolve(action),
-                            cancel_token,
-                            pool,
-                            span_owner,
-                        )
-                        for action in action_events
-                    ]
-                )
+        def record_result(action: ActionEvent, events: list[Event]) -> None:
+            # Workers only record results. Event emission belongs to the caller
+            # on the event-loop thread, while it owns the conversation state.
+            with completed_lock:
+                completed[action.id] = events
+
+        try:
+            if len(action_events) == 1 or self._max_workers == 1:
+                return [
+                    await self._arun_safe(
+                        action,
+                        tool_runner,
+                        _resolve(action),
+                        cancel_token,
+                        span_owner=span_owner,
+                        on_result=record_result,
+                    )
+                    for action in action_events
+                ]
+
+            pool = ThreadPoolExecutor(
+                max_workers=self._max_workers,
+                thread_name_prefix="aexecute_batch",
             )
+            try:
+                return list(
+                    await asyncio.gather(
+                        *[
+                            self._arun_safe(
+                                action,
+                                tool_runner,
+                                _resolve(action),
+                                cancel_token,
+                                pool,
+                                span_owner,
+                                on_result=record_result,
+                            )
+                            for action in action_events
+                        ]
+                    )
+                )
+            finally:
+                # Cancellation cannot forcibly stop an uncooperative thread;
+                # do not block the event loop waiting for it to finish.
+                pool.shutdown(wait=False, cancel_futures=True)
+        except asyncio.CancelledError as exc:
+            # Do not await unfinished workers. A late result must not mutate
+            # the snapshot that the caller will persist during cancellation.
+            with completed_lock:
+                results = completed.copy()
+            raise _ToolBatchCancelled(results) from exc
 
     async def _arun_safe(
         self,
@@ -198,6 +230,8 @@ class ParallelToolExecutor:
         cancel_token: CancellationToken | None = None,
         executor: ThreadPoolExecutor | None = None,
         span_owner: object | None = None,
+        *,
+        on_result: Callable[[ActionEvent, list[Event]], None] | None = None,
     ) -> list[Event]:
         """Run :meth:`_run_safe` in a thread via ``run_in_executor``.
 
@@ -225,7 +259,7 @@ class ParallelToolExecutor:
         ctx = contextvars.copy_context()
 
         def run_in_caller_context() -> list[Event]:
-            return ctx.run(
+            events = ctx.run(
                 self._run_safe,
                 action,
                 tool_runner,
@@ -233,6 +267,9 @@ class ParallelToolExecutor:
                 cancel_token,
                 span_owner,
             )
+            if on_result is not None:
+                on_result(action, events)
+            return events
 
         fut = loop.run_in_executor(executor, run_in_caller_context)
         try:
