@@ -946,6 +946,28 @@ class TestEventServiceSendMessage:
             assert mock_loop.run_in_executor.call_count == 1  # Only send_message call
 
     @pytest.mark.asyncio
+    async def test_send_message_records_sender(self, event_service):
+        """A sender is passed on to the conversation, which saves it."""
+        conversation = MagicMock()
+        conversation.send_message = MagicMock()
+        event_service._conversation = conversation
+        message = Message(role="user", content=[])
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.send_message(
+                message, run=False, sender="conversation:abc"
+            )
+
+        (_, send, sent), _ = mock_loop.run_in_executor.call_args
+        assert sent is message
+        assert send.func is conversation.send_message
+        assert send.keywords == {"sender": "conversation:abc"}
+
+    @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_already_running(
         self, event_service
     ):
