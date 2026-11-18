@@ -55,7 +55,7 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.ts-client`: the TypeScript client's `ConversationClient.switchLLM`, `switchProfile` and `switchAcpModel` and `ConversationManager.switchProfile` reach the routes: each switch resolves and reads back through `getConversation`, an unknown profile rejects with 404, `switchAcpModel` on a regular conversation with 400, a call without a key with 401, and `switchAcpModel` on an ACP conversation that has not run resolves and stores the model.
 - `F09.ts-client-acp-docs`: the TypeScript client's `switchAcpModel` docstrings describe what the server does before an ACP conversation's first run (200, the model is stored for the first session), not a 409.
 - `F09.ts-client-acp-effort`: the TypeScript client's `ConversationClient.switchAcpEffort` stores the level on an ACP conversation that has not run (`getConversation` shows `acp_effort` and `current_effort`), and rejects with 400 on a regular conversation and with 401 without a key.
-- `F09.load-plugin`: `load_plugin` with `<plugin>@<marketplace>` from a local marketplace registered on the agent's `agent_context` answers 200 and merges the plugin's skill, its command and its hooks into the live agent, visible in `GET`, `base_state.json` and on the socket.
+- `F09.load-plugin`: `load_plugin` with `<plugin>@<marketplace>` from a local marketplace registered on the agent's `agent_context` answers 200 and merges the plugin's skill, its command and its hooks into the live agent, visible in `GET` and `base_state.json`; the socket pushes the `agent` and `hook_config` updates, the `agent` one without skill bodies (`skills: []`).
 - `F09.load-plugin-hook-runs`: after a runtime load, the next user turn runs the plugin's `UserPromptSubmit` hook (a `HookExecutionEvent` with its output) and finishes.
 - `F09.load-plugin-errors`: no registered marketplaces and no agent context are 400, a registered marketplace whose source is missing is 400, an unknown marketplace or plugin is 404, empty and malformed refs are 400, a missing `plugin_ref` is 422 and an unknown conversation 404; a bare plugin name resolves across the registered marketplaces.
 - `F09.load-plugin-twice`: loading the same plugin twice leaves one copy of its hooks, so they still run once per message.
@@ -96,7 +96,10 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   `switchAcpEffort(id, effort)`;
   `RemoteConversation.switchProfile`, `switchLlm`, `switchAcpModel`,
   `switchAcpEffort`;
-  `ConversationManager.switchProfile`. There is no TypeScript `loadPlugin`.
+  `ConversationManager.switchProfile`;
+  `ConversationClient.loadPlugin(id, ref)` and
+  `PluginsClient.loadPluginForConversation(id, ref)` post
+  `{"plugin_ref": ref}` to `load_plugin` (driven by `F34.load-plugin`).
   `F09.ts-client` drives the `ConversationClient` methods and
   `ConversationManager.switchProfile` (the `RemoteConversation` methods post
   the same bodies to the same routes).
@@ -805,14 +808,17 @@ Preconditions:
     --save F09.load-plugin/get
   control-agent-server state cat "server/workspace/conversations/${PID//-/}/base_state.json" --max-chars 200 \
     --contains qa-f09-mkt-plugin-skill --check hook_config.user_prompt_submit len-eq 1
-  control-agent-server ws read qa-f09-plugin --kinds ConversationStateUpdateEvent --contains qa-f09-mkt-plugin-skill --expect-min 1 --wait 20 --save F09.load-plugin/agent-frame
+  control-agent-server ws read qa-f09-plugin --kinds ConversationStateUpdateEvent --contains '"key": "agent"' --expect-min 1 --wait 20 --save F09.load-plugin/agent-frame
+  control-agent-server ws read qa-f09-plugin --contains qa-f09-mkt-plugin-skill --expect-none
   control-agent-server ws stop qa-f09-plugin --kinds ConversationStateUpdateEvent --contains QA_PLUGIN_HOOK --expect-min 1 --wait 20
   ```
   Before the load the agent has no skills and no hooks. After it, `GET`
   (with `include_skills=true`) lists the plugin's skill and its command (as
   the skill `qa-f09-mkt-plugin:qa-hello`), `hook_config` has the plugin's
   `UserPromptSubmit` hook, `base_state.json` has both, and the socket pushed
-  state updates for `agent` and `hook_config`.
+  state updates for `agent` and `hook_config`. The `agent` update (like the
+  `full_state` snapshot) carries `agent_context.skills` as `[]`, so no frame
+  names the plugin's skill; read skills from `GET` with `include_skills=true`.
 - **The loaded hook runs (`F09.load-plugin-hook-runs`).** Run one turn on
   `PID`.
 
@@ -917,7 +923,7 @@ Preconditions:
 - **Restart (`F09.restart-persist`).** Restart the server and read every
   switched conversation back; then run a turn on `RID`.
 
-  Requires: `F09.switch-profile`, `F09.acp-model-deferred`, `F09.load-plugin`
+  Requires: `F09.switch-llm-ws`, `F09.switch-profile`, `F09.acp-model-deferred`, `F09.load-plugin`
   ```sh
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$CID" --quiet --check agent.llm.model eq openai/qa-f09-ws --check agent.llm.usage_id eq qa-f09-ws --save F09.restart-persist/cid
@@ -982,7 +988,9 @@ Preconditions:
   that the load is what adds the plugin.
 - Plugin commands become skills named `<plugin>:<command>`, and
   `GET /api/conversations/{id}` trims `agent.agent_context.skills` to `[]`
-  unless `include_skills=true`.
+  unless `include_skills=true`. Socket and webhook
+  `ConversationStateUpdateEvent`s (`full_state` and `agent`) always carry
+  `agent_context.skills` as `[]`; the persisted state keeps the skills.
 - `switch_acp_model` before the first run only persists the model; the
   provider's capability (`supports_runtime_model_switch`) and
   `available_models` are unknown (`false`, `[]`) until a session started. A

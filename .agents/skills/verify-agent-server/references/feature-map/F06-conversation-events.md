@@ -5,7 +5,8 @@ user and agent message, every tool action and observation, and one state
 update per changed field (`execution_status`, `stats`, `last_user_message_id`,
 ...). Consumers append a user message with `POST .../events` (and optionally
 start the agent), read history through search (filters, cursor paging, sort),
-count, get-one and batch-get, and follow the conversation live over
+count, get-one and batch-get (a GET with a JSON body, or its browser-safe
+`POST .../events/batch` form), and follow the conversation live over
 `/sockets/events/{conversation_id}`: first-frame auth, a transient
 `full_state` snapshot, optional replay of history (`resend_mode=all` or
 `since`), then every new event as raw JSON; a message frame sent on the socket
@@ -21,6 +22,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 `GET /api/conversations/{conversation_id}/events/count`,
 `GET /api/conversations/{conversation_id}/events/{event_id}`,
 `GET /api/conversations/{conversation_id}/events`,
+`POST /api/conversations/{conversation_id}/events/batch`,
 `POST /api/conversations/{conversation_id}/events`,
 `WS /sockets/events/{conversation_id}`
 
@@ -36,6 +38,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.get-one`: `GET .../events/{event_id}` returns the event that search lists under that id, and the same event is on disk.
 - `F06.unknown-event`: an unknown event id returns 404 from get-one and `null` in its slot from batch-get.
 - `F06.batch-get`: `GET .../events` with a JSON array of ids as the body returns those events in request order; no body is a 422.
+- `F06.batch-post`: `POST .../events/batch` with the same JSON array returns byte for byte what the GET batch returns (events in request order, `null` for an unknown id, `[]` for `[]`), appends nothing, and answers 422 for no body or a non-array body, 404 for an unknown conversation and 401 without a key.
 - `F06.not-found-auth`: every event route returns 404 for an unknown conversation, 422 for a malformed conversation id and 401 without a valid session key.
 - `F06.send-validation`: a missing body, a message with an unknown role, string content or an unknown content type is rejected with 422 and nothing is appended.
 - `F06.send-image`: a message with a text part and an `image` part (a `data:` URL) is persisted with its `image_urls` intact and returned the same by search, get-one and the socket replay; an `image` part without `image_urls` is a 422 and appends nothing.
@@ -85,8 +88,10 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - REST: `GET .../events/{event_id}` (TypeScript `ConversationClient.getEvent()`,
   `RemoteEventsList.getEventById()`) and `GET .../events` with a JSON array body
   (batch get; no SDK or TypeScript caller, because browsers cannot send a GET
-  body: the TypeScript `getEvents()` fans out to get-one and maps 404 to
-  `null`).
+  body) and its browser-safe form `POST .../events/batch` with the same bare
+  JSON array body (TypeScript `ConversationClient.batchGetEvents()`, driven by
+  `F34.events-batch-post`). The TypeScript `RemoteEventsList.getEventsById()`
+  still fans out to get-one and maps 404 to `null`.
 - WebSocket: `/sockets/events/{conversation_id}` with query `resend_mode`
   (`all` or `since`), `after_timestamp` (ISO 8601, required for `since`) and
   the deprecated `resend_all=true` and `session_api_key`. The SDK's
@@ -284,6 +289,35 @@ Preconditions:
   ```
   Events come back in request order, not log order; without a body the
   route answers 422 `body: Field required`.
+- **Batch get by POST (`F06.batch-post`).** The same ids through the
+  browser-safe form, compared byte for byte with the GET form.
+
+  Requires: `F06.search-time-window`, `F06.get-one`
+  ```sh
+  B6="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f06-batch"
+  mkdir -p "$B6"
+  N6=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "[\"$E2\", \"qa-missing-event\", \"$E1\"]" --expect 200 \
+    --check . len-eq 3 --check 0.id eq "$E2" --check 1 missing --check 2.id eq "$E1" --raw-out "$B6/post.json" --save F06.batch-post/three
+  control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\", \"qa-missing-event\", \"$E1\"]" --expect 200 \
+    --quiet --raw-out "$B6/get.json"
+  cmp "$B6/get.json" "$B6/post.json"
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json '[]' --expect 200 --check . len-eq 0
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --expect 422 --check detail.0.loc contains body \
+    --check detail.0.type eq missing --save F06.batch-post/no-body
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "{\"ids\": [\"$E2\"]}" --expect 422 \
+    --check detail.0.type eq list_type --save F06.batch-post/object-body
+  control-agent-server api POST "/api/conversations/$QA_UNKNOWN/events/batch" --json "[\"$E2\"]" --expect 404 \
+    --check detail contains 'Conversation not found' --save F06.batch-post/unknown-conversation
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "[\"$E2\"]" --auth none --expect 401
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "[\"$E2\"]" --expect 200 --check 0.id eq "$E2"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$N6"
+  ```
+  The POST answers `[<E2>, null, <E1>]`, the same bytes as the GET form
+  for the same ids; `[]` is `[]`. No body is 422 `missing` at `body`, an
+  object instead of the bare array is 422 `list_type`, an unknown
+  conversation 404 `Conversation not found`, no key 401, and the count is
+  unchanged: the POST reads, it appends nothing.
 - **Unknown conversation, bad id, no key (`F06.not-found-auth`).**
 
   Requires: `F06.get-one`
@@ -770,7 +804,9 @@ Preconditions:
   them. Compare ids, not raw JSON.
 - An unknown event id is a 404, and `null` in its slot of a batch
   (`F06.unknown-event`); batch-get is a GET with a JSON body, which browsers
-  cannot send.
+  cannot send, so browser clients use `POST .../events/batch`
+  (`F06.batch-post`). `GET .../events/batch` is not that route: it is
+  get-one for the event id `batch` (404).
 - The `SystemPromptEvent` is written on the first message, not at creation;
   a conversation created without a message has an empty log and count 0.
 - `POST .../events` with `run: false` never runs, even on an idle

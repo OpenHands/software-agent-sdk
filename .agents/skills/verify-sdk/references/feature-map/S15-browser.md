@@ -77,7 +77,7 @@ Preconditions:
   control-sdk program S15/close_tab --timeout 300 \
     --check setup_ok eq true --check all_closed eq true --check stale_lists eq 0
   ```
-  Expected: once `browser_close_tab` has answered, `browser_list_tabs` lists only the remaining tab. Known failure (reproduced 2026-11-12, [#6785](https://github.com/OpenHands/software-agent-sdk/issues/6785)): the close answers when Chrome acknowledges `Target.closeTarget`, but browser-use's tab list drops the tab only when `Target.detachedFromTarget` is handled 10–30 ms later, so the immediate list still shows it (`stale_lists` 5 of 5; closing the focused tab usually hides the lag). Fix: [#6786](https://github.com/OpenHands/software-agent-sdk/pull/6786).
+  Expected: once `browser_close_tab` has answered, `browser_list_tabs` lists only the remaining tab. Known failure (reproduced 2026-11-17, [#6785](https://github.com/OpenHands/software-agent-sdk/issues/6785)): the close answers when Chrome acknowledges `Target.closeTarget`, but browser-use's tab list drops the tab only when `Target.detachedFromTarget` is handled 10–30 ms later, so the immediate list still shows it (`stale_lists` 2 to 5 of 5; closing the focused tab usually hides the lag). Fix: [#6786](https://github.com/OpenHands/software-agent-sdk/pull/6786).
 - **No Chromium (`S15.degrade-on-failure`, `S15.chromium-detection`, `S15.prompt-guidance`).** The run's `HOME` has no Playwright cache, `PLAYWRIGHT_BROWSERS_PATH` is unset, and no Chromium is on `PATH` or in the system paths (on a machine with a system Chrome the program exits 3, since it cannot hide that one). A scripted agent with the terminal and the browser tool set still runs its terminal command.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
