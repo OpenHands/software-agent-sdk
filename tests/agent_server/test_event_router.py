@@ -168,9 +168,15 @@ class TestSendMessageFromAnotherConversation:
         async def get_conversation(conversation_id):
             return conversations.get(conversation_id)
 
+        async def member_of(tags):
+            return None
+
         update_test_context(
             client.app,
-            conversation_service=SimpleNamespace(get_conversation=get_conversation),
+            conversation_service=SimpleNamespace(
+                get_conversation=get_conversation,
+                projects=SimpleNamespace(member_of=member_of),
+            ),
         )
 
     def test_records_the_sender_and_opens_with_its_header(

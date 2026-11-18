@@ -617,6 +617,39 @@ async def test_sender_outside_any_project_is_named_as_a_conversation(
     assert "another conversation, not by the user" in header
 
 
+async def _tagged_sender_reaches_untagged(client, service, tmp_path, monkeypatch):
+    sender = await _start(service, tmp_path)
+    await service.projects.set_conversation_tag(sender, "project", "billing")
+    target = await _start(service, tmp_path)
+    _save_without_running(monkeypatch)
+
+    response = await client.post(
+        f"/api/conversations/{target.hex}/events", json=_send("hi", sender.hex)
+    )
+
+    assert response.status_code == 200, response.text
+    event = await _last_user_message(service, target)
+    assert event.sender == f"conversation:{sender.hex}"
+    header = event.llm_message.content[0].text  # type: ignore[union-attr]
+    assert "another conversation, not by the user" in header
+
+
+@pytest.mark.asyncio
+async def test_a_project_tag_naming_no_project_is_ordinary_for_senders(
+    client, service, tmp_path, monkeypatch
+):
+    """A client's own ``project`` tag does not limit whom it can message."""
+    await _tagged_sender_reaches_untagged(client, service, tmp_path, monkeypatch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.projects_off
+async def test_with_projects_off_a_project_tag_does_not_limit_senders(
+    client, service, tmp_path, monkeypatch
+):
+    await _tagged_sender_reaches_untagged(client, service, tmp_path, monkeypatch)
+
+
 @pytest.mark.asyncio
 async def test_message_runs_member_with_guard(client, service, tmp_path, monkeypatch):
     project = (await client.post("/api/projects", json={"name": "P"})).json()

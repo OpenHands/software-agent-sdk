@@ -774,3 +774,43 @@ def test_resolve_outside_a_project_makes_no_request(tmp_path):
 
     assert observation.is_error
     assert "not part of a project" in observation.text
+
+
+@pytest.mark.parametrize("name", ["../other/memory/MEMORY.md", "..", "a/b.md"])
+def test_memory_and_artifact_names_stay_in_the_project(tmp_path, name):
+    """A name with a path in it would be resolved by the URL into another
+    project's files; the tools refuse it before any request."""
+    from openhands.tools.project import (
+        ReadArtifactAction,
+        ReadArtifactExecutor,
+        ReadProjectMemoryAction,
+        ReadProjectMemoryExecutor,
+        UpdateProjectMemoryAction,
+        UpdateProjectMemoryExecutor,
+    )
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/memory"):
+            return httpx.Response(200, json={"files": []})
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(handler)
+    state = _conv_state(tmp_path)
+    observations = [
+        ReadArtifactExecutor(state, transport=transport)(ReadArtifactAction(name=name)),
+        ReadProjectMemoryExecutor(state, transport=transport)(
+            ReadProjectMemoryAction(name=name)
+        ),
+        UpdateProjectMemoryExecutor(state, transport=transport)(
+            UpdateProjectMemoryAction(name=name, content="x")
+        ),
+    ]
+
+    for observation in observations:
+        assert observation.is_error, observation.text
+        assert "is not a file name" in observation.text
+    assert all("/memory/" not in r.url.path for r in seen)
+    assert all("/artifacts/" not in r.url.path for r in seen)

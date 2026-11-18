@@ -330,6 +330,14 @@ def _held_status(response: httpx.Response) -> str:
     return status if status in HELD_FOR_USER_STATUSES else ""
 
 
+def _path_segment(name: str) -> str:
+    """``name`` as one URL path segment, so it cannot reach another project's
+    files: a ``/`` or a dot-segment would be resolved by the URL first."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise ProjectToolError(f"{name!r} is not a file name.")
+    return quote(name, safe="")
+
+
 def _held_refusal(conversation_id: str, status: str) -> str:
     template = _HELD_REFUSALS.get(
         status,
@@ -570,7 +578,7 @@ class ReadArtifactExecutor(ToolExecutor[ReadArtifactAction, ReadArtifactObservat
                 else None
             )
             data = self._client.request(
-                "GET", f"/api/projects/{project_id}/artifacts/{quote(name)}"
+                "GET", f"/api/projects/{project_id}/artifacts/{_path_segment(name)}"
             ).content
             text = None if target else _as_small_text(data)
             if text is not None:
@@ -720,7 +728,8 @@ class ReadProjectMemoryExecutor(
             listing = _memory_listing(self._client, project_id)
             try:
                 response = self._client.request(
-                    "GET", f"/api/projects/{project_id}/memory/{action.name}"
+                    "GET",
+                    f"/api/projects/{project_id}/memory/{_path_segment(action.name)}",
                 )
             except ProjectToolError as exc:
                 cause = exc.__cause__
@@ -778,7 +787,7 @@ class UpdateProjectMemoryExecutor(
             try:
                 response = self._client.request(
                     "PUT",
-                    f"/api/projects/{project_id}/memory/{action.name}",
+                    f"/api/projects/{project_id}/memory/{_path_segment(action.name)}",
                     json={
                         "content": action.content,
                         "base_revision": action.base_revision,

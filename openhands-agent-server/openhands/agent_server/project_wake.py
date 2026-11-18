@@ -126,12 +126,15 @@ async def sender_message_header(
     sender = await service.get_conversation(sender_id)
     if sender is None:
         raise SenderError("Sender conversation not found")
-    project_hex = sender.tags.get(PROJECT_TAG_KEY)
-    if not project_hex:
+    # Only a real project member (Projects on, project exists) is held to its
+    # project; any other ``project`` tag is ordinary client metadata.
+    project = await service.projects.member_of(sender.tags)
+    if project is None:
         return generic_sender_header(sender.title, sender_id)
-    if target_tags.get(PROJECT_TAG_KEY) != project_hex:
+    target = await service.projects.member_of(target_tags)
+    if target is None or target.id != project.id:
         raise SenderError("Sender is not a conversation of this project")
-    coordinator = await _coordinator_id(service, project_hex) == sender_id
+    coordinator = project.coordinator_conversation_id == sender_id
     role: SenderRole = "coordinator" if coordinator else "worker"
     return sender_header(sender.title, sender_id, role=role)
 
@@ -654,7 +657,10 @@ async def reconcile_coordinator_updates(service: "ConversationService") -> int:
     that has ended (finished, or stopped on the user) with no message from
     it in the coordinator since its last output, the update is delivered now,
     as it would have been when the turn ended. Turns the user started are
-    not replayed: the user saw those. Returns how many were delivered.
+    not replayed: the user saw those. A resolved member is skipped: its work
+    is done and the board shows it. Members are picked from the catalog, so
+    only those that may owe an update are loaded. Returns how many were
+    delivered.
     """
     stores = service.stores
     if stores is None or not await feature_enabled_now("projects", stores.settings):
@@ -669,13 +675,22 @@ async def reconcile_coordinator_updates(service: "ConversationService") -> int:
             continue
         project_hex = project.id.hex
         members = await service.list_tagged_conversations(PROJECT_TAG_KEY, project_hex)
-        for stored, execution_status in members:
-            status = str(getattr(execution_status, "value", execution_status))
-            if stored.id == coordinator_id or status not in _ENDED:
-                continue
-            target = await _coordinator(service, stored.id, project_hex)
-            if target is None:
-                break
+        # Decide from the catalog first: only an ended, unresolved member can
+        # owe an update, and only those are loaded.
+        owing = [
+            (stored, status)
+            for stored, execution_status in members
+            if stored.id != coordinator_id
+            and RESOLVED_TAG_KEY not in stored.tags
+            and (status := str(getattr(execution_status, "value", execution_status)))
+            in _ENDED
+        ]
+        if not owing:
+            continue
+        target = await _coordinator(service, owing[0][0].id, project_hex)
+        if target is None:
+            continue
+        for stored, status in owing:
             try:
                 if await _reconcile_member(
                     service,
