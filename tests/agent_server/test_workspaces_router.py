@@ -16,18 +16,15 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 
 
 @pytest.fixture
 def client(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
-        reset_stores()
         monkeypatch.setenv("OH_PERSISTENCE_DIR", str(Path(tmpdir) / "persist"))
         config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
         app = create_app(config)
         yield TestClient(app)
-        reset_stores()
 
 
 @pytest.fixture
@@ -37,7 +34,6 @@ def client_with_auth(monkeypatch):
     workspaces router inherits the same auth as the rest of ``/api``.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        reset_stores()
         monkeypatch.setenv("OH_PERSISTENCE_DIR", str(Path(tmpdir) / "persist"))
         config = Config(
             static_files_path=None,
@@ -46,7 +42,6 @@ def client_with_auth(monkeypatch):
         )
         app = create_app(config)
         yield TestClient(app, raise_server_exceptions=False)
-        reset_stores()
 
 
 def test_list_workspaces_empty_when_no_file(client):
@@ -145,13 +140,15 @@ def test_workspaces_survive_across_requests_via_disk_persistence(client):
         json={"workspaces": [{"id": "/keep", "name": "keep", "path": "/keep"}]},
     )
 
-    # Act: confirm it's on disk, then reset the in-memory singleton (simulating
-    # a server restart) and re-read.
+    # Act: confirm it's on disk, then re-read through a new server on the same
+    # directory (a restart: its stores are built from scratch).
     persist_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
     assert (persist_dir / "workspaces.json").exists()
 
-    reset_stores()
-    listed_again = client.get("/api/workspaces").json()
+    restarted = TestClient(
+        create_app(Config(static_files_path=None, session_api_keys=[], secret_key=None))
+    )
+    listed_again = restarted.get("/api/workspaces").json()
 
     # Assert
     assert [w["path"] for w in listed_again["workspaces"]] == ["/keep"]
@@ -292,8 +289,6 @@ def test_list_workspaces_returns_409_when_persisted_file_is_corrupted(client):
     )
     persist_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
     (persist_dir / "workspaces.json").write_text("{not valid json", encoding="utf-8")
-    # Force the next request to re-read from disk rather than the in-memory store.
-    reset_stores()
 
     # Act
     response = client.get("/api/workspaces")
@@ -361,3 +356,60 @@ def test_workspaces_endpoints_accept_valid_session_api_key(client_with_auth):
     assert listed.status_code == 200
     assert added.status_code == 200
     assert deleted.status_code == 200
+
+
+def test_refused_deletes_on_fresh_directory_create_no_workspaces_file(client):
+    # Arrange
+    persist_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
+
+    # Act
+    workspace = client.delete("/api/workspaces", params={"path": "/never"})
+    parent = client.delete("/api/workspaces/parents", params={"path": "/never"})
+
+    # Assert: both are 404 and, like a read, write no registry file.
+    assert workspace.status_code == 404
+    assert workspace.json()["detail"] == "Workspace not found"
+    assert parent.status_code == 404
+    assert parent.json()["detail"] == "Workspace parent not found"
+    assert not (persist_dir / "workspaces.json").exists()
+
+
+def test_noop_writes_do_not_save_and_keep_their_answer(client, monkeypatch):
+    # Arrange: seed one workspace and one parent, then make every save fail,
+    # standing in for storage the server cannot write.
+    from openhands.agent_server.persistence.store import FileWorkspacesStore
+
+    workspace = {"id": "/a", "name": "a", "path": "/a"}
+    parent = {"id": "/p", "name": "p", "path": "/p"}
+    assert client.post("/api/workspaces", json={"workspaces": [workspace]}).is_success
+    assert client.post("/api/workspaces/parents", json={"parents": [parent]}).is_success
+    ws_file = Path(os.environ["OH_PERSISTENCE_DIR"]) / "workspaces.json"
+    stamp = (ws_file.stat().st_ino, ws_file.stat().st_mtime_ns)
+
+    def failing_save(self, workspaces):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(FileWorkspacesStore, "save", failing_save)
+
+    # Act
+    readd = client.post("/api/workspaces", json={"workspaces": [workspace]})
+    readd_parent = client.post("/api/workspaces/parents", json={"parents": [parent]})
+    delete_unknown = client.delete("/api/workspaces", params={"path": "/never"})
+    delete_unknown_parent = client.delete(
+        "/api/workspaces/parents", params={"path": "/never"}
+    )
+    real_add = client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": "/b", "name": "b", "path": "/b"}]},
+    )
+
+    # Assert: only the real change tries to write.
+    assert readd.status_code == 200
+    assert [w["path"] for w in readd.json()["workspaces"]] == ["/a"]
+    assert readd_parent.status_code == 200
+    assert [p["path"] for p in readd_parent.json()["workspaceParents"]] == ["/p"]
+    assert delete_unknown.status_code == 404
+    assert delete_unknown_parent.status_code == 404
+    assert real_add.status_code == 500
+    assert "Failed to save workspaces" in real_add.json()["exception"]
+    assert (ws_file.stat().st_ino, ws_file.stat().st_mtime_ns) == stamp

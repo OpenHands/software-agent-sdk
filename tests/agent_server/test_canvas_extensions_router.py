@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
 from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
@@ -31,6 +32,7 @@ def client(tmp_path: Path, monkeypatch) -> TestClient:
         lambda: store,
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(canvas_extensions_router)
     return TestClient(app)
 
@@ -165,6 +167,7 @@ def client_with_sessions(tmp_path: Path, monkeypatch) -> tuple[TestClient, objec
         lambda: store,
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(canvas_extensions_router)
     sessions = AppBackendSessionStore()
     app.state.app_backend_session_store = sessions

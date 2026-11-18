@@ -180,3 +180,52 @@ def test_cipher_long_content():
 
     assert decrypted is not None
     assert decrypted.get_secret_value() == long_secret
+
+
+def test_cipher_decrypts_with_previous_key_and_encrypts_with_current():
+    old = Cipher("old-key")
+    token = old.encrypt(SecretStr("value"))
+    assert token is not None
+
+    rotated = Cipher("new-key", previous_keys=["old-key"])
+    decrypted = rotated.decrypt(token)
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "value"
+    assert rotated.try_decrypt_str(token) == "value"
+    assert not rotated.is_current(token)
+
+    fresh = rotated.encrypt(SecretStr("value"))
+    assert fresh is not None
+    assert rotated.is_current(fresh)
+    # A new token is under the new key only: the old key cannot read it.
+    assert old.decrypt(fresh) is None
+    assert Cipher("new-key").try_decrypt_str(fresh) == "value"
+
+
+def test_cipher_rotate():
+    token = Cipher("old-key").encrypt(SecretStr("value"))
+    assert token is not None
+    rotated = Cipher("new-key", previous_keys=["older-key", "old-key"])
+
+    new_token = rotated.rotate(token)
+    assert new_token is not None and new_token != token
+    assert rotated.is_current(new_token)
+    # After rotation the previous key is no longer needed.
+    assert Cipher("new-key").try_decrypt_str(new_token) == "value"
+    # A token already under the current key is returned unchanged.
+    assert rotated.rotate(new_token) == new_token
+    # No configured key can decrypt it: nothing to rotate to.
+    assert Cipher("new-key", previous_keys=["other"]).rotate(token) is None
+
+
+def test_cipher_without_the_old_key_cannot_decrypt():
+    token = Cipher("old-key").encrypt(SecretStr("value"))
+    assert token is not None
+    cipher = Cipher("new-key", previous_keys=["unrelated"])
+    assert cipher.decrypt(token) is None
+    assert cipher.try_decrypt_str(token) is None
+
+
+def test_cipher_previous_keys_drop_blanks_and_the_current_key():
+    cipher = Cipher("k", previous_keys=["", "  ", "k", "a", "a", "b"])
+    assert cipher.previous_keys == ("a", "b")

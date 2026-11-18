@@ -1,5 +1,6 @@
 """Tests for Conversation.fork() primitive."""
 
+import json
 import tempfile
 import threading
 import uuid
@@ -12,10 +13,14 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation, LocalConversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _agent() -> Agent:
@@ -154,9 +159,18 @@ def test_fork_execution_status_is_idle():
 def test_fork_resets_metrics_by_default():
     """By default, metrics on the fork should be fresh (empty)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
+        src.max_budget_per_run = 3.0
         fork = src.fork()
 
+        assert fork.max_budget_per_run == 3.0
+        saved = json.loads(Path(tmpdir, fork.id.hex, "base_state.json").read_text())
+        assert saved["max_budget_per_run"] == 3.0
         combined = fork.state.stats.get_combined_metrics()
         assert combined.accumulated_cost == 0
 
@@ -164,7 +178,12 @@ def test_fork_resets_metrics_by_default():
 def test_fork_preserves_metrics_when_requested():
     """When reset_metrics=False the fork should carry over stats."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
         # Inject a non-zero metric
         from openhands.sdk.llm.utils.metrics import Metrics
 
@@ -174,6 +193,7 @@ def test_fork_preserves_metrics_when_requested():
 
         fork = src.fork(reset_metrics=False)
 
+        assert fork.max_budget_per_run == 2.0
         combined = fork.state.stats.get_combined_metrics()
         assert combined.accumulated_cost == pytest.approx(1.5)
 
@@ -277,13 +297,14 @@ def test_fork_with_tags():
         assert fork.state.tags.get("env") == "test"
 
 
-def test_fork_with_title_sets_tag():
-    """Title is stored as a 'title' tag."""
+@pytest.mark.parametrize("tags", [{}, {"purpose": "debugging"}, {"title": "user tag"}])
+def test_fork_with_title_is_ignored(tags: dict[str, str]):
+    """Passing title is accepted for signature compat but does not pollute tags."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        fork = src.fork(title="My Fork")
+        fork = src.fork(title="My Fork", tags=tags)
 
-        assert fork.state.tags.get("title") == "My Fork"
+        assert dict(fork.state.tags) == tags
 
 
 def test_fork_shares_workspace():
@@ -403,3 +424,69 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def _persisted_base_state(conv: LocalConversation) -> dict:
+    persistence_dir = conv.state.persistence_dir
+    assert persistence_dir is not None
+    return json.loads((Path(persistence_dir) / "base_state.json").read_text())
+
+
+def test_fork_keeps_source_cipher_for_persisted_secrets(tmp_path):
+    """A fork of a cipher-backed conversation stores its secrets encrypted (#5465).
+
+    The agent-server resumes a fork from its ``base_state.json``, so a key
+    persisted redacted there makes the fork's first LLM call fail.
+    """
+    cipher = Cipher("test-secret-key")
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+        cipher=cipher,
+        secrets={"GITHUB_TOKEN": "ghp-test"},
+    )
+    fork = src.fork()
+
+    state = _persisted_base_state(fork)
+    api_key = cipher.decrypt(state["agent"]["llm"]["api_key"])
+    assert api_key is not None
+    assert api_key.get_secret_value() == "test-key"
+
+    # Conversation secrets survive the fork too, under the same cipher.
+    sources = state["secret_registry"]["secret_sources"]
+    token = cipher.decrypt(sources["GITHUB_TOKEN"]["value"])
+    assert token is not None
+    assert token.get_secret_value() == "ghp-test"
+
+    # Resuming the fork from disk (the agent-server path) restores the key.
+    resumed = ConversationState.model_validate(state, context={"cipher": cipher})
+    resumed_key = resumed.agent.llm.api_key
+    assert isinstance(resumed_key, SecretStr)
+    assert resumed_key.get_secret_value() == "test-key"
+
+
+def test_fork_without_cipher_still_redacts_secrets(tmp_path):
+    """Forks of cipher-less conversations keep redacting persisted secrets."""
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+    )
+    fork = src.fork()
+
+    assert set(_persisted_base_state(fork)["agent"]["llm"]["api_key"]) == {"*"}
+
+
+def test_fork_preserves_max_budget_per_run():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
+        fork = src.fork()
+
+        assert isinstance(fork, LocalConversation)
+        assert fork.max_budget_per_run == 2.0

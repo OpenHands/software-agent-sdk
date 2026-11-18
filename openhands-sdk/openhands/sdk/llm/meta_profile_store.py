@@ -10,7 +10,6 @@ string — credentials/provider settings resolve through that store.
 from __future__ import annotations
 
 import json
-import os
 import re
 import tempfile
 from collections.abc import Iterator
@@ -21,8 +20,10 @@ from typing import Any, Final
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field, model_validator
 
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -37,11 +38,10 @@ def default_meta_profile_dir() -> Path:
     persisted state. Honor that for bare ``MetaProfileStore()`` instances so
     runtime tools read the same meta-profiles exposed by the HTTP API. Without
     that env var, keep the standalone SDK default under ``~/.openhands``.
+    Resolved at call time through ``get_user_persistence_dir`` so ``~`` and
+    relative values land where the other stores put their files.
     """
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    if env_dir:
-        return Path(env_dir) / "meta-profiles"
-    return Path.home() / ".openhands" / "meta-profiles"
+    return get_user_persistence_dir() / "meta-profiles"
 
 
 class MetaProfileLimitExceeded(Exception):
@@ -89,7 +89,12 @@ class MetaProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_routing_mode(self) -> MetaProfile:
-        """Require either structured classes or a direct prompt, not both."""
+        """Validate direct-prompt mode: a template needs ``{{ instance_text }}``
+        and excludes classes.
+
+        A meta-profile with neither classes nor a template is accepted here so
+        persisted ones still load; ``POST /api/meta-profiles/{name}`` refuses it.
+        """
         if self.prompt_template is None:
             return self
         if re.search(r"{{\s*instance_text\s*}}", self.prompt_template) is None:
@@ -136,8 +141,11 @@ class MetaProfileStore:
             logger.error(
                 f"[Meta-profile Store] Failed to acquire lock within {timeout}s"
             )
-            raise TimeoutError(
-                f"Meta-profile store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Meta-profile store is busy. Please retry.",
+                message=(
+                    f"Meta-profile store lock acquisition timed out after {timeout}s"
+                ),
             )
 
     def list(self) -> list[str]:
@@ -156,7 +164,7 @@ class MetaProfileStore:
     def _get_path(self, name: str) -> Path:
         clean_name = name.removesuffix(".json")
         if not PROFILE_NAME_REGEX.match(clean_name):
-            raise ValueError(
+            raise Invalid(
                 f"Invalid meta-profile name: {name!r}. "
                 "Names must be 1-64 characters, start with a letter or digit, "
                 "and contain only letters, digits, '.', '_', or '-'."
@@ -181,7 +189,7 @@ class MetaProfileStore:
             data = json.loads(path.read_text(encoding="utf-8"))
             return MetaProfile.model_validate(data)
         except Exception as e:
-            raise ValueError(f"Failed to load meta-profile `{name}`: {e}") from e
+            raise Invalid(f"Failed to load meta-profile `{name}`: {e}") from e
 
     def save(
         self,

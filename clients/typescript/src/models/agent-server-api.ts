@@ -5,10 +5,22 @@
  * through the handwritten client.
  */
 import type {
+  ArchiveDirectoryApiFileArchiveGetData,
+  BatchGetConversationEventsApiConversationsConversationIdEventsGetData,
+  BatchGetConversationEventsApiConversationsConversationIdEventsGetResponse,
   GetAgentSettingsSchemaApiSettingsAgentSchemaGetResponse,
   GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponse,
+  GetInitStatusApiInitGetResponse,
   GetMcpOauthStatusApiMcpOauthStatusJobIdGetResponse,
   GetSettingsApiSettingsGetResponse,
+  GitCommitChangesQueryApiGitCommitsShaChangesGetData,
+  GitCommitChangesQueryApiGitCommitsShaChangesGetResponse,
+  GitCommitsQueryApiGitCommitsGetData,
+  GitCommitsQueryApiGitCommitsGetResponse,
+  InitializeServerApiInitPostData,
+  InitializeServerApiInitPostResponse,
+  LoadConversationPluginApiConversationsConversationIdLoadPluginPostData,
+  LoadConversationPluginApiConversationsConversationIdLoadPluginPostResponse,
   McpToolCallSpec,
   McpToolCallResult,
   StartMcpOauthApiMcpOauthStartPostData,
@@ -40,8 +52,35 @@ export type AgentServerMCPOAuthCallbackResponse =
   SubmitMcpOauthCallbackApiMcpOauthCallbackJobIdPostResponse;
 export type AgentServerMCPToolCallResult = McpToolCallResult;
 
+export type AgentServerBatchEventIds =
+  BatchGetConversationEventsApiConversationsConversationIdEventsGetData['body'];
+export type AgentServerBatchEventsResponse =
+  BatchGetConversationEventsApiConversationsConversationIdEventsGetResponse;
+
+export type AgentServerGitCommitsQuery = GitCommitsQueryApiGitCommitsGetData['query'];
+export type AgentServerGitCommitsResponse = GitCommitsQueryApiGitCommitsGetResponse;
+export type AgentServerGitCommitChangesQuery =
+  GitCommitChangesQueryApiGitCommitsShaChangesGetData['query'];
+export type AgentServerGitCommitChangesResponse =
+  GitCommitChangesQueryApiGitCommitsShaChangesGetResponse;
+
+export type AgentServerArchiveQuery = ArchiveDirectoryApiFileArchiveGetData['query'];
+
+export type AgentServerInitStatus = GetInitStatusApiInitGetResponse;
+export type AgentServerInitRequest = InitializeServerApiInitPostData['body'];
+export type AgentServerInitResponse = InitializeServerApiInitPostResponse;
+
+export type AgentServerLoadPluginRequest =
+  LoadConversationPluginApiConversationsConversationIdLoadPluginPostData['body'];
+export type AgentServerLoadPluginResponse =
+  LoadConversationPluginApiConversationsConversationIdLoadPluginPostResponse;
+
 export interface AgentServerCanvasBackendRevisionRequest {
   revision: string;
+}
+
+export interface AgentServerCanvasBackendSecretGrantRequest extends AgentServerCanvasBackendRevisionRequest {
+  secret_refs: string[];
 }
 
 export type AgentServerCanvasBackendState =
@@ -52,6 +91,8 @@ export interface AgentServerCanvasBackendStatus {
   state: AgentServerCanvasBackendState;
   revision?: string | null;
   prepared_revision?: string | null;
+  secret_refs?: string[];
+  secret_grant_revision?: string | null;
   pid?: number | null;
   port?: number | null;
   detail?: string | null;

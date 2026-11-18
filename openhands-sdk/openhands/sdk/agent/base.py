@@ -24,16 +24,18 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.prompt import render_template
-from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.section import Platform, PromptContext, SecretInfo
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
-    BROWSER_TOOL_NAME,
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     Tool,
@@ -45,7 +47,6 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -66,10 +67,7 @@ logger = get_logger(__name__)
 # replaces the default identity in the system prompt.
 
 _SOUL_PATH = get_user_persistence_dir() / "SOUL.md"
-_DEFAULT_SOUL = (
-    "You are OpenHands agent, a helpful AI assistant that can interact"
-    " with a computer to solve tasks."
-)
+_DEFAULT_SOUL = OPENHANDS_SYSTEM_IDENTITY
 
 # Built-in prompt dir. The registry only stands in for built-in prompts here; a
 # subclass with its own prompts/ keeps the Jinja render path.
@@ -164,12 +162,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
         description=(
             "List of default tool class names to include. By default, the agent "
-            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
-            "all default tools, or provide a subset to include only specific ones. "
-            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
-            "or include_default_tools=[] to disable all default tools."
+            "includes 'FinishTool'. Set to an empty list to disable all default "
+            "tools, or provide a subset to include specific ones. Add 'ThinkTool' "
+            "explicitly to enable the think tool. "
+            "Example: include_default_tools=['FinishTool', 'ThinkTool'] to enable "
+            "the think tool, or include_default_tools=[] to disable all default "
+            "tools."
         ),
-        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
+        examples=[["FinishTool"], ["FinishTool", "ThinkTool"], []],
     )
     agent_context: AgentContext | None = Field(
         default=None,
@@ -268,21 +268,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     @field_validator("system_prompt_kwargs")
     @classmethod
-    def _warn_deprecated_enable_browser(
+    def _drop_retired_enable_browser(
         cls, value: dict[str, object]
     ) -> dict[str, object]:
-        if "enable_browser" in value:
-            warn_deprecated(
-                "system_prompt_kwargs['enable_browser']",
-                deprecated_in="1.51.0",
-                removed_in="1.56.0",
-                details=(
-                    "Browser guidance now comes from the loaded browser tools; "
-                    "only custom Jinja templates still read this kwarg."
-                ),
-                stacklevel=5,
-            )
-        return value
+        """Old saved conversations may still carry this retired prompt flag."""
+        return {key: item for key, item in value.items() if key != "enable_browser"}
 
     condenser: CondenserBase | None = Field(
         default=None,
@@ -378,15 +368,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # own Jinja template; everything else (incl. custom policies) uses the registry.
         preset = self._prompt_preset
         if preset is None:
-            # Deprecated kwarg, kept until 1.56.0 for templates that branch on it.
-            template_kwargs = {
-                "enable_browser": any(t.name == BROWSER_TOOL_NAME for t in self.tools),
-                **self._resolved_template_kwargs(),
-            }
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
-                **template_kwargs,
+                **self._resolved_template_kwargs(),
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static
@@ -421,9 +406,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "model_family" not in template_kwargs
             or "model_variant" not in template_kwargs
         ):
-            spec = get_model_prompt_spec(
-                self.llm.model, getattr(self.llm, "model_canonical_name", None)
-            )
+            spec = get_model_prompt_spec(self.llm.model, self.llm.model_canonical_name)
             if "model_family" not in template_kwargs and spec.family:
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:
@@ -477,7 +460,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
-        secret_infos: tuple[tuple[str, str | None], ...] = ()
+        secret_infos: tuple[SecretInfo, ...] = ()
 
         if agent_context is not None:
             data = agent_context._resolve_dynamic_data(
@@ -496,12 +479,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
             secret_infos = tuple(
-                (info["name"] or "", info["description"]) for info in data.secret_infos
+                SecretInfo(
+                    name=info["name"] or "",
+                    description=info.get("description"),
+                    scope=info.get("scope"),
+                    scope_description=info.get("scope_description"),
+                )
+                for info in data.secret_infos
             )
             # Derive names from the resolver's merged secret_infos instead of a
             # second get_secret_infos() walk; this now includes registry-provided
             # secrets (additional_secret_infos), matching what <CUSTOM_SECRETS> shows.
-            secret_names = tuple(name for name, _ in secret_infos if name)
+            secret_names = tuple(info.name for info in secret_infos if info.name)
 
         template_kwargs = self._resolved_template_kwargs()
         # A custom security policy's content for SecuritySection (registry path only).
@@ -837,15 +826,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Drive the traversal from self
         yield from _walk(self)
-
-    def _close_tool_executor(self, tool: ToolDefinition) -> None:
-        try:
-            executable_tool = tool.as_executable()
-            executable_tool.executor.close()
-        except NotImplementedError:
-            return
-        except Exception as exc:
-            logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
 
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
         """Register tools materialized at runtime (e.g. MCP tools).

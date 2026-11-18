@@ -119,3 +119,89 @@ class ACPModelInfo(BaseModel):
             name=name if isinstance(name, str) else None,
             description=description if isinstance(description, str) else None,
         )
+
+
+class ACPEffortOption(BaseModel):
+    """One reasoning-effort level an ACP server offers for the current model."""
+
+    value: str = Field(
+        description=(
+            'Server-assigned effort value (e.g. ``"high"``). Pass it back to '
+            "switch to this effort. May be an alias such as claude-agent-acp's "
+            '``"default"``.'
+        ),
+    )
+    name: str | None = Field(
+        default=None, description='Human-readable label, e.g. ``"High"``.'
+    )
+
+
+class ACPModelDiscoveryError(BaseModel):
+    """Why an ACP server could not report its models."""
+
+    code: str = Field(
+        description=(
+            "Same codes as a conversation's cold-start ``ConversationErrorEvent``: "
+            "``ACPAuthRequired``, ``ACPStartupTimeout``, ``ACPSpawnError`` or "
+            "``ACPInitError``."
+        ),
+    )
+    detail: str = Field(description="Human-readable, secret-free cause.")
+
+
+class ACPModelDiscovery(BaseModel):
+    """What an ACP server reports for a fresh session, before any conversation."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    agent_name: str | None = Field(
+        default=None, description="Server name from ``initialize``."
+    )
+    agent_version: str | None = Field(
+        default=None, description="Server version from ``initialize``."
+    )
+    current_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Model the server picks when none is requested — its own default "
+            "for the given credentials. May be an opaque alias such as "
+            '``"default"``; match it against ``available_models`` for a label.'
+        ),
+    )
+    available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            "Models the server offers for the given credentials. Empty when the "
+            "server does not report any."
+        ),
+    )
+    current_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort the server uses for ``current_model_id`` when none "
+            "is requested. ``None`` when the model offers no effort setting."
+        ),
+    )
+    available_efforts: list[ACPEffortOption] = Field(
+        default_factory=list,
+        description=(
+            "Reasoning-effort levels the server offers for ``current_model_id``. "
+            "Empty when the model offers none."
+        ),
+    )
+    efforts_by_model: dict[str, list[ACPEffortOption]] = Field(
+        default_factory=dict,
+        description=(
+            "Reasoning-effort levels each model offers, keyed by ``model_id``; "
+            "an empty list when that model offers none. Empty when the server "
+            "has no config options."
+        ),
+    )
+    supports_runtime_model_switch: bool = Field(
+        default=False,
+        description="Whether a conversation can switch among these models live.",
+    )
+    error: ACPModelDiscoveryError | None = Field(
+        default=None,
+        description="Set when the server could not start a session.",
+    )

@@ -1,0 +1,544 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 5756 · Safe ambient plugin reconciliation</title><style>
+:root{--ink:#202720;--muted:#626b62;--accent:#225f55;--orange:#b65b1a;--paper:#fafaf6;--line:#d9ded7}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 system-ui,sans-serif}.wrap{max-width:1200px;margin:auto;padding:40px 24px;display:grid;grid-template-columns:240px minmax(0,1fr);gap:42px}nav{position:sticky;top:24px;align-self:start;font-size:14px}nav ul{padding-left:18px}nav li{margin:14px 0}small{display:block;color:var(--muted)}a{color:var(--accent)}h1{font-size:38px;line-height:1.15}h2{font-size:23px}section{border-top:1px solid var(--line);padding:24px 0}.callout{background:#e8f0eb;border-left:4px solid var(--accent);padding:14px 18px}.limit{background:#fff0df;border-left-color:var(--orange)}.eyebrow{color:var(--accent);font-weight:700;letter-spacing:.12em;font-size:12px}figure{margin:18px 0}svg{width:100%;height:auto;background:white;border:1px solid var(--line)}svg .old{fill:#f6f6f2;stroke:#879087;stroke-dasharray:5 4}svg .new{fill:#e8f0eb;stroke:var(--accent);stroke-width:2}svg .arrow{fill:none;stroke:var(--orange);stroke-width:3;stroke-dasharray:5 3}svg .label{font:12px system-ui;fill:var(--muted)}svg foreignObject div{font:16px/1.4 system-ui;color:var(--ink)}figcaption,.sources{font-size:13px;color:var(--muted)}details{border:1px solid var(--line);padding:10px 14px}summary{cursor:pointer}pre{overflow:auto;font-size:12px}code{background:#efefea;padding:2px 5px}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:10px;border-bottom:1px solid var(--line)}@media(max-width:800px){.wrap{display:block}nav{position:static}h1{font-size:30px}}
+</style></head><body><div class="wrap"><nav><strong>PR #5756 · Review fixes</strong><ul><li><a href="#s1">Conversation ownership</a> <small>changed +19/−43</small></li><li><a href="#s2">Discovery failure is distinct from removal</a> <small>changed +23/−8</small></li><li><a href="#s3">Installed plugin boundary</a> <small>changed +3/−1</small></li><li><a href="#s4">Installation discovery</a> <small>changed +9/−5</small></li><li><a href="#s5">Metadata integrity</a> <small>changed +14/−4</small></li><li><a href="#s6">Observable regression coverage</a> <small>changed +96/−20</small></li><li><a href="#s7">Document the compatibility boundary</a> <small>changed +6/−4</small></li></ul></nav><main><header><p class="eyebrow">SDK · PERSISTED CONVERSATIONS</p><h1>Reconcile plugins without deleting caller configuration</h1><p>Ambient contributions are removed only after a complete discovery scan and only when the conversation has a record of owning them. Replacement agents and legacy data are not subjected to guessed ownership.</p><div class="callout">A failed scan preserves the previous contribution snapshot. Recovery performs normal reconciliation on the next load. <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1032">local_conversation.py:1032</a></div></header>
+<section><h2>API and compatibility</h2><table><tr><th>Before</th><th>After</th></tr><tr><td><code>load_available_plugins(...)</code></td><td><code>load_available_plugins(..., strict=False)</code></td></tr></table><p>The keyword is additive and defaults to existing best-effort behavior. Conversation reconciliation explicitly requests strict discovery. Persisted field shapes remain unchanged in this repair. Sources: <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/plugin/discovery.py#L170">discovery.py:170</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/conversation/state.py#L157">state.py:157</a></p><div class="callout limit">Legacy conversations without ownership records may retain stale plugin content. Deleting it by matching names can delete caller configuration. Existing same-name overrides cannot be reconstructed from an already merged saved agent. Persisting the pre-ambient agent remains a separate design option.</div></section>
+<section><h2>Verification</h2><p>Seven new cases fail on prior PR head <code>35d8ff709c04</code>. All eleven focused resume/fork cases pass after the repair. The affected suites pass 521 tests with the environment-sensitive default-path test excluded; that test passes separately without the persistence-directory override.</p><p><code>uv run pytest tests/sdk/conversation/test_local_conversation_plugins.py -k AmbientPluginResume</code></p><p>Tests use installed plugins and real persisted conversation files; discovery exceptions are not mocked. <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/tests/sdk/conversation/test_local_conversation_plugins.py#L1861">test_local_conversation_plugins.py:1861</a></p><details><summary>Revisions and scope</summary><p>Original PR base: <code>4b8cb431a66c1f4b813d6c9c0181ce63a4e30d0a</code>. Before diagrams compare the reviewed PR head <code>35d8ff709c0423ea561d0677df08cc52ae16d570</code> with repair <code>0dc95ef029fe840d59c97afce2a8df45415f548a</code>. This document covers the review corrections; the original successful disable/resume behavior remains covered by the same test group.</p></details></section>
+<section id="s1"><h2>1. Conversation ownership</h2><p>An explicit replacement agent starts with empty ownership records. Only a fork inheriting its source agent copies the records. Legacy conversations retain content that cannot be attributed safely.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t1 d1"><title id="t1">Before and after</title><desc id="d1">Guess legacy ownership; always copy fork records becomes Use recorded ownership; reset for explicit agents</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Guess legacy ownership; always copy fork records</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Use recorded ownership; reset for explicit agents</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1045">local_conversation.py:1045</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1046">local_conversation.py:1046</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+index 05a884393..bf9d947a3 100644
+--- a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
++++ b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+@@ -85,8 +85,6 @@ from openhands.sdk.plugin import (
+     PluginSource,
+     ResolvedPluginSource,
+     fetch_plugin_with_resolution,
+-    get_installed_plugins_dir,
+-    list_installed_plugins,
+     load_available_plugins,
+ )
+ from openhands.sdk.secret import StaticSecret
+@@ -438,6 +436,10 @@ class LocalConversation(BaseConversation):
+             recovered_specs = extract_client_tool_specs(agent.tools)
+             if recovered_specs:
+                 register_client_tools(recovered_specs)
++        else:
++            with self._state:
++                self._state.ambient_plugin_skills = []
++                self._state.ambient_plugin_mcp_servers = []
+         self.agent = agent
+ 
+         # Default callback: persist every event to state
+@@ -928,15 +930,13 @@ class LocalConversation(BaseConversation):
+             fork_conv._state.head_is_empty = (
+                 self._state.head_is_empty if from_event_id is None else False
+             )
+-            # The fork&#x27;s agent carries the source&#x27;s ambient plugin
+-            # contributions, so it inherits their record (see
+-            # _ensure_plugins_loaded).
+-            fork_conv._state.ambient_plugin_skills = copy.copy(
+-                self._state.ambient_plugin_skills
+-            )
+-            fork_conv._state.ambient_plugin_mcp_servers = copy.copy(
+-                self._state.ambient_plugin_mcp_servers
+-            )
++            if agent is None:
++                fork_conv._state.ambient_plugin_skills = copy.copy(
++                    self._state.ambient_plugin_skills
++                )
++                fork_conv._state.ambient_plugin_mcp_servers = copy.copy(
++                    self._state.ambient_plugin_mcp_servers
++                )
+             # Full rebuild: the copied events may need property enforcement
+             # (same posture as cold load).
+             fork_conv._state.rebuild_view()
+@@ -1029,11 +1029,12 @@ class LocalConversation(BaseConversation):
+                 work_dir=self.workspace.working_dir,
+                 include_user=True,
+                 include_project=True,
++                strict=True,
+             )
+         except Exception:
+             logger.warning(
+                 &quot;Failed to load ambient (installed/local) plugins; &quot;
+-                &quot;continuing without them&quot;,
++                &quot;keeping previous contributions&quot;,
+                 exc_info=True,
+             )
+             ambient_plugins = None
+@@ -1369,37 +1370,12 @@ class LocalConversation(BaseConversation):
+         self._plugins_loaded = True
+ 
+     def _previous_ambient_contributions(self) -&gt; tuple[set[str], set[str]]:
+-        &quot;&quot;&quot;Skill and MCP server names ambient plugins contributed at the last load.
+-
+-        A conversation persisted before these were recorded has no record; for
+-        it, fall back to what currently disabled installed plugins would
+-        contribute (a removed plugin directory leaves nothing to compare
+-        against). Best-effort: a failure here only skips that cleanup.
+-        &quot;&quot;&quot;
+-        skills = self._state.ambient_plugin_skills
+-        servers = self._state.ambient_plugin_mcp_servers
+-        if skills is not None and servers is not None:
+-            return set(skills), set(servers)
+-
+-        stale_skills: set[str] = set()
+-        stale_servers: set[str] = set()
+-        try:
+-            disabled = [i.name for i in list_installed_plugins() if not i.enabled]
+-        except Exception:
+-            logger.warning(&quot;Failed to list installed plugins&quot;, exc_info=True)
+-            disabled = []
+-        installed_dir = get_installed_plugins_dir()
+-        for name in disabled:
+-            try:
+-                plugin = Plugin.load(installed_dir / name)
+-            except Exception:
+-                logger.warning(
+-                    f&quot;Failed to load disabled plugin &#x27;{name}&#x27;&quot;, exc_info=True
+-                )
+-                continue
+-            stale_skills.update(s.name for s in plugin.get_all_skills())
+-            stale_servers.update(plugin.mcp_config)
+-        return stale_skills, stale_servers
++        # Legacy conversations have no ownership record. Matching names alone
++        # cannot distinguish their caller-supplied content from plugin content.
++        return (
++            set(self._state.ambient_plugin_skills or []),
++            set(self._state.ambient_plugin_mcp_servers or []),
++        )
+ 
+     def _expand_plugin_source_ref(self, value: str) -&gt; str:
+         return expand_variable_references(
+</pre></details></section><section id="s2"><h2>2. Discovery failure is distinct from removal</h2><p>A complete scan reconciles the saved names. A failed scan preserves the prior agent contributions and record. Normal discovery callers keep the existing best-effort default.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t2 d2"><title id="t2">Before and after</title><desc id="d2">Loader errors become incomplete successful results becomes strict=True propagates errors before cleanup</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Loader errors become incomplete successful results</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">strict=True propagates errors before cleanup</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/openhands-sdk/openhands/sdk/plugin/discovery.py#L162">discovery.py:162</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/plugin/discovery.py#L170">discovery.py:170</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/plugin/discovery.py b/openhands-sdk/openhands/sdk/plugin/discovery.py
+index 2172ea2ac..7f22b0ba6 100644
+--- a/openhands-sdk/openhands/sdk/plugin/discovery.py
++++ b/openhands-sdk/openhands/sdk/plugin/discovery.py
+@@ -41,7 +41,9 @@ PROJECT_PLUGINS_SUBDIRS = [
+ ]
+ 
+ 
+-def _load_plugins_from_dir(plugins_dir: Path, skip_dirs: set[Path]) -&gt; list[Plugin]:
++def _load_plugins_from_dir(
++    plugins_dir: Path, skip_dirs: set[Path], *, strict: bool = False
++) -&gt; list[Plugin]:
+     &quot;&quot;&quot;Load every plugin subdirectory in ``plugins_dir``.
+ 
+     Mirrors ``Plugin.load_all`` but skips any directory in ``skip_dirs``. This is
+@@ -63,6 +65,8 @@ def _load_plugins_from_dir(plugins_dir: Path, skip_dirs: set[Path]) -&gt; list[Plug
+         try:
+             plugins.append(Plugin.load(item))
+         except Exception as e:
++            if strict:
++                raise
+             logger.warning(f&quot;Failed to load plugin from {item}: {e}&quot;)
+     return plugins
+ 
+@@ -88,7 +92,7 @@ def _merge_plugins_by_name(
+         out.append(plugin)
+ 
+ 
+-def load_user_plugins() -&gt; list[Plugin]:
++def load_user_plugins(*, strict: bool = False) -&gt; list[Plugin]:
+     &quot;&quot;&quot;Load plugins from the user&#x27;s home directories plus enabled installed plugins.
+ 
+     Scans ``~/.agents/plugins`` then ``~/.openhands/plugins`` (earlier wins on a
+@@ -107,16 +111,20 @@ def load_user_plugins() -&gt; list[Plugin]:
+     installed_dir = get_installed_plugins_dir().resolve()
+ 
+     for plugins_dir in USER_PLUGINS_DIRS:
+-        found = _load_plugins_from_dir(plugins_dir, skip_dirs={installed_dir})
++        found = _load_plugins_from_dir(
++            plugins_dir, skip_dirs={installed_dir}, strict=strict
++        )
+         _merge_plugins_by_name(found, seen_names, all_plugins, str(plugins_dir))
+ 
+     # Enabled installed plugins (lower precedence than directory plugins).
+     try:
+-        for plugin in load_installed_plugins():
++        for plugin in load_installed_plugins(strict=strict):
+             if plugin.name not in seen_names:
+                 seen_names.add(plugin.name)
+                 all_plugins.append(plugin)
+     except Exception as e:
++        if strict:
++            raise
+         logger.warning(f&quot;Failed to load installed plugins: {e}&quot;)
+ 
+     logger.debug(
+@@ -125,7 +133,7 @@ def load_user_plugins() -&gt; list[Plugin]:
+     return all_plugins
+ 
+ 
+-def load_project_plugins(work_dir: str | Path) -&gt; list[Plugin]:
++def load_project_plugins(work_dir: str | Path, *, strict: bool = False) -&gt; list[Plugin]:
+     &quot;&quot;&quot;Load plugins from project-specific directories.
+ 
+     Scans ``{root}/.agents/plugins`` and ``{root}/.openhands/plugins`` for the
+@@ -150,7 +158,7 @@ def load_project_plugins(work_dir: str | Path) -&gt; list[Plugin]:
+     for root in search_roots:
+         for subdir in PROJECT_PLUGINS_SUBDIRS:
+             plugins_dir = root / subdir
+-            found = _load_plugins_from_dir(plugins_dir, skip_dirs=set())
++            found = _load_plugins_from_dir(plugins_dir, skip_dirs=set(), strict=strict)
+             _merge_plugins_by_name(found, seen_names, all_plugins, str(plugins_dir))
+ 
+     logger.debug(
+@@ -164,6 +172,7 @@ def load_available_plugins(
+     *,
+     include_user: bool = False,
+     include_project: bool = False,
++    strict: bool = False,
+ ) -&gt; dict[str, Plugin]:
+     &quot;&quot;&quot;Load and merge locally-available plugins with consistent precedence.
+ 
+@@ -180,6 +189,8 @@ def load_available_plugins(
+         include_user: Load user-level plugins (``~/.agents/plugins`` etc.) and
+             enabled installed plugins.
+         include_project: Load project-level plugins (requires ``work_dir``).
++        strict: Raise on discovery errors so callers can distinguish a failed
++            scan from plugins that have been disabled or removed.
+ 
+     Returns:
+         Dict mapping plugin name → Plugin, with higher-precedence sources
+@@ -189,16 +200,20 @@ def load_available_plugins(
+ 
+     if include_user:
+         try:
+-            for plugin in load_user_plugins():
++            for plugin in load_user_plugins(strict=strict):
+                 available[plugin.name] = plugin
+         except Exception as e:
++            if strict:
++                raise
+             logger.warning(f&quot;Failed to load user plugins: {e}&quot;)
+ 
+     if include_project and work_dir:
+         try:
+-            for plugin in load_project_plugins(work_dir):
++            for plugin in load_project_plugins(work_dir, strict=strict):
+                 available[plugin.name] = plugin
+         except Exception as e:
++            if strict:
++                raise
+             logger.warning(f&quot;Failed to load project plugins: {e}&quot;)
+ 
+     return available
+</pre></details></section><section id="s3"><h2>3. Installed plugin boundary</h2><p>The plugin entry point forwards the optional strict setting without changing its default.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t3 d3"><title id="t3">Before and after</title><desc id="d3">No strict option becomes Forward strict to InstallationManager</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">No strict option</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Forward strict to InstallationManager</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/openhands-sdk/openhands/sdk/plugin/installed.py#L122">installed.py:122</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/plugin/installed.py#L122">installed.py:122</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/plugin/installed.py b/openhands-sdk/openhands/sdk/plugin/installed.py
+index 833aa5829..260329246 100644
+--- a/openhands-sdk/openhands/sdk/plugin/installed.py
++++ b/openhands-sdk/openhands/sdk/plugin/installed.py
+@@ -121,9 +121,11 @@ def list_installed_plugins(
+ 
+ def load_installed_plugins(
+     installed_dir: Path | None = None,
++    *,
++    strict: bool = False,
+ ) -&gt; list[Plugin]:
+     &quot;&quot;&quot;Load all enabled installed plugins as ``Plugin`` objects.&quot;&quot;&quot;
+-    return _manager(_resolve_installed_dir(installed_dir)).load_installed()
++    return _manager(_resolve_installed_dir(installed_dir)).load_installed(strict=strict)
+ 
+ 
+ def get_installed_plugin(
+</pre></details></section><section id="s4"><h2>4. Installation discovery</h2><p>Both metadata parsing and discovery of manually copied installations participate in the same failure contract.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t4 d4"><title id="t4">Before and after</title><desc id="d4">Metadata synchronization always uses fallback loading becomes Pass strict through metadata loading and sync</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Metadata synchronization always uses fallback loading</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Pass strict through metadata loading and sync</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/openhands-sdk/openhands/sdk/extensions/installation/manager.py#L276">manager.py:276</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/extensions/installation/manager.py#L276">manager.py:276</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/extensions/installation/manager.py b/openhands-sdk/openhands/sdk/extensions/installation/manager.py
+index ae0b40f72..42713db2e 100644
+--- a/openhands-sdk/openhands/sdk/extensions/installation/manager.py
++++ b/openhands-sdk/openhands/sdk/extensions/installation/manager.py
+@@ -273,7 +273,7 @@ class InstallationManager[T: ExtensionProtocol]:
+         &quot;&quot;&quot;Disable an installed extension by name.&quot;&quot;&quot;
+         return self._set_enabled(name, False)
+ 
+-    def list_installed(self) -&gt; list[InstallationInfo]:
++    def list_installed(self, *, strict: bool = False) -&gt; list[InstallationInfo]:
+         &quot;&quot;&quot;List all installed extensions.
+ 
+         Self-healing: the metadata file is updated to remove entries whose
+@@ -286,10 +286,14 @@ class InstallationManager[T: ExtensionProtocol]:
+         if not self.installation_dir.exists():
+             return []
+ 
+-        with self.metadata_session as session:
+-            return session.sync()
++        with InstallationMetadata.open(
++            self.installation_dir,
++            interface=self.installation_interface,
++            strict=strict,
++        ) as session:
++            return session.sync(strict=strict)
+ 
+-    def load_installed(self) -&gt; list[T]:
++    def load_installed(self, *, strict: bool = False) -&gt; list[T]:
+         &quot;&quot;&quot;Load all enabled extensions as ``T`` objects.
+ 
+         Calls ``list_installed()`` first (which syncs metadata), then loads
+@@ -304,7 +308,7 @@ class InstallationManager[T: ExtensionProtocol]:
+ 
+         extensions: list[T] = []
+ 
+-        for info in self.list_installed():
++        for info in self.list_installed(strict=strict):
+             if not info.enabled:
+                 continue
+ 
+</pre></details></section><section id="s5"><h2>5. Metadata integrity</h2><p>Strict scans also propagate failures from untracked plugin manifests. Existing non-strict installation callers retain their behavior.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t5 d5"><title id="t5">Before and after</title><desc id="d5">Corrupt metadata becomes an empty catalog becomes Strict parsing raises before any replacement save</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Corrupt metadata becomes an empty catalog</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Strict parsing raises before any replacement save</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/openhands-sdk/openhands/sdk/extensions/installation/metadata.py#L24">metadata.py:24</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/openhands-sdk/openhands/sdk/extensions/installation/metadata.py#L24">metadata.py:24</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/extensions/installation/metadata.py b/openhands-sdk/openhands/sdk/extensions/installation/metadata.py
+index 3dc737bcc..03a110a91 100644
+--- a/openhands-sdk/openhands/sdk/extensions/installation/metadata.py
++++ b/openhands-sdk/openhands/sdk/extensions/installation/metadata.py
+@@ -41,7 +41,7 @@ class MetadataSession:
+     def extensions(self) -&gt; dict[str, InstallationInfo]:
+         return self.metadata.extensions
+ 
+-    def sync(self) -&gt; list[InstallationInfo]:
++    def sync(self, *, strict: bool = False) -&gt; list[InstallationInfo]:
+         &quot;&quot;&quot;Reconcile metadata with what is actually on disk.
+ 
+         Prunes stale tracked entries whose directories are missing and
+@@ -60,7 +60,7 @@ class MetadataSession:
+         )
+         valid = self.metadata.validate_tracked(self.installed_dir)
+         discovered = self.metadata.discover_untracked(
+-            self.installed_dir, self.interface
++            self.installed_dir, self.interface, strict=strict
+         )
+         return valid + discovered
+ 
+@@ -125,6 +125,7 @@ class InstallationMetadata(BaseModel):
+         installed_dir: Path,
+         *,
+         interface: InstallationInterface | None = None,
++        strict: bool = False,
+     ) -&gt; MetadataSession:
+         &quot;&quot;&quot;Load metadata and return a session that auto-saves on exit.
+ 
+@@ -132,9 +133,10 @@ class InstallationMetadata(BaseModel):
+             installed_dir: Root directory where extensions are installed.
+             interface: Optional installation interface, required if the
+                 session will call ``sync()``.
++            strict: Raise on invalid metadata instead of treating it as empty.
+         &quot;&quot;&quot;
+         return MetadataSession(
+-            installed_dir, cls.load_from_dir(installed_dir), interface
++            installed_dir, cls.load_from_dir(installed_dir, strict=strict), interface
+         )
+ 
+     @classmethod
+@@ -143,7 +145,9 @@ class InstallationMetadata(BaseModel):
+         return installed_dir / cls.metadata_filename
+ 
+     @classmethod
+-    def load_from_dir(cls, installed_dir: Path) -&gt; InstallationMetadata:
++    def load_from_dir(
++        cls, installed_dir: Path, *, strict: bool = False
++    ) -&gt; InstallationMetadata:
+         &quot;&quot;&quot;Load metadata from the installed extensions directory.&quot;&quot;&quot;
+         metadata_path = cls.get_metadata_path(installed_dir)
+         if not metadata_path.exists():
+@@ -152,6 +156,8 @@ class InstallationMetadata(BaseModel):
+         try:
+             return cls.model_validate_json(metadata_path.read_text(encoding=&quot;utf-8&quot;))
+         except Exception as e:
++            if strict:
++                raise
+             logger.warning(f&quot;Failed to load installed extension metadata: {e}&quot;)
+             return cls()
+ 
+@@ -198,6 +204,8 @@ class InstallationMetadata(BaseModel):
+         self,
+         installed_dir: Path,
+         installation_interface: InstallationInterface,
++        *,
++        strict: bool = False,
+     ) -&gt; list[InstallationInfo]:
+         &quot;&quot;&quot;Discover extension directories not tracked by the metadata.
+ 
+@@ -224,6 +232,8 @@ class InstallationMetadata(BaseModel):
+             try:
+                 extension = installation_interface.load_from_dir(item)
+             except Exception as e:
++                if strict:
++                    raise
+                 logger.debug(f&quot;Skipping directory {item}: {e}&quot;)
+                 continue
+ 
+</pre></details></section><section id="s6"><h2>6. Observable regression coverage</h2><p>Four real corruption cases cover tracked, local and untracked manifests plus installation metadata. Explicit-agent resume/fork and legacy collision tests protect caller content. An inherited-agent fork still removes a disabled plugin.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t6 d6"><title id="t6">Before and after</title><desc id="d6">Mocked top-level discovery exception becomes Corrupt real files; persist, resume, fork, recover</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Mocked top-level discovery exception</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Corrupt real files; persist, resume, fork, recover</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/tests/sdk/conversation/test_local_conversation_plugins.py#L1856">test_local_conversation_plugins.py:1856</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/tests/sdk/conversation/test_local_conversation_plugins.py#L1861">test_local_conversation_plugins.py:1861</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/tests/sdk/conversation/test_local_conversation_plugins.py b/tests/sdk/conversation/test_local_conversation_plugins.py
+index ff036a2b0..dc927a6d4 100644
+--- a/tests/sdk/conversation/test_local_conversation_plugins.py
++++ b/tests/sdk/conversation/test_local_conversation_plugins.py
+@@ -5,6 +5,7 @@ import logging
+ import shutil
+ import uuid
+ from collections.abc import Callable
++from contextlib import closing
+ from pathlib import Path
+ from typing import Any, cast
+ from unittest.mock import MagicMock, patch
+@@ -1853,42 +1854,120 @@ class TestAmbientPluginResume:
+         assert {&quot;exp-skill&quot;, &quot;exp:hello&quot;} &lt;= skills
+         assert &quot;exp-server&quot; in servers
+ 
++    @pytest.mark.parametrize(
++        &quot;failure&quot;,
++        [&quot;installed_manifest&quot;, &quot;metadata&quot;, &quot;local_manifest&quot;, &quot;untracked_manifest&quot;],
++    )
+     def test_failed_discovery_keeps_ambient_contributions_on_resume(
+-        self, tmp_path: Path, mock_llm, monkeypatch
++        self, tmp_path: Path, mock_llm, monkeypatch, failure
+     ):
+-        &quot;&quot;&quot;A transient discovery failure keeps the last load&#x27;s contributions and
+-        their record, so the next successful load still reconciles them.&quot;&quot;&quot;
+-        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
++        install_store, user_dir, workspace = self._setup(tmp_path, monkeypatch)
+         source = self._make_plugin(tmp_path / &quot;src&quot;, &quot;amb&quot;)
+         install_plugin(str(source), installed_dir=install_store)
++        if failure == &quot;local_manifest&quot;:
++            broken_dir = self._make_plugin(user_dir / &quot;bbb&quot;, &quot;bbb&quot;)
++        else:
++            other = self._make_plugin(tmp_path / &quot;other&quot;, &quot;bbb&quot;)
++            install_plugin(str(other), installed_dir=install_store)
++            broken_dir = install_store / &quot;bbb&quot;
+         cid = uuid.uuid4()
+-        plugin_skills = {&quot;amb-skill&quot;, &quot;amb:hello&quot;}
+         self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+ 
+-        with patch(
+-            &quot;openhands.sdk.conversation.impl.local_conversation.load_available_plugins&quot;,
+-            side_effect=OSError(&quot;transient&quot;),
+-        ):
+-            skills, servers = self._load(tmp_path, workspace, cid)
+-        assert plugin_skills | {&quot;caller-skill&quot;} &lt;= skills
+-        assert {&quot;amb-server&quot;, &quot;caller-server&quot;} &lt;= servers
++        damaged = (
++            install_store / &quot;.installed.json&quot;
++            if failure == &quot;metadata&quot;
++            else broken_dir / &quot;.plugin&quot; / &quot;plugin.json&quot;
++        )
++        if failure == &quot;untracked_manifest&quot;:
++            metadata_path = install_store / &quot;.installed.json&quot;
++            metadata = json.loads(metadata_path.read_text())
++            del metadata[&quot;extensions&quot;][&quot;bbb&quot;]
++            metadata_path.write_text(json.dumps(metadata))
++        original = damaged.read_text()
++        damaged.write_text(&quot;{invalid json&quot;)
++        skills, servers = self._load(tmp_path, workspace, cid)
++        assert {&quot;amb-skill&quot;, &quot;amb:hello&quot;, &quot;bbb-skill&quot;, &quot;caller-skill&quot;} &lt;= skills
++        assert {&quot;amb-server&quot;, &quot;bbb-server&quot;, &quot;caller-server&quot;} &lt;= servers
++        assert damaged.read_text() == &quot;{invalid json&quot;
+ 
++        damaged.write_text(original)
+         disable_plugin(&quot;amb&quot;, installed_dir=install_store)
+         skills, servers = self._load(tmp_path, workspace, cid)
+-        assert not plugin_skills &amp; skills
++        assert not {&quot;amb-skill&quot;, &quot;amb:hello&quot;} &amp; skills
+         assert &quot;amb-server&quot; not in servers
+-        assert &quot;caller-skill&quot; in skills
++        assert {&quot;bbb-skill&quot;, &quot;caller-skill&quot;} &lt;= skills
+ 
+-    def test_legacy_state_drops_disabled_installed_plugin_on_resume(
++    @pytest.mark.parametrize(&quot;operation&quot;, [&quot;resume&quot;, &quot;fork&quot;])
++    def test_explicit_agent_keeps_same_named_caller_contributions(
++        self, tmp_path: Path, mock_llm, monkeypatch, operation
++    ):
++        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
++        source = self._make_plugin(tmp_path / &quot;src&quot;, &quot;amb&quot;)
++        install_plugin(str(source), installed_dir=install_store)
++        cid = uuid.uuid4()
++        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
++        disable_plugin(&quot;amb&quot;, installed_dir=install_store)
++        custom = Agent(
++            llm=mock_llm,
++            tools=[],
++            agent_context=AgentContext(
++                skills=[Skill(name=&quot;amb-skill&quot;, content=&quot;Caller&quot;)],
++            ),
++            mcp_config={&quot;amb-server&quot;: MCPServer(command=&quot;caller-cmd&quot;)},
++        )
++        if operation == &quot;fork&quot;:
++            with closing(
++                LocalConversation(
++                    agent=None,
++                    workspace=workspace,
++                    persistence_dir=tmp_path / &quot;conversations&quot;,
++                    conversation_id=cid,
++                    visualizer=None,
++                )
++            ) as original:
++                with closing(original.fork(agent=custom)) as fork:
++                    fork._ensure_plugins_loaded()
++                    cid = fork.id
++            custom = None
++        skills, servers = self._load(tmp_path, workspace, cid, agent=custom)
++        assert &quot;amb-skill&quot; in skills
++        assert &quot;amb-server&quot; in servers
++
++    def test_inherited_agent_fork_drops_disabled_plugin(
+         self, tmp_path: Path, mock_llm, monkeypatch
+     ):
+-        &quot;&quot;&quot;A conversation persisted before contributions were recorded (no
+-        ``ambient_plugin_*`` keys in base_state.json) is reconciled too.&quot;&quot;&quot;
+         install_store, _, workspace = self._setup(tmp_path, monkeypatch)
+         source = self._make_plugin(tmp_path / &quot;src&quot;, &quot;amb&quot;)
+         install_plugin(str(source), installed_dir=install_store)
+         cid = uuid.uuid4()
+         self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
++        disable_plugin(&quot;amb&quot;, installed_dir=install_store)
++        with closing(
++            LocalConversation(
++                agent=None,
++                workspace=workspace,
++                persistence_dir=tmp_path / &quot;conversations&quot;,
++                conversation_id=cid,
++                visualizer=None,
++            )
++        ) as original:
++            with closing(original.fork()) as fork:
++                fork._ensure_plugins_loaded()
++                fork_id = fork.id
++        skills, servers = self._load(tmp_path, workspace, fork_id)
++        assert &quot;amb-skill&quot; not in skills
++        assert &quot;amb-server&quot; not in servers
++        assert &quot;caller-skill&quot; in skills
++
++    def test_legacy_state_keeps_caller_content_matching_disabled_plugin(
++        self, tmp_path: Path, mock_llm, monkeypatch
++    ):
++        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
++        source = self._make_plugin(tmp_path / &quot;src&quot;, &quot;caller&quot;)
++        install_plugin(str(source), installed_dir=install_store)
++        disable_plugin(&quot;caller&quot;, installed_dir=install_store)
++        cid = uuid.uuid4()
++        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+ 
+         base_state = tmp_path / &quot;conversations&quot; / cid.hex / &quot;base_state.json&quot;
+         data = json.loads(base_state.read_text())
+@@ -1896,10 +1975,7 @@ class TestAmbientPluginResume:
+         data.pop(&quot;ambient_plugin_mcp_servers&quot;, None)
+         base_state.write_text(json.dumps(data))
+ 
+-        disable_plugin(&quot;amb&quot;, installed_dir=install_store)
+         skills, servers = self._load(tmp_path, workspace, cid)
+-        assert not {&quot;amb-skill&quot;, &quot;amb:hello&quot;} &amp; skills
+-        assert &quot;amb-server&quot; not in servers
+         assert &quot;caller-skill&quot; in skills
+         assert &quot;caller-server&quot; in servers
+ 
+</pre></details></section><section id="s7"><h2>7. Document the compatibility boundary</h2><p>The feature map now distinguishes successful reconciliation, failed discovery and unknown legacy ownership.</p><figure><svg viewBox="0 0 850 146" role="img" aria-labelledby="t7 d7"><title id="t7">Before and after</title><desc id="d7">Legacy disabled-plugin names are deleted becomes Legacy ownership is not guessed</desc><rect class="old" x="10" y="28" width="385" height="95" rx="6"/><rect class="new" x="455" y="28" width="385" height="95" rx="6"/><text x="28" y="54" class="label">BEFORE · PRIOR PR HEAD</text><text x="475" y="54" class="label">AFTER · THIS REPAIR</text><foreignObject x="28" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Legacy disabled-plugin names are deleted</div></foreignObject><foreignObject x="475" y="65" width="350" height="55"><div xmlns="http://www.w3.org/1999/xhtml">Legacy ownership is not guessed</div></foreignObject><path d="M402 77 H447 M438 70 L447 77 L438 84" class="arrow"/></svg><figcaption>The orange arrow marks the behavior changed by this repair.</figcaption></figure><p class="sources">Sources: before <a href="https://github.com/OpenHands/software-agent-sdk/blob/35d8ff709c0423ea561d0677df08cc52ae16d570/.agents/skills/verify-agent-server/references/feature-map/F26-plugins.md#L627">F26-plugins.md:627</a> · after <a href="https://github.com/OpenHands/software-agent-sdk/blob/0dc95ef029fe840d59c97afce2a8df45415f548a/.agents/skills/verify-agent-server/references/feature-map/F26-plugins.md#L627">F26-plugins.md:627</a></p><details><summary>Review the exact diff</summary><pre>diff --git a/.agents/skills/verify-agent-server/references/feature-map/F26-plugins.md b/.agents/skills/verify-agent-server/references/feature-map/F26-plugins.md
+index b25989fd1..cd9a07266 100644
+--- a/.agents/skills/verify-agent-server/references/feature-map/F26-plugins.md
++++ b/.agents/skills/verify-agent-server/references/feature-map/F26-plugins.md
+@@ -655,10 +655,12 @@ Preconditions:
+   `activated_skills: [&quot;qa-f26-inst:qa-hello&quot;]` on the user message), and the
+   agent context lists none of its skills. Ambient contributions are merged
+   into the agent persisted in `base_state.json`, so the conversation records
+-  their skill and MCP server names and drops them before re-discovery (read
+-  from source and not driven here: the MCP servers follow the same path, and
+-  a conversation persisted before that record existed drops what disabled
+-  installed plugins contribute). The command is sent here for the
++  their skill and MCP server names and drops them after successful discovery.
++  A failed scan preserves the previous contributions and ownership record.
++  Read from source and not driven here: MCP servers follow the same path;
++  explicit replacement agents start with no inherited ownership, and legacy
++  conversations without a record retain unidentifiable contributions rather
++  than deleting caller content by name. The command is sent here for the
+   first time because a keyword skill activates once per conversation
+   (`activated_knowledge_skills`). The plugin stays disabled.
+ - **Persistence across a restart (`F26.restart-persist`).** Disable
+</pre></details></section></main></div></body></html>

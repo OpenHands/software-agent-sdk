@@ -10,6 +10,21 @@ from openhands.sdk.llm.cleanup_profile import (
     aclean_outward_text,
     clean_outward_text,
 )
+from openhands.sdk.llm.decision import (
+    Choice,
+    ChoiceAnswer,
+    DecisionJSON,
+    DecisionModel,
+    DecisionReply,
+    DecisionResult,
+    DecisionUsage,
+    Noul,
+    NoulAnswer,
+    NoulCriteria,
+    Question,
+    Score,
+    ScoreAnswer,
+)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
@@ -19,6 +34,7 @@ from openhands.sdk.llm.llm_profile_store import (
 )
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
+from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.llm.message import (
     ImageContent,
     Message,
@@ -58,6 +74,20 @@ __all__ = [
     "OPENAI_CODEX_MODELS",
     # Core
     "CLEANUP_PROFILE_NAME",
+    # Decision models
+    "Choice",
+    "ChoiceAnswer",
+    "DecisionJSON",
+    "DecisionModel",
+    "DecisionReply",
+    "DecisionResult",
+    "DecisionUsage",
+    "Noul",
+    "NoulAnswer",
+    "NoulCriteria",
+    "Question",
+    "Score",
+    "ScoreAnswer",
     "aclean_outward_text",
     "clean_outward_text",
     "FallbackStrategy",
@@ -66,6 +96,7 @@ __all__ = [
     "LLMCallContext",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
+    "LLMSession",
     "LLMProfileLoader",
     "LLMProfileMutator",
     "LLMProfileStore",

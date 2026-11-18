@@ -14,12 +14,7 @@ from openhands.agent_server.docker_runtime.provisioning import (
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.docker_runtime.routers import _prepare_forward
 from openhands.agent_server.launch import launch_source, target_launch_runtime
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    get_settings_store,
-)
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.request import (
@@ -31,6 +26,7 @@ from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -46,15 +42,46 @@ def config(tmp_path, monkeypatch) -> Config:
     )
 
 
+def _registry(runtime_config: Config) -> DockerConversationRegistry:
+    """The part of a registry ``_prepare_forward`` reads: config and stores."""
+    return cast(
+        DockerConversationRegistry,
+        SimpleNamespace(
+            config=runtime_config, stores=ServerStores.from_config(runtime_config)
+        ),
+    )
+
+
 async def _forward(
     request: StartConversationRequest, runtime_config: Config, *, existing=False
 ) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
-    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    registry = _registry(runtime_config)
     body = request.model_dump(mode="json", context={"expose_secrets": True})
-    payload, launched = await _prepare_forward(body, registry, existing=existing)
+    payload, launched, _, _ = await _prepare_forward(body, registry, existing=existing)
     provisioning = RuntimeProvisioningStore(runtime_config)
     identity = provisioning.create(uuid4())
     return payload(identity.cipher), launched, identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worktree", [False, True])
+async def test_forward_preserves_worktree_flag(tmp_path, monkeypatch, worktree):
+    runtime_config = config(tmp_path, monkeypatch)
+    registry = _registry(runtime_config)
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
+        worktree=worktree,
+    )
+    payload, _, _, forwarded_worktree = await _prepare_forward(
+        request.model_dump(mode="json", context={"expose_secrets": True}),
+        registry,
+        existing=False,
+    )
+    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
+    assert forwarded_worktree is worktree
+    assert payload(identity.cipher)["workspace"]["working_dir"] == "/workspace"
+    assert payload(identity.cipher)["worktree"] is worktree
 
 
 def _no_stores() -> LaunchStores:
@@ -144,9 +171,9 @@ async def test_every_encrypted_field_reaches_the_container_decryptable(
         secrets_encrypted=True,
     )
     body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
-    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    registry = _registry(runtime_config)
 
-    payload, _ = await _prepare_forward(body, registry, existing=False)
+    payload, _, _, _ = await _prepare_forward(body, registry, existing=False)
     identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
     received = StartConversationRequest.model_validate(
         payload(identity.cipher), context={"cipher": identity.cipher}
@@ -162,7 +189,8 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
-    get_llm_profile_store().save(
+    stores = ServerStores.from_config(runtime_config)
+    stores.llm_profiles.save(
         "docker-test-model",
         LLM(model="test", api_key=SecretStr("model-key")),
         include_secrets=True,
@@ -174,7 +202,7 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
         mcp_server_refs=[],
         secret_refs=["ALLOWED"],
     )
-    get_agent_profile_store().save(profile)
+    stores.agent_profiles.save(profile)
     monkeypatch.setattr(
         "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
@@ -220,28 +248,38 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
 
 
 @pytest.mark.asyncio
-async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
+async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
+    tmp_path, monkeypatch
+):
     runtime_config = config(tmp_path, monkeypatch)
-    get_settings_store(runtime_config).save(
+    stores = ServerStores.from_config(runtime_config)
+    stores.settings.save(
         PersistedSettings(
             agent_settings=OpenHandsAgentSettings(
                 agent_context=AgentContext(load_memory=True)
             )
         )
     )
-    get_llm_profile_store().save("fast", LLM(model="fast-model"))
-    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="fast")
-    get_agent_profile_store().save(profile)
+    stores.llm_profiles.save("fast", LLM(model="fast-model"))
+    stores.llm_profiles.save("slow", LLM(model="slow-model"))
+    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="slow")
+    stores.agent_profiles.save(profile)
     monkeypatch.setattr(
         "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
     request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
         agent_profile_id=profile.id,
+        agent_launch_additions=AgentLaunchAdditions(
+            llm_profile_ref="fast",
+            skills=[Skill(name="deployment", content="Deployment instructions.")],
+        ),
     )
 
-    payload, _, identity = await _forward(request, runtime_config)
+    payload, launched, identity = await _forward(request, runtime_config)
 
+    assert launched is not None and launched.llm_profile_ref == "fast"
+    assert "llm_profile_ref" not in payload["agent_launch_additions"]
     assert payload["agent_settings"]["agent_context"]["load_memory"] is True
     received = StartConversationRequest.model_validate(payload)
     source = launch_source(received, _no_stores, identity.cipher)
@@ -252,6 +290,29 @@ async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
     assert agent.llm.model == "fast-model"
     assert agent.agent_context is not None
     assert agent.agent_context.load_memory is True
+    assert [skill.name for skill in agent.agent_context.skills] == ["deployment"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_suffix_only_launch_omits_unused_skills(tmp_path, monkeypatch, existing):
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test")),
+        agent_launch_additions=AgentLaunchAdditions(
+            system_message_suffix_append="Deployment context",
+        ),
+    )
+
+    payload, _, _ = await _forward(
+        request, config(tmp_path, monkeypatch), existing=existing
+    )
+
+    assert "skills" not in payload["agent_launch_additions"]
+    assert (
+        payload["agent_launch_additions"]["system_message_suffix_append"]
+        == "Deployment context"
+    )
 
 
 @pytest.mark.asyncio

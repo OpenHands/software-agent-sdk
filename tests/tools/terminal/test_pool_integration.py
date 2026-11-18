@@ -33,6 +33,23 @@ def pool_executor():
         executor.close()
 
 
+def test_pool_waits_for_slow_shell_initialization(tmp_path):
+    (tmp_path / ".bashrc").write_text("sleep 0.4\n")
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        no_change_timeout_seconds=1,
+        terminal_type="tmux",
+        env={"HOME": str(tmp_path)},
+        max_panes=1,
+    )
+    try:
+        obs = executor(TerminalAction(command="sleep 2"))
+
+        assert obs.metadata.exit_code == -1
+    finally:
+        executor.close()
+
+
 class TestDeclaredResources:
     def test_pool_mode_opts_out_of_framework_locking(self, pool_executor):
         """In pool mode, declared_resources returns empty keys so the
@@ -127,6 +144,22 @@ class TestTmuxPoolRecovery:
         assert after.exit_code == 0
         assert "after_rebuild" in after.text
 
+    def test_shell_exit_beside_a_busy_pane_rebuilds_pool(self, pool_executor):
+        # The busy pane keeps the tmux server up, so the exited pane is gone
+        # while the server still answers.
+        busy = threading.Thread(
+            target=lambda: pool_executor(TerminalAction(command="sleep 3", timeout=10))
+        )
+        busy.start()
+        time.sleep(0.5)
+        obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
+        busy.join()
+
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+        assert "after_rebuild" in after.text
+
     def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
         obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))
         assert obs.is_error
@@ -139,3 +172,83 @@ class TestTmuxPoolRecovery:
         assert reset_obs.exit_code == 0
         assert "Terminal session has been reset" in reset_obs.text
         assert pool_executor.working_dir in reset_obs.text
+
+
+class TestPoolClose:
+    def test_closing_the_executor_releases_a_call_waiting_on_a_command(
+        self, pool_executor
+    ):
+        observations: list[TerminalObservation] = []
+        action = TerminalAction(command="sleep 30", timeout=60)
+        caller = threading.Thread(
+            target=lambda: observations.append(pool_executor(action))
+        )
+        caller.start()
+        time.sleep(2)
+
+        closed_at = time.monotonic()
+        pool_executor.close()
+        caller.join(timeout=10)
+
+        assert not caller.is_alive(), "the call kept waiting after close()"
+        assert time.monotonic() - closed_at < 10
+        (obs,) = observations
+        assert obs.is_error
+        assert "terminal was closed" in obs.text
+
+
+class TestFollowUpsReachTheRunningCommand:
+    """Follow-ups to a command that is still running must reach it (#6651).
+
+    The observation for a no-change timeout tells the agent to answer with
+    ``is_input``, wait with an empty command, or send ``C-c``. Checking out a
+    pane for that follow-up must not interrupt the command first.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            executor = TerminalExecutor(
+                working_dir=work_dir,
+                terminal_type="tmux",
+                max_panes=3,
+                no_change_timeout_seconds=2,
+            )
+            yield executor
+            executor.close()
+
+    def test_input_answers_a_waiting_prompt(self, executor):
+        prompt = executor(
+            TerminalAction(command="python3 -c \"print('hello ' + input('Name? '))\"")
+        )
+        assert prompt.exit_code == -1  # still waiting for input
+
+        answer = executor(TerminalAction(command="bob", is_input=True))
+
+        assert not answer.is_error, answer.text
+        assert "hello bob" in answer.text
+
+    def test_empty_command_and_ctrl_c_reach_a_long_command(self, executor):
+        started = executor(
+            TerminalAction(
+                command="for i in 1 2 3; do echo tick$i; sleep 1; done; sleep 60"
+            )
+        )
+        assert started.exit_code == -1
+
+        more = executor(TerminalAction(command=""))
+        assert not more.is_error, more.text
+
+        stopped = executor(TerminalAction(command="C-c", is_input=True))
+        assert not stopped.is_error, stopped.text
+        assert stopped.exit_code == 130
+
+    def test_new_command_after_a_finished_follow_up_runs_normally(self, executor):
+        executor(TerminalAction(command="python3 -c \"input('x? ')\""))
+        executor(TerminalAction(command="done", is_input=True))
+
+        result = executor(TerminalAction(command="echo after"))
+
+        assert not result.is_error, result.text
+        assert "after" in result.text
+        assert result.exit_code == 0

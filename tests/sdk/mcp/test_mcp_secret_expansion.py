@@ -53,7 +53,7 @@ def _make_result(content=None, is_error=False) -> MagicMock:
     """Build a mock CallToolResult with the given content blocks."""
     result = MagicMock(spec=mcp.types.CallToolResult)
     result.content = content or [mcp.types.TextContent(type="text", text="Success")]
-    result.isError = is_error
+    result.is_error = is_error
     return result
 
 
@@ -192,7 +192,9 @@ def test_executor_masks_secrets_in_returned_observation(
             mcp.types.TextContent(
                 type="text", text=f"authenticated with {secret_value}"
             ),
-            mcp.types.ImageContent(type="image", data="aGVsbG8=", mimeType="image/png"),
+            mcp.types.ImageContent(
+                type="image", data="aGVsbG8=", mime_type="image/png"
+            ),
         ],
     )
     action = MCPToolAction(data={"api_key": "$API_KEY"})
