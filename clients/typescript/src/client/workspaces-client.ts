@@ -61,6 +61,16 @@ export class WorkspacesClient {
     return response.data;
   }
 
+  async renameWorkspace(path: string, name: string): Promise<WorkspacesListResponse> {
+    await this.ensureWorkspaceRenameSupported();
+    const response = await this.client.patch<WorkspacesListResponse>(
+      '/api/workspaces',
+      { name },
+      { params: { path } }
+    );
+    return response.data;
+  }
+
   async deleteWorkspace(path: string): Promise<DeleteWorkspaceResponse> {
     await this.ensureWorkspacesSupported();
     const response = await this.client.delete<DeleteWorkspaceResponse>('/api/workspaces', {
@@ -74,6 +84,16 @@ export class WorkspacesClient {
     const response = await this.client.post<WorkspacesListResponse>('/api/workspaces/parents', {
       parents,
     });
+    return response.data;
+  }
+
+  async renameWorkspaceParent(path: string, name: string): Promise<WorkspacesListResponse> {
+    await this.ensureWorkspaceRenameSupported();
+    const response = await this.client.patch<WorkspacesListResponse>(
+      '/api/workspaces/parents',
+      { name },
+      { params: { path } }
+    );
     return response.data;
   }
 
@@ -91,5 +111,9 @@ export class WorkspacesClient {
 
   private async ensureWorkspacesSupported(): Promise<void> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.workspaces);
+  }
+
+  private async ensureWorkspaceRenameSupported(): Promise<void> {
+    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.workspaceRename);
   }
 }
