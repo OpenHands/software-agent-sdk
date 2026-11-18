@@ -1,0 +1,125 @@
+$ podman --version
+podman version 5.4.2 [exit 0]
+$ podman image inspect --format {{.Id}} ghcr.io/openhands/agent-server:latest-python
+17c7a3fcc6ddce94d61e362392d85df6dcfe27a414f9f3606536c61ea14698a7 [exit 0]
+
+### Authentication, key exposure, loopback isolation
+
+Host HTTP server on 127.0.0.1:42967
+$ curl -s -o /dev/null -w %{http_code}\n http://127.0.0.1:33339/api/conversations/count
+401 [exit 0]
+$ curl -s -o /dev/null -w %{http_code}\n http://127.0.0.1:33339/api/conversations/count -H X-Session-API-Key: wrong
+401 [exit 0]
+$ curl -s -o /dev/null -w %{http_code}\n http://127.0.0.1:33339/api/conversations/count -H X-Session-API-Key: <key>
+200 [exit 0]
+Processes whose argv contains the key:
+  8029 sh
+  8033 /openhands/.openvscode-server/node
+agent shell: id -u; echo w > new.txt; ls /home; env | grep -c SESSION_API_KEY; for h in 127.0.0.1 host.containers.internal; do curl -s -m 3 -o /dev/null -w "$h %{http_code}\n" http://$h:42967/ || echo "$h unreachable (curl exit $?)"; done
+10001
+openhands
+0
+127.0.0.1 000
+127.0.0.1 unreachable (curl exit 7)
+host.containers.internal 000
+host.containers.internal unreachable (curl exit 7) [exit 0]
+$ stat -c %n %u:%g /tmp/tmp6_flk2ml/project/new.txt
+/tmp/tmp6_flk2ml/project/new.txt 1000:1000 [exit 0]
+While running:
+$ pgrep -af podman logs --follow
+7813 podman logs --follow agent-server-ba64d0fd-0e48-4294-a5fd-05779d82ea87
+7836 podman logs --follow agent-server-ba64d0fd-0e48-4294-a5fd-05779d82ea87 [exit 0]
+After the with block:
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### extra_ports=True publishes the VSCode port on loopback
+
+$ podman port --all
+f96ed6b8dc55	8000/tcp -> 127.0.0.1:31791
+f96ed6b8dc55	8001/tcp -> 127.0.0.1:31792 [exit 0]
+$ curl -s -o /dev/null -w %{http_code}\n --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:31792/
+403 [exit 0]
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### Test images
+
+localhost/probe-crash: ENTRYPOINT ["sh", "-c", "echo probe: bad config >&2; exit 3"]
+localhost/probe-hang: ENTRYPOINT ["sh", "-c", "sleep infinity", "sh"]
+
+### Port 48383 taken after the availability check
+
+RuntimeError: Failed to run podman container: Error: pasta failed with exit code 1:
+  Failed to bind port 48383 (Address already in use) for option '-t 127.0.0.1/48383-48383:8000-8000'
+While the exception is alive:
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### Volume source does not exist
+
+ValidationError: 1 validation error for PodmanWorkspace
+    Value error, Volume source does not exist: /tmp/tmp6_flk2ml/missing [type=value_error, input_value={'volumes': ['/tmp/tmp6_f...ng:/workspace/project']}, input_type=dict]
+      For further information visit https://errors.pydantic.dev/2.13/v/value_error
+While the exception is alive:
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### Entrypoint exits during startup
+
+RuntimeError: Container stopped unexpectedly. Logs:
+  
+  probe: bad config
+While the exception is alive:
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### Server never becomes healthy (health_check_timeout=5)
+
+RuntimeError: Container failed to become healthy in time. Logs:
+While the exception is alive:
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### podman rm fails once (PATH shim around the real podman)
+
+
+### Health timeout, then the rollback's podman rm fails
+
+RuntimeError: Container failed to become healthy in time. Logs:
+note: Cleanup also failed: Failed to remove container agent-server-d9d656f4-8f66-4bbf-889c-8ba640de13f0: Error: injected rm failure
+While the exception is alive:
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+agent-server-d9d656f4-8f66-4bbf-889c-8ba640de13f0 Up 6 seconds [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+After the exception is released (__del__ retries):
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+
+### cleanup() on a running workspace: removal fails once, then retry
+
+first cleanup(): RuntimeError: Failed to remove container agent-server-6a368aea-8d04-4bc8-aea9-6642a1ca3f8d: Error: injected rm failure
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+agent-server-6a368aea-8d04-4bc8-aea9-6642a1ca3f8d Up 6 seconds [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
+second cleanup(): returned
+$ podman ps --all --filter name=agent-server --format {{.Names}} {{.Status}}
+(no output) [exit 0]
+$ pgrep -af podman logs --follow
+(no output) [exit 1]
