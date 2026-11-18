@@ -15,7 +15,11 @@ from litellm.exceptions import (
     OpenAIError,
     PermissionDeniedError,
 )
-from openai import APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError
+from openai import (
+    APIError as OpenAIAPIError,
+    APIStatusError,
+    RateLimitError as OpenAIRateLimitError,
+)
 
 from .types import (
     LLMContextWindowExceedError,
@@ -188,6 +192,11 @@ def looks_like_auth_error(exception: Exception) -> bool:
     # Trust the typed exception when the provider/LiteLLM raised an explicit
     # 401/403 — its message text may not contain the heuristic patterns below.
     if isinstance(exception, (AuthenticationError, PermissionDeniedError)):
+        return True
+    if isinstance(exception, (APIStatusError, APIError)) and exception.status_code in (
+        401,
+        403,
+    ):
         return True
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False

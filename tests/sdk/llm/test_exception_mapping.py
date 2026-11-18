@@ -1,12 +1,14 @@
 import httpx
 import pytest
 from litellm.exceptions import (
+    APIError,
     AuthenticationError,
     BadRequestError,
     ContentPolicyViolationError,
     InternalServerError,
     PermissionDeniedError,
 )
+from openai import APIStatusError, OpenAIError
 
 from openhands.sdk import LLM
 from openhands.sdk.llm.exceptions import (
@@ -15,6 +17,7 @@ from openhands.sdk.llm.exceptions import (
     LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
+    looks_like_auth_error,
     map_provider_exception,
 )
 
@@ -23,10 +26,65 @@ MODEL = "test-model"
 PROVIDER = "test-provider"
 
 
+@pytest.mark.parametrize(
+    ("status_code", "expected_auth", "expected_type"),
+    [
+        (401, True, LLMAuthenticationError),
+        (403, True, LLMAuthenticationError),
+        (400, False, LLMBadRequestError),
+    ],
+)
+def test_bad_request_classified_by_http_status(
+    status_code: int, expected_auth: bool, expected_type: type[Exception]
+):
+    error = BadRequestError(
+        "Authentication Fails, Your api key: ****alid is invalid",
+        MODEL,
+        PROVIDER,
+        response=httpx.Response(
+            status_code,
+            request=httpx.Request("POST", "https://example.test"),
+        ),
+    )
+
+    assert looks_like_auth_error(error) is expected_auth
+    assert isinstance(map_provider_exception(error), expected_type)
+
+
 def test_map_auth_error_from_bad_request():
     e = BadRequestError("Invalid API key provided", MODEL, PROVIDER)
     mapped = map_provider_exception(e)
     assert isinstance(mapped, LLMAuthenticationError)
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_map_openai_status_error_without_auth_wording(status_code: int):
+    error = APIStatusError(
+        "Request rejected",
+        response=httpx.Response(
+            status_code,
+            request=httpx.Request("POST", "https://example.test"),
+        ),
+        body=None,
+    )
+
+    assert looks_like_auth_error(error) is True
+    assert isinstance(map_provider_exception(error), LLMAuthenticationError)
+
+
+def test_openai_error_without_http_status_is_not_auth_error():
+    error = OpenAIError("Request failed")
+
+    assert looks_like_auth_error(error) is False
+    assert map_provider_exception(error) is error
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_map_litellm_api_error_without_auth_wording(status_code: int):
+    error = APIError(status_code, "Request rejected", PROVIDER, MODEL)
+
+    assert looks_like_auth_error(error) is True
+    assert isinstance(map_provider_exception(error), LLMAuthenticationError)
 
 
 def test_map_auth_error_from_openai_error():
