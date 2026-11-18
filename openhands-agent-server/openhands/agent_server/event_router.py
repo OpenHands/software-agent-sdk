@@ -35,6 +35,7 @@ from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
 )
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     AskUserAnswerRequest,
     ConfirmationResponseRequest,
@@ -52,7 +53,7 @@ from openhands.agent_server.persistence import (
     SettingsStore,
     run_store,
 )
-from openhands.agent_server.project_wake import SenderError, sender_message_header
+from openhands.agent_server.project_wake import sender_message_header
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus

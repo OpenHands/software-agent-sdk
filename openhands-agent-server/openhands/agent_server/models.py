@@ -520,7 +520,7 @@ class ConversationMessageRequest(SendMessageRequest):
     would mean nothing.
     """
 
-    sender_conversation_id: UUID | None = Field(
+    sender_conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
             "The conversation sending this message, such as a project's "

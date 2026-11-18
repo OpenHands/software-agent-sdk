@@ -35,6 +35,10 @@ from openhands.agent_server.event_service import (
     ServiceInactive,
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
+from openhands.agent_server.message_sender import (
+    SenderError,
+    sender_header as generic_sender_header,
+)
 from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_prompts import (
     RESTART_STOP,
@@ -85,10 +89,6 @@ _DELIVERY_RETRY_SECONDS = (1.0, 5.0)
 _waiting_runs: set[asyncio.Task] = set()
 
 
-class SenderError(ValueError):
-    """The ``sender_conversation_id`` of a message cannot send it."""
-
-
 async def _load_projects(service: "ConversationService") -> PersistedProjects | None:
     """The server's projects; ``None`` when it keeps none or has no stores."""
     if service.stores is None:
@@ -128,12 +128,12 @@ async def sender_message_header(
     if sender is None:
         raise SenderError("Sender conversation not found")
     project_hex = sender.tags.get(PROJECT_TAG_KEY)
-    role: SenderRole = "conversation"
-    if project_hex:
-        if target_tags.get(PROJECT_TAG_KEY) != project_hex:
-            raise SenderError("Sender is not a conversation of this project")
-        coordinator = await _coordinator_id(service, project_hex) == sender_id
-        role = "coordinator" if coordinator else "worker"
+    if not project_hex:
+        return generic_sender_header(sender.title, sender_id)
+    if target_tags.get(PROJECT_TAG_KEY) != project_hex:
+        raise SenderError("Sender is not a conversation of this project")
+    coordinator = await _coordinator_id(service, project_hex) == sender_id
+    role: SenderRole = "coordinator" if coordinator else "worker"
     return sender_header(sender.title, sender_id, role=role)
 
 
