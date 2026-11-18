@@ -102,11 +102,12 @@ VERIFIED_NVIDIA_MODELS = [
     "nemotron-3-ultra-550b-a55b",
 ]
 
-# Plus: 3.7 and 3.6. Max: 3.8 and 3.7. Flash: 3.8 and 3.7. Omni-flash: 3.8.
+# Plus: 3.7 and 3.6. Max: 4, 3.8 and 3.7. Flash: 3.8 and 3.7. Omni-flash: 3.8.
 # Coder: unversioned.
 VERIFIED_QWEN_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "qwen4-max",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
@@ -221,6 +222,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-ultra-550b-a55b",
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "qwen4-max",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",

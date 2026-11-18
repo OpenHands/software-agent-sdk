@@ -285,7 +285,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             set(),
         ),
         "qwen": (
-            {"qwen3.8-max", "qwen3.7-max", "qwen3.8-omni-flash"},
+            {"qwen4-max", "qwen3.8-max", "qwen3.7-max", "qwen3.8-omni-flash"},
             {"qwen3-max", "qwen3-6-plus"},
         ),
         # OpenRouter routes other vendors' models, so entries are namespaced
