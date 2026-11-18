@@ -1920,13 +1920,11 @@ async def test_a_restart_delivers_the_updates_it_missed(
 
 
 @pytest.mark.asyncio
-async def test_a_pause_from_a_restart_is_not_the_users(
+async def test_a_worker_stopped_by_a_shutdown_is_reported_after_the_restart(
     client, service, tmp_path, monkeypatch
 ):
-    """E2E finding: a worker the shutdown paused was reported as paused by the
-    user. The shutdown sends nothing; the catch-up names the restart and
-    wakes the coordinator. A later pause by the user reads as theirs."""
-    from openhands.agent_server.event_service import PAUSED_BY_SHUTDOWN_MARKER
+    """While the server goes down, nothing is sent; the catch-up after it
+    starts again reports the worker in the status it came back in."""
     from openhands.agent_server.project_wake import notify_coordinator_of_stop
 
     cat = await _start(service, tmp_path)
@@ -1953,12 +1951,9 @@ async def test_a_pause_from_a_restart_is_not_the_users(
     await _agent_says(
         service, worker, "Running the tests now.", ConversationExecutionStatus.PAUSED
     )
-    worker_service._mark_paused_by_shutdown(True)
-    assert (service.conversations_dir / worker.hex / PAUSED_BY_SHUTDOWN_MARKER).exists()
     copies = await _user_messages(service, cat)
     runs.clear()
 
-    # While the server goes down, nothing is sent.
     worker_service._closing = True
     try:
         assert not await notify_coordinator_of_stop(
@@ -1973,55 +1968,10 @@ async def test_a_pause_from_a_restart_is_not_the_users(
         worker_service._closing = False
     assert await _user_messages(service, cat) == copies
 
-    # Back up: the catch-up names the restart and wakes the coordinator.
     assert await reconcile_coordinator_updates(service) == 1
-    header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
-    assert header.startswith("[Update from ") and "server restart" in header
-    assert "Paused by the user" not in header
-    assert runs == [True]
-
-    # An error status read while the mark is set is the same restart.
-    assert await notify_coordinator_of_stop(
-        service, worker, project["id"], "error", "x", f"conversation:{cat.hex}"
-    )
-    header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
-    assert "server restart" in header
-
-    # A run clears the mark, so the user's own pause later reads as theirs.
-    worker_service._mark_paused_by_shutdown(False)
-    assert not worker_service.paused_by_shutdown
-    runs.clear()
-    assert await notify_coordinator_of_stop(
-        service,
-        worker,
-        project["id"],
-        "paused",
-        "x",
-        f"conversation:{cat.hex}",
-    )
     header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
     assert header.startswith("[Paused by the user: ")
     assert runs == [False]
-
-
-@pytest.mark.asyncio
-async def test_a_run_clears_the_shutdown_mark(service, tmp_path):
-    worker = await _start(service, tmp_path)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    conversation = event_service._conversation
-    assert conversation is not None
-
-    async def arun() -> None:
-        return None
-
-    conversation.arun = arun  # type: ignore[method-assign]
-    event_service._mark_paused_by_shutdown(True)
-    assert event_service.paused_by_shutdown
-
-    assert await event_service.run() is True
-    await event_service.wait_for_run_completion(timeout=5)
-    assert not event_service.paused_by_shutdown
 
 
 @pytest.mark.asyncio

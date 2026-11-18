@@ -125,8 +125,6 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
-PAUSED_BY_SHUTDOWN_MARKER = ".paused_by_shutdown"
-"""File in a conversation's folder while its run is paused by a shutdown."""
 # How long a conversation start waits for MCP servers; slower servers' tools
 # join the agent once they are ready.
 MCP_STARTUP_BUDGET_SECONDS = 1.0
@@ -387,24 +385,6 @@ class EventService:
     @property
     def conversation_dir(self):
         return self.conversations_dir / self.stored.id.hex
-
-    @property
-    def paused_by_shutdown(self) -> bool:
-        """The last run was paused because the server shut down, not by anyone.
-
-        Set when :meth:`close` pauses a running run, cleared when a run starts.
-        """
-        return (self.conversation_dir / PAUSED_BY_SHUTDOWN_MARKER).exists()
-
-    def _mark_paused_by_shutdown(self, paused: bool) -> None:
-        marker = self.conversation_dir / PAUSED_BY_SHUTDOWN_MARKER
-        try:
-            if paused:
-                marker.touch()
-            else:
-                marker.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Could not update %s", marker, exc_info=True)
 
     async def run_state_op[R](self, fn: Callable[..., R], *args: Any) -> R:
         """Run ``fn``, which acquires the state lock, off the event loop."""
@@ -1691,15 +1671,8 @@ class EventService:
         # should be surfaced back to the agent.
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
-            # close() marks a run it stops; then the server was shut down on
-            # purpose, not crashed, and the run is paused like one stopped
-            # between steps.
-            shut_down = self.paused_by_shutdown
             state.transition(
-                ConversationExecutionStatus.PAUSED
-                if shut_down
-                else ConversationExecutionStatus.ERROR,
-                "stale running status on load",
+                ConversationExecutionStatus.ERROR, "stale running status on load"
             )
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
@@ -1729,14 +1702,9 @@ class EventService:
                         tool_name=first_action.tool_name,
                         tool_call_id=first_action.tool_call_id,
                         error=(
-                            "The server was shut down while this tool was in "
-                            "progress, and the conversation was paused. The tool "
-                            "execution was interrupted and did not complete."
-                            if shut_down
-                            else "A restart occurred while this tool was in "
-                            "progress. This may indicate a fatal memory error or "
-                            "system crash. The tool execution was interrupted and "
-                            "did not complete."
+                            "A restart occurred while this tool was in progress. "
+                            "This may indicate a fatal memory error or system crash. "
+                            "The tool execution was interrupted and did not complete."
                         ),
                         classification=ErrorClassification(
                             kind=FailureKind.INTERNAL, retryable=False
@@ -2072,8 +2040,6 @@ class EventService:
                                     acp_internal_rerun_requested
                                 )
 
-            if self.paused_by_shutdown:
-                self._mark_paused_by_shutdown(False)
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
             # Finally, release even if the task is cancelled before its
@@ -2679,9 +2645,6 @@ class EventService:
         run_task = self._run_task
         if run_task is not None and not run_task.done():
             if self._conversation is not None:
-                # Recorded first, so whoever sees the pause can tell it apart
-                # from one the user made.
-                self._mark_paused_by_shutdown(True)
                 try:
                     await self.run_state_op(self._conversation.pause)
                 except Exception:

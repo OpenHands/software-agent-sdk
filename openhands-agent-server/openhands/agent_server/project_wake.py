@@ -29,7 +29,6 @@ from itertools import islice
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from openhands.agent_server.event_service import PAUSED_BY_SHUTDOWN_MARKER
 from openhands.agent_server.exceptions import (
     ConversationRunLimitExceeded,
     HeldForUser,
@@ -42,7 +41,6 @@ from openhands.agent_server.message_sender import (
 )
 from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_prompts import (
-    RESTART_STOP,
     SenderRole,
     card_header,
     paused_header,
@@ -302,9 +300,8 @@ async def notify_coordinator_of_stop(
     Only for a turn the coordinator started; the user sees their own turns
     stop. Waiting for confirmation, an error or stuck wakes the coordinator so
     it can tell the user what the member waits on. A pause is the user's
-    own act, so it is saved for the coordinator's awareness without a run;
-    a pause a server shutdown made wakes the coordinator with that cause,
-    once the server is back (the shutdown itself sends nothing).
+    own act, so it is saved for the coordinator's awareness without a run.
+    Nothing is sent while the server shuts down.
     Returns whether a message was saved.
     """
     if status not in HELD_FOR_USER_STATUSES or turn_sender is None:
@@ -317,16 +314,12 @@ async def notify_coordinator_of_stop(
         return False
     member = await service.get_conversation(member_id)
     title = member.title if member else None
+    member_service = await service.get_event_service(member_id)
+    if member_service is None or member_service._closing:
+        # The server is going down; the catch-up after it starts again
+        # delivers this, with the status the member comes back in.
+        return False
     paused = status == "paused"
-    marker = service.conversations_dir / member_id.hex / PAUSED_BY_SHUTDOWN_MARKER
-    if status in ("paused", "error") and marker.exists():
-        member_service = await service.get_event_service(member_id)
-        if member_service is None or member_service._closing:
-            # The server is going down; the catch-up after it starts again
-            # delivers this with its real cause.
-            return False
-        paused = False
-        status = RESTART_STOP
     header = (
         paused_header(title, member_id)
         if paused
