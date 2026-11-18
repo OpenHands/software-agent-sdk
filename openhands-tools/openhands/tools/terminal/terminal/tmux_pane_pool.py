@@ -175,8 +175,8 @@ class TmuxPanePool:
         except Exception as e:
             logger.warning(f"Error killing pool session: {e}")
 
-        # With exit-empty disabled, tmux can outlive its last session.
-        # _new_owned_session gives this pool its own dedicated server.
+        # This pool owns its server, which outlives the session when
+        # exit-empty is off.
         try:
             if self._server is not None:
                 self._server.kill()

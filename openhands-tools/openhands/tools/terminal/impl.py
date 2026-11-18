@@ -60,9 +60,7 @@ _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "could not find pane_id",
     # tmux reports this when a command's target pane is already gone and
     # the server has no current session/window/pane context to fall back
-    # to (e.g. a server that briefly outlives its last session). See
-    # tests/tools/terminal/test_pool_integration.py::
-    # TestTmuxPoolRecovery::test_shell_exit_with_server_surviving_rebuilds_pool
+    # to (e.g. a server that briefly outlives its last session).
     "no current target",
 )
 
