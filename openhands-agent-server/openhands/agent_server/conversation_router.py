@@ -808,10 +808,7 @@ async def switch_conversation_acp_effort(
 
 
 @conversation_router.patch(
-    "/{conversation_id}",
-    responses=error_responses(
-        {NotFound: "Item not found", Unprocessable: "Tags would join a project"}
-    ),
+    "/{conversation_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def update_conversation(
     conversation_id: UUID,
