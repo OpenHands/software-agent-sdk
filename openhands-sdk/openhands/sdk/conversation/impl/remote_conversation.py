@@ -64,6 +64,7 @@ from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import (
     OPERATION_METADATA_KEY,
     default_observability_span_name_from_env,
+    format_send_message_span_input,
     merge_observability_metadata,
     observability_parent_span_context_from_env,
     observe,
@@ -1393,7 +1394,10 @@ class RemoteConversation(BaseConversation):
             " since it would be handled server-side."
         )
 
-    @observe(name="conversation.send_message")
+    @observe(
+        name="conversation.send_message",
+        input_formatter=format_send_message_span_input,
+    )
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])

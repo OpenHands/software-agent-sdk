@@ -21,8 +21,11 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
+from pydantic import BaseModel
+
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.utils import get_env
+from openhands.sdk.utils.redact import redact_text_secrets
 
 
 if TYPE_CHECKING:
@@ -254,7 +257,7 @@ def observe[**P, R](
     ignore_output: bool = False,
     span_type: Literal["DEFAULT", "LLM", "TOOL"] = "DEFAULT",
     ignore_inputs: list[str] | None = None,
-    input_formatter: Callable[P, str] | None = None,
+    input_formatter: Callable[..., Any] | None = None,
     output_formatter: Callable[[R], str] | None = None,
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
@@ -325,6 +328,25 @@ def observe[**P, R](
         return sync_wrapper
 
     return decorator
+
+
+def format_send_message_span_input(
+    _conversation: object,
+    message: Any,
+    sender: str | None = None,
+) -> dict[str, Any]:
+    """Build a redacted input payload for ``conversation.send_message`` spans."""
+    if isinstance(message, BaseModel):
+        message = message.model_dump(mode="json")
+
+    payload: dict[str, Any] = {"message": message}
+    if sender is not None:
+        payload["sender"] = sender
+
+    # Redact the serialized form so credential-like entries embedded inside a
+    # free-form message are handled by the repository's canonical text filter.
+    serialized = json.dumps(payload, ensure_ascii=False, default=str)
+    return cast(dict[str, Any], json.loads(redact_text_secrets(serialized)))
 
 
 # Keep owner first so observe can restore its conversation root span.
