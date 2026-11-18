@@ -1227,3 +1227,28 @@ def test_deepseek_preset_without_a_proxy_uses_deepseek(monkeypatch):
 
     assert route["base_url"] is None
     assert route["env"] == "DEEPSEEK_API_KEY"
+
+
+def test_deepseek_preset_prints_the_active_model_for_recipe_checks(monkeypatch, capsys):
+    monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("LLM_API_KEY", "proxy-key")
+    monkeypatch.setattr(cas, "resolve_run", lambda run: object())
+    saved = []
+
+    def save(run, name, model, key, base_url, activate, validate):
+        saved.append((name, model, base_url))
+        return {"profile": name, "model": model}
+
+    monkeypatch.setattr(cas, "save_llm_profile", save)
+    args = _preset_args(
+        run=None, preset="deepseek", no_validate=False, print_model=True
+    )
+
+    with pytest.raises(SystemExit) as done:
+        cas.cmd_llm_preset(args)
+
+    assert done.value.code == 0
+    assert capsys.readouterr().out == "litellm_proxy/deepseek-v4.1-flash\n"
+    assert saved == [
+        ("deepseek-flash", "litellm_proxy/deepseek-v4.1-flash", "https://proxy.example")
+    ]
