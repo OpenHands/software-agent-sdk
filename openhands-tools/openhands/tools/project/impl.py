@@ -69,7 +69,8 @@ PROJECT_MESSAGE_TIMEOUT_SECONDS = 300.0
 
 _NOT_IN_PROJECT = (
     "This conversation is not part of a project: it has no "
-    f"'{PROJECT_TAG_KEY}' tag. Ask the user to add it to a project first."
+    f"'{PROJECT_TAG_KEY}' tag. Only a project's coordinator starts its "
+    "conversations; tell the user these project tools do not apply here."
 )
 
 
