@@ -42,7 +42,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.openai.usage import token_usage_delta
 from openhands.agent_server.persistence import (
     FileSettingsStore,
-    PersistedSettings,
     SettingsStore,
     run_store,
 )
@@ -458,10 +457,10 @@ async def require_feature_enabled(
     if host_experimental_features() is not None:
         return
     try:
-        settings = await run_store(settings_store.load) or PersistedSettings()
+        features = await run_store(settings_store.experimental_features)
     except (PermissionError, OSError):
         raise Conflict("Cannot read the settings file to check the feature flag")
-    if not is_enabled(settings.experimental_features, key):
+    if not is_enabled(features, key):
         raise Conflict(off_detail)
 
 

@@ -4,7 +4,9 @@ import socket
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2972,6 +2974,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Test that tag updates hold the ConversationState lock."""
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -3007,6 +3010,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Waiting on the state lock must not stall unrelated async work."""
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         state = ConversationState(
@@ -3069,6 +3073,63 @@ class TestConversationServiceUpdateConversation:
         )
 
     @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_leaves_default_executor_free(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """A run holds the state lock across whole tool steps. A tag PATCH
+        waiting on it must not park a default-executor thread: event reads of
+        every conversation need that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        state_executor = ThreadPoolExecutor(max_workers=1)
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = partial(
+            loop.run_in_executor, state_executor
+        )
+        mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.RUNNING,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+        held, release = threading.Event(), threading.Event()
+
+        def hold_state_lock() -> None:
+            with state:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_state_lock)
+        holder.start()
+        assert held.wait(timeout=1.0)
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            update = asyncio.create_task(
+                conversation_service.update_conversation(
+                    conversation_id, UpdateConversationRequest(tags={"env": "prod"})
+                )
+            )
+            try:
+                await asyncio.sleep(0.05)
+                free = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: "free"), timeout=2
+                )
+                assert free == "free"
+            finally:
+                release.set()
+                holder.join()
+            assert await asyncio.wait_for(update, timeout=2)
+        state_executor.shutdown()
+        assert state.tags == {"env": "prod"}
+
+    @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
         """Test updating a non-existent conversation returns False."""
         non_existent_id = uuid4()
@@ -3095,6 +3156,7 @@ class TestConversationServiceUpdateConversation:
         """Test that updating a conversation triggers webhook notifications."""
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -3143,6 +3205,7 @@ class TestConversationServiceUpdateConversation:
             updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
         )
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
