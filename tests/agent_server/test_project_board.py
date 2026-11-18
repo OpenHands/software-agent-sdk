@@ -1120,23 +1120,54 @@ async def test_a_needs_you_reply_without_a_request_line_has_no_ask():
 
 
 @pytest.mark.asyncio
-async def test_asks_in_a_turn_the_coordinator_started_are_for_the_coordinator():
+async def test_a_question_for_the_user_waits_for_the_user():
+    """Live F36.auto-resolve, 2026-11-18: a worker asked the user to pick in a
+    turn the coordinator started; the coordinator told it it was finished,
+    and the worker resolved itself. The question is the user's: it stays on
+    the board through the coordinator's messages until the user answers."""
     store = _Tags({"project": "p1"})
-    verdict = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    asks = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    subscriber = _judging(store, asks, [])
 
     await _feed(
-        _judging(store, verdict, []),
-        _message("user", "Build piece 2", sender="conversation:cat"),
+        subscriber,
+        _message("user", "Suggest two cat names", sender="conversation:cat"),
         _status("running"),
-        _message(
-            "agent",
-            "Piece 2 is done. Want me to hand piece 3 to a new conversation, "
-            "or leave it with you?",
-        ),
+        _message("agent", "Mochi or Juniper. Tell me which one you prefer."),
         _status("finished"),
     )
+    asked = {"project": "p1", "turn": "asked", "ask": "Tell me which one you prefer."}
+    assert store.tags == asked
 
-    assert store.tags == {"project": "p1", "turn": "answered"}
+    await _feed(
+        subscriber,
+        _message("user", "You're finished, thanks.", sender="conversation:cat"),
+        _status("running"),
+        _message("agent", "Understood."),
+        _status("finished"),
+    )
+    assert store.tags == asked
+
+    await _feed(subscriber, _message("user", "Mochi"), _status("running"))
+    assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_the_users_answer_passed_on_by_the_coordinator_closes_the_question():
+    store = _Tags({"project": "p1", "turn": "asked", "ask": "Which name?"})
+    subscriber = _judging(store, None, [])
+
+    await _feed(
+        subscriber,
+        _message(
+            "user",
+            '[Answer to your question: "Which name?"]\nMochi',
+            sender="conversation:cat",
+        ),
+        _status("running"),
+    )
+
+    assert store.tags == {"project": "p1"}
 
 
 @pytest.mark.asyncio
@@ -1226,7 +1257,7 @@ def test_tracker_reads_a_turn_from_its_events():
     )
 
     assert signals == [
-        TurnStarted(),
+        TurnStarted(by_user=False),
         TurnEnded(
             turn="asked",
             ask="Postgres or SQLite?",
@@ -1248,7 +1279,7 @@ def test_tracker_tells_a_user_message_and_its_answer_to_a_card():
     message = _message("user", "Use SQLite.")
 
     assert tracker.observe(message) == [
-        TurnStarted(),
+        TurnStarted(by_user=True),
         CardAnswered(message.id, None, "Use SQLite."),
         UserWrote("Use SQLite."),
     ]

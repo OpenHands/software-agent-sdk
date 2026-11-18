@@ -2004,6 +2004,24 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_the_agent_cannot_resolve_over_the_users_open_question(
+    client, service, tmp_path
+):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/conversations"
+    tags = {"project": project["id"], "turn": "asked", "ask": "Which name?"}
+    member = await _start(service, tmp_path, tags=tags)
+
+    response = await client.post(f"{base}/{member.hex}/resolve", json={"by": "agent"})
+
+    assert response.status_code == 409
+    assert "theirs to answer" in response.json()["detail"]
+    assert await _tags(service, member) == tags
+    # The user can.
+    assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
+
+
+@pytest.mark.asyncio
 async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     client, service, tmp_path
 ):

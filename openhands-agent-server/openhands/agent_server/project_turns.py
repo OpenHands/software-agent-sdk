@@ -217,7 +217,11 @@ _TURN_ACTIONS_KEPT: Final[int] = 20
 
 @dataclass(frozen=True)
 class TurnStarted:
-    """A message started a new turn: the last turn's outcome no longer holds."""
+    """A message started a new turn: the last turn's outcome no longer holds.
+    ``by_user`` is false when another conversation (the coordinator) sent it:
+    that does not answer a question the user still owes."""
+
+    by_user: bool
 
 
 @dataclass(frozen=True)
@@ -352,9 +356,12 @@ class TurnTracker:
         self._reported_hold = None
         self._last_action = None
         self._last_error = None
-        signals: list[TurnSignal] = [TurnStarted()]
+        text = extract_message_text(event) or ""
+        # The user's answer passed on by the coordinator answers the user's
+        # question; anything else the coordinator says does not.
+        by_user = event.sender is None or text.startswith(ANSWER_HEADER_PREFIX)
+        signals: list[TurnSignal] = [TurnStarted(by_user=by_user)]
         if event.sender is None:
-            text = extract_message_text(event) or ""
             if not text.startswith(ANSWER_HEADER_PREFIX):
                 # A tap comes with its own answer event; this is the user
                 # writing, which also answers a pending card.

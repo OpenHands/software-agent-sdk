@@ -489,6 +489,46 @@ async def test_the_users_words_in_the_coordinator_answer_the_member(
 
 
 @pytest.mark.asyncio
+async def test_the_users_answer_reaches_a_question_asked_without_a_card(
+    client, service, tmp_path
+):
+    """A worker asked in its final message; the coordinator asks the user on
+    a card for it, and the user's answer reaches the worker as theirs."""
+    project, cat, worker = await _project(client, service, tmp_path)
+    await service.projects.set_conversation_tag(worker, "turn", "asked")
+    await service.projects.set_conversation_tag(worker, "ask", "Which name?")
+    passed = _ask(
+        AskUserForConversationAction(
+            question="Which name for the cat?",
+            options=[
+                AskUserOption(label="Mochi", consequence="Short."),
+                AskUserOption(label="Juniper", consequence="Longer."),
+            ],
+            for_conversation=str(worker),
+        )
+    )
+    await _record(service, cat, passed, _shown(passed))
+    tap = AskUserAnswerEvent(ask_id=passed.id, option_index=0, option_label="Mochi")
+    await _record(service, cat, tap)
+
+    for _ in range(200):
+        if [e for e in await _events(service, worker) if isinstance(e, MessageEvent)]:
+            break
+        await asyncio.sleep(0.025)
+    (message,) = [
+        e for e in await _events(service, worker) if isinstance(e, MessageEvent)
+    ]
+    assert message.sender == f"conversation:{cat.hex}"
+    assert message.llm_message.content[0].text == (  # type: ignore[union-attr]
+        '[Answer to your question: "Which name?"]\nMochi'
+    )
+    info = await service.get_conversation(worker)
+    assert info is not None and "turn" not in info.tags
+    # Answered: a second pass has nothing left to close.
+    assert not await pass_on_answer(service, cat, project, tap.id, "Mochi", None)
+
+
+@pytest.mark.asyncio
 async def test_nothing_is_passed_on_without_a_member_waiting(client, service, tmp_path):
     project, cat, worker = await _project(client, service, tmp_path)
     # The coordinator's own question names no member.

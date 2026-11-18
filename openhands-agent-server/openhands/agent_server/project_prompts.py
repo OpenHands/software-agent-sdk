@@ -69,14 +69,20 @@ UPDATE_TEXT_MAX = 4000
 
 def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
     """First line of the update a coordinator gets when a member finishes."""
-    outcome = (
-        "It finished its turn with a question for the user"
-        if asked
-        else "It finished its turn"
-    )
+    if asked:
+        return (
+            f"[Update from {_name(title, conversation_id)}, a conversation in "
+            "your project, not from the user. It finished its turn with a "
+            "question for the user; its final message follows. The question "
+            "waits for the user on their board until they answer it. Ask the "
+            "user with ask_user, giving this conversation's id as "
+            "for_conversation: their answer then reaches it. Do not answer it "
+            "yourself, and do not tell that conversation it is finished while "
+            "the question is open.]"
+        )
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "
-        f"project, not from the user. {outcome}; its final message follows. "
+        "project, not from the user. It finished its turn; its final message follows. "
         "Pass on to the user what they need to know, send that conversation "
         "a follow-up only if the work needs one (it already has what the "
         "user told it), or read more of it with read_project_conversation. "

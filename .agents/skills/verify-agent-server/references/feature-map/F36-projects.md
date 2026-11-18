@@ -428,24 +428,26 @@ Preconditions:
     --json '{"title": "qa-f36-answer", "task": "What is 17 times 23? Answer in one sentence and finish. Do not use tools.", "isolation": "shared"}' \
     --expect 201 --field conversation_id)
   A2=$(control-agent-server api POST "/api/conversations/$CAT/children" \
-    --json '{"title": "qa-f36-handoff", "task": "Reply with the single word ready and finish. Do not use tools.", "isolation": "shared"}' \
+    --json '{"title": "qa-f36-handoff", "task": "Suggest two names for my new cat, with one line on each. End your final message with exactly: Tell me which one you prefer. Do not use tools.", "isolation": "shared"}' \
     --expect 201 --field conversation_id)
   control-agent-server conversation wait "$A1" --until finished --timeout 180
-  control-agent-server conversation wait "$A2" --until finished --timeout 180
-  sleep 5
-  control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
-  control-agent-server api POST "/api/conversations/$A2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Suggest two names for my new cat, with one line on each. End your final message with exactly: Tell me which one you prefer. Do not use tools."}], "run": true}' --expect 200
   control-agent-server conversation wait "$A2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$A1" --check tags.resolved eq auto --check tags.resolvenote matches '^(0\.(8[5-9]|9\d)|1\.00) nothing$' --until-ok 30 \
     --save F36.auto-resolve/answer
   control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask eq 'Tell me which one you prefer.' --check tags not-contains resolved --until-ok 30 \
     --save F36.auto-resolve/handoff
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolve_note": "' --save F36.auto-resolve/board
+  control-agent-server api POST "/api/projects/$P2/conversations/$A2/resolve" --json '{"by": "agent"}' --expect 409 --save F36.auto-resolve/agent-refused
+  control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
+  control-agent-server api POST "/api/conversations/$A2/events" --json "{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"You are finished, thanks. Reply with the single word ok.\"}], \"run\": true, \"sender_conversation_id\": \"$CAT\"}" --expect 200
+  control-agent-server conversation wait "$A2" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask eq 'Tell me which one you prefer.' --check tags not-contains resolved --until-ok 30 \
+    --save F36.auto-resolve/still-asked
   ```
-  The answer is the coordinator's task. The hand-off comes from the user: a
-  question in a turn the coordinator started is the coordinator's to answer,
-  never Needs you, and the woken coordinator may tell the member it is done.
-  The judge runs on the conversation's own LLM (no `OH_RESOLUTION_MODEL`).
+  Both are the coordinator's tasks. The judge runs on the conversation's own
+  LLM (no `OH_RESOLUTION_MODEL`). A question for the user stays theirs, also
+  in a turn the coordinator started: the member cannot resolve over it (409),
+  and a coordinator's message ("you are finished") leaves it on Needs you.
   A plain answer resolves as `auto` with a note such as `1.00 nothing`. A
   hand-off that ends without a question mark (`Tell me which one you prefer.`)
   becomes `turn=asked` with that sentence as `ask` (Needs you).
@@ -701,6 +703,10 @@ Preconditions:
   the coordinator when it ends, so the coordinator runs after every member
   recipe here. Wait for it (`conversation wait "$CAT" --until idle,finished`)
   before checking its status.
+- A question for the user (`turn=asked`) stays open until the user writes in
+  the conversation, or answers the coordinator's `ask_user` card made for it
+  (`for_conversation`), which passes their answer on. Other messages from the
+  coordinator keep it open, and the member's `resolve_conversation` is 409.
 - `attention` comes from `execution_status`, refined by the `turn` and
   `resolved` tags. `idle` means nothing runs, not that the task
   succeeded. `turn` is a heuristic: the last paragraph of the agent's final

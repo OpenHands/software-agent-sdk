@@ -843,6 +843,16 @@ async def _set_member_resolved(
     info = await service.get_conversation(conversation_id)
     if info is None or info.tags.get(PROJECT_TAG) != project_id.hex:
         raise NotFound("Conversation not in project")
+    if (
+        resolved
+        and by == "agent"
+        and info.tags.get(TURN_TAG_KEY) == "asked"
+        and RESOLVED_TAG_KEY not in info.tags
+    ):
+        raise Conflict(
+            "This conversation asked the user a question they have not answered "
+            "yet. It is theirs to answer: end your turn without resolving."
+        )
     if resolved and by == "agent":
         # The agent is inside its own tool call: answer at once (see
         # ProjectService.resolve_for_agent).
@@ -858,6 +868,10 @@ async def _set_member_resolved(
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         202: {"description": "`by=agent`: accepted; the tags change at once"},
+        409: {
+            "description": "`by=agent`: the user has not answered the "
+            "conversation's question yet"
+        },
         404: {"description": "Project not found, or conversation not a member"},
     },
 )

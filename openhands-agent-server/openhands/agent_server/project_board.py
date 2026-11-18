@@ -34,7 +34,6 @@ from openhands.agent_server.project_turns import (
     TurnTracker,
     UserWrote,
     extract_request,
-    from_conversation,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk.conversation.resolution import ResolutionState, ResolutionVerdict
@@ -144,7 +143,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
     def _act(self, signal: TurnSignal) -> None:
         if isinstance(signal, TurnStarted):
-            self._turn_started()
+            self._turn_started(signal.by_user)
             return
         project = self.tags().get(PROJECT_TAG_KEY)
         if not project:
@@ -167,7 +166,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         else:
             self._enqueue(lambda: self._record(project, signal))
 
-    def _turn_started(self) -> None:
+    def _turn_started(self, by_user: bool) -> None:
         # The user moved on: the last turn's verdict no longer matters, and
         # the reopen below should not wait for it.
         if self._judging is not None:
@@ -177,7 +176,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         # queue the reopen behind it as well.
         pending = self._tail is not None and not self._tail.done()
         if pending or any(key in self.tags() for key in BOARD_TAG_KEYS):
-            self._enqueue(self._reopen)
+            self._enqueue(lambda: self._reopen(keep_question=not by_user))
 
     def _notify_stopped(
         self, project: str, signal: TurnStopped, callback: OnStopped
@@ -215,19 +214,39 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     async def _enabled(self) -> bool:
         return self.projects_enabled is None or await self.projects_enabled()
 
-    async def _reopen(self) -> None:
+    async def _reopen(self, *, keep_question: bool) -> None:
         # Only a project member's board state is the server's to clear.
         if PROJECT_TAG_KEY not in self.tags() or not await self._enabled():
             return
+        keys = set(BOARD_TAG_KEYS)
+        if keep_question and self._question_open():
+            # Another conversation's message does not answer the user's
+            # question: it stays on the board until the user writes.
+            keys -= {TURN_TAG_KEY, ASK_TAG_KEY}
         # Most user messages find neither tag; each write is a metadata save.
-        for key in sorted(BOARD_TAG_KEYS):
+        for key in sorted(keys):
             if key in self.tags():
                 await self.set_tag(self.conversation_id, key, None)
+
+    def _question_open(self) -> bool:
+        """The conversation asked the user something they have not answered
+        (nor resolved)."""
+        tags = self.tags()
+        return tags.get(TURN_TAG_KEY) == "asked" and RESOLVED_TAG_KEY not in tags
 
     async def _record(self, project: str, ended: TurnEnded) -> None:
         if not await self._enabled():
             return
         turn, ask, text = ended.turn, ended.ask, ended.text
+        if self._question_open():
+            # The user has not answered the last question: a turn another
+            # conversation started since leaves it theirs, and resolves
+            # nothing. A new question replaces it.
+            if turn != "asked":
+                turn, ask = "asked", self.tags().get(ASK_TAG_KEY)
+            await self._set_turn(turn, ask)
+            self._notify_finished(project, turn, ended)
+            return
         verdict = None
         shown = False
         if ended.judged is not None and RESOLVED_TAG_KEY not in self.tags():
@@ -245,14 +264,10 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if verdict is not None:
             # The judge decides whether the reply waits on the user, also
             # when it asks without a question mark or ends on a pleasantry.
-            starter = await self._starter(ended.sender, ended.sender_known)
-            if verdict.needs_user and from_conversation(starter):
-                # Asks in a turn another conversation started (a coordinator)
-                # are for that conversation, which gets the reply; the turn
-                # is neither the user's to answer nor resolved.
-                turn = "answered"
-                ask = None
-            elif verdict.needs_user:
+            # A question for the user goes on the board in a turn the
+            # coordinator started too: the coordinator gets the reply, and
+            # passes it on, but the question is the user's.
+            if verdict.needs_user:
                 turn = "asked"
                 ask = ask or extract_request(text)
             else:
