@@ -5,6 +5,7 @@ PooledTmuxTerminal, including declared_resources() and concurrent execution
 through the executor's __call__ interface.
 """
 
+import subprocess
 import tempfile
 import threading
 import time
@@ -31,6 +32,39 @@ def pool_executor():
         )
         yield executor
         executor.close()
+
+
+def _server_socket_args(server) -> list[str]:
+    """tmux CLI args identifying *server*'s socket (handles the long-path
+    fallback where libtmux uses an explicit ``socket_path`` instead of a
+    ``socket_name``, see ``_new_owned_session``)."""
+    if server.socket_name is not None:
+        return ["-L", server.socket_name]
+    assert server.socket_path is not None
+    return ["-S", server.socket_path]
+
+
+def _tmux_socket_is_live(socket_args: list[str], timeout: float = 2.0) -> bool:
+    """Probe whether a tmux server behind *socket_args* is still reachable.
+
+    ``show-options -g`` is a server-scope query: it succeeds against a live
+    server with zero sessions (distinguishing "live, empty" from "dead,
+    socket gone"), unlike ``list-sessions`` which merely reports no
+    sessions either way. Polls briefly because ``kill-server`` unlinks the
+    socket asynchronously, so an immediate single probe can race it.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        result = subprocess.run(
+            ["tmux", *socket_args, "show-options", "-g", "exit-empty"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(0.05)
 
 
 def test_pool_waits_for_slow_shell_initialization(tmp_path):
@@ -164,12 +198,16 @@ class TestTmuxPoolRecovery:
         assert old_pool is not None
         old_server = old_pool._server
         assert old_server is not None
+        # Captured explicitly so liveness can be probed via a fresh tmux
+        # client even after the pool object itself has been replaced.
+        old_socket_args = _server_socket_args(old_server)
 
         try:
             # Real, standard tmux server option (tmux(1)); default is
             # "on". This is the pool's own isolated server, never a
             # shared one.
             old_server.cmd("set-option", "-g", "exit-empty", "off")
+            assert _tmux_socket_is_live(old_socket_args, timeout=0.2)
 
             obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
 
@@ -177,7 +215,18 @@ class TestTmuxPoolRecovery:
             assert obs.exit_code == -1
             assert "rebuilt the terminal pool" in obs.text
             assert "top-level `exit`" in obs.text
-            assert "Original tmux error:" in obs.text
+            assert "Original tmux error: no current target" in obs.text
+
+            # The pool must have shut down its *own* dedicated server as
+            # part of recovery, not merely the session within it (a
+            # session-only kill leaves a lingering tmux process when
+            # exit-empty is off, as set above). Poll briefly: kill-server
+            # unlinks the socket asynchronously.
+            assert not _tmux_socket_is_live(old_socket_args, timeout=2.0), (
+                "old pool's dedicated tmux server is still alive after "
+                "recovery; pool.close() must kill its own server, not "
+                "just its session"
+            )
 
             after = pool_executor(
                 TerminalAction(command="echo after_rebuild", timeout=5.0)
@@ -185,11 +234,18 @@ class TestTmuxPoolRecovery:
             assert not after.is_error
             assert after.exit_code == 0
             assert "after_rebuild" in after.text
+
+            new_pool = pool_executor._pool
+            assert new_pool is not None
+            assert new_pool is not old_pool
+            new_server = new_pool._server
+            assert new_server is not None
+            assert _server_socket_args(new_server) != old_socket_args
         finally:
-            # exit-empty=off means the old server lingers with zero
-            # sessions even after recovery replaces pool_executor's
-            # pool with a fresh one; clean up only this test-owned
-            # leftover server explicitly.
+            # Belt-and-suspenders: if an assertion above failed before
+            # recovery could clean up (or cleanup itself is broken), make
+            # sure this test-owned leftover server never lingers past the
+            # test. Harmless (and silently ignored) if it is already dead.
             try:
                 old_server.cmd("kill-server")
             except Exception:
