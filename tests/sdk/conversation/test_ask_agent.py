@@ -28,8 +28,9 @@ from openhands.sdk.llm import (
     MetricsSnapshot,
     TextContent,
 )
-from openhands.sdk.tool import Action, Observation
+from openhands.sdk.tool import Action, Observation, Tool
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.file_editor import FileEditorTool
 from tests.sdk.conversation.conftest import create_mock_http_client
 
 
@@ -242,6 +243,27 @@ def create_mock_model_response(content: str) -> ModelResponse:
         object="chat.completion",
         usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_reuses_normal_tool_schemas(mock_transport, tmp_path, agent):
+    mock_transport.return_value = create_mock_model_response("Done.")
+    conv = Conversation(
+        agent=Agent(llm=agent.llm, tools=[Tool(name=FileEditorTool.name)]),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    try:
+        conv.send_message("Check in.")
+        conv.run()
+        normal_tools = mock_transport.call_args.kwargs["tools"]
+        conv.ask_agent("How is it going?")
+        question_tools = mock_transport.call_args.kwargs["tools"]
+    finally:
+        conv.close()
+
+    assert any(tool["function"]["name"] == FileEditorTool.name for tool in normal_tools)
+    assert question_tools == normal_tools
 
 
 @patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
