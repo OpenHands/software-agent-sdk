@@ -19,7 +19,6 @@ from openhands.agent_server.event_router import (
     send_message,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import ConversationMessageRequest
 from openhands.agent_server.openai import service as gateway
 from openhands.agent_server.openai.service import GatewayConflict, OpenAIAgentRunResult
 from openhands.agent_server.server_context import ServerContext
@@ -38,7 +37,7 @@ async def _send_direct(request: SendMessageRequest, event_service: EventService)
     """Call the send route the way FastAPI does for a plain user message."""
     return await send_message(
         uuid4(),
-        ConversationMessageRequest(**request.model_dump()),
+        request,
         event_service,
         cast(ServerContext, None),
     )

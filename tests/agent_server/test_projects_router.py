@@ -749,15 +749,19 @@ async def test_a_sender_conversation_is_always_guarded(client, service, tmp_path
     assert await _user_messages(service, worker) == 0
 
 
-def test_sender_fields_belong_to_the_events_route_only():
-    """Review: a new conversation's initial_message does not offer the sender
-    fields, which only the events route honors."""
-    from openhands.agent_server.models import ConversationMessageRequest
+def test_sender_fields_are_left_out_of_a_plain_message():
+    """The sender fields live on SendMessageRequest, but a user's own message
+    serializes exactly as before they existed."""
     from openhands.sdk.conversation.message_request import SendMessageRequest
 
-    for field in ("sender_conversation_id", "refuse_pending_confirmation"):
-        assert field not in SendMessageRequest.model_fields
-        assert field in ConversationMessageRequest.model_fields
+    plain = SendMessageRequest(content=[TextContent(text="hi")])
+    assert "sender_conversation_id" not in plain.model_dump()
+    assert "refuse_pending_confirmation" not in plain.model_dump()
+    sent = SendMessageRequest(
+        sender_conversation_id=uuid4(), refuse_pending_confirmation=True
+    ).model_dump(mode="json")
+    assert sent["refuse_pending_confirmation"] is True
+    assert "sender_conversation_id" in sent
 
 
 @pytest.mark.asyncio

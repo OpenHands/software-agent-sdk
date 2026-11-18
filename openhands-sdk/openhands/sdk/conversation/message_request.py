@@ -1,4 +1,5 @@
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,35 @@ class SendMessageRequest(BaseModel):
     run: bool = Field(
         default=False,
         description="Whether the agent loop should automatically run if not running",
+    )
+    sender_conversation_id: UUID | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The conversation sending this message, when an agent rather than "
+            "the user sends it. The saved message records it as its `sender` "
+            "(`conversation:<id hex>`) and opens with a line telling the "
+            "receiving agent which conversation sent it, that the user did "
+            "not, and that it approves nothing on the user's behalf. On a new "
+            "conversation's `initial_message` it marks the first message the "
+            "same way. A sender in a project may only message conversations of "
+            "the same project, and its runs are always guarded as with "
+            "`refuse_pending_confirmation`. Leave it out for the user's own "
+            "messages."
+        ),
+    )
+    refuse_pending_confirmation: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "With `run`, never run a conversation that waits on the user: "
+            "waiting for confirmation (the run would approve its pending "
+            "actions), paused, error or stuck (it would resume or retry work "
+            "the user stopped or has not seen). A conversation already in "
+            "one of these answers 409 and nothing is saved; one that reaches "
+            "one while the message is delivered keeps the message and is not "
+            "run (`run` is that status). For senders other than the user."
+        ),
     )
 
     def create_message(self) -> Message:

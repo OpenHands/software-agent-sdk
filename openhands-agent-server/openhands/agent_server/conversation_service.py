@@ -46,6 +46,7 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -63,6 +64,7 @@ from openhands.agent_server.persistence import (
     run_store,
 )
 from openhands.agent_server.project_service import ProjectService
+from openhands.agent_server.project_wake import sender_message_header
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -1698,6 +1700,25 @@ class ConversationService:
                     f"to a different workspace"
                 )
 
+        initial_message = request.initial_message
+        first_message: Message | None = None
+        if initial_message is not None:
+            content = list(initial_message.content)
+            sender_id = initial_message.sender_conversation_id
+            if sender_id is not None:
+                if initial_sender is not None:
+                    raise SenderError("The first message already has a sender")
+                content.insert(
+                    0,
+                    TextContent(
+                        text=await sender_message_header(
+                            self, sender_id, conversation_id, request.tags
+                        )
+                    ),
+                )
+                initial_sender = conversation_sender(sender_id)
+            first_message = Message(role=initial_message.role, content=content)
+
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
         runtime_launched_profile = (
             LaunchedAgentProfile.model_validate_json(runtime_profile)
@@ -1880,17 +1901,12 @@ class ConversationService:
             )
         if title is not None:
             stored = stored.model_copy(update={"title": title})
-        initial_message = request.initial_message
         return await self._launch_prepared_conversation(
             stored,
             launched,
             run_slot=run_slot,
             gateway_run=gateway_run,
-            initial_message=(
-                Message(role=initial_message.role, content=initial_message.content)
-                if initial_message
-                else None
-            ),
+            initial_message=first_message,
             initial_sender=initial_sender,
             reuse_request=request if reuse_existing else None,
             max_budget_per_run=request.max_budget_per_run,
