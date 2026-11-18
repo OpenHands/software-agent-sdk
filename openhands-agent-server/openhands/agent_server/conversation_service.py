@@ -46,6 +46,7 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
+from openhands.agent_server.message_sender import sender_message_header
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -88,6 +89,7 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
+from openhands.sdk.conversation.types import conversation_sender
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
@@ -1622,6 +1624,24 @@ class ConversationService:
                     f"to a different workspace"
                 )
 
+        initial_message = request.initial_message
+        first_message: Message | None = None
+        initial_sender: str | None = None
+        if initial_message is not None:
+            content = list(initial_message.content)
+            sender_id = initial_message.sender_conversation_id
+            if sender_id is not None:
+                content.insert(
+                    0,
+                    TextContent(
+                        text=await sender_message_header(
+                            self, sender_id, conversation_id
+                        )
+                    ),
+                )
+                initial_sender = conversation_sender(sender_id)
+            first_message = Message(role=initial_message.role, content=content)
+
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
         runtime_launched_profile = (
             LaunchedAgentProfile.model_validate_json(runtime_profile)
@@ -1799,17 +1819,13 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        initial_message = request.initial_message
         return await self._launch_prepared_conversation(
             stored,
             launched,
             run_slot=run_slot,
             gateway_run=gateway_run,
-            initial_message=(
-                Message(role=initial_message.role, content=initial_message.content)
-                if initial_message
-                else None
-            ),
+            initial_message=first_message,
+            initial_sender=initial_sender,
             reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
@@ -1821,6 +1837,7 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
         gateway_run: bool = False,
@@ -1861,7 +1878,9 @@ class ConversationService:
             )
         try:
             if initial_message is not None:
-                await event_service.send_message(initial_message, False)
+                await event_service.send_message(
+                    initial_message, False, sender=initial_sender
+                )
                 await event_service.run(run_slot=run_slot)
 
             state = await event_service.get_state()
