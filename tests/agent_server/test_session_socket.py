@@ -18,6 +18,7 @@ from openhands.agent_server.session_socket import (
     _read_page,
     _replay,
     _SessionSubscriber,
+    session_socket,
 )
 from openhands.sdk import Message, TextContent
 from openhands.sdk.agent.stream_context import (
@@ -562,6 +563,7 @@ class _LockedEventService:
         self.sending = asyncio.Event()
         self.saved: list[Message] = []
         self.events = _FakeEventLog()
+        self.subscriber: _SessionSubscriber | None = None
 
     def get_conversation(self):
         from types import SimpleNamespace
@@ -570,6 +572,7 @@ class _LockedEventService:
 
     async def subscribe_to_events(self, subscriber) -> object:
         await self.step_done.wait()
+        self.subscriber = subscriber
         return uuid4()
 
     async def subscribe_to_stream_progress(self, subscriber) -> object:
@@ -598,9 +601,6 @@ class _ClientSocket(_FakeWebSocket):
         if self._frames:
             return self._frames.pop(0)
         await asyncio.Event().wait()
-
-    async def close(self, code: int = 1000, reason: str | None = None) -> None:
-        return None
 
 
 def _user_frame(text: str) -> dict:
@@ -676,3 +676,119 @@ async def test_a_frame_that_arrives_with_the_close_is_still_saved():
     await writer.aclose()
 
     assert [m.content[0].text for m in saved] == ["last words"]  # type: ignore[union-attr]
+
+
+@pytest.fixture
+def accept_any_client(monkeypatch):
+    async def accept(websocket, key, config):
+        return True
+
+    monkeypatch.setattr(
+        "openhands.agent_server.session_socket._accept_authenticated_websocket",
+        accept,
+    )
+
+
+async def _wait_until(predicate, timeout: float = 5) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
+async def _open_session(
+    config: Config, ws: _ClientSocket
+) -> tuple[asyncio.Future, _LockedEventService]:
+    service = _LockedEventService()
+    service.step_done.set()
+    session = asyncio.ensure_future(
+        session_socket(
+            uuid4(),
+            ws,  # type: ignore[arg-type]
+            config=config,
+            conv_service=MagicMock(get_event_service=AsyncMock(return_value=service)),
+        )
+    )
+    await _wait_until(lambda: service.subscriber is not None)
+    return session, service
+
+
+async def _publish(service: _LockedEventService, event: MessageEvent) -> None:
+    assert service.subscriber is not None
+    service.events.add(event)
+    await service.subscriber(event)
+
+
+async def _cancel(session: asyncio.Future) -> None:
+    session.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await session
+
+
+def _sent_event_ids(ws: _FakeWebSocket) -> list[str]:
+    return [frame["event"]["id"] for frame in ws.frames() if "event" in frame]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_kwargs", "text_bytes", "closed_with"),
+    [
+        ({"session_max_frame_bytes": 2 * MAX_FRAME_BYTES}, MAX_FRAME_BYTES + 1, None),
+        ({}, MAX_FRAME_BYTES + 1, (1013, "frame_too_large")),
+        ({"session_max_frame_bytes": 10_000}, 20_000, (1013, "frame_too_large")),
+    ],
+    ids=["raised-cap-delivers", "default-cap-drops", "configured-cap-drops"],
+)
+async def test_frame_cap_comes_from_config(
+    accept_any_client, config_kwargs, text_bytes, closed_with
+):
+    """The cap is the configured one (#6934); a frame over it still drops."""
+    ws = _ClientSocket([])
+    session, service = await _open_session(Config(**config_kwargs), ws)
+    big = _msg("x" * text_bytes)
+    try:
+        await _publish(service, big)
+        await _wait_until(lambda: session.done() or big.id in _sent_event_ids(ws))
+
+        assert ws.closed_with == closed_with
+        assert (big.id in _sent_event_ids(ws)) == (closed_with is None)
+    finally:
+        await _cancel(session)
+
+
+def _near_cap_event(i: int) -> MessageEvent:
+    return _msg(f"{i:02d}" + "x" * 8_600)
+
+
+@pytest.mark.asyncio
+async def test_four_near_cap_frames_fit_the_derived_write_budget(accept_any_client):
+    ws = _ClientSocket([])
+    ws.gate = asyncio.Event()
+    session, service = await _open_session(Config(session_max_frame_bytes=10_000), ws)
+    try:
+        for i in range(4):
+            await _publish(service, _near_cap_event(i))
+        await asyncio.wait_for(ws.send_started.wait(), timeout=5)
+
+        ws.gate.set()
+        await _wait_until(lambda: len(ws.sent) == 5)
+
+        assert ws.closed_with is None
+        assert not session.done()
+        assert all(8_000 < len(payload) <= 10_000 for payload in ws.sent[1:])
+    finally:
+        await _cancel(session)
+
+
+@pytest.mark.asyncio
+async def test_a_fifth_near_cap_frame_drops_a_stalled_consumer(accept_any_client):
+    ws = _ClientSocket([])
+    ws.gate = asyncio.Event()
+    session, service = await _open_session(Config(session_max_frame_bytes=10_000), ws)
+    try:
+        for i in range(5):
+            await _publish(service, _near_cap_event(i))
+        await asyncio.wait_for(session, timeout=5)
+
+        assert ws.closed_with == (1013, "slow_consumer")
+    finally:
+        await _cancel(session)
