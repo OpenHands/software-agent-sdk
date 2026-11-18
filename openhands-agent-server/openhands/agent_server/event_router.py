@@ -34,7 +34,6 @@ from openhands.agent_server.message_sender import SenderError, sender_message_he
 from openhands.agent_server.models import (
     AskUserAnswerRequest,
     ConfirmationResponseRequest,
-    ConversationMessageRequest,
     EventSortOrder,
     ReactionRequest,
     SendMessageRequest,
@@ -274,7 +273,7 @@ async def batch_get_conversation_events_via_post(
 )
 async def send_message(
     conversation_id: UUID,
-    request: ConversationMessageRequest,
+    request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
     context: ServerContext = Depends(get_server_context),
 ) -> Success:
@@ -337,6 +336,8 @@ async def _gateway_run_endpoint(
     request: SendMessageRequest,
     context: tuple[EventService, float] = Depends(_gateway_context),
 ) -> dict[str, Any]:
+    if request.sender_conversation_id is not None:
+        raise Unprocessable("A gateway turn is not sent by another conversation")
     event_service, deadline = context
     return await run_gateway_message(request, event_service, deadline=deadline)
 

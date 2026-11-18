@@ -33,6 +33,7 @@ from openhands.agent_server.dependencies import (
 from openhands.agent_server.errors import error_responses
 from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AddMCPServersRequest,
@@ -352,7 +353,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidParentConversation, UnavailableAgentTool, SenderError) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:

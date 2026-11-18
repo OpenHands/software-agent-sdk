@@ -497,27 +497,6 @@ class ConfirmationResponseRequest(BaseModel):
     reason: str = "User rejected the action."
 
 
-class ConversationMessageRequest(SendMessageRequest):
-    """A message posted to a running conversation's events.
-
-    The sender lives here, not on :class:`SendMessageRequest`, because that
-    model is also a new conversation's ``initial_message``, where it would
-    mean nothing.
-    """
-
-    sender_conversation_id: OpenHandsUUID | None = Field(
-        default=None,
-        description=(
-            "The conversation sending this message, when an agent rather than "
-            "the user sends it. The saved message records it as its `sender` "
-            "(`conversation:<id hex>`) and opens with a line telling the "
-            "receiving agent which conversation sent it, that the user did "
-            "not, and that it approves nothing on the user's behalf. Leave it "
-            "out for the user's own messages."
-        ),
-    )
-
-
 class Success(BaseModel):
     success: bool = True
 
