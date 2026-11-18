@@ -133,7 +133,7 @@ async def sender_message_header(
         if target_tags.get(PROJECT_TAG_KEY) != project_hex:
             raise SenderError("Sender is not a conversation of this project")
         coordinator = await _coordinator_id(service, project_hex) == sender_id
-        role = "coordinator" if coordinator else "member"
+        role = "coordinator" if coordinator else "worker"
     return sender_header(sender.title, sender_id, role=role)
 
 
@@ -266,7 +266,7 @@ async def notify_coordinator(
         return False
     member = await service.get_conversation(member_id)
     title = member.title if member else None
-    asked = turn == "asked"
+    asked = turn == "asking"
     card = None
     if asked and not by_user:
         member_events = await service.get_event_service(member_id)
@@ -465,7 +465,7 @@ async def _answer_open_question(
     without a card. The message carries the answer header, so the board
     counts it as the user's answer."""
     tags = dict(member.stored.tags)
-    if tags.get(TURN_TAG_KEY) != "asked" or RESOLVED_TAG_KEY in tags:
+    if tags.get(TURN_TAG_KEY) != "asking" or RESOLVED_TAG_KEY in tags:
         return False
     answer = " — ".join(
         part for part in ((picked or "").strip(), (words or "").strip()) if part
@@ -477,7 +477,7 @@ async def _answer_open_question(
     # nothing to answer.
     try:
         await service.projects.set_conversation_tag(
-            member.stored.id, TURN_TAG_KEY, None, expected="asked"
+            member.stored.id, TURN_TAG_KEY, None, expected="asking"
         )
     except ValueError:
         return False
@@ -625,7 +625,9 @@ async def _reconcile_member(
         coordinator_id,
     )
     if status == ConversationExecutionStatus.FINISHED.value:
-        turn: TurnOutcome = "asked" if tags.get(TURN_TAG_KEY) == "asked" else "answered"
+        turn: TurnOutcome = (
+            "asking" if tags.get(TURN_TAG_KEY) == "asking" else "finished"
+        )
         return await notify_coordinator(
             service, member_id, project_hex, turn, text, start.sender
         )

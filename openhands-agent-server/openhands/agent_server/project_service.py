@@ -196,7 +196,7 @@ async def _project_prompt(
     except (OSError, ValueError):
         logger.warning("Projects unreadable; no project context for %s", project_hex)
         project = None
-    role: SenderRole = "member"
+    role: SenderRole = "worker"
     if started_by is not None and project is not None:
         if project.coordinator_conversation_id == started_by[1]:
             role = "coordinator"

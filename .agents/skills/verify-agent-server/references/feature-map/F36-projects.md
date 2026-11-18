@@ -9,7 +9,7 @@ file lock. Membership is not stored there: a conversation belongs to a project
 when its `project` tag holds the project's id (hex), so a child started with
 `start_child_conversation` joins its parent's project with the rest of the
 copied tags. `GET /api/projects/{id}/conversations` lists the members grouped by
-what they need from the user (`attention`: `needs_you`, `needs_input`,
+what they need from the user (`attention`: `needs_you`, `asking`,
 `working`, `idle`, `resolved`, derived from `execution_status` and tags). Two server-executed
 tools, `list_project_conversations` and `message_project_conversation`, give a
 coordinator agent typed access to the same list and a way to steer a conversation.
@@ -67,7 +67,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
 - `F36.message-rest`: `POST /api/conversations/{id}/events` with `refuse_pending_confirmation` saves the message, starts a run and answers `run: started` with the previous status. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
 - `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
-- `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`), and an `asked` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
+- `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asking`, attention `asking`) or not (`finished`), and an `asking` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask`, `resolved` or `resolvenote`.
 - `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the user's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the user's `resolved=user`, and the resolution judge does not run on that turn.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
@@ -95,12 +95,12 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   `{"project_id", "coordinator": ProjectConversation | null, "conversations": [ProjectConversation]}`
   where a conversation is `{conversation_id, title, execution_status, attention,
   resolved, turn, automation_id, parent_conversation_id, created_at,
-  updated_at}`. `attention` is `needs_you`, `needs_input`, `working`,
+  updated_at}`. `attention` is `needs_you`, `asking`, `working`,
   `idle` (finished or never run, not resolved) or `resolved`.
 - Tags the server sets on project members (`openhands.agent_server.project_board`):
-  `turn=asked|answered` when a run finishes, and `resolved=auto` plus
-  `resolvenote` when an answered turn leaves nothing for the user (never
-  over `resolved=user`, never on an `asked` turn). The resolution judge
+  `turn=asking|finished` when a run finishes, and `resolved=auto` plus
+  `resolvenote` when a finished turn leaves nothing for the user (never
+  over `resolved=user`, never on an `asking` turn). The resolution judge
   (`openhands.sdk.conversation.resolution`, `resolution_judge.py`) asks typed
   questions of the saved LLM profile `resolution_judge`, which the first
   judged turn creates as a copy of the conversation's own LLM (edit it in
@@ -110,10 +110,10 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   reports_problem) and code decides: resolved when handled and task_done are
   >= 0.85 and every hand-off < 0.2 (`resolvenote` like `0.93 nothing`). A
   substantive question, choice, review or check (>= 0.5) makes the turn
-  `asked` (Needs you), with the reply's last paragraph as `ask`; work left
-  that waits on no one stays `answered` and unresolved (Idle). There are no
+  `asking` (Needs you), with the reply's last paragraph as `ask`; work left
+  that waits on no one stays `finished` and unresolved (Idle). There are no
   text heuristics: without a verdict (no judge, or it failed) a turn is
-  `answered`, and a critic score >= 0.9 still resolves (`0.95 critic`).
+  `finished`, and a critic score >= 0.9 still resolves (`0.95 critic`).
   The board shows the note as `resolve_note`.
   Clients resolve with `POST /api/projects/{id}/conversations/{cid}/resolve`
   and reopen with `.../reopen` (both 204, idempotent, and both clear
@@ -295,7 +295,7 @@ Preconditions:
   Requires: `F36.coordinator`, `F36.unknown-project`
   ```sh
   if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag "project=$P2" --print-id; then false; fi
-  if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag turn=asked --print-id; then false; fi
+  if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag turn=asking --print-id; then false; fi
   control-agent-server api POST "/api/conversations/$W1/fork" --json "{\"tags\": {\"project\": \"$P2\"}}" --expect 422 \
     --check detail eq 'Tags set by the server only: project' --save F36.client-tags/fork
   control-agent-server api GET "/api/projects/$P2/conversations" --check . not-contains qa-f36-claim
@@ -377,13 +377,13 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --check tags.ask matches '(?i)colou?r.*\?$' --until-ok 60 --save F36.turn/asked
-  control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "needs_input"' \
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asking --check tags.ask matches '(?i)colou?r.*\?$' --until-ok 60 --save F36.turn/asking
+  control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "asking"' \
     --check conversations contains '"ask": "' --save F36.turn/conversations
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Blue. Reply with the single word noted and finish."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 60 --save F36.turn/answered
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq finished --check tags not-contains ask --until-ok 60 --save F36.turn/finished
   W2_HEX=$(printf %s "$W2" | tr -d -)
   for _ in $(seq 30); do
     control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the user" --expect-min 2 >/dev/null 2>&1 && break
@@ -394,23 +394,23 @@ Preconditions:
   control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation:$W2_HEX), a conversation in your project, to the user" --expect-min 2
   control-agent-server api GET "/api/conversations/$CAT" --check execution_status matches '^(idle|finished)$'
   ```
-  A question finishes as `asked` with the question as `ask` and lists as
-  `needs_input`; the answer reopens the conversation and the next run
-  finishes as `answered`, without an `ask`. The coordinator gets a copy of
+  A question finishes as `asking` with the question as `ask` and lists as
+  `asking`; the answer reopens the conversation and the next run
+  finishes as `finished`, without an `ask`. The coordinator gets a copy of
   each of the user's messages and of each reply, and is not run.
 - **Resolved (`F36.resolved`).**
   Requires: `F36.turn`
   Needs: `llm`
   ```sh
-  control-agent-server api PATCH "/api/conversations/$W2" --json "{\"tags\": {\"project\": \"qa-f36-elsewhere\", \"turn\": \"asked\", \"resolved\": \"user\"}}" --expect 200
-  control-agent-server api GET "/api/conversations/$W2" --check tags.project eq "$P2" --check tags.turn eq answered \
+  control-agent-server api PATCH "/api/conversations/$W2" --json "{\"tags\": {\"project\": \"qa-f36-elsewhere\", \"turn\": \"asking\", \"resolved\": \"user\"}}" --expect 200
+  control-agent-server api GET "/api/conversations/$W2" --check tags.project eq "$P2" --check tags.turn eq finished \
     --check tags.resolved ne user
   control-agent-server api POST "/api/projects/$P2/conversations/$W2/resolve" --expect 204
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolved": "user"' \
     --check conversations contains '"attention": "resolved"' --save F36.resolved/conversations
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word reopened and finish."}], "run": true, "refuse_pending_confirmation": true}' --expect 200
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.resolved ne user --check tags.turn eq answered --until-ok 10 \
+  control-agent-server api GET "/api/conversations/$W2" --check tags.resolved ne user --check tags.turn eq finished --until-ok 10 \
     --save F36.resolved/reopened
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 1
   ```
@@ -432,7 +432,7 @@ Preconditions:
   control-agent-server conversation wait "$A2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$A1" --check tags.resolved eq auto --check tags.resolvenote matches '^(0\.(8[5-9]|9\d)|1\.00) nothing$' --until-ok 30 \
     --save F36.auto-resolve/answer
-  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask matches 'Tell me which one you prefer\.$' --check tags not-contains resolved --until-ok 30 \
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asking --check tags.ask matches 'Tell me which one you prefer\.$' --check tags not-contains resolved --until-ok 30 \
     --save F36.auto-resolve/handoff
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolve_note": "' --save F36.auto-resolve/board
   control-agent-server api GET /api/profiles --check profiles contains '"name": "resolution_judge"' --save F36.auto-resolve/judge-profile
@@ -440,8 +440,8 @@ Preconditions:
   control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
   control-agent-server api POST "/api/conversations/$A2/events" --json "{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"You are finished, thanks. Reply with the single word ok.\"}], \"run\": true, \"sender_conversation_id\": \"$CAT\"}" --expect 200
   control-agent-server conversation wait "$A2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asked --check tags.ask matches 'Tell me which one you prefer\.$' --check tags not-contains resolved --until-ok 30 \
-    --save F36.auto-resolve/still-asked
+  control-agent-server api GET "/api/conversations/$A2" --check tags.turn eq asking --check tags.ask matches 'Tell me which one you prefer\.$' --check tags not-contains resolved --until-ok 30 \
+    --save F36.auto-resolve/still-asking
   ```
   Both are the coordinator's tasks. The judge runs on the `resolution_judge`
   profile, created from the conversation's own LLM. A question for the user stays theirs, also
@@ -449,7 +449,7 @@ Preconditions:
   and a coordinator's message ("you are finished") leaves it on Needs you.
   A plain answer resolves as `auto` with a note such as `1.00 nothing`. A
   hand-off that ends without a question mark (`Tell me which one you prefer.`)
-  becomes `turn=asked` with the reply's last paragraph as `ask` (Needs you).
+  becomes `turn=asking` with the reply's last paragraph as `ask` (Needs you).
 - **Unfinished work stays open (`F36.needs-you`).**
   Requires: `F36.auto-resolve`
   Needs: `llm`
@@ -458,12 +458,12 @@ Preconditions:
     --json '{"title": "qa-f36-two-haiku", "task": "In this conversation we will write two haiku: one about rain, then one about snow. Write only the rain haiku now, and finish. Do not use tools.", "isolation": "shared"}' \
     --expect 201 --field conversation_id)
   control-agent-server conversation wait "$A3" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$A3" --check tags.turn eq answered --check tags not-contains resolved --until-ok 30 --save F36.needs-you/unfinished
+  control-agent-server api GET "/api/conversations/$A3" --check tags.turn eq finished --check tags not-contains resolved --until-ok 30 --save F36.needs-you/unfinished
   control-agent-server api POST "/api/conversations/$A3/events" --json '{"role": "user", "content": [{"type": "text", "text": "Now the snow one. Do not use tools."}], "run": true}' --expect 200
   control-agent-server conversation wait "$A3" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$A3" --check tags.resolved eq auto --until-ok 30 --save F36.needs-you/finished
   ```
-  With half the task left and no question, the turn is `answered` and not
+  With half the task left and no question, the turn is `finished` and not
   resolved (Idle). Once the second haiku is written, the judge reads the first
   message as context and resolves. Verified 2026-11-10 with deepseek-flash.
 - **The worker resolves itself (`F36.self-resolve`).**
@@ -702,15 +702,15 @@ Preconditions:
   the coordinator when it ends, so the coordinator runs after every member
   recipe here. Wait for it (`conversation wait "$CAT" --until idle,finished`)
   before checking its status.
-- A question for the user (`turn=asked`) stays open until the user writes in
+- A question for the user (`turn=asking`) stays open until the user writes in
   the conversation, or answers the coordinator's `ask_user` card made for it
   (`for_conversation`), which passes their answer on. Other messages from the
   coordinator keep it open, and the member's `resolve_conversation` is 409.
 - `attention` comes from `execution_status`, refined by the `turn` and
   `resolved` tags. `idle` means nothing runs, not that the task
-  succeeded. `turn` is the judge's: `asked` when it says the final reply
+  succeeded. `turn` is the judge's: `asking` when it says the final reply
   waits on the user (or the turn ended on an `ask_user` card), else
-  `answered`, which is also shown while the judge runs. The tags are written just
+  `finished`, which is also shown while the judge runs. The tags are written just
   after the run's final state update, so poll (`--until-ok`) rather than read
   once. There is no per-conversation "ask" text or task progress yet.
 - A `resolved` conversation is listed as `resolved` unless it is running

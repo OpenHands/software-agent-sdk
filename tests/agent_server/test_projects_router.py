@@ -881,15 +881,15 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         # title: (status, tags)
         "question": (
             ConversationExecutionStatus.FINISHED,
-            {"turn": "asked", "ask": "Which database?"},
+            {"turn": "asking", "ask": "Which database?"},
         ),
         "answer": (
             ConversationExecutionStatus.FINISHED,
-            {"turn": "answered", "ask": "Stale?"},
+            {"turn": "finished", "ask": "Stale?"},
         ),
         "done": (
             ConversationExecutionStatus.FINISHED,
-            {"turn": "answered", "resolved": "auto"},
+            {"turn": "finished", "resolved": "auto"},
         ),
         "closed-running": (ConversationExecutionStatus.RUNNING, {"resolved": "user"}),
         "blocked": (
@@ -913,7 +913,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
 
     by_title = {t["title"]: t for t in conversations}
     assert {t: by_title[t]["attention"] for t in cases} == {
-        "question": "needs_input",
+        "question": "asking",
         "answer": "idle",
         "done": "resolved",
         "closed-running": "working",
@@ -921,7 +921,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         "nightly": "idle",
     }
     assert by_title["done"]["resolved"] == "auto"
-    assert by_title["question"]["turn"] == "asked"
+    assert by_title["question"]["turn"] == "asking"
     assert by_title["question"]["ask"] == "Which database?"
     assert by_title["answer"]["ask"] is None  # only while asked
     assert by_title["nightly"]["turn"] is None  # unknown values are ignored
@@ -930,7 +930,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         (t["attention"] for t in conversations),
         key=[
             "needs_you",
-            "needs_input",
+            "asking",
             "working",
             "idle",
             "resolved",
@@ -1150,7 +1150,7 @@ async def test_a_finished_member_wakes_its_coordinator(
         service,
         worker,
         project["id"],
-        "asked",
+        "asking",
         "Which database should I use?",
         f"conversation:{cat.hex}",
     )
@@ -1178,10 +1178,10 @@ async def test_no_update_without_a_coordinator_or_to_itself(
 
     by_cat = f"conversation:{cat.hex}"
     assert not await notify_coordinator(
-        service, cat, project["id"], "answered", "x", by_cat
+        service, cat, project["id"], "finished", "x", by_cat
     )
     assert not await notify_coordinator(
-        service, cat, bare["id"], "answered", "x", by_cat
+        service, cat, bare["id"], "finished", "x", by_cat
     )
     assert await _user_messages(service, cat) == 0
 
@@ -1207,12 +1207,12 @@ async def test_only_the_coordinators_turns_wake_it(
 
     for sender in (f"conversation:{peer.hex}", "someone"):
         assert not await notify_coordinator(
-            service, worker, project["id"], "answered", "x", sender
+            service, worker, project["id"], "finished", "x", sender
         )
     assert await _user_messages(service, cat) == 0
 
     assert await notify_coordinator(
-        service, worker, project["id"], "asked", "Which colour?", None
+        service, worker, project["id"], "asking", "Which colour?", None
     )
     event = await _last_user_message(service, cat)
     header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
@@ -1487,7 +1487,7 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
     monkeypatch.setattr(EventService, "stop_goal_loop", stop_goal_loop)
 
     assert await notify_coordinator(
-        service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
+        service, worker, project["id"], "finished", "Done.", f"conversation:{cat.hex}"
     )
     assert await relay_user_message(service, worker, project["id"], "Use Postgres")
 
@@ -1735,7 +1735,7 @@ async def test_an_update_waits_for_a_run_slot_instead_of_being_dropped(
     monkeypatch.setattr(EventService, "run_saved_message_when_free", run_when_free)
 
     assert await notify_coordinator(
-        service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
+        service, worker, project["id"], "finished", "Done.", f"conversation:{cat.hex}"
     )
     await asyncio.sleep(0)
     assert ran == []
@@ -1976,7 +1976,7 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
         tmp_path,
         tags={
             "project": project["id"],
-            "turn": "answered",
+            "turn": "finished",
             "resolved": "auto",
             "resolvenote": "tests pass",
         },
@@ -1986,7 +1986,7 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
     assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
     assert await _tags(service, member) == {
         "project": project["id"],
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "user",
     }
     assert (await client.post(f"{base}/{member.hex}/resolve")).status_code == 204
@@ -1994,7 +1994,7 @@ async def test_resolve_and_reopen_routes(client, service, tmp_path):
     assert (await client.post(f"{base}/{member.hex}/reopen")).status_code == 204
     assert await _tags(service, member) == {
         "project": project["id"],
-        "turn": "answered",
+        "turn": "finished",
     }
     assert (await client.post(f"{base}/{member.hex}/reopen")).status_code == 204
 
@@ -2009,7 +2009,7 @@ async def test_the_agent_cannot_resolve_over_the_users_open_question(
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     base = f"/api/projects/{project['id']}/conversations"
-    tags = {"project": project["id"], "turn": "asked", "ask": "Which name?"}
+    tags = {"project": project["id"], "turn": "asking", "ask": "Which name?"}
     member = await _start(service, tmp_path, tags=tags)
 
     response = await client.post(f"{base}/{member.hex}/resolve", json={"by": "agent"})
@@ -2029,7 +2029,7 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     base = f"/api/projects/{project['id']}/conversations"
     member = await _start(
-        service, tmp_path, tags={"project": project["id"], "turn": "answered"}
+        service, tmp_path, tags={"project": project["id"], "turn": "finished"}
     )
     agent = {"json": {"by": "agent"}}
 
@@ -2039,7 +2039,7 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
     await asyncio.gather(*service.projects._agent_resolves)
     assert await _tags(service, member) == {
         "project": project["id"],
-        "turn": "answered",
+        "turn": "finished",
         "resolved": "auto",
         "resolvenote": "agent",
     }
@@ -2065,7 +2065,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     member = await _start(
         service,
         tmp_path,
-        tags={"project": "p1", "turn": "asked", "ask": "Which DB?", "env": "dev"},
+        tags={"project": "p1", "turn": "asking", "ask": "Which DB?", "env": "dev"},
     )
 
     # Stale read: no board tags, a different project, a forged resolve note.
@@ -2077,7 +2077,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     )
     assert await _tags(service, member) == {
         "project": "p1",
-        "turn": "asked",
+        "turn": "asking",
         "ask": "Which DB?",
         "env": "prod",
     }

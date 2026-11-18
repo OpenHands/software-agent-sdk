@@ -346,7 +346,7 @@ async def _launch_child(
         # The parent's own resolved/turn state must not carry over.
         update={
             "tags": parent_tags
-            or {"source": "test", "resolved": "user", "turn": "asked"},
+            or {"source": "test", "resolved": "user", "turn": "asking"},
         }
     )
     with patch(

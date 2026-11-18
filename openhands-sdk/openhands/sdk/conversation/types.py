@@ -36,13 +36,13 @@ it, ``auto`` when the server judged that nothing is left for the user (see
 message removes it."""
 
 TURN_TAG_KEY = "turn"
-"""Tag recording how the agent's last turn ended: ``asked`` when its final
-message asked the user something, ``answered`` otherwise. A new user message
+"""Tag recording how the agent's last turn ended: ``asking`` when its final
+message waits on the user, ``finished`` otherwise. A new user message
 removes it."""
 
 ASK_TAG_KEY = "ask"
 """Tag holding the question a conversation's agent stopped on, in one short
-line, while ``turn`` is ``asked``. A new user message removes it."""
+line, while ``turn`` is ``asking``. A new user message removes it."""
 
 ASK_MAX_LENGTH = 200
 """Longest ``ask``; a longer question is cut and ends with an ellipsis."""

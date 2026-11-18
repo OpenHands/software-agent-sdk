@@ -32,13 +32,13 @@ def _name(title: str | None, conversation_id: UUID) -> str:
     return conversation_mention(title, conversation_id)
 
 
-SenderRole = Literal["coordinator", "member", "conversation"]
+SenderRole = Literal["coordinator", "worker", "conversation"]
 """How the sender relates to the receiver: the project's coordinator, another
 conversation of the same project, or a conversation outside any project."""
 
 _SENDER_ROLES: dict[SenderRole, str] = {
     "coordinator": "the coordinator of your project",
-    "member": "another conversation in your project",
+    "worker": "another conversation in your project",
     "conversation": "another conversation",
 }
 
@@ -47,7 +47,7 @@ _SENDER_REPLY: dict[SenderRole, str] = {
     "coordinator": (
         "Answer in this conversation: the coordinator gets your final message."
     ),
-    "member": ("Answer in this conversation. The sender is not told when you do."),
+    "worker": ("Answer in this conversation. The sender is not told when you do."),
     "conversation": (
         "Answer in this conversation. The sender is not told when you do."
     ),

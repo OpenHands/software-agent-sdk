@@ -86,7 +86,7 @@ _LIST_DESCRIPTION = (
     "to: every other conversation tagged with the same project, including the "
     "ones you started with start_child_conversation.\n\n"
     "Conversations come grouped by `attention`: `needs_you` (waiting for "
-    "confirmation, paused, error or stuck), `needs_input` (finished with a "
+    "confirmation, paused, error or stuck), `asking` (finished with a "
     "question for the user, shown after `asks:`), `working` (running), "
     "`idle` (not running and not resolved) and "
     "`resolved` (the user, the conversation itself or the resolution judge "

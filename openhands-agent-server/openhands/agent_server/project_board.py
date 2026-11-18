@@ -3,7 +3,7 @@
 :class:`ConversationOutcomeSubscriber` acts on what a
 :class:`~openhands.agent_server.project_turns.TurnTracker` reads from a
 project member's events. When a run finishes it tags the conversation with
-how the agent's last message ended (``turn=asked`` or ``turn=answered``) and,
+how the agent's last message ended (``turn=asking`` or ``turn=finished``) and,
 when a turn leaves nothing for the user to do, marks it resolved
 (``resolved=auto``). Two signals can resolve a turn: the resolution judge
 (:mod:`openhands.sdk.conversation.resolution`), which asks whether anything is
@@ -88,7 +88,7 @@ waiting for confirmation, paused, error or stuck (see
 says what it waits on: the pending action, the error, or the last message."""
 
 ResolutionJudge = Callable[[ResolutionState], Awaitable[ResolutionVerdict | None]]
-"""Judges whether an answered turn leaves anything for the user; ``None``
+"""Judges whether a finished turn leaves anything for the user; ``None``
 when no judge model is available or the call failed."""
 
 TurnSenderLookup = Callable[[], Awaitable[str | None]]
@@ -233,7 +233,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         """The conversation asked the user something they have not answered
         (nor resolved)."""
         tags = self.tags()
-        return tags.get(TURN_TAG_KEY) == "asked" and RESOLVED_TAG_KEY not in tags
+        return tags.get(TURN_TAG_KEY) == "asking" and RESOLVED_TAG_KEY not in tags
 
     async def _record(self, project: str, ended: TurnEnded) -> None:
         if not await self._enabled():
@@ -243,8 +243,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             # The user has not answered the last question: a turn another
             # conversation started since leaves it theirs, and resolves
             # nothing. A new question replaces it.
-            if turn != "asked":
-                turn, ask = "asked", self.tags().get(ASK_TAG_KEY)
+            if turn != "asking":
+                turn, ask = "asking", self.tags().get(ASK_TAG_KEY)
             await self._set_turn(turn, ask)
             self._notify_finished(project, turn, ended)
             return
@@ -252,14 +252,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         shown = False
         if ended.judged is not None and RESOLVED_TAG_KEY not in self.tags():
             # The judge can take a while; the board shows the turn as
-            # answered meanwhile rather than no outcome at all.
+            # finished meanwhile rather than no outcome at all.
             await self._set_turn(turn, ask)
             shown = True
             judging = asyncio.ensure_future(self._judge(ended.judged))
             self._judging = judging
             await asyncio.wait({judging})
             self._judging = None
-            # Cancelled by a new user message: keep it answered.
+            # Cancelled by a new user message: keep it finished.
             verdict = None if judging.cancelled() else judging.result()
         shown_turn = (turn, ask)
         if verdict is not None:
@@ -268,17 +268,17 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             # coordinator started too: the coordinator gets the reply, and
             # passes it on, but the question is the user's.
             if verdict.needs_user:
-                turn = "asked"
+                turn = "asking"
                 ask = ask or ask_line(text)
             else:
-                turn = "answered"
+                turn = "finished"
                 ask = None
         if not shown or (turn, ask) != shown_turn:
             await self._set_turn(turn, ask)
         self._notify_finished(project, turn, ended)
         # A turn that asked the user something is theirs to answer, and a
         # conversation already resolved (by the user or before) stays so.
-        if turn == "asked" or RESOLVED_TAG_KEY in self.tags():
+        if turn == "asking" or RESOLVED_TAG_KEY in self.tags():
             return
         if verdict is not None and verdict.needs_user:
             return

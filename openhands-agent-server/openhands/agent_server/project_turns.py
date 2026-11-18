@@ -38,7 +38,7 @@ from openhands.sdk.llm.message import TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 
 
-TurnOutcome = Literal["asked", "answered"]
+TurnOutcome = Literal["asking", "finished"]
 
 _EXECUTION_STATUS_KEY: Final[str] = "execution_status"
 
@@ -172,7 +172,7 @@ class TurnStopped:
 class TurnEnded:
     """A run the tracker saw finished. ``judged`` is what the resolution judge
     needs, or ``None`` when the turn ended on a question card, which waits on
-    the user by construction. Otherwise ``turn`` is ``answered`` until the
+    the user by construction. Otherwise ``turn`` is ``finished`` until the
     judge says the reply waits on the user."""
 
     turn: TurnOutcome
@@ -300,8 +300,8 @@ class TurnTracker:
             return []
         card = self._card
         # A card asks the user by construction; any other reply is the
-        # judge's to read, and counts as answered until it has.
-        turn: TurnOutcome = "asked" if card else "answered"
+        # judge's to read, and counts as finished until it has.
+        turn: TurnOutcome = "asking" if card else "finished"
         ended = TurnEnded(
             turn=turn,
             ask=card,

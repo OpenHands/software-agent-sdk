@@ -139,12 +139,12 @@ class ProjectAttention(str, Enum):
     """What a conversation needs from the user.
 
     Derived from the execution status, then refined by the conversation's tags: a
-    finished conversation whose last message asked something needs input, and a
+    finished conversation whose last message asked something is asking, and a
     resolved conversation is resolved unless it is blocked on the user.
     """
 
     NEEDS_YOU = "needs_you"
-    NEEDS_INPUT = "needs_input"
+    ASKING = "asking"
     WORKING = "working"
     IDLE = "idle"
     RESOLVED = "resolved"
@@ -310,15 +310,15 @@ class ProjectConversation(BaseModel):
     turn: TurnOutcome | None = Field(
         default=None,
         description=(
-            "How the agent's last run ended: `asked` when its final message "
-            "asked the user something, `answered` otherwise. Backed by the "
+            "How the agent's last run ended: `asking` when its final message "
+            "waits on the user, `finished` otherwise. Backed by the "
             "`turn` tag; a new user message clears it."
         ),
     )
     ask: str | None = Field(
         default=None,
         description=(
-            "While `turn` is `asked`: the question the agent stopped on, in one "
+            "While `turn` is `asking`: the question the agent stopped on, in one "
             "short line (at most 200 characters). Backed by the `ask` tag; a "
             "new user message clears it."
         ),
@@ -342,7 +342,7 @@ class ProjectConversationsResponse(BaseModel):
         default_factory=list,
         description=(
             "Every other member conversation, grouped by attention "
-            "(needs_you, needs_input, working, finished, idle, resolved) and "
+            "(needs_you, asking, working, idle, resolved) and "
             "newest-updated first within each group."
         ),
     )
@@ -494,8 +494,8 @@ def _attention(
     if resolved is not None:
         return ProjectAttention.RESOLVED
     # A finished turn that asked something; an idle (reloaded) one stays idle.
-    if execution_status == ConversationExecutionStatus.FINISHED and turn == "asked":
-        return ProjectAttention.NEEDS_INPUT
+    if execution_status == ConversationExecutionStatus.FINISHED and turn == "asking":
+        return ProjectAttention.ASKING
     return attention
 
 
@@ -503,7 +503,7 @@ def _conversation(
     stored: StoredConversation, execution_status: ConversationExecutionStatus
 ) -> ProjectConversation:
     resolved = _tag_value(stored.tags, RESOLVED_TAG_KEY, ("user", "auto"))
-    turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asked", "answered"))
+    turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asking", "finished"))
     return ProjectConversation(
         conversation_id=stored.id,
         title=stored.title,
@@ -514,7 +514,7 @@ def _conversation(
         if resolved == "auto"
         else None,
         turn=turn,
-        ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asked" else None,
+        ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asking" else None,
         automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
         parent_conversation_id=stored.parent_conversation_id,
         created_at=stored.created_at,
@@ -846,7 +846,7 @@ async def _set_member_resolved(
     if (
         resolved
         and by == "agent"
-        and info.tags.get(TURN_TAG_KEY) == "asked"
+        and info.tags.get(TURN_TAG_KEY) == "asking"
         and RESOLVED_TAG_KEY not in info.tags
     ):
         raise Conflict(

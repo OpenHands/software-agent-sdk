@@ -171,14 +171,14 @@ async def test_a_turn_ending_on_a_card_is_asked_and_reported():
 
     assert store.tags == {
         "project": "p1",
-        "turn": "asked",
+        "turn": "asking",
         "ask": "Which database should config.yaml use?",
     }
     # Asked on a card: the user owes the answer even in a turn the
     # coordinator started, so the judge has nothing to decide.
     assert judged == []
     ((project, turn, text, sender),) = finished
-    assert (project, turn, sender) == ("p1", "asked", cat)
+    assert (project, turn, sender) == ("p1", "asking", cat)
     assert text is not None and text.startswith("Question: Which database")
 
 
@@ -205,7 +205,7 @@ async def test_a_failed_card_then_a_finish_is_not_asked():
 
     await _feed(subscriber, _user("Write it"), _ask(_DATABASE), finish, _finished())
 
-    assert store.tags.get("turn") == "answered"
+    assert store.tags.get("turn") == "finished"
     assert "ask" not in store.tags
 
 
@@ -356,7 +356,7 @@ async def test_the_coordinator_gets_the_members_card(client, service, tmp_path):
     _, text = card_text(asked)  # type: ignore[misc]
 
     assert await notify_coordinator(
-        service, worker, project, "asked", text, f"conversation:{cat.hex}"
+        service, worker, project, "asking", text, f"conversation:{cat.hex}"
     )
 
     (update,) = [e for e in await _events(service, cat) if isinstance(e, MessageEvent)]
@@ -495,7 +495,7 @@ async def test_the_users_answer_reaches_a_question_asked_without_a_card(
     """A worker asked in its final message; the coordinator asks the user on
     a card for it, and the user's answer reaches the worker as theirs."""
     project, cat, worker = await _project(client, service, tmp_path)
-    await service.projects.set_conversation_tag(worker, "turn", "asked")
+    await service.projects.set_conversation_tag(worker, "turn", "asking")
     await service.projects.set_conversation_tag(worker, "ask", "Which name?")
     passed = _ask(
         AskUserForConversationAction(
