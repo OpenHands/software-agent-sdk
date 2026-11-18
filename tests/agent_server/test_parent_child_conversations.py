@@ -422,6 +422,8 @@ async def test_start_child_conversation_links_child_to_parent(tmp_path, workspac
 async def test_start_child_conversation_delivers_task_as_first_message(
     tmp_path, workspace_dir
 ):
+    """The task is the parent's message, so it carries the parent as sender:
+    it does not read as the user's own (it closes no user question)."""
     request = StartChildConversationRequest(task="Write the docs")
 
     launch = await _launch_child(tmp_path, workspace_dir, request)

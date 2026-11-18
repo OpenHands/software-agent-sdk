@@ -2468,6 +2468,7 @@ class ConversationService:
                     TextContent(text=request.task),
                 ],
             ),
+            # The parent's agent wrote the task, not the user.
             initial_sender=conversation_sender(parent_id),
         )
 
