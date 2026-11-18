@@ -38,7 +38,7 @@ from collections.abc import (
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -81,10 +81,7 @@ from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
-    SecretStr,
     ValidationError,
-    ValidationInfo,
-    field_serializer,
     field_validator,
 )
 
@@ -147,10 +144,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -1981,7 +1975,7 @@ class ACPAgent(AgentBase):
             "the server keeps its own."
         ),
     )
-    acp_resume_session_id: str | None = Field(
+    acp_resume_session_id: Annotated[str | None, SecretField()] = Field(
         default=None,
         description=(
             "Optional explicit ACP session id to resume. When set, takes "
@@ -1999,46 +1993,6 @@ class ACPAgent(AgentBase):
             "trip) when the value must cross a serialization boundary."
         ),
     )
-
-    @field_serializer("acp_resume_session_id", when_used="always")
-    def _serialize_acp_resume_session_id(self, value: str | None, info):
-        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
-
-        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
-        cannot leak into logs, trace exports, or PR review attachments.
-        Trusted backend callers opt into plaintext via Pydantic's context
-        (``expose_secrets='plaintext'``); frontend round-trips use the
-        ``"encrypted"`` mode with a cipher in the context.
-        """
-        if value is None:
-            return None
-        return serialize_secret(SecretStr(value), info)
-
-    @field_validator("acp_resume_session_id", mode="before")
-    @classmethod
-    def _validate_acp_resume_session_id(
-        cls, value: Any, info: ValidationInfo
-    ) -> str | None:
-        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
-
-        Without this validator, ``model_validate_json`` of a previously
-        serialized agent would put garbage in ``acp_resume_session_id``:
-
-        - Default-redacted dumps would reload as the literal ``"**********"``
-          sentinel — calling ``session/load`` with that fails server-side and
-          we fall back to a fresh session every time, defeating the whole
-          point of the durable mirror.
-        - Encrypted dumps (frontend round-trip) would reload as the raw
-          Fernet ciphertext — same failure mode, plus the ciphertext sits
-          in ``state.agent_state`` on disk.
-
-        :func:`validate_secret` returns ``None`` for empty/redacted values
-        and decrypts when a cipher is present in the validation context.
-        We unwrap the returned ``SecretStr`` so the field's runtime type
-        stays ``str | None`` (the rest of the SDK reads it directly).
-        """
-        secret = validate_secret(value, info)
-        return secret.get_secret_value() if secret is not None else None
 
     acp_file_secrets: list[ACPFileSecretSpec] = Field(
         default_factory=lambda: list(default_acp_file_secrets()),
@@ -2257,6 +2211,11 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # The conversation's session for the sentinel LLM: its registry opened
+        # it, so this resolves on the portal thread as well as on the caller's.
+        session = self.llm.session_for()
+        metrics = session.metrics
+
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
@@ -2265,7 +2224,7 @@ class ACPAgent(AgentBase):
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
-                self.llm.metrics.add_cost(delta)
+                metrics.add_cost(delta)
                 cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
@@ -2275,7 +2234,7 @@ class ACPAgent(AgentBase):
             _extract_token_usage(response)
         )
         if input_tokens or output_tokens:
-            self.llm.metrics.add_token_usage(
+            metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 cache_read_tokens=cache_read,
@@ -2296,7 +2255,7 @@ class ACPAgent(AgentBase):
                 self.acp_model, input_tokens, output_tokens
             )
             if cost > 0:
-                self.llm.metrics.add_cost(cost)
+                metrics.add_cost(cost)
 
         if not cost_recorded and not input_tokens and not output_tokens:
             # gemini-cli currently returns response.usage=None and
@@ -2308,13 +2267,9 @@ class ACPAgent(AgentBase):
             )
 
         if elapsed is not None:
-            self.llm.metrics.add_response_latency(elapsed, session_id)
+            metrics.add_response_latency(elapsed, session_id)
 
-        if self.llm.telemetry._stats_update_callback is not None:
-            try:
-                self.llm.telemetry._stats_update_callback()
-            except Exception:
-                logger.debug("Stats update callback failed", exc_info=True)
+        session.telemetry.notify_stats_update()
 
     # -- Capability helpers ------------------------------------------------
 
@@ -4865,9 +4820,12 @@ class ACPAgent(AgentBase):
         # authoritative current model is persisted by
         # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
         self.llm.model = model
-        self.llm.metrics.model_name = model
-        if self.llm.metrics.accumulated_token_usage is not None:
-            self.llm.metrics.accumulated_token_usage.model = model
+        # Both ledgers carry the model name: the LLM's own and the one the
+        # conversation keeps for it (the same object outside a conversation).
+        for metrics in (self.llm.metrics, self.llm.session_for().metrics):
+            metrics.model_name = model
+            if metrics.accumulated_token_usage is not None:
+                metrics.accumulated_token_usage.model = model
         # Refresh the surfaced model state so the chip/picker
         # (``ConversationInfo.current_model_id``) reflects the switch instead
         # of the stale session-start value. ``_current_model_id`` is a

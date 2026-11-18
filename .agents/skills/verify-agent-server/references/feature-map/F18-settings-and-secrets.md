@@ -15,7 +15,7 @@ raw value as `text/plain` (the target of the SDK's `LookupSecret` URLs), and
 cipher (`OH_SECRET_KEY`, falling back to the session key) and survive
 restarts. Settings changes emit no WebSocket events.
 
-Source: `openhands-agent-server/openhands/agent_server/settings_router.py`, `openhands-agent-server/openhands/agent_server/_secrets_exposure.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-sdk/openhands/sdk/settings/api_models.py`, `openhands-sdk/openhands/sdk/settings/model.py`, `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`, `openhands-sdk/openhands/sdk/utils/cipher.py`, `openhands-sdk/openhands/sdk/workspace/remote/base.py`, `openhands-sdk/openhands/sdk/workspace/repo.py`, `clients/typescript/src/client/settings-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/settings_router.py`, `openhands-agent-server/openhands/agent_server/experimental_features_router.py`, `openhands-agent-server/openhands/agent_server/_secrets_exposure.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-sdk/openhands/sdk/settings/api_models.py`, `openhands-sdk/openhands/sdk/settings/model.py`, `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`, `openhands-sdk/openhands/sdk/utils/cipher.py`, `openhands-sdk/openhands/sdk/workspace/remote/base.py`, `openhands-sdk/openhands/sdk/workspace/repo.py`, `clients/typescript/src/client/settings-client.ts`
 
 Needs: `git`, `node`
 
@@ -49,11 +49,11 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.sdk-clone-repos`: with the server secret `GITHUB_TOKEN` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/GITHUB_TOKEN` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`GITLAB_TOKEN`) clones anonymously, and `get_repos_context()` names both clones.
 - `F18.ts-client`: the TypeScript `SettingsClient` reads both schemas, reads settings redacted, `plaintext` and `encrypted`, applies a sparse `updateSettings` that a second read shows, upserts, lists (also with `agentProfileId`), reads as text and deletes a secret, and rejects an unknown secret (404), a bad name (422) and a wrong key (401) with an `HttpError`.
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
-- `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (`conversation_reactions`, off) without creating `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing.
+- `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (`conversation_reactions`, `ask_user`, `conversation_mentions` and `message_edits`, all off) without writing `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing (`experimental_features` stays `{}`).
 - `F18.upgrade-from-release`: settings, an LLM key and a secret saved by the latest released server read back identical after the same state is restarted on this checkout (`restart --checkout`), the upgrade does not rewrite either file, and the experimental routes answer.
-- `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
+- `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults (every experimental feature off) and PATCH, of the settings or of an experimental feature, is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
 - `F18.no-cipher`: without any cipher key, `X-Expose-Secrets: encrypted` is 503, `plaintext` still works, both files store plaintext, and the secrets routes are open without a key.
-- `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with 422 and neither wipes an existing value nor leaves a listed but unreadable secret (fixed by #5682).
+- `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with a validation 422 on `value` and neither wipes an existing value nor leaves a listed but unreadable secret.
 - `F18.dangling-pointers`: PATCH refuses an `active_agent_profile_id` or `active_meta_profile` that names nothing with 404, as the dedicated activate routes do, and stores nothing (fixed by #5847).
 - `F18.secret-scope-profile-errors`: `GET /api/settings/secrets?agent_profile_id=` naming an agent profile whose file no longer validates, or arriving while the agent-profile store's lock is held elsewhere, must answer as the agent-profile routes do (400 and 503), not with an unhandled 500.
 - `F18.secret-name-contract`: the published OpenAPI description of the secret routes names the status an invalid secret name actually gets, 422 (fixed by #5846).
@@ -71,6 +71,13 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
   `PUT /api/settings/secrets` `{"name", "value", "description"?}`,
   `GET /api/settings/secrets/{name}` (raw `text/plain`),
   `DELETE /api/settings/secrets/{name}`.
+- REST: `GET /api/settings/experimental` (a list of
+  `{key, label, description, enabled}`) and
+  `PATCH /api/settings/experimental/{key}` `{"enabled": bool}` (404 for an
+  unknown key, 409 when `settings.json` cannot be read); the switches are
+  stored in `settings.json` `experimental_features` (what each one does is
+  mapped by its own family: `conversation_reactions` in F37,
+  `conversation_mentions` in F38).
 - Neighbours used as arrange steps and second views, owned by other families:
   `POST/DELETE /api/profiles/{name}` and `GET /api/profiles` (LLM profiles),
   `POST/GET/DELETE /api/agent-profiles/{name}` and
@@ -96,7 +103,9 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
   `getConversationSchema()`, `getSettings({exposeSecrets})`,
   `updateSettings(request)`, `listSecrets({agentProfileId})`,
   `upsertSecret(request)`, `getSecret(name)` (`responseType: 'text'`),
-  `deleteSecret(name)` (`clients/typescript/src/client/settings-client.ts`);
+  `deleteSecret(name)`, `listExperimentalFeatures()` and
+  `updateExperimentalFeature(key, enabled)` (driven by `F37.ts-client`)
+  (`clients/typescript/src/client/settings-client.ts`);
   refusals reject with `HttpError` (`isHttpError`, `status`, `detail`).
   Recipe `F18.ts-client` runs them with `node` on the built package
   (`clients/typescript/dist`). The same class's `createMcpServer`,
@@ -668,28 +677,41 @@ Preconditions:
 - **Experimental features (`F18.experimental-features`).** List them and try
   to switch one the server does not know.
   ```sh
-  control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 1 --check 0.key eq conversation_reactions \
-    --check 0.enabled eq false --save F18.experimental-features/list
+  S="$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"
+  SUM=$({ cat "$S" 2>/dev/null || true; } | sha256sum)
+  control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 4 --check 0.key eq conversation_reactions \
+    --check 0.label eq 'Conversation reactions' --check 0.description exists --check 0.enabled eq false \
+    --check 1.key eq ask_user --check 1.label eq 'Decision cards' --check 1.enabled eq false \
+    --check 2.key eq conversation_mentions --check 2.enabled eq false \
+    --check 3.key eq message_edits --check 3.enabled eq false --save F18.experimental-features/list
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{"enabled": true}' --expect 404 \
     --check detail eq 'Unknown experimental feature: qa_f18_unknown' --save F18.experimental-features/unknown
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{}' --expect 422
   control-agent-server api GET /api/settings/experimental --auth none --expect 401
-  if grep -qs experimental_features "$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"; then false; fi
+  control-agent-server api PATCH /api/settings/experimental/conversation_reactions --auth none --json '{"enabled": true}' --expect 401
+  test "$SUM" = "$({ cat "$S" 2>/dev/null || true; } | sha256sum)"
+  if test -e "$S"; then jq -e '.experimental_features == {}' "$S"; fi
   ```
-  The list holds `conversation_reactions`, off (F37 switches it), as
+  The list holds `conversation_reactions` (F37 switches it), `ask_user`,
+  `conversation_mentions` (F38 switches it) and `message_edits` (F39 switches
+  it), all off, as
   `{key, label, description, enabled}`. A key the server does not know is a
-  404, and the refused switch leaves `settings.json` without an
-  `experimental_features` entry.
+  404, and neither the reads nor the refused switches create or change
+  `settings.json`; once other bullets saved it, its `experimental_features`
+  is the empty object every save writes.
 - **Upgrade from the latest release (`F18.upgrade-from-release`).** A second
   run starts on the newest release tag, saves settings as a user of that
   release would, and is restarted on this checkout over the same state.
   ```sh
   HERE="${AGENT_SERVER_VERIFY_CHECKOUT:-$PWD}"
-  TAG=$(git -C "$HERE" describe --tags --abbrev=0 --match 'v*')
+  TAG=$(git -C "$HERE" describe --tags --abbrev=0 --match 'v*' 2>/dev/null) ||
+    TAG=$(git -C "$HERE" ls-remote --tags --refs --sort=-v:refname origin 'v*' | sed -n '1s|.*refs/tags/||p')
+  test -n "$TAG"
   REL="$F18/release-$TAG"
-  git -C "$HERE" worktree add --detach "$REL" "$TAG" >/dev/null 2>&1
+  git -C "$HERE" worktree add --detach "$REL" "$TAG" >/dev/null 2>&1 ||
+    git clone -q --depth 1 --branch "$TAG" "$(git -C "$HERE" remote get-url origin)" "$REL"
   UP=$(control-agent-server launch --new --name f18-upgrade --checkout "$REL" --timeout 900 --print-run)
-  trap 'control-agent-server stop --run "$UP" >/dev/null; git -C "$HERE" worktree remove --force "$REL"' EXIT
+  trap 'control-agent-server stop --run "$UP" >/dev/null; git -C "$HERE" worktree remove --force "$REL" 2>/dev/null || rm -rf "$REL"' EXIT
   control-agent-server api PATCH /api/settings --run "$UP" --json '{"agent_settings_diff": {"llm": {"model": "openai/qa-f18-upgrade", "api_key": "qa-f18-upgrade-key"}}, "conversation_settings_diff": {"max_iterations": 77}, "misc_settings_diff": {"qa_f18": "from-release"}}' --expect 200
   control-agent-server api PUT /api/settings/secrets --run "$UP" --json '{"name": "QA_F18_UPGRADE", "value": "qa-f18-upgrade-secret"}' --expect 200
   BEFORE=$(sha256sum "$UP/home/.openhands/settings.json" "$UP/home/.openhands/secrets.json")
@@ -698,13 +720,17 @@ Preconditions:
     --check agent_settings.llm.model eq openai/qa-f18-upgrade --check agent_settings.llm.api_key eq qa-f18-upgrade-key \
     --check conversation_settings.max_iterations eq 77 --check misc_settings.qa_f18 eq from-release --save F18.upgrade-from-release/settings
   control-agent-server api GET /api/settings/secrets/QA_F18_UPGRADE --run "$UP" --expect 200 --check . eq qa-f18-upgrade-secret
-  control-agent-server api GET /api/settings/experimental --run "$UP" --expect 200 --save F18.upgrade-from-release/experimental
+  control-agent-server api GET /api/settings/experimental --run "$UP" --expect 200 --check 0.key eq conversation_reactions \
+    --check 0.enabled eq false --save F18.upgrade-from-release/experimental
   test "$BEFORE" = "$(sha256sum "$UP/home/.openhands/settings.json" "$UP/home/.openhands/secrets.json")"
   ```
   Everything the release saved reads back unchanged on this checkout, and
   reading it does not rewrite `settings.json` or `secrets.json` (same
   checksums). The first launch of a release worktree builds its environment
-  with `uv`, which needs the package index and can take minutes.
+  with `uv`, which needs the package index and can take minutes. A shallow
+  clone without tags (a CI or cloud checkout) has no tag to describe or to
+  add as a worktree: the recipe then takes the newest `v*` tag from the
+  remote and clones it into the run (`network`).
 - **Corrupted files (`F18.corrupted-files`).** Back up both files, overwrite
   them with broken JSON, drive every route, restore.
 
@@ -723,6 +749,9 @@ Preconditions:
     --check agent_settings.llm.model eq "$DEFAULT_MODEL" --save F18.corrupted-files/get-settings
   control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_probe": 1}}' --expect 409 \
     --check detail contains 'Settings file is corrupted or encrypted with a different key' --save F18.corrupted-files/patch
+  control-agent-server api GET /api/settings/experimental --expect 200 --check 0.enabled eq false
+  control-agent-server api PATCH /api/settings/experimental/conversation_reactions --json '{"enabled": true}' --expect 409 \
+    --check detail eq 'Settings file is corrupted or encrypted with a different key' --save F18.corrupted-files/patch-experimental
   control-agent-server state cat home/.openhands/settings.json --contains qa-f18-corrupt
   control-agent-server api GET /api/settings/secrets --expect 200 --check secrets len-eq 0 --save F18.corrupted-files/list-secrets
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 404
@@ -735,8 +764,9 @@ Preconditions:
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY"
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.corrupted-files/restored
   ```
-  A broken `settings.json` reads as defaults (200, no error), and PATCH
-  refuses with 409 instead of overwriting it. A broken `secrets.json` lists
+  A broken `settings.json` reads as defaults (200, no error; every
+  experimental feature off), and both PATCH routes refuse with 409 instead
+  of overwriting it. A broken `secrets.json` lists
   nothing and hides every value (404); PUT and DELETE refuse with 500 (the
   reason is in `exception`). Neither file was touched, and restoring them
   restores the values without a restart.
@@ -774,15 +804,17 @@ Preconditions:
   trap 'restore_token || true' EXIT
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET"
   control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_TOKEN", "value": "**********", "description": "qa f18 edited"}' \
-    --expect 422 --check detail eq 'Secret value must not be empty or redacted' --save F18.secret-empty-value/put-placeholder
+    --expect 422 --check detail len-eq 1 --check detail.0.loc eq '["body", "value"]' --check detail.0.type eq value_error \
+    --check detail.0.msg eq 'Value error, The secret must be a real value, not blank or redacted' --save F18.secret-empty-value/put-placeholder
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-empty-value/get-after-placeholder
   control-agent-server api GET /api/settings/secrets --check secrets contains QA_F18_TOKEN --check . not-contains 'qa f18 edited'
   ```
   The value reads back before the PUT (the control). The placeholder PUT is
-  refused with 422 `Secret value must not be empty or redacted` (#5682), and
-  the stored value and description are untouched. Before #5682 it answered
-  200 and silently wiped the value (`CustomSecret`'s validator turns
-  `**********` and `""` into `null`), leaving a listed secret whose read was
+  refused with a standard validation 422: `detail` is a one-entry list with
+  `loc` `["body", "value"]`, `type` `value_error` and `msg`
+  `Value error, The secret must be a real value, not blank or redacted`; the stored value and description are untouched.
+  Accepting it would wipe the value (`CustomSecret`'s validator turns
+  `**********` and `""` into `null`), leaving a listed secret whose read is
   404. The trap puts the secret back in case the PUT ever succeeds.
 - **Empty secret value (`F18.secret-empty-value`).** PUT a new secret whose
   value is the empty string, then one that is only whitespace.
@@ -792,15 +824,15 @@ Preconditions:
   control-agent-server api GET /api/settings/secrets --check secrets contains QA_F18_TOKEN --check secrets not-contains QA_F18_EMPTY
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET"
   control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_EMPTY", "value": ""}' \
-    --expect 422 --check detail eq 'Secret value must not be empty or redacted' --save F18.secret-empty-value/put-empty
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_EMPTY", "value": "   "}' --expect 422
+    --expect 422 --check detail.0.loc eq '["body", "value"]' --check detail.0.msg eq 'Value error, The secret must be a real value, not blank or redacted' --save F18.secret-empty-value/put-empty
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_EMPTY", "value": "   "}' --expect 422 --check detail.0.msg eq 'Value error, The secret must be a real value, not blank or redacted'
   control-agent-server api GET /api/settings/secrets --check secrets not-contains QA_F18_EMPTY --save F18.secret-empty-value/list-empty
   control-agent-server api GET /api/settings/secrets/QA_F18_EMPTY --expect 404
   ```
   A listed secret is readable (the control: `QA_F18_TOKEN`). An empty or
   blank value is refused with 422 and leaves nothing behind: the name is not
-  listed and a read is 404. Before #5682 the PUT answered 200 and listed an
-  unreadable `QA_F18_EMPTY`. The trap deletes it in case a PUT succeeds.
+  listed and a read is 404; the 422 body is the same validation entry as for
+  the placeholder. The trap deletes it in case a PUT succeeds.
 - **Dangling agent-profile pointer (`F18.dangling-pointers`).** The
   activate route, and PATCH itself for an LLM profile name, refuse targets
   that do not exist; PATCH an `active_agent_profile_id` that names nothing.
@@ -860,8 +892,8 @@ Preconditions:
   Scoping works while the profile is valid (one secret), and the
   agent-profile route reports the broken file as 400 `Failed to load profile
   ...`. The scoped list answers the same 400 with the load error in
-  `detail`: `list_secrets` reads the profile inside `store_errors()`, as the
-  agent-profile routes do. The trap removes the profile file.
+  `detail`: it reports profile store errors with the statuses the
+  agent-profile routes use. The trap removes the profile file.
 - **Agent-profile store busy (`F18.secret-scope-profile-errors`).**
   Another process (here `flock`, standing in for a second server on the same
   persistence directory) holds the agent-profile store's lock for 75 seconds.
@@ -986,7 +1018,7 @@ Preconditions:
   later `--rotate-secret-key` into a no-op.
 - `**********` (and an empty string) posted as a secret means "no secret"
   in a settings PATCH, where it clears the key; a secrets PUT refuses it (and
-  a blank value) with 422 since #5682 (`F18.secret-empty-value`).
+  a blank value) with a validation 422 on `value` (`F18.secret-empty-value`).
   Round-trip with `X-Expose-Secrets: encrypted`, which the server decrypts.
 - PATCH responses are always redacted, and `conversation_settings` is always
   redacted, whatever `X-Expose-Secrets` says. Any authenticated caller may ask
@@ -1039,3 +1071,8 @@ Preconditions:
   token back adds `--unsafe-unredacted` to its `--field` read
   (`TOKEN=$(... --field ... --unsafe-unredacted)`) and keeps it out of
   evidence.
+- `experimental_features` lives inside `settings.json` schema v7 without a
+  version bump. A server older than the experimental routes ignores the key
+  and drops it on its next save, so restarting on such a release
+  (`restart --checkout`), saving any setting there and coming back turns
+  every feature off again (v1.62.0 is such a release).

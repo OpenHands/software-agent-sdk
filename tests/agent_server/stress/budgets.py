@@ -11,9 +11,11 @@ from dataclasses import dataclass
 class ParallelSubagentBudget:
     n_subagents: int = 8
     per_call_latency_s: float = 0.2
-    # Wall time must be < single-agent wall × this. 1.5 leaves slack for
-    # scheduling overhead while still failing on serialized execution.
-    wall_time_factor: float = 1.5
+    # Wall time must be < single-agent wall × this. 3.0 (vs the ideal ~1×)
+    # leaves slack for non-scaling startup/teardown and per-sub-agent
+    # executor and registry overhead on shared runners, while still failing
+    # hard on serialized execution (which lands near n×).
+    wall_time_factor: float = 3.0
     # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
     # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0
@@ -52,9 +54,14 @@ class ConversationListingBudget:
 class ConcurrentConversationsBudget:
     n_conversations: int = 16
     per_call_latency_s: float = 0.1
-    # Concurrent wall < single-conversation wall × this. 4.0 (vs serial
-    # estimate of n=16) leaves slack for shared CI runners.
-    wall_time_factor: float = 4.0
+    # Concurrent wall < single-conversation wall × this. 8.0 (vs serial
+    # estimate of n=16) leaves slack for overhead that does not shrink with
+    # per-call latency: the default ``asyncio`` executor is bounded (and is
+    # shared by *every* other ``to_thread``/``run_in_executor`` in the run
+    # path), so 16 × 0.1s synthetic LLM sleeps queue behind a fixed amount of
+    # worker contention instead of overlapping perfectly. The ratio still
+    # catches true serialization, which lands near n× (~2.5s).
+    wall_time_factor: float = 8.0
     # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
     # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0

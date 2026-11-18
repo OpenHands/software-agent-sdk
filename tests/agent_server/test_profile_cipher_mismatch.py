@@ -5,11 +5,8 @@ a keyless LLM to settings, and re-saving it wrote ``null`` over the stored key.
 """
 
 import json
-import os
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,10 +14,8 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.profiles import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -30,18 +25,13 @@ PROFILE = "qa-rotate"
 
 
 @pytest.fixture
-def dirs():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        reset_stores()
-        old_val = os.environ.get("OH_PERSISTENCE_DIR")
-        os.environ["OH_PERSISTENCE_DIR"] = str(root / "settings")
-        yield root
-        reset_stores()
-        if old_val is not None:
-            os.environ["OH_PERSISTENCE_DIR"] = old_val
-        else:
-            os.environ.pop("OH_PERSISTENCE_DIR", None)
+def dirs(tmp_path, monkeypatch):
+    """The server's persistence directory: ``settings.json``, ``profiles/`` and
+    ``agent-profiles/`` all live in it."""
+    root = tmp_path / "persistence"
+    root.mkdir()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(root))
+    return root
 
 
 @contextmanager
@@ -52,21 +42,7 @@ def _client(dirs: Path, previous_keys: tuple[str, ...] = ()):
         secret_key=SecretStr(KEY_B),
         previous_secret_keys=[SecretStr(k) for k in previous_keys],
     )
-    with (
-        patch(
-            "openhands.agent_server.profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=dirs / "profiles"),
-        ),
-        patch(
-            "openhands.agent_server.settings_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=dirs / "profiles"),
-        ),
-        patch(
-            "openhands.agent_server.profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=dirs / "agent-profiles"),
-        ),
-    ):
-        yield TestClient(create_app(config))
+    yield TestClient(create_app(config))
 
 
 @pytest.fixture
@@ -94,7 +70,7 @@ def _profile_key_under_key_a(dirs: Path) -> str | None:
 
 def test_activate_undecryptable_profile_refused(client_b: TestClient, dirs: Path):
     before = _seed_profile_under_key_a(dirs)
-    settings_path = dirs / "settings" / "settings.json"
+    settings_path = dirs / "settings.json"
     assert not settings_path.exists()
 
     response = client_b.post(f"/api/profiles/{PROFILE}/activate")
@@ -122,7 +98,7 @@ def test_patch_active_undecryptable_profile_refused(client_b: TestClient, dirs: 
         f"Profile '{PROFILE}' is encrypted with a different key"
     )
     assert "OH_PREVIOUS_SECRET_KEYS" in response.json()["detail"]
-    assert not (dirs / "settings" / "settings.json").exists()
+    assert not (dirs / "settings.json").exists()
 
 
 def test_resave_undecryptable_profile_refused(client_b: TestClient, dirs: Path):
@@ -185,7 +161,6 @@ def test_previous_key_lets_a_profile_activate_and_resave(dirs: Path):
 
     stored = json.loads((dirs / "profiles" / f"{PROFILE}.json").read_text())
     assert Cipher(KEY_B).try_decrypt_str(stored["api_key"]) == "sk-a"
-    reset_stores()
 
     # The previous key is no longer needed for the profile or the settings.
     with _client(dirs) as client:

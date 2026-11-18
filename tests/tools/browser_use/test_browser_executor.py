@@ -541,6 +541,54 @@ async def test_stop_recording_without_active_session_returns_error():
     assert "Not recording" in result
 
 
+def test_reset_kills_hung_browser_and_forgets_its_session(mock_browser_executor):
+    """A reset whose cleanup times out must not leave the hung browser running
+    or let the next action reuse its session (#6650)."""
+    import subprocess
+
+    import psutil
+
+    from openhands.tools.browser_use.impl import MAX_CONSECUTIVE_FAILURES
+
+    # Stand-in for Chromium: a process with a child of its own.
+    browser = subprocess.Popen(["sh", "-c", "sleep 60 & wait"], start_new_session=True)
+    try:
+        process = psutil.Process(browser.pid)
+        deadline = time.monotonic() + 5
+        while not process.children() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = process.children()[0]
+
+        server = mock_browser_executor._server
+        server.browser_session._local_browser_watchdog._subprocess = process
+        server.active_sessions = {"s1": {}}
+        old_session = server.browser_session
+        mock_browser_executor._initialized = True
+
+        with patch.object(
+            mock_browser_executor._async_executor,
+            "run_async",
+            side_effect=builtins.TimeoutError(),  # actions and cleanup both hang
+        ):
+            results = [
+                mock_browser_executor(BrowserNavigateAction(url="https://example.com"))
+                for _ in range(MAX_CONSECUTIVE_FAILURES)
+            ]
+        result = results[-1]
+
+        assert "reset" in result.text.lower()
+        assert browser.wait(timeout=5) is not None
+        assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
+        assert server.browser_session is None
+        assert server.active_sessions == {}
+        old_session.event_bus.stop.assert_called_once_with(clear=True, timeout=1)
+        assert mock_browser_executor._initialized is False
+    finally:
+        if browser.poll() is None:
+            browser.kill()
+            browser.wait()
+
+
 def _session_with_navigate_handler(handler):
     from browser_use.browser.events import NavigateToUrlEvent
     from bubus import EventBus
@@ -592,3 +640,21 @@ async def test_navigate_allowed_reports_success(mock_browser_executor):
 
     assert_browser_observation_success(result)
     assert "Navigated to: http://127.0.0.1/page.html" in result.text
+
+
+def test_kill_processes_reports_a_process_it_cannot_kill(caplog):
+    """A browser process that survives the kill is logged, not skipped silently."""
+    import psutil
+
+    from openhands.tools.browser_use.impl import _kill_processes
+
+    stubborn = MagicMock(spec=psutil.Process)
+    stubborn.pid = 4242
+    stubborn.is_running.return_value = True
+    stubborn.status.return_value = psutil.STATUS_RUNNING
+    stubborn.kill.side_effect = psutil.AccessDenied(4242)
+
+    with caplog.at_level("WARNING"):
+        _kill_processes([stubborn], timeout=0.1)
+
+    assert "Could not kill browser process 4242" in caplog.text

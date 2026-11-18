@@ -162,14 +162,14 @@ Example — Running tests (good use of bash-runner):
     cause or assertion error, but do not include the full stack
     trace or the verbose setup/teardown output."
 """,
-    "web researcher": """
-Example — Research information on a website (good use of web researcher):
-    subagent_type="web researcher"
+    "web-researcher": """
+Example — Research information on a website (good use of web-researcher):
+    subagent_type="web-researcher"
     prompt="Navigate to the Stripe API docs and find the parameters for the PaymentIntent create endpoint."
 """,  # noqa: E501
-    "general purpose": """
+    "general-purpose": """
 Example — Perform a multi-step task involving code editing and shell commands:
-    subagent_type="general purpose"
+    subagent_type="general-purpose"
     prompt="Read the database module in src/db.py, extract the connection
     pooling logic into a separate file, update all imports, and run the
     test suite to verify nothing breaks."

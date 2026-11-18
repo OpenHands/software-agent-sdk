@@ -33,6 +33,23 @@ def pool_executor():
         executor.close()
 
 
+def test_pool_waits_for_slow_shell_initialization(tmp_path):
+    (tmp_path / ".bashrc").write_text("sleep 0.4\n")
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        no_change_timeout_seconds=1,
+        terminal_type="tmux",
+        env={"HOME": str(tmp_path)},
+        max_panes=1,
+    )
+    try:
+        obs = executor(TerminalAction(command="sleep 2"))
+
+        assert obs.metadata.exit_code == -1
+    finally:
+        executor.close()
+
+
 class TestDeclaredResources:
     def test_pool_mode_opts_out_of_framework_locking(self, pool_executor):
         """In pool mode, declared_resources returns empty keys so the
@@ -127,16 +144,17 @@ class TestTmuxPoolRecovery:
         assert after.exit_code == 0
         assert "after_rebuild" in after.text
 
-    def test_shell_that_died_while_idle_is_noticed_before_the_timeout(
-        self, pool_executor
-    ):
-        pool_executor(TerminalAction(command="(sleep 1; kill -9 $$) &", timeout=5.0))
-        time.sleep(2.5)
+    def test_shell_exit_beside_a_busy_pane_rebuilds_pool(self, pool_executor):
+        # The busy pane keeps the tmux server up, so the exited pane is gone
+        # while the server still answers.
+        busy = threading.Thread(
+            target=lambda: pool_executor(TerminalAction(command="sleep 3", timeout=10))
+        )
+        busy.start()
+        time.sleep(0.5)
+        obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
+        busy.join()
 
-        started = time.monotonic()
-        obs = pool_executor(TerminalAction(command="echo after", timeout=30.0))
-
-        assert time.monotonic() - started < 10
         assert obs.is_error
         assert "rebuilt the terminal pool" in obs.text
         after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))

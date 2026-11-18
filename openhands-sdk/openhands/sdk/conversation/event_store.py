@@ -1,5 +1,6 @@
 # state.py
 import bisect
+import itertools
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
@@ -173,10 +174,29 @@ class EventLog(EventsListBase):
         ancestor whose file was lost is bridged (see ``_effective_parent_id``);
         a ``leaf_id`` missing from the log yields ``[]``.
         """
-        chain: list[Event] = []
+        chain = list(itertools.islice(self.walk_back(leaf_id), limit))
+        return chain[::-1]
+
+    def walk_back(
+        self, leaf_id: EventID | None, *, until: EventID | None = None
+    ) -> Iterator[Event]:
+        """The branch ending at ``leaf_id``, newest first, read as it goes.
+
+        A caller that stops early reads only the events it walked past, not
+        the whole branch. With ``until``, the walk ends at that event (the last
+        one yielded) or, when it is not on this branch, as soon as it is behind
+        it: an event's ancestors all come before it in the log, so the walk
+        never goes further back than ``until``. An ``until`` missing from the
+        log yields nothing. Raises ValueError on a cycle, like ``path_to_root``.
+        """
+        stop_idx: int | None = None
+        if until is not None:
+            stop_idx = self._id_to_idx.get(until)
+            if stop_idx is None:
+                return
         seen: set[EventID] = set()
         cur_id: EventID | None = leaf_id
-        while cur_id is not None and (limit is None or len(chain) < limit):
+        while cur_id is not None:
             if cur_id in seen:
                 raise ValueError(f"Cycle in event tree at {cur_id}")
             seen.add(cur_id)
@@ -184,10 +204,14 @@ class EventLog(EventsListBase):
             if idx is None:
                 # Only the leaf can be unknown: ancestors are bridged.
                 self._report_missing(cur_id)
-                break
-            chain.append(evt := self[idx])
+                return
+            if stop_idx is not None and idx < stop_idx:
+                return
+            evt = self[idx]
+            yield evt
+            if idx == stop_idx:
+                return
             cur_id = self._effective_parent_id(idx, evt)
-        return chain[::-1]
 
     @overload
     def __getitem__(self, idx: int) -> Event: ...
