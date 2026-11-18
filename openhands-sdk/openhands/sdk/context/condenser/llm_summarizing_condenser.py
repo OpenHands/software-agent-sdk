@@ -20,6 +20,7 @@ from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.exceptions import LLMResponseRefusedError
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.utils import maybe_truncate
@@ -260,6 +261,8 @@ class LLMSummarizingCondenser(RollingCondenser):
         # litellm_extra_body only when it is non-empty.
         try:
             llm_response = self.llm.generate(messages=messages, store=False)
+        except LLMResponseRefusedError:
+            raise
         except Exception as e:
             raise NoCondensationAvailableException(
                 f"Summarization LLM call failed: {e}"
@@ -385,6 +388,8 @@ class LLMSummarizingCondenser(RollingCondenser):
                     summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
+            except LLMResponseRefusedError:
+                raise
             except Exception as e:
                 # If we haven't set a max_event_str_length yet, set it as the largest
                 # event string length.
@@ -464,6 +469,8 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         try:
             llm_response = await self.llm.agenerate(messages=messages, store=False)
+        except LLMResponseRefusedError:
+            raise
         except Exception as e:
             raise NoCondensationAvailableException(
                 f"Summarization LLM call failed: {e}"
@@ -536,6 +543,8 @@ class LLMSummarizingCondenser(RollingCondenser):
                     summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
+            except LLMResponseRefusedError:
+                raise
             except Exception as e:
                 if max_event_str_length is None:
                     max_event_str_length = max(len(str(ev)) for ev in view.events)

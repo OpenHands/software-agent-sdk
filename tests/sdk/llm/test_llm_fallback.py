@@ -26,6 +26,7 @@ from openhands.sdk.llm import (
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
     LLMRateLimitError,
+    LLMResponseRefusedError,
     LLMServiceUnavailableError,
 )
 
@@ -107,6 +108,30 @@ def test_fallback_succeeds_after_primary_transient_failure(mock_comp):
     content = resp.message.content[0]
     assert isinstance(content, TextContent)
     assert content.text == "fallback ok"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_filtered_fallback_stops_the_chain(mock_comp):
+    primary = _get_llm(fallback_strategy=FallbackStrategy(fallback_llms=["a", "b"]))
+    _patch_resolve(primary, [_get_llm("first"), _get_llm("second")])
+    filtered = ModelResponse(
+        choices=[
+            {
+                "index": 0,
+                "finish_reason": "content_filter",
+                "message": {"role": "assistant", "content": "partial reply"},
+            }
+        ]
+    )
+    mock_comp.side_effect = [
+        APIConnectionError(message="down", llm_provider="openai", model="gpt-4o"),
+        filtered,
+        _get_mock_response("unused"),
+    ]
+
+    with pytest.raises(LLMResponseRefusedError):
+        primary.completion(_MSGS)
+    assert mock_comp.call_count == 2
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

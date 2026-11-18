@@ -19,7 +19,7 @@ from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMResponseRefusedError
 
 
 def create_mock_response(
@@ -87,7 +87,7 @@ def create_reasoning_only_response(
 
 
 def create_stream_chunks(
-    text: str, chunk_id: str = "chatcmpl-stream"
+    text: str, chunk_id: str = "chatcmpl-stream", *, finish_reason: str = "stop"
 ) -> list[ModelResponseStream]:
     """Chat-completion stream chunks whose reassembly carries ``text``."""
     deltas = [Delta(role="assistant", content="")]
@@ -101,7 +101,7 @@ def create_stream_chunks(
                 StreamingChoices(
                     index=0,
                     delta=delta,
-                    finish_reason="stop" if i == len(deltas) - 1 else None,
+                    finish_reason=finish_reason if i == len(deltas) - 1 else None,
                 )
             ],
             created=1,
@@ -286,6 +286,20 @@ def test_content_free_stream_reassembled_and_retried(mock_completion) -> None:
     assert isinstance(content, TextContent)
     assert content.text == "ok"
     assert mock_completion.call_count == 2
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_refused_stream_does_not_return_partial_text(mock_completion, base_llm):
+    mock_completion.return_value = create_stream_chunks(
+        "partial", finish_reason="refusal"
+    )
+    with pytest.raises(LLMResponseRefusedError):
+        base_llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])],
+            stream=True,
+            on_token=lambda chunk: None,
+        )
+    mock_completion.assert_called_once()
 
 
 # ------------------------------------------------------------------
