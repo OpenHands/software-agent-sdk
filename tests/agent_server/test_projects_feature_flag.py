@@ -117,7 +117,7 @@ async def test_no_wake_ups_while_off():
 def test_finalize_withholds_tools():
     agent = Agent(
         llm=LLM(model="test-model", usage_id="test"),
-        tools=[Tool(name="terminal"), Tool(name="list_project_conversations")],
+        tools=[Tool(name="terminal"), Tool(name="list_workers")],
     )
     launched = finalize(
         agent,

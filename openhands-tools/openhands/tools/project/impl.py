@@ -35,17 +35,17 @@ from openhands.tools.project.definition import (
     ARTIFACT_TEXT_MAX_BYTES,
     ListArtifactsAction,
     ListArtifactsObservation,
-    ListProjectConversationsAction,
-    ListProjectConversationsObservation,
-    MessageProjectConversationAction,
-    MessageProjectConversationObservation,
+    ListWorkersAction,
+    ListWorkersObservation,
+    MessageWorkerAction,
+    MessageWorkerObservation,
     ProjectConversationSummary,
     ReadArtifactAction,
     ReadArtifactObservation,
-    ReadProjectConversationAction,
-    ReadProjectConversationObservation,
     ReadProjectMemoryAction,
     ReadProjectMemoryObservation,
+    ReadWorkerAction,
+    ReadWorkerObservation,
     ResolveConversationAction,
     ResolveConversationObservation,
     UpdateProjectMemoryAction,
@@ -149,16 +149,14 @@ class _ProjectClient:
             raise ProjectToolError(
                 f"Unexpected project conversations response: {exc}"
             ) from exc
-        # The caller is never its own conversation; leave it out when the caller is a
-        # conversation rather than the coordinator.
+        # The route lists the coordinator separately; this leaves only workers.
+        # The caller is the coordinator, the only conversation with these tools.
         own_id = self.conv_state.id.hex
         return project_id, [t for t in conversations if t.conversation_id != own_id]
 
 
-class ListProjectConversationsExecutor(
-    ToolExecutor[ListProjectConversationsAction, ListProjectConversationsObservation]
-):
-    """GET the caller's project conversations and report them."""
+class ListWorkersExecutor(ToolExecutor[ListWorkersAction, ListWorkersObservation]):
+    """GET the project's workers and report them."""
 
     def __init__(
         self,
@@ -171,15 +169,13 @@ class ListProjectConversationsExecutor(
 
     def __call__(
         self,
-        action: ListProjectConversationsAction,  # noqa: ARG002
+        action: ListWorkersAction,  # noqa: ARG002
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> ListProjectConversationsObservation:
+    ) -> ListWorkersObservation:
         try:
             project_id, conversations = self._client.conversations()
         except ProjectToolError as exc:
-            return ListProjectConversationsObservation.from_text(
-                text=str(exc), is_error=True
-            )
+            return ListWorkersObservation.from_text(text=str(exc), is_error=True)
 
         if conversations:
             lines = [
@@ -200,15 +196,13 @@ class ListProjectConversationsExecutor(
             )
         else:
             text = f"Project {project_id} has no conversations yet."
-        return ListProjectConversationsObservation.from_text(
+        return ListWorkersObservation.from_text(
             text=text, project_id=project_id, conversations=conversations
         )
 
 
-class ReadProjectConversationExecutor(
-    ToolExecutor[ReadProjectConversationAction, ReadProjectConversationObservation]
-):
-    """GET a project conversation's recent messages and report them."""
+class ReadWorkerExecutor(ToolExecutor[ReadWorkerAction, ReadWorkerObservation]):
+    """GET a worker's recent messages and report them."""
 
     def __init__(
         self,
@@ -221,15 +215,20 @@ class ReadProjectConversationExecutor(
 
     def __call__(
         self,
-        action: ReadProjectConversationAction,
+        action: ReadWorkerAction,
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> ReadProjectConversationObservation:
+    ) -> ReadWorkerObservation:
         try:
             try:
                 target_id = UUID(action.conversation_id.strip()).hex
             except ValueError:
                 raise ProjectToolError(
                     f"{action.conversation_id!r} is not a conversation id."
+                )
+            if target_id == self._client.conv_state.id.hex:
+                raise ProjectToolError(
+                    "That is this conversation; read_worker reads a worker. "
+                    "Use list_workers to find the right id."
                 )
             project_id = self._client.project_id()
             response = self._client.request(
@@ -245,9 +244,7 @@ class ReadProjectConversationExecutor(
                     f"Unexpected conversation messages response: {exc}"
                 ) from exc
         except ProjectToolError as exc:
-            return ReadProjectConversationObservation.from_text(
-                text=str(exc), is_error=True
-            )
+            return ReadWorkerObservation.from_text(text=str(exc), is_error=True)
         if not lines:
             text = f"Conversation {target_id} has no messages yet."
         else:
@@ -255,9 +252,7 @@ class ReadProjectConversationExecutor(
                 f"Latest {len(lines)} messages of conversation {target_id}, "
                 "oldest first:\n\n" + "\n\n".join(lines)
             )
-        return ReadProjectConversationObservation.from_text(
-            text=text, conversation_id=target_id
-        )
+        return ReadWorkerObservation.from_text(text=text, conversation_id=target_id)
 
 
 def _transcript_line(message: dict[str, Any]) -> str:
@@ -343,10 +338,8 @@ def _held_refusal(conversation_id: str, status: str) -> str:
     return template.format(id=conversation_id)
 
 
-class MessageProjectConversationExecutor(
-    ToolExecutor[
-        MessageProjectConversationAction, MessageProjectConversationObservation
-    ]
+class MessageWorkerExecutor(
+    ToolExecutor[MessageWorkerAction, MessageWorkerObservation]
 ):
     """Send a message to a conversation of the caller's project.
 
@@ -372,9 +365,9 @@ class MessageProjectConversationExecutor(
 
     def __call__(
         self,
-        action: MessageProjectConversationAction,
+        action: MessageWorkerAction,
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> MessageProjectConversationObservation:
+    ) -> MessageWorkerObservation:
         try:
             try:
                 target_id = UUID(action.conversation_id.strip()).hex
@@ -388,8 +381,8 @@ class MessageProjectConversationExecutor(
             )
             if target is None:
                 raise ProjectToolError(
-                    f"{action.conversation_id} is not a conversation of this project. "
-                    "Use list_project_conversations to find the right id."
+                    f"{action.conversation_id} is not a worker of this project. "
+                    "Use list_workers to find the right id."
                 )
             if target.execution_status in HELD_FOR_USER_STATUSES:
                 raise ProjectToolError(
@@ -419,7 +412,7 @@ class MessageProjectConversationExecutor(
                         f"No answer from conversation {target_id} after "
                         f"{self._client.timeout:.0f} seconds. The message may "
                         "still be delivered. Do not send it again; check the "
-                        "conversation with list_project_conversations or tell "
+                        "conversation with list_workers or tell "
                         "the user."
                     ) from exc
                 if (
@@ -441,16 +434,14 @@ class MessageProjectConversationExecutor(
                     "been delivered; check before sending it again."
                 ) from exc
         except ProjectToolError as exc:
-            return MessageProjectConversationObservation.from_text(
-                text=str(exc), is_error=True
-            )
+            return MessageWorkerObservation.from_text(text=str(exc), is_error=True)
 
         outcome = _RUN_OUTCOMES.get(
             run, f"The server reported run outcome {run!r}."
         ).format(status=previous_status)
         text = (
             f"Message saved to conversation {target_id}. {outcome} "
-            "Check list_project_conversations before reporting what it did.\n"
+            "Check list_workers before reporting what it did.\n"
             + json.dumps(
                 {
                     "conversation_id": target_id,
@@ -459,7 +450,7 @@ class MessageProjectConversationExecutor(
                 }
             )
         )
-        return MessageProjectConversationObservation.from_text(
+        return MessageWorkerObservation.from_text(
             text=text,
             conversation_id=target_id,
             previous_status=previous_status,

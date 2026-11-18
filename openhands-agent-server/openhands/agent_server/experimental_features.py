@@ -109,9 +109,9 @@ PROJECTS = ExperimentalFeatureDefinition(
 )
 
 PROJECT_TOOL_NAMES: tuple[str, ...] = (
-    "list_project_conversations",
-    "message_project_conversation",
-    "read_project_conversation",
+    "list_workers",
+    "message_worker",
+    "read_worker",
     "write_artifact",
     "read_artifact",
     "list_artifacts",

@@ -41,18 +41,18 @@ class ProjectConversationSummary(BaseModel):
     updated_at: str | None = None
 
 
-# list_project_conversations
+# list_workers
 
 
-class ListProjectConversationsAction(Action):
-    """List the other conversations in this conversation's project."""
+class ListWorkersAction(Action):
+    """List the workers of the project this conversation coordinates."""
 
     @property
     def visualize(self) -> Text:
-        return Text("List project conversations", style="bold cyan")
+        return Text("List workers", style="bold cyan")
 
 
-class ListProjectConversationsObservation(Observation):
+class ListWorkersObservation(Observation):
     project_id: UnmaskedID | None = None
     conversations: list[ProjectConversationSummary] = Field(default_factory=list)
 
@@ -60,13 +60,11 @@ class ListProjectConversationsObservation(Observation):
     def visualize(self) -> Text:
         content = Text()
         if self.is_error:
-            content.append("Listing project conversations failed", style="bold red")
+            content.append("Listing workers failed", style="bold red")
             content.append("\n")
             content.append(self.text)
             return content
-        content.append(
-            f"{len(self.conversations)} project conversations", style="bold green"
-        )
+        content.append(f"{len(self.conversations)} workers", style="bold green")
         for conversation in self.conversations:
             content.append(f"\n[{conversation.attention}] ")
             content.append(conversation.title or conversation.conversation_id)
@@ -82,10 +80,9 @@ ARTIFACT_TEXT_MAX_BYTES = 32 * 1024
 
 
 _LIST_DESCRIPTION = (
-    "List the conversations of the project this conversation coordinates or belongs "
-    "to: every other conversation tagged with the same project, including the "
-    "ones you started with start_child_conversation.\n\n"
-    "Conversations come grouped by `attention`: `needs_you` (waiting for "
+    "List the workers of the project you coordinate: the conversations you "
+    "started with start_child_conversation.\n\n"
+    "Workers come grouped by `attention`: `needs_you` (waiting for "
     "confirmation, paused, error or stuck), `asking` (finished with a "
     "question for the user, shown after `asks:`), `working` (running), "
     "`idle` (not running and not resolved) and "
@@ -97,10 +94,8 @@ _LIST_DESCRIPTION = (
 )
 
 
-class ListProjectConversationsTool(
-    ToolDefinition[ListProjectConversationsAction, ListProjectConversationsObservation]
-):
-    """Tool that lists the conversations of the caller's project."""
+class ListWorkersTool(ToolDefinition[ListWorkersAction, ListWorkersObservation]):
+    """Tool that lists the workers of the caller's project."""
 
     # Attached by the host that runs the projects API, not picked from the
     # catalog.
@@ -123,17 +118,16 @@ class ListProjectConversationsTool(
         """
         if params:
             raise ValueError(
-                "ListProjectConversationsTool does not accept parameters: "
-                f"{sorted(params)}"
+                f"ListWorkersTool does not accept parameters: {sorted(params)}"
             )
-        from openhands.tools.project.impl import ListProjectConversationsExecutor
+        from openhands.tools.project.impl import ListWorkersExecutor
 
         return [
             cls(
                 description=_LIST_DESCRIPTION,
-                action_type=ListProjectConversationsAction,
-                observation_type=ListProjectConversationsObservation,
-                executor=ListProjectConversationsExecutor(conv_state, server_url),
+                action_type=ListWorkersAction,
+                observation_type=ListWorkersObservation,
+                executor=ListWorkersExecutor(conv_state, server_url),
                 annotations=ToolAnnotations(
                     readOnlyHint=True,
                     destructiveHint=False,
@@ -144,16 +138,16 @@ class ListProjectConversationsTool(
         ]
 
 
-# message_project_conversation
+# message_worker
 
 
-class MessageProjectConversationAction(Action):
-    """Send a follow-up message to another conversation in this project."""
+class MessageWorkerAction(Action):
+    """Send a follow-up message to one of this project's workers."""
 
     conversation_id: str = Field(
         description=(
-            "Id of the conversation to message, exactly as "
-            "list_project_conversations or start_child_conversation returned it."
+            "Id of the worker to message, exactly as "
+            "list_workers or start_child_conversation returned it."
         )
     )
     message: str = Field(
@@ -167,13 +161,13 @@ class MessageProjectConversationAction(Action):
     @property
     def visualize(self) -> Text:
         content = Text()
-        content.append("Message project conversation", style="bold cyan")
+        content.append("Message worker", style="bold cyan")
         content.append(f" {self.conversation_id}\n")
         content.append(self.message)
         return content
 
 
-class MessageProjectConversationObservation(Observation):
+class MessageWorkerObservation(Observation):
     conversation_id: UnmaskedID | None = None
     previous_status: str | None = None
     run: str | None = Field(
@@ -189,7 +183,7 @@ class MessageProjectConversationObservation(Observation):
     def visualize(self) -> Text:
         content = Text()
         if self.is_error:
-            content.append("Message to project conversation failed", style="bold red")
+            content.append("Message to worker failed", style="bold red")
             content.append("\n")
             content.append(self.text)
             return content
@@ -200,9 +194,9 @@ class MessageProjectConversationObservation(Observation):
 
 
 _MESSAGE_DESCRIPTION = (
-    "Send a follow-up message to another conversation in your project and "
-    "ask it to run: to correct, resume or extend its task. Only conversations that "
-    "list_project_conversations reports can be messaged; start a new worker with "
+    "Send a follow-up message to one of your project's workers and "
+    "ask it to run: to correct, resume or extend its task. Only workers that "
+    "list_workers reports can be messaged; start a new worker with "
     "start_child_conversation for a distinct task.\n\n"
     "A running conversation receives the message in its current run; a finished "
     "or idle conversation is run to handle it. A conversation that waits on the "
@@ -212,17 +206,13 @@ _MESSAGE_DESCRIPTION = (
     "you should tell the user what it waits on. A successful result means "
     "the message was saved and a run was requested, not that the conversation "
     "acted on it; check "
-    "list_project_conversations or read the conversation before reporting "
+    "list_workers or read the conversation before reporting "
     "progress. After an error that says the message may still be delivered, "
     "do not resend it."
 )
 
 
-class MessageProjectConversationTool(
-    ToolDefinition[
-        MessageProjectConversationAction, MessageProjectConversationObservation
-    ]
-):
+class MessageWorkerTool(ToolDefinition[MessageWorkerAction, MessageWorkerObservation]):
     """Tool that sends a follow-up message to a conversation of the caller's project."""
 
     user_selectable: ClassVar[bool] = False
@@ -244,17 +234,16 @@ class MessageProjectConversationTool(
         """
         if params:
             raise ValueError(
-                "MessageProjectConversationTool does not accept parameters: "
-                f"{sorted(params)}"
+                f"MessageWorkerTool does not accept parameters: {sorted(params)}"
             )
-        from openhands.tools.project.impl import MessageProjectConversationExecutor
+        from openhands.tools.project.impl import MessageWorkerExecutor
 
         return [
             cls(
                 description=_MESSAGE_DESCRIPTION,
-                action_type=MessageProjectConversationAction,
-                observation_type=MessageProjectConversationObservation,
-                executor=MessageProjectConversationExecutor(conv_state, server_url),
+                action_type=MessageWorkerAction,
+                observation_type=MessageWorkerObservation,
+                executor=MessageWorkerExecutor(conv_state, server_url),
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
                     destructiveHint=False,
@@ -520,16 +509,14 @@ class ListArtifactsTool(ToolDefinition[ListArtifactsAction, ListArtifactsObserva
         ]
 
 
-# read_project_conversation
+# read_worker
 
 
-class ReadProjectConversationAction(Action):
-    """Read the latest messages of one conversation of this project."""
+class ReadWorkerAction(Action):
+    """Read the latest messages of one of this project's workers."""
 
     conversation_id: str = Field(
-        description=(
-            "Id of the conversation to read, as list_project_conversations returned it."
-        )
+        description=("Id of the worker to read, as list_workers returned it.")
     )
     limit: int = Field(
         default=20, ge=1, le=100, description="How many recent messages to read."
@@ -537,12 +524,10 @@ class ReadProjectConversationAction(Action):
 
     @property
     def visualize(self) -> Text:
-        return Text(
-            f"Read project conversation {self.conversation_id}", style="bold cyan"
-        )
+        return Text(f"Read worker {self.conversation_id}", style="bold cyan")
 
 
-class ReadProjectConversationObservation(Observation):
+class ReadWorkerObservation(Observation):
     conversation_id: UnmaskedID | None = None
 
     @property
@@ -551,18 +536,16 @@ class ReadProjectConversationObservation(Observation):
 
 
 _READ_DESCRIPTION = (
-    "Read the latest messages of one conversation of your project: what the "
-    "user, the agent and other conversations said, and the agent's finish "
+    "Read the latest messages of one of your project's workers: what the "
+    "user, the worker and you said, and the agent's finish "
     "message, oldest first, without its tool calls. Use it to catch up on a "
-    "conversation before you report on it or send it a follow-up; the updates "
+    "worker before you report on it or send it a follow-up; the updates "
     "you receive only carry each turn's final message."
 )
 
 
-class ReadProjectConversationTool(
-    ToolDefinition[ReadProjectConversationAction, ReadProjectConversationObservation]
-):
-    """Tool that reads the recent messages of a project conversation."""
+class ReadWorkerTool(ToolDefinition[ReadWorkerAction, ReadWorkerObservation]):
+    """Tool that reads the recent messages of a project's worker."""
 
     user_selectable: ClassVar[bool] = False
 
@@ -576,17 +559,16 @@ class ReadProjectConversationTool(
         """Create the tool bound to the current conversation."""
         if params:
             raise ValueError(
-                "ReadProjectConversationTool does not accept parameters: "
-                f"{sorted(params)}"
+                f"ReadWorkerTool does not accept parameters: {sorted(params)}"
             )
-        from openhands.tools.project.impl import ReadProjectConversationExecutor
+        from openhands.tools.project.impl import ReadWorkerExecutor
 
         return [
             cls(
                 description=_READ_DESCRIPTION,
-                action_type=ReadProjectConversationAction,
-                observation_type=ReadProjectConversationObservation,
-                executor=ReadProjectConversationExecutor(conv_state, server_url),
+                action_type=ReadWorkerAction,
+                observation_type=ReadWorkerObservation,
+                executor=ReadWorkerExecutor(conv_state, server_url),
                 annotations=ToolAnnotations(
                     readOnlyHint=True,
                     destructiveHint=False,
@@ -824,12 +806,12 @@ class ResolveConversationTool(
         ]
 
 
-register_tool(ListProjectConversationsTool.name, ListProjectConversationsTool)
-register_tool(ReadProjectConversationTool.name, ReadProjectConversationTool)
+register_tool(ListWorkersTool.name, ListWorkersTool)
+register_tool(ReadWorkerTool.name, ReadWorkerTool)
 register_tool(WriteArtifactTool.name, WriteArtifactTool)
 register_tool(ReadArtifactTool.name, ReadArtifactTool)
 register_tool(ListArtifactsTool.name, ListArtifactsTool)
-register_tool(MessageProjectConversationTool.name, MessageProjectConversationTool)
+register_tool(MessageWorkerTool.name, MessageWorkerTool)
 register_tool(ReadProjectMemoryTool.name, ReadProjectMemoryTool)
 register_tool(UpdateProjectMemoryTool.name, UpdateProjectMemoryTool)
 register_tool(ResolveConversationTool.name, ResolveConversationTool)

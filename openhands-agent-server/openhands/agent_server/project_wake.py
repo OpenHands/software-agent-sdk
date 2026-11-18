@@ -13,7 +13,7 @@ stuck) sends :func:`~openhands.agent_server.project_prompts.stop_header`, and a
 pause is saved for awareness (:func:`notify_coordinator_of_stop`). Updates are
 delivered like a message sent with ``refuse_pending_confirmation``, so they
 never run a coordinator that waits on the user (the message is kept and seen
-on its next run). The coordinator reads more with ``read_project_conversation``.
+on its next run). The coordinator reads more with ``read_worker``.
 
 :func:`reconcile_coordinator_updates` catches up after a restart: a member
 whose coordinator-started turn ended while no update reached the coordinator

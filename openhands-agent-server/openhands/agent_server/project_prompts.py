@@ -1,7 +1,7 @@
 """What a project conversation is told about the conversations that steer it.
 
 A coordinator starts workers with ``start_child_conversation`` and
-steers them with ``message_project_conversation``. Each of those agents should
+steers them with ``message_worker``. Each of those agents should
 know who is talking to it, so it does not take the coordinator's words for the
 user's, and so it knows its final message is what gets relayed.
 
@@ -82,7 +82,7 @@ def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> s
         "project, not from the user. It finished its turn; its final message follows. "
         "Pass on to the user what they need to know, send that conversation "
         "a follow-up only if the work needs one (it already has what the "
-        "user told it), or read more of it with read_project_conversation. "
+        "user told it), or read more of it with read_worker. "
         "If nothing needs doing, end your turn.]"
     )
 
@@ -124,7 +124,7 @@ def stop_header(title: str | None, conversation_id: UUID, *, status: str) -> str
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "
         f"project, not from the user. {outcome}, or read more of it with "
-        "read_project_conversation. If nothing needs doing, end your turn.]"
+        "read_worker. If nothing needs doing, end your turn.]"
     )
 
 

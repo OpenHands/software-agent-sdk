@@ -947,8 +947,8 @@ async def test_with_projects_off_a_new_conversation_gets_no_project_tools(
                 llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[
                     Tool(name="terminal"),
-                    Tool(name="list_project_conversations"),
-                    Tool(name="message_project_conversation"),
+                    Tool(name="list_workers"),
+                    Tool(name="message_worker"),
                 ],
             )
         }

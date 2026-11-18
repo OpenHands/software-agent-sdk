@@ -103,9 +103,9 @@ coordinator is not on the board, so it does not."""
 
 
 PROJECT_COORDINATOR_TOOLS = (
-    "list_project_conversations",
-    "message_project_conversation",
-    "read_project_conversation",
+    "list_workers",
+    "message_worker",
+    "read_worker",
     "start_child_conversation",
     *PROJECT_MEMBER_TOOLS,
 )

@@ -11,7 +11,7 @@ when its `project` tag holds the project's id (hex), so a child started with
 copied tags. `GET /api/projects/{id}/conversations` lists the members grouped by
 what they need from the user (`attention`: `needs_you`, `asking`,
 `working`, `idle`, `resolved`, derived from `execution_status` and tags). Two server-executed
-tools, `list_project_conversations` and `message_project_conversation`, give a
+tools, `list_workers` and `message_worker`, give a
 coordinator agent typed access to the same list and a way to steer a conversation.
 Messages go through the generic `POST /api/conversations/{conversation_id}/events`.
 With `refuse_pending_confirmation` it never runs a conversation that is waiting for
@@ -77,12 +77,12 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.persist-restart`: projects and membership survive a server restart.
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations lose the `project` tag and the board's tags (their other tags stay).
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
-- `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
+- `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_workers` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
 - `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the user writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the user in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
-- `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_project_conversation` tool reads it.
-- `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the user), and runs again.
-- `F36.mention`: tools and headers name conversations as mentions, `[Title](conversation:<id hex>)`: `list_project_conversations` lists each conversation that way, and a coordinator asked which conversation handles a task answers with that mention.
-- `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
+- `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_worker` tool reads it.
+- `F36.tool-message`: `message_worker` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the user), and runs again.
+- `F36.mention`: tools and headers name conversations as mentions, `[Title](conversation:<id hex>)`: `list_workers` lists each conversation that way, and a coordinator asked which conversation handles a task answers with that mention.
+- `F36.tool-message-refuses-confirmation`: `message_worker` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
 
 ## How to get to it (agent POV)
 
@@ -152,7 +152,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   422 when the sender is unknown, is the target, or is in a project the
   target is not in.
 - Agent tools (registered by the agent-server, not part of the default
-  preset): `list_project_conversations`, `message_project_conversation`,
+  preset): `list_workers`, `message_worker`,
   `write_artifact`, `list_artifacts` and `read_artifact` from
   `openhands.tools.project`, alongside `start_child_conversation`. They read
   the project from the calling conversation's `project` tag and call this
@@ -241,7 +241,7 @@ Preconditions:
   ```sh
   CAT=$(control-agent-server conversation start --no-run --title qa-f36-cat --tag insidercat=self \
     --body-json '{"agent_launch_additions": {"system_prompt_filename": "system_prompt_project_coordinator.j2"}}' \
-    --tools terminal,file_editor,start_child_conversation,list_project_conversations,message_project_conversation,read_project_conversation,write_artifact,read_artifact,list_artifacts,read_project_memory,update_project_memory,resolve_conversation \
+    --tools terminal,file_editor,start_child_conversation,list_workers,message_worker,read_worker,write_artifact,read_artifact,list_artifacts,read_project_memory,update_project_memory,resolve_conversation \
     --print-id)
   P2=$(control-agent-server api POST /api/projects --json "{\"name\": \"qa-f36-two\", \"coordinator_conversation_id\": \"$CAT\"}" \
     --expect 201 --field id)
@@ -589,7 +589,7 @@ Preconditions:
   Requires: `F36.coordinator`
   Needs: `llm`
   ```sh
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Start one child conversation titled qa-f36-child with isolation shared whose task is: reply with the single word done and finish. Then call list_project_conversations once and tell me what you see. Do nothing else.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Start one child conversation titled qa-f36-child with isolation shared whose task is: reply with the single word done and finish. Then call list_workers once and tell me what you see. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ActionEvent --contains start_child_conversation --expect-min 1
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains qa-f36-child --expect-min 2 --save F36.tool-start-and-list/events
   CHILD=$(control-agent-server api GET "/api/projects/$P2/conversations" --field conversations \
@@ -626,7 +626,7 @@ Preconditions:
   ```sh
   control-agent-server api GET "/api/projects/$P2/conversations/$CHILD/messages" --expect 200 \
     --check messages.0.source eq user --check messages.0.sender matches '^conversation:' --save F36.read/rest
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use read_project_conversation on the qa-f36-child conversation and tell me its last message. Do nothing else.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use read_worker on the qa-f36-child conversation and tell me its last message. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'oldest first' --expect-min 1 --save F36.read/events
   ```
   The transcript lists the coordinator's task message first; the tool reads it.
@@ -634,7 +634,7 @@ Preconditions:
   Requires: `F36.tool-start-and-list`
   Needs: `llm`
   ```sh
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_project_conversation to ask the qa-f36-child conversation to reply with the single word again. Do nothing else.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_worker to ask the qa-f36-child conversation to reply with the single word again. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'Message saved to conversation' --expect-min 1 --save F36.tool-message/events
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
@@ -666,7 +666,7 @@ Preconditions:
   Requires: `F36.attention`, `F36.tool-start-and-list`
   Needs: `llm`, `tmux`
   ```sh
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_project_conversation to tell the qa-f36-asks conversation: go ahead. Then stop.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_worker to tell the qa-f36-asks conversation: go ahead. Then stop.'
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'would approve that action' --expect-min 1 \
     --save F36.tool-message-refuses-confirmation/events
   control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
