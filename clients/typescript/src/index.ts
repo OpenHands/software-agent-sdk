@@ -245,6 +245,7 @@ export type {
   AgentKind,
   ACPServerKind,
   ProfileVerificationSettings,
+  ProfileSandboxSettings,
   OpenHandsAgentProfile,
   ACPAgentProfile,
   AgentProfile,

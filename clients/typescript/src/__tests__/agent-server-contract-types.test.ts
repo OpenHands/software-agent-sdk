@@ -30,6 +30,7 @@ import type {
   AgentProfileSaveInput,
   AgentProfileSummary,
   OpenHandsAgentProfile,
+  ProfileSandboxSettings,
 } from '../models/agent-profile';
 import type {
   AgentServerArchiveQuery,
@@ -271,11 +272,24 @@ describe('Agent Server generated contract aliases', () => {
     );
   });
 
-  it('declares every agent-profile payload field the server sends, and no others', () => {
+  it('matches the pinned profile contract plus the additive sandbox field', () => {
+    // The generated contract follows the released agent-server pin. The new
+    // optional field is declared ahead of the next release; do not regenerate
+    // the pinned contract from unreleased source or relax checks for other keys.
     assertType<Equal<keyof AgentProfileSummary, keyof GeneratedAgentProfileSummary>>(true);
-    assertType<Equal<keyof OpenHandsAgentProfile, keyof GeneratedOpenHandsAgentProfile>>(true);
-    assertType<Equal<keyof ACPAgentProfile, keyof GeneratedACPAgentProfile>>(true);
+    assertType<
+      Equal<keyof OpenHandsAgentProfile, keyof GeneratedOpenHandsAgentProfile | 'sandbox'>
+    >(true);
+    assertType<Equal<keyof ACPAgentProfile, keyof GeneratedACPAgentProfile | 'sandbox'>>(true);
     assertType<Equal<keyof AgentProfileDiagnostics, keyof GeneratedAgentProfileDiagnostics>>(true);
+  });
+
+  it('keeps sandbox metadata typed, optional and nullable on profiles and save inputs', () => {
+    type ExpectedSandbox = { sandbox?: ProfileSandboxSettings | null };
+    assertType<Equal<ProfileSandboxSettings, { spec_id: string }>>(true);
+    assertType<Equal<Pick<OpenHandsAgentProfile, 'sandbox'>, ExpectedSandbox>>(true);
+    assertType<Equal<Pick<ACPAgentProfile, 'sandbox'>, ExpectedSandbox>>(true);
+    assertType<Equal<Pick<AgentProfileSaveInput, 'sandbox'>, ExpectedSandbox>>(true);
   });
 
   it('preserves optional nullable ACP effort in profiles and save inputs', () => {
