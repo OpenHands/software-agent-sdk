@@ -118,6 +118,30 @@ def test_gateway_deadline_includes_cold_conversation_load(client, monkeypatch):
     event_service.send_message.assert_not_awaited()
 
 
+def test_gateway_turn_refuses_a_sender_conversation(client):
+    event_service = AsyncMock(spec=EventService)
+    event_service._gateway_run_lock = asyncio.Lock()
+
+    async def load(conversation_id):
+        return event_service
+
+    update_test_context(
+        client.app,
+        conversation_service=SimpleNamespace(get_event_service=load),
+    )
+
+    response = client.post(
+        f"/api/conversations/{uuid4()}/events/_gateway/run",
+        json={
+            "content": [{"type": "text", "text": "Do not save"}],
+            "sender_conversation_id": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 422
+    event_service.send_message.assert_not_awaited()
+
+
 class TestSendMessageFromAnotherConversation:
     """``sender_conversation_id`` on ``POST .../events``."""
 
