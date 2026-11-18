@@ -8,6 +8,7 @@ can equally back a status command, a stop hook, or a server endpoint.
 
 import contextlib
 import json
+import math
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -119,7 +120,9 @@ def _parse_verdict(message: Message) -> GoalVerdict:
 
     try:
         score = float(data.get("score", 0.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        score = 0.0
+    if not math.isfinite(score):
         score = 0.0
     score = max(0.0, min(1.0, score))
 
