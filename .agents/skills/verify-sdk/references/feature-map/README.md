@@ -38,9 +38,13 @@ the way a user's program does (see [recipes.md](../recipes.md)).
 ## Baseline preconditions
 
 - `uv sync --dev` has run in the repository root.
-- Live bullets: `DEEPSEEK_API_KEY` is exported. `control-sdk new --llm
-  deepseek-flash` runs use it, and `control-sdk exec --model-env` hands it to
-  examples and the integration runner as `LLM_API_KEY`/`LLM_MODEL`.
+- Live bullets: `DEEPSEEK_API_KEY` is exported, or `LLM_BASE_URL` and
+  `LLM_API_KEY` name a LiteLLM proxy that serves `deepseek-v4.1-flash` (then
+  `deepseek-flash` goes through the proxy, as `control-agent-server llm preset
+  deepseek` does; `deepseek-pro` still needs `DEEPSEEK_API_KEY`). `control-sdk
+  new --llm deepseek-flash` runs use it, and `control-sdk exec --model-env`
+  hands it to examples and the integration runner as
+  `LLM_API_KEY`/`LLM_MODEL`/`LLM_BASE_URL`.
 - Run commands from the repository root.
 - `control-sdk` and `sdk-map` are on `PATH`:
   `export PATH="$PWD/.agents/skills/verify-sdk/scripts:$PATH"`.
