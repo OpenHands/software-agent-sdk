@@ -401,6 +401,14 @@ class Observation(Schema, ABC):
         default=False, description="Whether the observation indicates an error"
     )
 
+    is_in_progress: bool = Field(
+        default=False,
+        description=(
+            "Whether the tool confirms that the requested operation is still running. "
+            "Successful in-progress observations do not count as repetition loops."
+        ),
+    )
+
     def follow_up_events(self) -> "Sequence[Event]":
         """Events to record right after this observation, in order.
 
