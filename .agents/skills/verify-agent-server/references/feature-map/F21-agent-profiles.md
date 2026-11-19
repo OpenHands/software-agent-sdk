@@ -1007,11 +1007,14 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   SUMMARY=$(jq -c '.profiles[0] | with_entries(.value = true)' "$D/list.json")
   OPENHANDS=$(jq -c '.profile | with_entries(.value = true)' "$D/openhands.json")
   ACPKEYS=$(jq -c '.profile | with_entries(.value = true)' "$D/acp.json")
+  test "$(jq -c '[.profile | has("sandbox")]' "$D/openhands.json" "$D/acp.json" | paste -sd,)" = '[true],[true]'
+  CONTRACT_OPENHANDS=$(jq -c '.profile | del(.sandbox) | with_entries(.value = true)' "$D/openhands.json")
+  CONTRACT_ACP=$(jq -c '.profile | del(.sandbox) | with_entries(.value = true)' "$D/acp.json")
   DIAG=$(jq -c 'with_entries(.value = true)' "$D/diagnostics.json")
   DIST="$PWD/clients/typescript/dist"
   printf '%s\n' "import type { AgentProfileInfo, OpenHandsAgentProfile, AcpAgentProfile, AgentProfileDiagnostics } from '$DIST/generated/agent-server-schema.js';" \
     "import type { Shape } from './shape.js';" "export const summary: Shape<AgentProfileInfo> = $SUMMARY;" \
-    "export const openhands: Shape<OpenHandsAgentProfile> = $OPENHANDS;" "export const acp: Shape<AcpAgentProfile> = $ACPKEYS;" \
+    "export const openhands: Shape<OpenHandsAgentProfile> = $CONTRACT_OPENHANDS;" "export const acp: Shape<AcpAgentProfile> = $CONTRACT_ACP;" \
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/contract.ts"
   printf '%s\n' "import type { AgentProfileSummary, OpenHandsAgentProfile, ACPAgentProfile, AgentProfileDiagnostics } from '$DIST/index.js';" \
     "import type { Shape } from './shape.js';" "export const summary: Shape<AgentProfileSummary> = $SUMMARY;" \
@@ -1029,7 +1032,10 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   `disabled_skills`, `meta_profile_ref` and
   `enable_classify_and_switch_llm_tool` (and no `skills`, which a save
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
-  `acp_startup_timeout`. The client's unit test
+  `acp_startup_timeout`. Both profile kinds also carry `sandbox` (`null`
+  when unset, `F21.sandbox-metadata`), which the exported types declare;
+  the generated contract is built from the published server schema and may
+  not list it yet, so `contract.ts` checks every other key. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
   generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`,
   and `acp_effort` (which the server's ACP profile carries) on both the
