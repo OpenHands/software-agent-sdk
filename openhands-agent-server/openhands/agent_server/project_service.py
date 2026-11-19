@@ -200,7 +200,7 @@ async def _project_prompt(
     worker, or ``None`` for the coordinator, whose id is ``coordinator_id``.
     Returns the block's body (``None``
     when the project cannot be read) and how the starter relates to the
-    project, for the header of the worker's brief.
+    project, for the sender line of the worker's brief.
     """
     try:
         project = (
@@ -720,7 +720,7 @@ class ProjectService:
         It keeps what makes it part of the project: the ``project`` tag, the
         coordinator's workspace (in a worktree when asked), the parent link to
         the coordinator, the user's confirmation policy, plugins, hooks and
-        secrets, the coordinator as sender of the task (with a header saying
+        secrets, the coordinator as sender of the task (with a sender line saying
         so), the worker's prompt and project context, and the project tools a
         worker uses. It does not take the coordinator's agent, launch
         additions or client tools.
@@ -744,7 +744,7 @@ class ProjectService:
             secrets_encrypted=False,
             client_tools=[],
             agent_launch_additions=None,
-            # The coordinator sends the task, which opens with its header.
+            # The coordinator sends the task, which opens with its sender line.
             initial_message=SendMessageRequest(
                 role="user",
                 content=[TextContent(text=request.task)],

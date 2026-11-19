@@ -31,7 +31,7 @@ from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
 )
-from openhands.agent_server.message_sender import SenderError, sender_message_header
+from openhands.agent_server.message_sender import SenderError, sender_message_line
 from openhands.agent_server.models import (
     AskUserAnswerRequest,
     ConfirmationResponseRequest,
@@ -46,7 +46,7 @@ from openhands.agent_server.persistence import (
     SettingsStore,
     run_store,
 )
-from openhands.agent_server.project_wake import project_sender_header
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -297,22 +297,22 @@ async def send_message(
         if context.conversation_service is None:
             raise Unavailable("Conversation service is not available")
         try:
-            header = await sender_message_header(
+            sender_line = await sender_message_line(
                 context.conversation_service,
                 request.sender_conversation_id,
                 conversation_id,
             )
-            header = (
-                await project_sender_header(
+            sender_line = (
+                await project_sender_line(
                     context.conversation_service,
                     request.sender_conversation_id,
                     event_service.stored.tags,
                 )
-                or header
+                or sender_line
             )
         except SenderError as e:
             raise Unprocessable(str(e))
-        content.insert(0, TextContent(text=header))
+        content.insert(0, TextContent(text=sender_line))
         sender = conversation_sender(request.sender_conversation_id)
     message = Message(role=request.role, content=content)
     # The inner gateway route holds the lock for its whole turn; refuse before

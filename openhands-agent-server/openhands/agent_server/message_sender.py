@@ -14,7 +14,7 @@ class SenderError(ValueError):
     """The ``sender_conversation_id`` of a message cannot send it."""
 
 
-def sender_header(title: str | None, conversation_id: UUID) -> str:
+def sender_line(title: str | None, conversation_id: UUID) -> str:
     """First line of a message one conversation sends another.
 
     The sender is a conversation mention, so the receiving agent can copy it
@@ -28,7 +28,7 @@ def sender_header(title: str | None, conversation_id: UUID) -> str:
     )
 
 
-async def sender_message_header(
+async def sender_message_line(
     service: "ConversationService", sender_id: UUID, target_id: UUID
 ) -> str:
     """The line a message from ``sender_id`` to ``target_id`` opens with.
@@ -41,4 +41,4 @@ async def sender_message_header(
     sender = await service.get_conversation(sender_id)
     if sender is None:
         raise SenderError("Sender conversation not found")
-    return sender_header(sender.title, sender_id)
+    return sender_line(sender.title, sender_id)
