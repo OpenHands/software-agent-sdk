@@ -229,6 +229,7 @@ class DelegateExecutor(ToolExecutor):
                 # Use max_iteration_per_run from agent definition if set
                 conv_kwargs: dict = {
                     "agent": worker_agent,
+                    "secrets": parent_conversation.state.secret_registry.secret_sources,
                     "workspace": workspace_path,
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,

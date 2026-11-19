@@ -1,8 +1,10 @@
 """Tests for delegation tools."""
 
 import json
+import secrets
 import uuid
 import warnings
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +12,7 @@ import pytest
 from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
+from openhands.sdk import Agent, LocalConversation
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -619,6 +622,33 @@ def test_spawn_no_persistence_when_parent_has_none():
     sub_conv = executor._sub_agents["sub1"]
     # The sub-conversation should have no persistence_dir
     assert sub_conv._state.persistence_dir is None
+
+
+def test_spawn_inherits_parent_secrets(tmp_path: Path):
+    """Spawned sub-agents can use and mask the parent's secrets."""
+    register_builtins_agents()
+    token = secrets.token_hex(32)
+    llm = LLM(model="openai/gpt-4o", api_key=SecretStr("test-key"))
+    executor = DelegateExecutor()
+    with (
+        closing(executor),
+        closing(
+            LocalConversation(
+                agent=Agent(llm=llm),
+                workspace=tmp_path,
+                visualizer=None,
+                secrets={"DELEGATE_PROBE_TOKEN": token},
+            )
+        ) as parent,
+    ):
+        observation = executor(DelegateAction(command="spawn", ids=["sub1"]), parent)
+
+        assert "Successfully spawned" in observation.text
+        registry = executor._sub_agents["sub1"].state.secret_registry
+        assert registry.get_secrets_as_env_vars("echo $DELEGATE_PROBE_TOKEN") == {
+            "DELEGATE_PROBE_TOKEN": token
+        }
+        assert token not in registry.mask_secrets_in_output(f"value={token}")
 
 
 def test_legacy_executor_warns_before_its_removal_and_still_closes(monkeypatch):
