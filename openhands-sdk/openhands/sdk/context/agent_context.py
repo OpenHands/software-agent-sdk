@@ -3,14 +3,11 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, NamedTuple
+from typing import Annotated, Any, NamedTuple
 
 from pydantic import (
     BaseModel,
     Field,
-    SecretStr,
-    ValidationInfo,
-    field_serializer,
     field_validator,
     model_validator,
 )
@@ -32,10 +29,7 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret_dict,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 logger = get_logger(__name__)
@@ -180,7 +174,17 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
-    secrets: Mapping[str, SecretValue] | None = Field(
+    # Raw-string entries are encrypted at rest and decrypted on load; an entry
+    # that cannot be decrypted, or is blank, is kept as given. SecretSource
+    # entries serialize through their own secret fields.
+    secrets: Annotated[
+        Mapping[str, SecretValue] | None,
+        SecretField(
+            undecryptable="keep",
+            keep_unusable=True,
+            serialized_as=dict[str, Any] | None,
+        ),
+    ] = Field(
         default=None,
         description=(
             "Dictionary mapping secret keys to values or secret sources. "
@@ -204,45 +208,6 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
-
-    @field_validator("secrets", mode="before")
-    @classmethod
-    def _decrypt_secrets(cls, value: Any, info: ValidationInfo) -> Any:
-        """Decrypt persisted raw-string ``secrets`` values when a cipher
-        is in context.
-
-        ``_serialize_secrets`` writes each raw-string value through
-        :func:`serialize_secret`, which produces Fernet ciphertext under
-        cipher context. Without a matching ``mode='before'`` decryption
-        validator, that ciphertext would survive round-trips through
-        :class:`StartConversationRequest` (whose
-        ``_populate_agent_from_settings`` validator runs *without*
-        cipher context) and get injected into the agent's system prompt
-        as-is — same bug class as any secret-bearing dict field that
-        round-trips without a matching decryption validator (e.g. MCP
-        ``env`` / ``headers``).
-
-        ``SecretSource`` entries are dict-shaped on the wire (Pydantic
-        models), so they're skipped by :func:`validate_secret_dict`'s
-        ``isinstance(value, str)`` gate and continue to construct
-        normally through their own validators.
-        """
-        return validate_secret_dict(value, info, description="AgentContext secrets")
-
-    @field_serializer("secrets", when_used="always")
-    def _serialize_secrets(
-        self, value: Mapping[str, SecretValue] | None, info
-    ) -> dict[str, Any] | None:
-        """Mask raw-string ``secrets`` values via :func:`serialize_secret`."""
-        if value is None:
-            return None
-        out: dict[str, Any] = {}
-        for k, v in value.items():
-            if isinstance(v, SecretSource):
-                out[k] = v.model_dump(mode=info.mode, context=info.context)
-            else:
-                out[k] = serialize_secret(SecretStr(v), info)
-        return out
 
     @field_validator("skills")
     @classmethod

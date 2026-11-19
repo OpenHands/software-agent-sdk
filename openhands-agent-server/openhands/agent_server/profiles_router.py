@@ -24,11 +24,13 @@ from openhands.agent_server.persistence import (
     FileSettingsStore,
     PersistedSettings,
     ProviderConnectionStore,
+    run_store,
 )
 from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMError,
+    LLMNoResponseError,
     LLMRateLimitError,
     LLMServiceUnavailableError,
     LLMTimeoutError,
@@ -289,7 +291,8 @@ class ValidateProfileResponse(BaseModel):
 
 # Errors that should NOT block saving — they are transient and unrelated to
 # the correctness of the configuration itself.
-_TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError)
+# An empty HTTP-200 completion is a provider glitch the runtime retries (#6085).
+_TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError, LLMNoResponseError)
 
 # Upper bound, in seconds, on the single pre-flight attempt. A profile's own
 # ``timeout`` (300 s by default) and retry policy are for real conversations;
@@ -350,7 +353,7 @@ async def validate_profile(
     # Check a draft linked to a provider connection with the connection's
     # credentials, as activation and ``switch_llm`` run it. No-op without
     # ``provider_connection_id``; a dangling link is a 422 naming it.
-    llm = store.resolve_provider_connection(llm, cipher=cipher)
+    llm = await run_store(store.resolve_provider_connection, llm, cipher=cipher)
 
     messages = [
         Message(

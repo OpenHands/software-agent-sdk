@@ -11,9 +11,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.conversation_lease import ConversationOwnershipLostError
-from openhands.agent_server.conversation_service import (
-    CredentialBindingActivationRequired,
-)
+from openhands.agent_server.exceptions import CredentialBindingActivationRequired
 
 
 @pytest.fixture
