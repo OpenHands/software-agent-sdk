@@ -23,6 +23,7 @@ from openhands.sdk.tool.builtins.classify_and_switch_llm import (
     build_router_classifier_messages,
     parse_class_index,
     parse_direct_model,
+    parse_router_route,
     render_direct_prompt,
 )
 
@@ -257,6 +258,31 @@ def test_parse_direct_model_matches_saved_profile_names_case_insensitively() -> 
     )
 
 
+def test_parse_router_route_accepts_unique_underlying_model() -> None:
+    router = RouterLLM(
+        llms_for_routing={
+            "gpt-5.5-copy": _make_llm("openhands/gpt-5.5", "gpt-copy"),
+            "gpt-sol": _make_llm("openhands/gpt-sol", "gpt-sol"),
+        }
+    )
+
+    assert (
+        parse_router_route('{"route": "openhands/gpt-5.5"}', router) == "gpt-5.5-copy"
+    )
+    assert parse_router_route("I choose openhands/gpt-sol", router) == "gpt-sol"
+
+
+def test_parse_router_route_rejects_ambiguous_underlying_model() -> None:
+    router = RouterLLM(
+        llms_for_routing={
+            "primary": _make_llm("openhands/gpt-5.5", "primary"),
+            "secondary": _make_llm("openhands/gpt-5.5", "secondary"),
+        }
+    )
+
+    assert parse_router_route('{"route": "openhands/gpt-5.5"}', router) is None
+
+
 def test_recent_messages_text_takes_last_n() -> None:
     from openhands.sdk.event.llm_convertible.message import MessageEvent
 
@@ -468,6 +494,26 @@ def test_executor_router_llm_switches_to_selected_route(
     assert obs.active_model == "slow-model"
     assert isinstance(conversation.agent.llm, RouterLLM)
     assert conversation.agent.llm.selection.mode == "manual"
+    assert conversation.agent.llm.selection.manual_route_name == "slow"
+    assert conversation.agent.llm.active_llm is not None
+    assert conversation.agent.llm.active_llm.model == "slow-model"
+
+
+def test_executor_router_llm_switches_when_classifier_returns_model_id(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    conversation = _make_router_conversation()
+    _register_tool(conversation, meta_store)
+    _patch_classifier(conversation, monkeypatch, reply='{"route": "slow-model"}')
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    assert obs.model == "slow"
+    assert obs.chosen_class == "route: slow"
+    assert obs.active_model == "slow-model"
+    assert isinstance(conversation.agent.llm, RouterLLM)
     assert conversation.agent.llm.selection.manual_route_name == "slow"
     assert conversation.agent.llm.active_llm is not None
     assert conversation.agent.llm.active_llm.model == "slow-model"

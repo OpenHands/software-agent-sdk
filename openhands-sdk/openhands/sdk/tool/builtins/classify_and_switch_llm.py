@@ -243,18 +243,11 @@ def _active_model_name(conversation: LocalConversation) -> str | None:
     return llm.model
 
 
-def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
-    """Parse a direct-routing classifier reply into a target name.
-
-    The expected contract is JSON with a ``model`` or ``route`` field, but the
-    parser also scans the raw response for an allowed target name to tolerate
-    fenced JSON or small formatting mistakes. Matching is case-insensitive, but
-    the returned value is the canonical name from ``available_models``.
-    """
+def _classifier_reply_parts(text: str) -> tuple[str, str]:
+    """Return normalized reply text and an optional JSON model/route candidate."""
     raw = (text or "").strip()
     raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
     raw = re.sub(r"\n?```$", "", raw).strip()
-    profile_by_casefold = {model.casefold(): model for model in available_models}
 
     candidate = ""
     try:
@@ -264,6 +257,19 @@ def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None
             candidate = str(obj.get("model") or obj.get("route") or "").strip()
     except Exception:  # noqa: BLE001
         candidate = ""
+    return raw, candidate
+
+
+def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
+    """Parse a direct-routing classifier reply into a target name.
+
+    The expected contract is JSON with a ``model`` or ``route`` field, but the
+    parser also scans the raw response for an allowed target name to tolerate
+    fenced JSON or small formatting mistakes. Matching is case-insensitive, but
+    the returned value is the canonical name from ``available_models``.
+    """
+    raw, candidate = _classifier_reply_parts(text)
+    profile_by_casefold = {model.casefold(): model for model in available_models}
 
     if candidate:
         return profile_by_casefold.get(candidate.casefold())
@@ -272,6 +278,50 @@ def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None
     for model in sorted(available_models, key=len, reverse=True):
         if model.casefold() in scan:
             return model
+    return None
+
+
+def parse_router_route(text: str, router: RouterLLM) -> str | None:
+    """Parse a classifier reply into a RouterLLM route name.
+
+    Route names are authoritative, but classifiers often return the underlying
+    provider model (for example ``openhands/gpt-5.5``) or a display label. Accept
+    those aliases only when they map to exactly one route so ambiguous duplicate
+    model IDs still fail visibly instead of silently choosing the wrong route.
+    """
+    target = parse_direct_model(text, router.available_routes())
+    if target is not None:
+        return target
+
+    raw, candidate = _classifier_reply_parts(text)
+    alias_to_routes: dict[str, set[str]] = {}
+    alias_display: dict[str, str] = {}
+    for route in router.route_infos():
+        for alias in (route.label, route.model):
+            alias = (alias or "").strip()
+            if not alias or alias == route.name:
+                continue
+            key = alias.casefold()
+            alias_to_routes.setdefault(key, set()).add(route.name)
+            alias_display[key] = alias
+
+    def unique_route_for_alias(alias: str) -> str | None:
+        routes = alias_to_routes.get(alias.casefold())
+        if routes is None or len(routes) != 1:
+            return None
+        return next(iter(routes))
+
+    if candidate:
+        target = unique_route_for_alias(candidate)
+        if target is not None:
+            return target
+
+    scan = raw.casefold()
+    for key in sorted(alias_display, key=lambda k: len(alias_display[k]), reverse=True):
+        if key in scan:
+            target = unique_route_for_alias(alias_display[key])
+            if target is not None:
+                return target
     return None
 
 
@@ -448,7 +498,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
 
         # 3a) RouterLLM mode: resolve and pin an existing router route.
         if use_router_routes:
-            target_route = parse_direct_model(reply, router_llm.available_routes())
+            target_route = parse_router_route(reply, router_llm)
             if target_route is None:
                 return ClassifyAndSwitchLLMObservation.from_text(
                     text=(
