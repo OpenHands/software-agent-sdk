@@ -34,6 +34,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 from openhands.sdk.subagent.scope import (
     SubAgentScope,
@@ -475,9 +476,13 @@ class TaskManager:
             if not pending:
                 break
 
-            if self._confirmation_handler is None or self._confirmation_handler(
-                task_id, pending
-            ):
+            if self._confirmation_handler is None:
+                conversation.reject_pending_actions(
+                    "Action requires interactive confirmation, which is "
+                    "unavailable during sub-agent delegation."
+                )
+                conversation.run()
+            elif self._confirmation_handler(task_id, pending):
                 conversation.run()
             else:
                 conversation.reject_pending_actions("User rejected the actions")
@@ -490,8 +495,13 @@ class TaskManager:
     ) -> None:
         """
         Apply permission_mode: explicit mode from definition
-        or inherit the parent's policy when None.
+        or inherit the parent's policy when None, plus inherit security_analyzer.
         """
+        parent_analyzer = getattr(
+            self.parent_conversation.state, "security_analyzer", None
+        )
+        if isinstance(parent_analyzer, SecurityAnalyzerBase) or parent_analyzer is None:
+            conversation.set_security_analyzer(parent_analyzer)
         if confirmation_policy is None:
             conversation.set_confirmation_policy(
                 self.parent_conversation.state.confirmation_policy

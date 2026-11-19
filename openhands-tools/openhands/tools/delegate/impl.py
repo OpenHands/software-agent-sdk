@@ -12,6 +12,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.subagent.scope import inherit_mcp_config
 from openhands.sdk.tool.tool import ToolExecutor
@@ -132,9 +133,13 @@ class DelegateExecutor(ToolExecutor):
             if not pending:
                 break
 
-            if self._confirmation_handler is None or self._confirmation_handler(
-                agent_id, pending
-            ):
+            if self._confirmation_handler is None:
+                conversation.reject_pending_actions(
+                    "Action requires interactive confirmation, which is "
+                    "unavailable during sub-agent delegation."
+                )
+                conversation.run()
+            elif self._confirmation_handler(agent_id, pending):
                 conversation.run()
             else:
                 conversation.reject_pending_actions("User rejected the actions")
@@ -249,7 +254,15 @@ class DelegateExecutor(ToolExecutor):
                 created_sub_agents.append((agent_id, agent_type, sub_conversation))
 
                 # Apply permission_mode: explicit mode from definition,
-                # or inherit the parent's policy when None.
+                # or inherit the parent's policy when None, plus security_analyzer.
+                parent_analyzer = getattr(
+                    parent_conversation.state, "security_analyzer", None
+                )
+                if (
+                    isinstance(parent_analyzer, SecurityAnalyzerBase)
+                    or parent_analyzer is None
+                ):
+                    sub_conversation.set_security_analyzer(parent_analyzer)
                 confirmation_policy = factory.definition.get_confirmation_policy()
                 if confirmation_policy is None:
                     sub_conversation.set_confirmation_policy(

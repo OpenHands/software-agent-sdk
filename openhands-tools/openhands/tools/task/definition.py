@@ -244,7 +244,8 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             confirmation_handler: Optional callback invoked when a sub-agent's
                 confirmation policy requires user approval.  Receives
                 `(task_id, pending_actions)` and must return `True` to
-                approve or `False` to reject.
+                approve or `False` to reject.  When `None` (the default),
+                pending confirmations fail closed and are rejected.
             sub_agent_scope: Whether the sub-agents it offers and starts must
                 stay within this agent's tools. Sub-agents always inherit this
                 agent's MCP servers.
