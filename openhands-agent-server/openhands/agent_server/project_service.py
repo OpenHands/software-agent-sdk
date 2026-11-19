@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     ASK_USER,
@@ -48,7 +48,6 @@ from openhands.agent_server.project_profiles import (
 from openhands.agent_server.project_prompts import (
     SenderRole,
     project_context,
-    sender_header,
 )
 from openhands.agent_server.project_wake import (
     conversation_context,
@@ -69,7 +68,6 @@ from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
-    conversation_sender,
 )
 from openhands.sdk.errors import Conflict, Unprocessable
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
@@ -596,10 +594,8 @@ class ProjectService:
                 Tool(name=ASK_USER_TOOL_NAME, params={"for_conversations": True})
             )
         try:
-            return await self.conversations.create_conversation(
-                start,
-                title=title,
-                server_tools=server_tools,
+            info, _ = await self.conversations.start_conversation(
+                start, server_tools=server_tools
             )
         except Exception as exc:
             if not isinstance(exc, LaunchFailure):
@@ -607,47 +603,44 @@ class ProjectService:
             raise ValueError(
                 f"Cannot start the coordinator from agent profile {profile_id}: {exc}"
             ) from exc
+        return await self._titled(info, title)
+
+    async def _titled(
+        self, info: ConversationInfo, title: str | None
+    ) -> ConversationInfo:
+        """``info`` with ``title`` saved, when one was given (a start request
+        has no title of its own)."""
+        if title is None:
+            return info
+        await self.conversations.update_conversation(
+            info.id, UpdateConversationRequest(title=title)
+        )
+        return info.model_copy(update={"title": title})
 
     async def start_worker(
         self,
         coordinator_service: EventService,
         request: StartChildConversationRequest,
-        run_slot: RunSlot,
     ) -> StartChildConversationResponse:
-        """A project's new member: a worker from an agent profile, or, with
-        no profile to start from, a copy of the coordinator's agent that still runs
-        the worker's prompt, project context and tools.
+        """A project's new member: a worker that runs an agent profile.
 
         Only the project's coordinator starts conversations in a project, so
         each member's work is the coordinator's to follow.
 
         Raises:
             Conflict: If the starting conversation is not the project's coordinator.
+            ValueError: If there is no agent profile to start the worker from.
         """
         coordinator = coordinator_service.stored
         await self._require_coordinator(coordinator)
         worker_profile = await self._worker_profile(coordinator)
-        if worker_profile is not None:
-            return await self._start_worker_from_profile(
-                coordinator_service, request, worker_profile, run_slot
+        if worker_profile is None:
+            raise ValueError(
+                "No agent profile to start a worker from: set the project's "
+                "worker profile, or an active agent profile the server can run"
             )
-        project_hex = coordinator.tags[PROJECT_TAG_KEY]
-        context, role = await _project_prompt(
-            self.stores, project_hex, (coordinator.title, coordinator.id)
-        )
-        return await self.conversations.start_copied_child(
-            coordinator_service,
-            request,
-            run_slot,
-            additions=AgentLaunchAdditions(
-                system_prompt_filename=PROJECT_WORKER_PROMPT,
-                project_context=context,
-            ),
-            header=sender_header(coordinator.title, coordinator.id, role=role),
-            withheld_tools=(),
-            # A worker joins the project and nothing else, as one started
-            # from a profile.
-            tags={PROJECT_TAG_KEY: project_hex},
+        return await self._start_worker_from_profile(
+            coordinator_service, request, worker_profile
         )
 
     async def _require_coordinator(self, coordinator: StoredConversation) -> None:
@@ -666,11 +659,11 @@ class ProjectService:
     async def _worker_profile(self, coordinator: StoredConversation) -> UUID | None:
         """The agent profile a new worker starts from.
 
-        A worker is a normal conversation of the user's, not a copy of the
-        coordinator: it runs the project's
-        ``worker_agent_profile_id``, or else the user's active agent
-        profile. ``None`` (no project, no profile, or a workspace a normal
-        start cannot take) keeps the copy of the coordinator's agent.
+        A worker is a normal conversation of the user's: it runs the
+        project's ``worker_agent_profile_id``, or else the predefined
+        "worker" profile, or else the user's active agent profile. ``None``
+        when there is no project, no profile, or a workspace a normal start
+        cannot take.
         """
         project_hex = coordinator.tags.get(PROJECT_TAG_KEY)
         stores = self.stores
@@ -695,8 +688,8 @@ class ProjectService:
                 ),
                 None,
             )
-            # An ACP agent takes neither the worker's prompt nor its tools;
-            # without another profile the worker copies the coordinator's agent.
+            # An ACP agent takes neither the worker's prompt nor its tools,
+            # so an ACP profile does not count.
             if project is not None and project.worker_agent_profile_id is not None:
                 return _project_profile(stores, project.worker_agent_profile_id)
             predefined = ensure_project_profile("worker", stores)
@@ -708,8 +701,7 @@ class ProjectService:
             return await asyncio.to_thread(lookup)
         except Exception:
             logger.warning(
-                "Cannot choose a worker agent profile for project %s; the new "
-                "conversation copies its coordinator's agent",
+                "Cannot choose a worker agent profile for project %s",
                 project_hex,
                 exc_info=True,
             )
@@ -720,7 +712,6 @@ class ProjectService:
         coordinator_service: EventService,
         request: StartChildConversationRequest,
         profile_id: UUID,
-        run_slot: RunSlot,
     ) -> StartChildConversationResponse:
         """Start a worker from the project's worker agent profile.
 
@@ -735,7 +726,7 @@ class ProjectService:
         coordinator = coordinator_service.stored
         coordinator_id = coordinator.id
         worker_id = uuid4()
-        context, role = await _project_prompt(
+        context, _ = await _project_prompt(
             self.stores,
             coordinator.tags[PROJECT_TAG_KEY],
             (coordinator.title, coordinator_id),
@@ -754,14 +745,11 @@ class ProjectService:
                 system_prompt_filename=PROJECT_WORKER_PROMPT,
                 project_context=context,
             ),
+            # The coordinator sends the task, which opens with its header.
             initial_message=SendMessageRequest(
                 role="user",
-                content=[
-                    TextContent(
-                        text=sender_header(coordinator.title, coordinator_id, role=role)
-                    ),
-                    TextContent(text=request.task),
-                ],
+                content=[TextContent(text=request.task)],
+                sender_conversation_id=coordinator_id,
             ),
             # A worker joins the project and nothing else: the coordinator's
             # other tags (an app's role or controller markers) describe it.
@@ -777,11 +765,8 @@ class ProjectService:
             ),
         )
         try:
-            info = await self.conversations.create_conversation(
+            info, _ = await self.conversations.start_conversation(
                 start,
-                run_slot=run_slot,
-                title=request.title,
-                initial_sender=conversation_sender(coordinator_id),
                 server_tools=[Tool(name=name) for name in PROJECT_WORKER_TOOLS],
             )
         except Exception as exc:
@@ -790,6 +775,7 @@ class ProjectService:
             raise ValueError(
                 f"Cannot start the conversation from agent profile {profile_id}: {exc}"
             ) from exc
+        info = await self._titled(info, request.title)
         workspace = cast(LocalWorkspace, info.workspace)
         coordinator_workspace = cast(LocalWorkspace, coordinator.workspace)
         shared = await asyncio.to_thread(
