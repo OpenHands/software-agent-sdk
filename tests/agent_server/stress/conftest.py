@@ -12,6 +12,7 @@ round-trips. Tests call `service.start_conversation(request)` directly with a
 real Python object, then use the API for everything else.
 """
 
+import gc
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -35,6 +36,18 @@ from openhands.agent_server.server_details_router import (
 from tests.agent_server.conftest import install_test_context
 from tests.agent_server.stress.budgets import CONCURRENT_CONVERSATIONS
 from tests.agent_server.stress.probe import ResourceProbe
+
+
+@pytest.fixture(autouse=True)
+def _collect_earlier_garbage() -> None:
+    """Start each test with the garbage of the tests before it collected.
+
+    The listing suite leaves hundreds of thousands of objects in reference
+    cycles. Left alone, the collector frees them in one full pass of about a
+    second on a CI runner, whenever the next allocation-heavy moment comes,
+    and that can be in the middle of another test's latency budget.
+    """
+    gc.collect()
 
 
 @pytest_asyncio.fixture
