@@ -3,10 +3,12 @@
 import os
 import platform
 import tempfile
+import time
 import uuid
 from collections.abc import Generator
 from typing import cast
 
+import psutil
 import pytest
 from pydantic import SecretStr
 
@@ -18,7 +20,14 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalTool
 from openhands.tools.terminal.impl import TerminalExecutor
-from openhands.tools.terminal.terminal import TerminalSession, create_terminal_session
+from openhands.tools.terminal.terminal import (
+    TerminalSession,
+    create_terminal_session,
+)
+from openhands.tools.terminal.terminal.terminal_session import (
+    TerminalCommandStatus,
+)
+from openhands.tools.terminal.terminal.windows_terminal import WindowsTerminal
 
 
 pytestmark = pytest.mark.skipif(
@@ -205,3 +214,69 @@ def test_terminal_tool_uses_windows_description(temp_dir: str) -> None:
 
     tools = TerminalTool.create(conv_state, terminal_type="powershell")
     assert "PowerShell session" in tools[0].description
+
+
+def test_close_terminates_process_when_reader_blocked(
+    temp_dir: str,
+) -> None:
+    """close() terminates PowerShell and unblocks reader in bounded time.
+
+    When a process keeps stdout open without writing (leaving reader blocked),
+    close() terminates the process before closing pipes to prevent deadlocks.
+    """
+    terminal = WindowsTerminal(work_dir=temp_dir)
+    terminal.initialize()
+    assert terminal.process is not None
+    pid = terminal.process.pid
+    assert psutil.pid_exists(pid)
+
+    terminal.send_keys("Start-Sleep -Seconds 60")
+    time.sleep(0.5)
+
+    start_time = time.monotonic()
+    terminal.close()
+    elapsed = time.monotonic() - start_time
+
+    assert elapsed < 6.0, f"close() took too long ({elapsed:.2f}s)"
+    assert terminal.process is None
+    assert terminal.reader_thread is None or not terminal.reader_thread.is_alive()
+    assert not psutil.pid_exists(pid), f"Process {pid} was not terminated"
+
+
+def test_stdin_write_bounded_timeout(temp_dir: str) -> None:
+    """_write_to_stdin respects timeout when pipe is blocked."""
+    terminal = WindowsTerminal(work_dir=temp_dir)
+    terminal.initialize()
+    try:
+        terminal._write_to_stdin("Write-Output 'test'\n", timeout=2.0)
+    finally:
+        terminal.close()
+
+
+def test_ctrl_c_after_hard_timeout_returns_observation(
+    temp_dir: str,
+) -> None:
+    """After a hard timeout, Ctrl+C returns observation and cleans up."""
+    session = create_terminal_session(
+        work_dir=temp_dir,
+        terminal_type="powershell",
+        no_change_timeout_seconds=1,
+    )
+    session.initialize()
+    try:
+        obs = session.execute(
+            TerminalAction(command="Start-Sleep -Seconds 60", timeout=1)
+        )
+        assert obs.metadata.exit_code == -1
+        assert session.prev_status == TerminalCommandStatus.HARD_TIMEOUT
+
+        start_time = time.monotonic()
+        ctrl_c_obs = session.execute(
+            TerminalAction(command="C-c", is_input=True, timeout=5)
+        )
+        elapsed = time.monotonic() - start_time
+
+        assert elapsed < 10.0, f"Ctrl+C action took too long ({elapsed:.2f}s)"
+        assert ctrl_c_obs is not None
+    finally:
+        session.close()

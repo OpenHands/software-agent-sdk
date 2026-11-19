@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializeAsAny,
     field_validator,
     model_validator,
 )
@@ -112,7 +113,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         arbitrary_types_allowed=True,
     )
 
-    llm: LLM = Field(
+    llm: SerializeAsAny[LLM] = Field(
         ...,
         description="LLM configuration for the agent.",
         examples=[
@@ -254,6 +255,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             and data["security_policy_filename"] is None
         ):
             data["security_policy_filename"] = ""
+        llm = data.get("llm")
+        if isinstance(llm, dict) and "llms_for_routing" in llm:
+            from openhands.sdk.llm.router import RouterLLM
+
+            data["llm"] = RouterLLM.model_validate_router(llm)
         has_inline = data.get("system_prompt") is not None
         has_custom_filename = (
             "system_prompt_filename" in data
@@ -826,15 +832,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Drive the traversal from self
         yield from _walk(self)
-
-    def _close_tool_executor(self, tool: ToolDefinition) -> None:
-        try:
-            executable_tool = tool.as_executable()
-            executable_tool.executor.close()
-        except NotImplementedError:
-            return
-        except Exception as exc:
-            logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
 
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
         """Register tools materialized at runtime (e.g. MCP tools).

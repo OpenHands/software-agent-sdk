@@ -112,7 +112,7 @@ For additional patterns, read the existing suites such as `b01_no_premature_impl
 Use the integration runner locally when developing new scenarios:
 
 ```bash
-python tests/integration/run_infer.py \
+python -m tests.integration.run_infer \
   --llm-config '{"model": "claude-sonnet-4-5-20250929"}' \
   --eval-ids "b01_no_premature_implementation"
 ```

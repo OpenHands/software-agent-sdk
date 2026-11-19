@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 import zlib
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Final, Literal
 from urllib.parse import urljoin, urlsplit
@@ -34,7 +35,7 @@ from openhands.agent_server.canvas_extensions.manifest import (
     CanvasExtensionBackendArtifact,
     CanvasExtensionManifest,
 )
-from openhands.agent_server.persistence.store import SecretsStore, get_secrets_store
+from openhands.agent_server.persistence.store import SecretsStore
 from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -150,8 +151,11 @@ class CanvasExtensionBackendManager:
         *,
         allow_insecure_artifact_urls: bool = False,
         max_artifact_bytes: int = _MAX_ARTIFACT_BYTES,
-        secrets_store: SecretsStore | None = None,
+        secrets_store: Callable[[], SecretsStore] | None = None,
     ) -> None:
+        """``secrets_store`` returns the store a backend's ``secret_refs`` are
+        read from. It is called at each start, so a manager that outlives a
+        server (re)initialisation reads the store of the current one."""
         self.installed_dir = installed_dir or get_installed_canvas_extensions_dir()
         root = (
             state_dir or get_user_persistence_dir() / "canvas-extensions" / "backends"
@@ -452,7 +456,7 @@ class CanvasExtensionBackendManager:
             if (
                 prepared is not None
                 and prepared.revision == revision
-                and Path(prepared.artifact_dir).is_dir()
+                and await asyncio.to_thread(Path(prepared.artifact_dir).is_dir)
             ):
                 return self._status_unlocked(name)
 
@@ -786,19 +790,20 @@ class CanvasExtensionBackendManager:
                 if prepared is None or prepared.revision != revision:
                     raise RuntimeError("backend revision must be prepared before start")
                 artifact_dir = Path(prepared.artifact_dir)
-                if not artifact_dir.is_dir():
+                if not await asyncio.to_thread(artifact_dir.is_dir):
                     raise RuntimeError("prepared backend artifact is missing")
 
                 parts = self._backend_parts(name)
                 assert parts is not None
                 backend, artifact, current_platform = parts
-                expected_artifact_dir = (
-                    self.artifacts_dir / name / prepared.artifact_sha256
-                ).resolve()
+                expected_artifact_dir = await asyncio.to_thread(
+                    (self.artifacts_dir / name / prepared.artifact_sha256).resolve
+                )
                 if (
                     prepared.platform != current_platform
                     or prepared.artifact_sha256 != artifact.sha256
-                    or artifact_dir.resolve() != expected_artifact_dir
+                    or await asyncio.to_thread(artifact_dir.resolve)
+                    != expected_artifact_dir
                 ):
                     raise RuntimeError(
                         "prepared backend metadata does not match manifest"
@@ -807,7 +812,9 @@ class CanvasExtensionBackendManager:
                     await self._terminate_runtime(runtime)
                 secret_environment: dict[str, str] = {}
                 if backend.secret_refs:
-                    store = self.secrets_store or get_secrets_store()
+                    if self.secrets_store is None:
+                        raise ValueError("Backend secret store is not available")
+                    store = self.secrets_store()
                     for secret_name in backend.secret_refs:
                         try:
                             value = await asyncio.to_thread(
@@ -912,8 +919,12 @@ class CanvasExtensionBackendManager:
             process.returncode is None or self._group_alive(process.pid)
         )
 
-    async def _wait_for_group_exit(self, pgid: int, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
+    async def _wait_for_group_exit(self, pgid: int) -> bool:
+        """Whether the group exits within ``_STOP_TIMEOUT_SECONDS``.
+
+        Nothing signals a process group's exit, so this polls.
+        """
+        deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
         while True:
             if not self._group_alive(pgid):
                 return True
@@ -932,14 +943,14 @@ class CanvasExtensionBackendManager:
         # on the leader's exit code would leak those descendants.
         if process.returncode is None:
             self._signal_group(pgid, signal.SIGTERM)
-            if not await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS):
+            if not await self._wait_for_group_exit(pgid):
                 self._signal_group(pgid, signal.SIGKILL)
-                await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
+                await self._wait_for_group_exit(pgid)
         elif self._group_alive(pgid):
             # With no leader left to shut down cleanly, its descendants are
             # orphaned; do not let one hold status or restart for the grace period.
             self._signal_group(pgid, signal.SIGKILL)
-            await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
+            await self._wait_for_group_exit(pgid)
         if process.returncode is None:
             await process.wait()
         await self._finish_runtime(runtime)
@@ -998,11 +1009,9 @@ class CanvasExtensionBackendManager:
                 continue  # Its server is still running and owns it.
             if self._is_recorded_backend(record):
                 self._signal_group(record.pgid, signal.SIGTERM)
-                if not await self._wait_for_group_exit(
-                    record.pgid, _STOP_TIMEOUT_SECONDS
-                ):
+                if not await self._wait_for_group_exit(record.pgid):
                     self._signal_group(record.pgid, signal.SIGKILL)
-                    await self._wait_for_group_exit(record.pgid, _STOP_TIMEOUT_SECONDS)
+                    await self._wait_for_group_exit(record.pgid)
             path.unlink(missing_ok=True)
 
     def has_running_backends(self) -> bool:

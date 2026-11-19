@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.sdk.plugin import Plugin, PluginFetchError
 
@@ -37,6 +38,7 @@ def client(tmp_path: Path, monkeypatch) -> TestClient:
         "openhands.sdk.plugin.installed.DEFAULT_INSTALLED_PLUGINS_DIR", store
     )
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(plugins_router)
     return TestClient(app)
 
