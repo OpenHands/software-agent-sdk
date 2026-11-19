@@ -16,6 +16,7 @@ from openhands.agent_server.docker_runtime.routers import _prepare_forward
 from openhands.agent_server.launch import launch_source, target_launch_runtime
 from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent
+from openhands.sdk.agent import ACPAgent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
@@ -47,7 +48,12 @@ def _registry(runtime_config: Config) -> DockerConversationRegistry:
     return cast(
         DockerConversationRegistry,
         SimpleNamespace(
-            config=runtime_config, stores=ServerStores.from_config(runtime_config)
+            config=runtime_config,
+            stores=ServerStores.from_config(runtime_config),
+            conversation_dir=lambda conversation_id: (
+                runtime_config.conversations_path / conversation_id.hex
+            ),
+            resolve_persisted_cipher=lambda _conversation_id: runtime_config.cipher,
         ),
     )
 
@@ -57,7 +63,9 @@ async def _forward(
 ) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
     registry = _registry(runtime_config)
     body = request.model_dump(mode="json", context={"expose_secrets": True})
-    payload, launched, _, _ = await _prepare_forward(body, registry, existing=existing)
+    payload, launched, _, _, _ = await _prepare_forward(
+        body, registry, existing=existing
+    )
     provisioning = RuntimeProvisioningStore(runtime_config)
     identity = provisioning.create(uuid4())
     return payload(identity.cipher), launched, identity
@@ -73,7 +81,7 @@ async def test_forward_preserves_worktree_flag(tmp_path, monkeypatch, worktree):
         agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
         worktree=worktree,
     )
-    payload, _, _, forwarded_worktree = await _prepare_forward(
+    payload, _, _, forwarded_worktree, _ = await _prepare_forward(
         request.model_dump(mode="json", context={"expose_secrets": True}),
         registry,
         existing=False,
@@ -154,6 +162,27 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_codex_without_host_credential_logs_plain_secret_fallback(
+    tmp_path, monkeypatch, caplog
+):
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+    )
+
+    with caplog.at_level("INFO"):
+        await _forward(request, config(tmp_path, monkeypatch))
+
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "docker_credential_binding_selection"
+    )
+    assert record.outcome == "fallback"
+    assert record.reason == "host_credential_missing"
+
+
+@pytest.mark.asyncio
 async def test_every_encrypted_field_reaches_the_container_decryptable(
     tmp_path, monkeypatch
 ):
@@ -173,7 +202,7 @@ async def test_every_encrypted_field_reaches_the_container_decryptable(
     body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
     registry = _registry(runtime_config)
 
-    payload, _, _, _ = await _prepare_forward(body, registry, existing=False)
+    payload, _, _, _, _ = await _prepare_forward(body, registry, existing=False)
     identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
     received = StartConversationRequest.model_validate(
         payload(identity.cipher), context={"cipher": identity.cipher}

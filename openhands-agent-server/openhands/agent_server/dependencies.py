@@ -9,6 +9,7 @@ router-level ones such as ``check_session_api_key``. A test replaces any of
 them through ``app.dependency_overrides``.
 """
 
+import re
 from typing import Annotated
 from uuid import UUID
 
@@ -47,6 +48,10 @@ WORKSPACE_SESSION_COOKIE_NAME = "oh_workspace_session_key"
 _SESSION_API_KEY_HEADER = APIKeyHeader(name="X-Session-API-Key", auto_error=False)
 _WORKSPACE_SESSION_COOKIE = APIKeyCookie(
     name=WORKSPACE_SESSION_COOKIE_NAME, auto_error=False
+)
+_RUNTIME_CREDENTIAL_BINDING_PATH = re.compile(
+    r"^/api/(?:_docker/)?conversations/[0-9a-fA-F-]{36}/"
+    r"runtime-credential-bindings/[^/]+$"
 )
 
 
@@ -124,11 +129,22 @@ def _unavailable(connection: HTTPConnection, detail: str) -> Exception:
 
 
 def check_session_api_key(
+    connection: HTTPConnection,
     config: Annotated[Config, Depends(get_config)],
     session_api_key: Annotated[str | None, Depends(_SESSION_API_KEY_HEADER)],
 ) -> None:
     """Reject the request if the supplied key is not in the current session keys."""
     if config.session_api_keys and session_api_key not in config.session_api_keys:
+        # Docker runtimes call this one broker route with their per-runtime key.
+        # The route itself verifies the key against the requested conversation;
+        # this exception only lets that exact request reach that validation.
+        if (
+            session_api_key is not None
+            and connection.scope["type"] == "http"
+            and connection.scope.get("method") in {"GET", "PUT"}
+            and _RUNTIME_CREDENTIAL_BINDING_PATH.fullmatch(connection.url.path)
+        ):
+            return
         raise Unauthenticated()
 
 
