@@ -38,19 +38,6 @@ class GoalAlreadyRunning(ValueError):
         super().__init__("goal_already_running")
 
 
-class HeldForUser(ValueError):
-    """A run was refused because the conversation waits on the user.
-
-    ``status`` is the execution status it waits in (confirmation, paused,
-    error or stuck). Only the user may run the conversation from here; the
-    refused message, if any, stays saved.
-    """
-
-    def __init__(self, status: str) -> None:
-        super().__init__(status)
-        self.status = status
-
-
 class CondensationUnavailable(ValueError):
     """The conversation's agent has no condenser that handles requests."""
 

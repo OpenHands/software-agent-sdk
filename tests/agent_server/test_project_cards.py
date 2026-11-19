@@ -258,7 +258,6 @@ def save_without_running(monkeypatch) -> None:
     original = EventService.send_message
 
     async def save_only(self, message, run=False, **kwargs):
-        kwargs.pop("refuse_pending_confirmation", None)
         await original(self, message, False, **kwargs)
         return "started"
 

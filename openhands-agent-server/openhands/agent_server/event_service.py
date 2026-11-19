@@ -1,6 +1,5 @@
 import asyncio
 import contextvars
-import functools
 import threading
 import time
 import traceback
@@ -11,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, TypeVar, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -28,7 +27,6 @@ from openhands.agent_server.exceptions import (
     ConversationRunLimitExceeded,
     CredentialBindingActivationTooLate,
     GoalAlreadyRunning,
-    HeldForUser,
     ServiceInactive,
 )
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
@@ -79,7 +77,6 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.conversation.types import (
-    GOAL_LOOP_SENDER,
     ConversationCallbackType,
 )
 from openhands.sdk.credential import (
@@ -135,9 +132,6 @@ logger = get_logger(__name__)
 _T = TypeVar("_T")
 _GIT_INIT_LOCK = threading.Lock()
 
-SendMessageRunOutcome = Literal["started", "queued", "not_run"]
-"""What ``EventService.send_message(run=True)`` did about running."""
-
 
 def _without_skill_bodies(
     event: ConversationStateUpdateEvent,
@@ -154,10 +148,6 @@ def _without_skill_bodies(
     if agent.get("agent_context"):
         agent["agent_context"]["skills"] = []
     return event
-
-
-RunRefusal = ConversationAlreadyRunning | HeldForUser
-"""Why :func:`admission_refusal` refuses a run."""
 
 
 class _RunPermit:
@@ -262,35 +252,6 @@ def _without_agent_context_secret(
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"secrets": secrets})}
     )
-
-
-def admission_refusal(state: ConversationState) -> RunRefusal | None:
-    """Why a message may not start a run of this conversation now, or ``None``.
-
-    One rule for every sender that runs a conversation it does not watch:
-
-    - A running conversation refuses with :class:`ConversationAlreadyRunning`.
-    - Pending actions refuse with ``HeldForUser("waiting_for_confirmation")``:
-      whether the conversation waits for confirmation or was paused or
-      interrupted with actions unconfirmed, the next run would execute them,
-      which approves them on the user's behalf.
-    - Another conversation (the project tools, coordinator updates) may run
-      only an idle or finished one; ``paused``, ``error`` and ``stuck`` are
-      the user's to look at, refused with :class:`HeldForUser` and the status.
-
-    The caller holds the state lock, and should hold the run lock so the
-    answer cannot change before the run starts.
-    """
-    status = state.execution_status
-    if status == ConversationExecutionStatus.RUNNING:
-        return ConversationAlreadyRunning()
-    if (
-        status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-        or state.waiting_actions()
-    ):
-        return HeldForUser(ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value)
-    admitted = {ConversationExecutionStatus.IDLE, ConversationExecutionStatus.FINISHED}
-    return None if status in admitted else HeldForUser(status.value)
 
 
 @dataclass
@@ -895,32 +856,6 @@ class EventService:
             timestamp__lt,
         )
 
-    def _admission_refusal_sync(self) -> RunRefusal | None:
-        if not self._conversation:
-            raise ServiceInactive()
-        with self._conversation._state as state:
-            return admission_refusal(state)
-
-    def _send_keeping_stuck_sync(
-        self, send: Callable[[Message], None], message: Message
-    ) -> None:
-        """Save a guarded message without clearing a ``stuck`` status.
-
-        A new message resets a stuck conversation to idle, which would let the
-        guarded run that follows retry work the user has not looked at. The
-        state lock is reentrant, so ``send`` can take it again inside.
-        """
-        if not self._conversation:
-            raise ServiceInactive()
-        with self._conversation._state as state:
-            held = state.execution_status
-            send(message)
-            if (
-                held == ConversationExecutionStatus.STUCK
-                and state.execution_status != held
-            ):
-                state.transition(held, "a guarded message keeps stuck")
-
     def _get_execution_status_sync(self) -> ConversationExecutionStatus:
         if not self._conversation:
             raise ServiceInactive()
@@ -1045,28 +980,16 @@ class EventService:
         _from_goal_loop: bool = False,
         *,
         run_slot: RunSlot | None = None,
-        refuse_pending_confirmation: bool = False,
         sender: str | None = None,
         keep_goal_loop: bool = False,
-    ) -> SendMessageRunOutcome | None:
+    ):
         """Append a message and, with ``run``, start a run to handle it.
 
         ``sender`` is recorded on the saved event; see
         :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
 
-        With ``refuse_pending_confirmation`` a conversation that waits on the
-        user keeps the message but is not run, and this raises
-        :class:`HeldForUser` (see :meth:`run`).
-
         ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
         messages the server delivers rather than the user writes.
-
-        Returns:
-            ``None`` without ``run``. Otherwise ``"started"`` when a run was
-            started for the message; ``"queued"`` when a run was already
-            active, so it takes the message or a follow-up run is armed for
-            when it ends (that run may still stop at a confirmation first);
-            ``"not_run"`` when a stop or a closed service left it unrun.
         """
         if not self._conversation:
             raise ServiceInactive()
@@ -1075,19 +998,17 @@ class EventService:
         if not (_from_goal_loop or keep_goal_loop):
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
-        send = self._conversation.send_message
         if _from_goal_loop and sender is None:
-            sender = GOAL_LOOP_SENDER
-        if sender is not None:
-            send = functools.partial(send, sender=sender)
-        if refuse_pending_confirmation:
-            send = functools.partial(self._send_keeping_stuck_sync, send)
-        await self.run_state_op(send, message)
-        outcome: SendMessageRunOutcome | None = None
+            sender = "goal"
+        send_message = (
+            partial(self._conversation.send_message, sender=sender)
+            if sender is not None
+            else self._conversation.send_message
+        )
+        await self.run_state_op(send_message, message)
         if run:
-            outcome = "not_run"
             if self._explicit_interrupt_generation != explicit_interrupt_generation:
-                return outcome
+                return
             (
                 did_mark_acp_prompt_superseded,
                 active_acp_prompt_has_latest_message,
@@ -1107,44 +1028,36 @@ class EventService:
                         self._explicit_interrupt_generation
                         != explicit_interrupt_generation
                     ):
-                        return outcome
-                    # Replaces the prompt that was running a moment ago, as
-                    # on main: Projects never message an ACP conversation.
-                    started = await self.run(
+                        return
+                    await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
-                    outcome = "started" if started else "not_run"
-                except ConversationAlreadyRunning:
-                    # If a run is still wrapping up (its wait_for_pending
-                    # tail), the message we just appended won't be picked up
-                    # by it, so record explicit run intent for
+                except ValueError as e:
+                    # run() refused. If a run is still wrapping up (its
+                    # wait_for_pending tail), the message we just appended won't
+                    # be picked up by it, so record explicit run intent for
                     # _run_and_publish to honor once that task clears. Tracking
                     # the request — rather than inferring it later from an IDLE
                     # status — is what keeps a deliberate run=False append, or an
                     # IDLE reached via another path, from triggering an unwanted
-                    # run.
-                    outcome = "queued"
-                    if not active_acp_prompt_has_latest_message:
+                    # run. ServiceInactive is terminal and must not re-arm.
+                    if (
+                        str(e) == "conversation_already_running"
+                        and not active_acp_prompt_has_latest_message
+                    ):
                         self._rerun_requested = True
                         self._acp_internal_rerun_requested = True
-                except HeldForUser:
-                    raise
-                except ValueError:
-                    # ServiceInactive is terminal and must not re-arm.
-                    pass
                 finally:
                     self._unpin_run_session()
             else:
                 try:
-                    started = await self.run(
+                    await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
-                        refuse_pending_confirmation=refuse_pending_confirmation,
                     )
                     self._acp_internal_rerun_requested = False
-                    outcome = "started" if started else "not_run"
                 except ConversationRunLimitExceeded as exc:
                     # Nothing was interrupted here, so a capacity refusal is a
                     # clean backpressure signal. The message is already saved,
@@ -1154,40 +1067,29 @@ class EventService:
                         "reached. Retry POST /api/conversations/"
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
-                except ConversationAlreadyRunning:
-                    outcome = "queued"
-                    if not active_acp_prompt_has_latest_message:
+                except ValueError as e:
+                    if (
+                        str(e) == "conversation_already_running"
+                        and not active_acp_prompt_has_latest_message
+                    ):
                         self._rerun_requested = True
-                except HeldForUser:
-                    raise
-                except ValueError:
-                    pass
-        return outcome
 
-    async def run_saved_message_when_free(self) -> SendMessageRunOutcome:
+    async def run_saved_message_when_free(self) -> None:
         """Run for a message already saved, waiting for a free run slot.
 
         For server deliveries that :meth:`send_message` saved but could not run
         because every slot was taken (``ConversationRunLimitExceeded``): the
         sender was told nothing and nobody would retry, so this waits for
-        capacity instead. The run is guarded like a delivery
-        (``refuse_pending_confirmation``), and a run that started meanwhile
-        takes the message or is re-armed for it.
-
-        Raises :class:`HeldForUser` when the conversation now waits on the
-        user; the message stays for its next run.
+        capacity instead. A run that started meanwhile takes the message or is
+        re-armed for it.
         """
         if not self._conversation:
             raise ServiceInactive()
         with await RunSlot.acquire(self._run_semaphore, wait=True) as run_slot:
             try:
-                started = await self.run(
-                    run_slot=run_slot, refuse_pending_confirmation=True
-                )
+                await self.run(run_slot=run_slot)
             except ConversationAlreadyRunning:
                 self._rerun_requested = True
-                return "queued"
-        return "started" if started else "not_run"
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -1768,8 +1670,7 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         wait_for_capacity: bool = False,
-        refuse_pending_confirmation: bool = False,
-    ) -> bool:
+    ):
         """Run the conversation asynchronously in the background.
 
         This method starts the conversation run in a background task and returns
@@ -1780,25 +1681,9 @@ class EventService:
         ``astep()`` override), the synchronous ``run()`` is executed
         in the thread pool as before.
 
-        Args:
-            refuse_pending_confirmation: Refuse to run a conversation that
-                waits on the user (:data:`HELD_FOR_USER_STATUSES`: waiting
-                for confirmation, paused, error or stuck). Running it would
-                approve pending actions, resume work the user paused, or retry
-                a failure the user has not seen, so callers acting for someone
-                other than the user (a coordinator steering another
-                conversation, a server wake-up) set this. The check is made
-                under the run lock, where no other run can change the status.
-
-        Returns:
-            ``True`` when a run was scheduled; ``False`` when a stop that
-            landed meanwhile, or a closing service, left nothing to run.
-
         Raises:
             ServiceInactive: If the service is inactive.
-            ValueError: If the conversation is already running, or (with
-                ``refuse_pending_confirmation``) it waits on the user
-                (:class:`HeldForUser`).
+            ValueError: If the conversation is already running.
             ConversationRunLimitExceeded: If all server run slots are occupied.
         """
         if not self._conversation or self._closing:
@@ -1814,7 +1699,7 @@ class EventService:
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
-                return False
+                return
             # _run_task first: a live run holds the state lock across its step
             # (a tool call can last minutes), so reading execution status would
             # block this request behind it instead of answering at once.
@@ -1823,12 +1708,6 @@ class EventService:
             status = await self._get_execution_status()
             if status == ConversationExecutionStatus.RUNNING:
                 raise ConversationAlreadyRunning()
-            if refuse_pending_confirmation:
-                # HeldForUser with the status: "waiting_for_confirmation",
-                # "paused", "error" or "stuck".
-                refusal = await self.run_state_op(self._admission_refusal_sync)
-                if refusal is not None:
-                    raise refusal
             if self._closing:
                 raise ServiceInactive()
             # Re-check: the status read above can yield to a late stop too.
@@ -1836,7 +1715,7 @@ class EventService:
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
-                return False
+                return
 
             # Capture conversation reference for the closure
             conversation = self._conversation
@@ -1871,7 +1750,7 @@ class EventService:
             ):
                 if new_owner:
                     owner.release()
-                return False
+                return
             if new_owner:
                 self._run_session_slot = owner
             slot = owner.share()
@@ -2029,7 +1908,6 @@ class EventService:
             # Finally, release even if the task is cancelled before its
             # coroutine enters its own try/finally.
             self._run_task.add_done_callback(settle)
-            return True
 
     # ``timeout`` bounds only the wait for the run task, not the status read
     # after it, which a caller-side ``asyncio.timeout`` would also cut off.
@@ -2186,11 +2064,7 @@ class EventService:
         try:
             await _emit_status(active=True, status="running")
             nudge = RESUME_PROMPT if resume else controller.start()
-            await self.send_message(
-                _user(nudge),
-                run=False,
-                _from_goal_loop=True,
-            )
+            await self.send_message(_user(nudge), run=False, _from_goal_loop=True)
             while True:
                 try:
                     await self.run()
@@ -2242,9 +2116,7 @@ class EventService:
                 # feedback (score + what's missing), not just the final one.
                 await _emit_status(active=True, status="running", verdict=step.verdict)
                 await self.send_message(
-                    _user(step.followup),
-                    run=False,
-                    _from_goal_loop=True,
+                    _user(step.followup), run=False, _from_goal_loop=True
                 )
         except asyncio.CancelledError:
             logger.info("Goal loop cancelled")
@@ -2433,9 +2305,6 @@ class EventService:
             message,
             run=True,
             sender=sender,
-            # Delivered by the server for the user, like a coordinator's
-            # update: a conversation that waits on the user is not run.
-            refuse_pending_confirmation=sender is not None,
             keep_goal_loop=sender is not None,
         )
         return answer

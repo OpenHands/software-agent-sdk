@@ -1,8 +1,8 @@
 """Messages one conversation sends another, and the coordinator's wake-up.
 
-:func:`sender_message_header` checks a ``sender_conversation_id`` given to
-``POST /api/conversations/{id}/events`` and writes the line the message opens
-with. :func:`notify_coordinator` wakes a project's coordinator when one of its
+:func:`project_sender_header` holds a project member's
+``sender_conversation_id`` to its project and writes the line its message
+opens with. :func:`notify_coordinator` wakes a project's coordinator when one of its
 conversations finishes a run the coordinator asked for.
 
 The coordinator gets the member's final message, not its events: one user
@@ -10,10 +10,10 @@ message that records the member as ``sender`` and opens with
 :func:`~openhands.agent_server.project_prompts.update_header`. A member the
 coordinator started that stops on the user instead (confirmation, error,
 stuck) sends :func:`~openhands.agent_server.project_prompts.stop_header`, and a
-pause is saved for awareness (:func:`notify_coordinator_of_stop`). Updates are
-delivered like a message sent with ``refuse_pending_confirmation``, so they
-never run a coordinator that waits on the user (the message is kept and seen
-on its next run). The coordinator reads more with ``read_worker``.
+pause is saved for awareness (:func:`notify_coordinator_of_stop`). An update
+to a coordinator that waits for confirmation is saved without a run, since a
+run would approve its pending actions. The coordinator reads more with
+``read_worker``.
 
 :func:`reconcile_coordinator_updates` catches up after a restart: a member
 whose coordinator-started turn ended while no update reached the coordinator
@@ -31,13 +31,11 @@ from uuid import UUID
 
 from openhands.agent_server.exceptions import (
     ConversationRunLimitExceeded,
-    HeldForUser,
     ServiceInactive,
 )
 from openhands.agent_server.experimental_features import feature_enabled_now
 from openhands.agent_server.message_sender import (
     SenderError,
-    sender_header as generic_sender_header,
 )
 from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_prompts import (
@@ -109,28 +107,26 @@ async def _coordinator_id(
     return project.coordinator_conversation_id if project else None
 
 
-async def sender_message_header(
-    service: "ConversationService",
-    sender_id: UUID,
-    target_id: UUID,
-    target_tags: dict[str, str],
-) -> str:
-    """The line a message from ``sender_id`` to ``target_id`` opens with.
+async def project_sender_header(
+    service: "ConversationService", sender_id: UUID, target_tags: dict[str, str]
+) -> str | None:
+    """The line a message from a project member opens with, or ``None`` when
+    the sender is in no project (the generic header applies).
 
-    Raises :class:`SenderError` when the sender does not exist, is the target
-    itself, or is in a project the target is not in: a project's conversations
-    only reach their own project.
+    Called beside :func:`~openhands.agent_server.message_sender.sender_message_header`,
+    which checks the sender exists and is not the target.
+
+    Raises :class:`SenderError` when the target is not in the sender's
+    project: a project's conversations only reach their own project.
     """
-    if sender_id == target_id:
-        raise SenderError("A conversation cannot message itself")
     sender = await service.get_conversation(sender_id)
     if sender is None:
-        raise SenderError("Sender conversation not found")
+        return None
     # Only a real project member (Projects on, project exists) is held to its
     # project; any other ``project`` tag is ordinary client metadata.
     project = await service.projects.member_of(sender.tags)
     if project is None:
-        return generic_sender_header(sender.title, sender_id)
+        return None
     target = await service.projects.member_of(target_tags)
     if target is None or target.id != project.id:
         raise SenderError("Sender is not a conversation of this project")
@@ -169,31 +165,25 @@ async def _deliver(
 ) -> None:
     """Save a message in the coordinator and, with ``run``, run it.
 
-    The run is guarded like any message not from the user: a coordinator
-    that waits on the user keeps the message for its next run. A stuck
-    coordinator stays stuck even when the message is only saved, so a later
-    update does not resume work the user has not looked at. When every
-    run slot is taken, a background task waits for one instead of leaving the
-    update unread. A failed save is retried before the update is given up.
+    A coordinator that waits for confirmation keeps the message for its next
+    run. When every run slot is taken, a background task waits for one
+    instead of leaving the update unread. A failed save is retried before the
+    update is given up.
     """
     message = Message(role="user", content=list(content))
+    run = run and not await _waits_for_confirmation(coordinator)
     for attempt in range(_DELIVERY_ATTEMPTS):
         last = attempt == _DELIVERY_ATTEMPTS - 1
         try:
             await coordinator.send_message(
                 message,
                 run=run,
-                # Also without a run: this is what keeps a stuck coordinator
-                # stuck while the message is saved.
-                refuse_pending_confirmation=True,
                 sender=conversation_sender(member_id),
                 keep_goal_loop=True,
             )
             return
         except ConversationRunLimitExceeded:
             _run_when_free(coordinator_id, coordinator)
-            return
-        except HeldForUser:
             return
         except ServiceInactive:
             raise
@@ -209,14 +199,25 @@ async def _deliver(
         await asyncio.sleep(delay)
 
 
+async def _waits_for_confirmation(service: "EventService") -> bool:
+    """Whether a run would approve the conversation's pending actions.
+
+    A server delivery saves its message without a run then; the user decides
+    on the actions first. An unlocked read, so a confirmation that arrives
+    just after it is not seen.
+    """
+    state = await service.get_state()
+    return (
+        state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+
 def _run_when_free(coordinator_id: UUID, coordinator: "EventService") -> None:
     """Run the coordinator for a saved update once a run slot frees."""
 
     async def wait_and_run() -> None:
         try:
             await coordinator.run_saved_message_when_free()
-        except HeldForUser:
-            pass
         except ValueError as exc:
             logger.warning(
                 "Coordinator %s did not run for an update: %s",
@@ -495,17 +496,12 @@ async def _answer_open_question(
         return False
     await service.projects.set_conversation_tag(member.stored.id, ASK_TAG_KEY, None)
     text = f'{ANSWER_HEADER_PREFIX}: "{question}"]\n{answer}'
-    try:
-        await member.send_message(
-            Message(role="user", content=[TextContent(text=text)]),
-            run=True,
-            sender=conversation_sender(coordinator_id),
-            refuse_pending_confirmation=True,
-            keep_goal_loop=True,
-        )
-    except HeldForUser:
-        # Saved; the member waits on the user for something else first.
-        pass
+    await member.send_message(
+        Message(role="user", content=[TextContent(text=text)]),
+        run=not await _waits_for_confirmation(member),
+        sender=conversation_sender(coordinator_id),
+        keep_goal_loop=True,
+    )
     return True
 
 

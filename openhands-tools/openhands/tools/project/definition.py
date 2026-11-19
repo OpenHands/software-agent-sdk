@@ -167,15 +167,6 @@ class MessageWorkerAction(Action):
 
 class MessageWorkerObservation(Observation):
     conversation_id: UnmaskedID | None = None
-    previous_status: str | None = None
-    run: str | None = Field(
-        default=None,
-        description=(
-            "started, queued, not_run, or the state that kept it from running "
-            "(waiting_for_confirmation, paused, error, stuck), as the server "
-            "reported it."
-        ),
-    )
 
     @property
     def visualize(self) -> Text:
@@ -197,11 +188,10 @@ _MESSAGE_DESCRIPTION = (
     " Only workers that list_workers reports can be messaged; start a new worker with "
     "start_child_conversation for a distinct task.\n\n"
     "A running conversation receives the message in its current run; a finished or "
-    "idle conversation is run to handle it. A conversation that waits on the user is "
-    "never run by this tool: waiting for them to approve an action (running would "
-    "approve it), paused by them, or stopped on an error or stuck (running would "
-    "resume or retry what they have not seen). It is refused, and you should tell the "
-    "user what it waits on. A successful result means the message was saved and a run "
+    "idle conversation is run to handle it, and so is a paused, errored or stuck one. "
+    "A conversation waiting for the user to approve an action is refused, since "
+    "running it would approve the action; tell the user what it waits on. "
+    "A successful result means the message was saved and a run "
     "was requested; you can check list_workers or read the conversation before "
     "reporting progress. After an error that says the message may still be delivered, "
     "do not resend it."

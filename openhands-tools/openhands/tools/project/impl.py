@@ -7,7 +7,6 @@ conversation reaches only its own project's conversations, artifacts and
 memory.
 """
 
-import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,7 +17,6 @@ import httpx
 from pydantic import ValidationError
 
 from openhands.sdk.conversation.types import (
-    HELD_FOR_USER_STATUSES,
     PROJECT_TAG_KEY,
     PROJECTS_OFF_DETAIL,
     conversation_mention,
@@ -270,65 +268,11 @@ def _transcript_line(message: dict[str, Any]) -> str:
     return f"[{who}] {message['text']}"
 
 
-_RUN_OUTCOMES = {
-    "started": "It was {status}; a run was started for it.",
-    "queued": (
-        "A run was already active: it takes the message, or the conversation runs "
-        "again when it ends, unless that run stops at a confirmation first."
-    ),
-    "waiting_for_confirmation": (
-        "It reached a confirmation while the message was being delivered, so "
-        "it was not run: the message waits for the user's decision on the "
-        "pending action."
-    ),
-    "paused": (
-        "The user paused it while the message was being delivered, so it was "
-        "not run: the message waits until the user resumes it."
-    ),
-    "error": (
-        "It stopped on an error while the message was being delivered, so it "
-        "was not run. Tell the user; they decide whether to retry."
-    ),
-    "stuck": (
-        "It got stuck while the message was being delivered, so it was not "
-        "run. Tell the user."
-    ),
-    "not_run": (
-        "It was stopped while the message was being delivered, so it was not "
-        "run. Tell the user rather than resending."
-    ),
-}
-
-_HELD_REFUSALS = {
-    "waiting_for_confirmation": (
-        "Conversation {id} is waiting for the user to approve or reject an "
-        "action. Running it now would approve that action, so nothing was "
-        "sent. Tell the user what it is waiting on."
-    ),
-    "paused": (
-        "The user paused conversation {id}. Sending would resume it, so "
-        "nothing was sent. Tell the user what you wanted it to do; they "
-        "resume it."
-    ),
-    "error": (
-        "Conversation {id} stopped on an error the user has not dealt with. "
-        "Sending would retry it, so nothing was sent. Tell the user about the "
-        "error; they decide whether to retry."
-    ),
-    "stuck": (
-        "Conversation {id} is stuck. Sending would restart it, so nothing was "
-        "sent. Tell the user."
-    ),
-}
-
-
-def _held_status(response: httpx.Response) -> str:
-    """The held status a 409 from the send route names in its ``status``."""
-    try:
-        status = response.json().get("status")
-    except (ValueError, AttributeError):
-        return ""
-    return status if status in HELD_FOR_USER_STATUSES else ""
+_CONFIRMATION_REFUSAL = (
+    "Conversation {id} is waiting for the user to approve or reject an "
+    "action. Running it now would approve that action, so nothing was sent. "
+    "Tell the user what it is waiting on."
+)
 
 
 def _path_segment(name: str) -> str:
@@ -339,14 +283,6 @@ def _path_segment(name: str) -> str:
     return quote(name, safe="")
 
 
-def _held_refusal(conversation_id: str, status: str) -> str:
-    template = _HELD_REFUSALS.get(
-        status,
-        "Conversation {id} is waiting on the user, so nothing was sent. Tell the user.",
-    )
-    return template.format(id=conversation_id)
-
-
 class MessageWorkerExecutor(
     ToolExecutor[MessageWorkerAction, MessageWorkerObservation]
 ):
@@ -355,12 +291,9 @@ class MessageWorkerExecutor(
     The conversation must be listed by the project's conversations endpoint.
     Delivery goes through ``POST /api/conversations/{conversation_id}/events``
     with ``sender_conversation_id`` (the server checks the sender is in the
-    same project and records it) and ``refuse_pending_confirmation``, so it
-    never runs a conversation that is waiting for confirmation (that run would
-    approve the pending action); the server decides it under the conversation's
-    run lock. The same holds for a paused, errored or stuck conversation, which
-    a run would resume: the user owns those. A conversation already in one
-    of these states is refused before anything is sent.
+    same project and records it). A conversation the project listing shows
+    waiting for confirmation is refused before anything is sent, since a run
+    would approve its pending action.
     """
 
     def __init__(
@@ -393,21 +326,18 @@ class MessageWorkerExecutor(
                     f"{action.conversation_id} is not a worker of this project. "
                     "Use list_workers to find the right id."
                 )
-            if target.execution_status in HELD_FOR_USER_STATUSES:
-                raise ProjectToolError(
-                    _held_refusal(target_id, target.execution_status)
-                )
+            if target.execution_status == "waiting_for_confirmation":
+                raise ProjectToolError(_CONFIRMATION_REFUSAL.format(id=target_id))
             try:
                 # The generic send route; the server checks the sender is in
-                # the same project and refuses to approve a pending confirmation.
-                response = self._client.request(
+                # the same project.
+                self._client.request(
                     "POST",
                     f"/api/conversations/{target_id}/events",
                     json={
                         "role": "user",
                         "content": [{"type": "text", "text": action.message}],
                         "run": True,
-                        "refuse_pending_confirmation": True,
                         "sender_conversation_id": self._client.conv_state.id.hex,
                     },
                 )
@@ -424,46 +354,16 @@ class MessageWorkerExecutor(
                         "conversation with list_workers or tell "
                         "the user."
                     ) from exc
-                if (
-                    isinstance(cause, httpx.HTTPStatusError)
-                    and cause.response.status_code == 409
-                ):
-                    # It reached a held state after it was listed.
-                    raise ProjectToolError(
-                        _held_refusal(target_id, _held_status(cause.response))
-                    ) from exc
                 raise
-            try:
-                body = response.json()
-                run = str(body["run"])
-                previous_status = str(body["previous_status"])
-            except (ValueError, KeyError, TypeError) as exc:
-                raise ProjectToolError(
-                    f"Unexpected message response: {exc}. The message may have "
-                    "been delivered; check before sending it again."
-                ) from exc
         except ProjectToolError as exc:
             return MessageWorkerObservation.from_text(text=str(exc), is_error=True)
 
-        outcome = _RUN_OUTCOMES.get(
-            run, f"The server reported run outcome {run!r}."
-        ).format(status=previous_status)
-        text = (
-            f"Message saved to conversation {target_id}. {outcome} "
-            "Check list_workers before reporting what it did.\n"
-            + json.dumps(
-                {
-                    "conversation_id": target_id,
-                    "previous_status": previous_status,
-                    "run": run,
-                }
-            )
-        )
         return MessageWorkerObservation.from_text(
-            text=text,
+            text=(
+                f"Message saved to conversation {target_id} and a run was "
+                "requested. Check list_workers before reporting what it did."
+            ),
             conversation_id=target_id,
-            previous_status=previous_status,
-            run=run,
         )
 
 

@@ -71,12 +71,8 @@ the user wrote the message."""
 HELD_FOR_USER_STATUSES = frozenset(
     {"waiting_for_confirmation", "paused", "error", "stuck"}
 )
-"""Execution statuses in which a conversation waits on the user.
-
-A message from anyone but the user (a coordinator, another conversation, a
-server wake-up) is saved but never runs a conversation in one of these: running
-it would approve pending actions, resume work the user paused, or retry a
-failure the user has not seen. Project boards show them as needs-you."""
+"""Execution statuses in which a conversation waits on the user. Project
+boards show them as needs-you."""
 
 
 CONVERSATION_MENTION_SCHEME = "conversation:"

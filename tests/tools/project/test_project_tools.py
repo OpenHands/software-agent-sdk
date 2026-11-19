@@ -85,16 +85,7 @@ class _Server:
                 raise self.message_response
             if self.message_response is not None:
                 return self.message_response
-            target = path.split("/")[-2]
-            status = next(
-                t["execution_status"]
-                for t in self.conversations
-                if t["conversation_id"] == target
-            )
-            return httpx.Response(
-                200,
-                json={"success": True, "previous_status": status, "run": "started"},
-            )
+            return httpx.Response(200, json={"success": True})
         return httpx.Response(404, json={"detail": "Project not found"})
 
     def posts(self) -> list[httpx.Request]:
@@ -246,66 +237,10 @@ def test_message_posts_to_member_conversation(tmp_path, status, attention):
         "role": "user",
         "content": [{"type": "text", "text": "Also add docs"}],
         "run": True,
-        "refuse_pending_confirmation": True,
         "sender_conversation_id": state.id.hex,
     }
     assert observation.conversation_id == conversation["conversation_id"]
-    assert observation.previous_status == status
-    assert observation.run == "started"
-
-
-def test_message_reports_confirmation_reached_during_delivery(tmp_path):
-    conversation = _conversation("running", "working")
-    server = _Server(
-        [conversation],
-        message_response=httpx.Response(
-            200,
-            json={
-                "conversation_id": conversation["conversation_id"],
-                "previous_status": "running",
-                "run": "waiting_for_confirmation",
-            },
-        ),
-    )
-    executor = MessageWorkerExecutor(
-        _conv_state(tmp_path), transport=httpx.MockTransport(server)
-    )
-
-    observation = executor(
-        MessageWorkerAction(
-            conversation_id=conversation["conversation_id"], message="x"
-        )
-    )
-
-    assert not observation.is_error
-    assert observation.run == "waiting_for_confirmation"
-    assert "it was not run" in observation.text
-
-
-def test_message_maps_server_409_to_refusal(tmp_path):
-    conversation = _conversation("idle", "idle")
-    server = _Server(
-        [conversation],
-        message_response=httpx.Response(
-            409,
-            json={
-                "detail": "Conversation is waiting for confirmation",
-                "status": "waiting_for_confirmation",
-            },
-        ),
-    )
-    executor = MessageWorkerExecutor(
-        _conv_state(tmp_path), transport=httpx.MockTransport(server)
-    )
-
-    observation = executor(
-        MessageWorkerAction(
-            conversation_id=conversation["conversation_id"], message="x"
-        )
-    )
-
-    assert observation.is_error
-    assert "would approve that action" in observation.text
+    assert "a run was requested" in observation.text
 
 
 def test_message_timeout_says_not_to_resend(tmp_path):
@@ -326,19 +261,9 @@ def test_message_timeout_says_not_to_resend(tmp_path):
     assert "Do not send it again" in observation.text
 
 
-@pytest.mark.parametrize(
-    ("status", "says"),
-    [
-        ("waiting_for_confirmation", "would approve that action"),
-        ("paused", "Sending would resume it"),
-        ("error", "Sending would retry it"),
-        ("stuck", "Sending would restart it"),
-    ],
-)
-def test_message_refuses_conversation_waiting_on_the_user(tmp_path, status, says):
-    """Review S3: a paused, failed or stuck worker is the user's to resume,
-    so the coordinator's message must not run it (nor approve an action)."""
-    conversation = _conversation(status, "needs_you")
+def test_message_refuses_conversation_waiting_for_confirmation(tmp_path):
+    """Running it would approve the pending action, so nothing is sent."""
+    conversation = _conversation("waiting_for_confirmation", "needs_you")
     server = _Server([conversation])
     executor = MessageWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
@@ -351,30 +276,29 @@ def test_message_refuses_conversation_waiting_on_the_user(tmp_path, status, says
     )
 
     assert observation.is_error
-    assert says in observation.text
+    assert "would approve that action" in observation.text
     assert server.posts() == []
 
 
-def test_message_maps_a_409_for_a_pause_to_its_refusal(tmp_path):
-    conversation = _conversation("running", "working")
-    server = _Server(
-        [conversation],
-        message_response=httpx.Response(
-            409, json={"detail": "Conversation is paused", "status": "paused"}
-        ),
-    )
+@pytest.mark.parametrize("status", ["paused", "error", "stuck"])
+def test_message_runs_a_paused_errored_or_stuck_worker(tmp_path, status):
+    """Only a pending approval is the user's alone; the coordinator may
+    run the worker again from the other stops."""
+    conversation = _conversation(status, "needs_you")
+    server = _Server([conversation])
     executor = MessageWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
         MessageWorkerAction(
-            conversation_id=conversation["conversation_id"], message="x"
+            conversation_id=conversation["conversation_id"], message="try again"
         )
     )
 
-    assert observation.is_error
-    assert "Sending would resume it" in observation.text
+    assert not observation.is_error, observation.text
+    (post,) = server.posts()
+    assert json.loads(post.content)["run"] is True
 
 
 def test_message_refuses_conversation_outside_project(tmp_path):

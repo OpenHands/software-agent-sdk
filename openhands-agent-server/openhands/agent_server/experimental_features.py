@@ -77,6 +77,17 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
+ASK_USER = ExperimentalFeatureDefinition(
+    key="ask_user",
+    label="Decision cards",
+    description=(
+        "When a choice is yours to make, the agent can ask you one question "
+        "with a few options and a recommendation, shown as a card you answer "
+        "in one tap or in your own words. Applies to conversations started "
+        "after you turn it on."
+    ),
+)
+
 CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
     key="conversation_mentions",
     label="Conversation mentions",
@@ -95,17 +106,6 @@ MESSAGE_EDITS = ExperimentalFeatureDefinition(
         "became wrong: it strikes the outdated part and adds a short note, and "
         "the message shows as edited. Applies to conversations started after "
         "you turn it on."
-    ),
-)
-
-ASK_USER = ExperimentalFeatureDefinition(
-    key="ask_user",
-    label="Decision cards",
-    description=(
-        "When a choice is yours to make, the agent can ask you one question "
-        "with a few options and a recommendation, shown as a card you answer "
-        "in one tap or in your own words. Applies to conversations started "
-        "after you turn it on."
     ),
 )
 

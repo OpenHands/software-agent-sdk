@@ -67,10 +67,9 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
   `SendMessageRequest` body `{"role": "user", "content": [{"type": "text",
   "text": "..."}], "run": false}` returns `{"success": true}` (with `run: true`
   it also reports `run`: `started`, `queued` or `not_run`); `run` defaults
-  to `false`. The same model is a new conversation's `initial_message`. Two
-  optional fields, left out of dumps while unset, serve messages from other
-  conversations: `sender_conversation_id` (projects, F36: its runs are always
-  guarded) and `refuse_pending_confirmation`. A content item is either `{"type": "text", "text": ...}`
+  to `false`. The same model is a new conversation's `initial_message`. An
+  optional `sender_conversation_id`, left out of dumps while unset, marks a
+  message from another conversation (projects: F36). A content item is either `{"type": "text", "text": ...}`
   or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). The Python SDK `RemoteConversation.send_message()` and the
   TypeScript `RemoteConversation.sendMessage()` always send `run: false` and
   then call `POST /run` separately; `ConversationClient.sendEvent()` posts the
