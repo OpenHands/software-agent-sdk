@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>github_ci_status — design</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 880px;
+         margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #d0d7de; padding-bottom: .4rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .85rem; }
+  pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+        padding: .8rem 1rem; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #d0d7de; padding: .45rem .7rem; text-align: left;
+           font-size: .9rem; vertical-align: top; }
+  th { background: #f6f8fa; }
+  .before { border-left: 4px solid #cf222e; padding-left: .8rem; }
+  .after  { border-left: 4px solid #1a7f37; padding-left: .8rem; }
+  .muted  { color: #57606a; font-size: .85rem; }
+  .flow   { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+            padding: 1rem; text-align: center; }
+  .flow span { display: inline-block; padding: .35rem .7rem; border: 1px solid #d0d7de;
+               border-radius: 6px; background: white; margin: .2rem; font-size: .82rem; }
+  .flow .arrow { border: none; background: none; padding: 0 .25rem; color: #57606a; }
+  .dash { border-style: dashed !important; color: #57606a; }
+</style>
+</head>
+<body>
+
+<h1><code>github_ci_status</code> — PR CI status under GitHub App tokens</h1>
+<p class="muted">New read-only tool in <code>openhands-tools</code>. Additive; no change to
+existing tools, events, or the agent-server wire contract.</p>
+
+<h2>Problem</h2>
+<p class="before"><code>gh pr checks</code>, <code>/commits/{sha}/check-runs</code>, and the GraphQL
+<code>statusCheckRollup</code> all read the checks rollup. GitHub App installation tokens need
+<em>Checks: read</em> for it; Apps issued with Actions + metadata only get <code>403</code>. Every
+automation that gates on CI then re-implements the same Actions-API polling workaround by hand.</p>
+
+<h2>After</h2>
+<p class="after">One tool call does the whole chain with App-token-compatible endpoints only, and
+degrades gracefully when the enrichment endpoints refuse the token.</p>
+
+<div class="flow">
+  <span>pulls/{n} → head.sha</span><span class="arrow">→</span>
+  <span>actions/runs?head_sha=…</span><span class="arrow">→</span>
+  <span>actions/runs/{id}/jobs</span>
+  <br>
+  <span class="dash">check-runs + statuses (best effort; 403 → permission note)</span>
+</div>
+
+<h2>Public surface</h2>
+<table>
+  <tr><th>Field (<code>GithubCiStatusAction</code>)</th><th>Meaning</th></tr>
+  <tr><td><code>repository</code></td><td><code>"owner/repo"</code> (clone URLs normalized)</td></tr>
+  <tr><td><code>pull_number</code> | <code>sha</code></td><td>exactly one; PR resolves its current head</td></tr>
+  <tr><td><code>include_jobs</code></td><td>fetch failing job/step names for non-passing runs (default on)</td></tr>
+</table>
+<table>
+  <tr><th>Field (<code>GithubCiStatusObservation</code>)</th><th>Meaning</th></tr>
+  <tr><td><code>overall</code></td><td>rollup: failure &gt; pending &gt; success; <code>neutral</code> = no signals</td></tr>
+  <tr><td><code>workflow_runs</code>, <code>other_checks</code></td><td><code>CiResult</code> list (name, kind, status, conclusion, url, details)</td></tr>
+  <tr><td><code>unavailable_sources</code></td><td>endpoints the token could not read, with permission hints</td></tr>
+</table>
+
+<h2>Rollup semantics</h2>
+<pre>classify(signal): failure  if conclusion ∈ {failure, timed_out, action_required,
+                                            cancelled, stale, startup_failure, error}
+                           or state ∈ {failure, error}
+                  success  if conclusion ∈ {success, neutral, skipped} or state == success
+                  pending  otherwise (queued / in_progress / pending)
+
+overall: any failure → "failure"; else any pending → "pending";
+         any success → "success"; no signals → "neutral"</pre>
+<p>Failure beats pending on purpose: a gate should report "this will not be green" even while
+sibling runs are still going.</p>
+
+<h2>Token &amp; error behavior</h2>
+<ul>
+  <li>Token from conversation secrets (<code>github_token</code>, <code>GITHUB_TOKEN</code>,
+      <code>GH_TOKEN</code>, <code>github</code>) then environment; env values are registered with the
+      secret registry so output masking covers them. Never a tool parameter.</li>
+  <li>401/403 on the core endpoints → error observation naming the missing permission
+      (<em>actions: read</em> / <em>pull requests: read</em>).</li>
+  <li>401/403 on check-runs/statuses → success path continues; the report names
+      <em>checks: read</em> / <em>statuses: read</em> as optional.</li>
+  <li><code>GITHUB_API_URL</code> overrides the API base (GitHub Enterprise).</li>
+</ul>
+
+<h2>Validation</h2>
+<ul>
+  <li>15 unit tests against a real local HTTP stub (<code>tests/tools/github_ci_status/</code>):
+      PR→SHA resolution, failure reports with failed step names, the App-token 403 degradation
+      path, third-party check merging, rollup precedence, pagination-safe job fetching
+      (only for non-passing runs), token resolution order.</li>
+  <li>Full <code>tests/tools</code> suite: 1059 passed. Ruff format + lint, pycodestyle, pyright,
+      and <code>scripts/check_tool_registration.py</code> pass on touched files.</li>
+</ul>
+
+</body>
+</html>
