@@ -248,12 +248,13 @@ Preconditions:
   P2=$(control-agent-server api POST /api/projects \
     --json "{\"name\": \"qa-f36-two\", \"coordinator\": {\"working_dir\": \"$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f36-cat\", \"title\": \"qa-f36-cat\", \"tags\": {\"insidercat\": \"self\"}}}" \
     --expect 201 --check coordinator_conversation_id matches '^[0-9a-f]{32}$' --save F36.coordinator/post --field id)
-  CAT=$(control-agent-server api GET "/api/projects/$P2" --field coordinator_conversation_id)
+  CAT=$(python3 -c 'import sys, uuid; print(uuid.UUID(sys.argv[1]))' \
+    "$(control-agent-server api GET "/api/projects/$P2" --field coordinator_conversation_id)")
   control-agent-server api GET "/api/conversations/$CAT" --check tags.project eq "$P2" --check tags.insidercat eq self \
     --check execution_status eq idle --check agent.system_prompt_filename eq system_prompt_project_coordinator.j2 \
     --check . contains list_workers --check . contains message_worker --save F36.coordinator/get
   control-agent-server api GET "/api/conversations/$CAT" \
-    --check agent.agent_context.project_context contains "You are this project's coordinator, conversation $(python3 -c 'import sys, uuid; print(uuid.UUID(sys.argv[1]))' "$CAT")."
+    --check agent.agent_context.project_context contains "You are this project's coordinator, conversation $CAT."
   control-agent-server api GET "/api/projects/$P2/conversations" --check coordinator.title eq qa-f36-cat --check conversations len-eq 0 \
     --save F36.coordinator/conversations
   ```
