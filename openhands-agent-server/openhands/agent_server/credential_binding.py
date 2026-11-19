@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import CredentialBindingActivationTooLate
+from openhands.agent_server.exceptions import CredentialBindingActivationTooLate
 from openhands.agent_server.persistence import FileSecretsStore, run_store
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (

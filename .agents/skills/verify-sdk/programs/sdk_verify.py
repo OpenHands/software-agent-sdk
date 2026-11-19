@@ -252,7 +252,7 @@ def event_summary(index: int, event: Any) -> dict[str, Any]:
     observation = getattr(event, "observation", None)
     if observation is not None:
         row["tool"] = getattr(event, "tool_name", None)
-        row["text"] = _clip(_observation_text(observation))
+        row["text"] = _clip(_observation_text(observation), 2000)
         row["is_error"] = bool(getattr(observation, "is_error", False))
     message = getattr(event, "llm_message", None)
     if message is not None and type(event).__name__ == "MessageEvent":

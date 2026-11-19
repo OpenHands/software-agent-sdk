@@ -296,6 +296,15 @@ class SettingsStore(ABC):
             The updated settings after saving.
         """
 
+    def experimental_features(self) -> dict[str, bool]:
+        """The user's experimental feature switches, as saved now.
+
+        For checks that follow a switch at once (a route, a wake-up). Raises
+        what :meth:`load` raises when the settings cannot be read.
+        """
+        settings = self.load() or PersistedSettings()
+        return dict(settings.experimental_features)
+
 
 class SecretsStore(ABC):
     """Abstract base class for secrets storage."""
@@ -346,6 +355,8 @@ class FileSettingsStore(SettingsStore):
         self.filename = filename
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".settings.lock"
+        # The switches last read, with the file's (mtime_ns, size) then.
+        self._features_cache: tuple[tuple[int, int], dict[str, bool]] | None = None
 
     def load(self, *, strict: bool = False) -> PersistedSettings | None:
         """Load settings from file.
@@ -418,7 +429,30 @@ class FileSettingsStore(SettingsStore):
         data = settings.model_dump(mode="json", context=context)
 
         _atomic_write_json(self._path, data)
+        # A file system with coarse timestamps can keep the mtime and size
+        # across a quick save; forget the switches so the next check reads.
+        self._features_cache = None
         logger.debug(f"Settings saved to {self._path}")
+
+    def experimental_features(self) -> dict[str, bool]:
+        """The saved switches, read again only when the file changed.
+
+        A flag check is then one ``stat``, not a read and a decryption of
+        every secret in the file. The file's modification time and size key
+        the cache, so a save here or by another process shows on the next
+        check.
+        """
+        try:
+            stat = self._path.stat()
+        except FileNotFoundError:
+            return {}
+        key = (stat.st_mtime_ns, stat.st_size)
+        cached = self._features_cache
+        if cached is not None and cached[0] == key:
+            return dict(cached[1])
+        features = super().experimental_features()
+        self._features_cache = (key, features)
+        return dict(features)
 
     def update(
         self, update_fn: Callable[[PersistedSettings], PersistedSettings]
