@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializeAsAny,
     field_validator,
     model_validator,
 )
@@ -117,7 +118,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         arbitrary_types_allowed=True,
     )
 
-    llm: LLM = Field(
+    llm: SerializeAsAny[LLM] = Field(
         ...,
         description="LLM configuration for the agent.",
         examples=[
@@ -259,6 +260,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             and data["security_policy_filename"] is None
         ):
             data["security_policy_filename"] = ""
+        llm = data.get("llm")
+        if isinstance(llm, dict) and "llms_for_routing" in llm:
+            from openhands.sdk.llm.router import RouterLLM
+
+            data["llm"] = RouterLLM.model_validate_router(llm)
         has_inline = data.get("system_prompt") is not None
         has_custom_filename = (
             "system_prompt_filename" in data
