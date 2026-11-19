@@ -46,9 +46,12 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2512",
 ]
 
-# Argon: 4. Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
+# Gemini 4: Argon, Carbon and Hydrogen. Pro: 3.1. Flash: 3.8 and 3.7.
+# Flash-lite: 3.5 and 3.1.
 VERIFIED_GEMINI_MODELS = [
     "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-hydrogen",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
@@ -101,11 +104,12 @@ VERIFIED_NVIDIA_MODELS = [
     "nemotron-3-ultra-550b-a55b",
 ]
 
-# Plus: 3.7 and 3.6. Max: 3.8 and 3.7. Flash: 3.8 and 3.7. Omni-flash: 3.8.
+# Plus: 3.7 and 3.6. Max: 4, 3.8 and 3.7. Flash: 3.8 and 3.7. Omni-flash: 3.8.
 # Coder: unversioned.
 VERIFIED_QWEN_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "qwen4-max",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
@@ -140,6 +144,8 @@ VERIFIED_OPENROUTER_MODELS = [
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "google/gemini-4-argon",
+    "google/gemini-4-carbon",
+    "google/gemini-4-hydrogen",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.8-flash",
     "google/gemini-3.7-flash",
@@ -222,6 +228,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-ultra-550b-a55b",
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "qwen4-max",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
