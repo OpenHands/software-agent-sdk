@@ -34,9 +34,7 @@ from openhands.agent_server.exceptions import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.experimental_features import (
-    PROJECT_TOOLS,
     experimental_feature_tools,
-    experimental_feature_withheld_tools,
     host_experimental_features,
 )
 from openhands.agent_server.launch import (
@@ -84,11 +82,9 @@ from openhands.agent_server.telemetry import (
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message, TextContent
-from openhands.sdk.agent import ACPAgent, Agent
+from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import (
-    PROJECT_COORDINATOR_PROMPT,
-    PROJECT_WORKER_PROMPT,
     AgentBase,
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -346,23 +342,6 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 
 
 logger = logging.getLogger(__name__)
-
-
-_PROJECT_PROMPTS = (PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT)
-
-
-def _without_project_role(agent: AgentBase) -> AgentBase:
-    """A copy of a project member's agent for an ordinary child: the default
-    prompt, and no project context."""
-    if not isinstance(agent, Agent):
-        return agent
-    update: dict[str, Any] = {}
-    if agent.system_prompt_filename in _PROJECT_PROMPTS:
-        update["system_prompt_filename"] = "system_prompt.j2"
-    context = agent.agent_context
-    if context is not None and context.project_context:
-        update["agent_context"] = context.model_copy(update={"project_context": None})
-    return agent.model_copy(update=update) if update else agent
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
@@ -1776,9 +1755,6 @@ class ConversationService:
                 experimental_feature_tools=experimental_feature_tools(
                     experimental_features
                 ),
-                withheld_tools=experimental_feature_withheld_tools(
-                    experimental_features
-                ),
                 project_role=project_role,
                 load_memory=load_memory,
                 managed_secrets=(
@@ -2331,8 +2307,7 @@ class ConversationService:
             return None
 
         # Only a member of an existing project, with Projects on, starts
-        # workers; any other conversation starts an ordinary child, with no
-        # project tools, guidance or memory (the parent keeps its own).
+        # workers; any other conversation starts an ordinary child.
         if await self.projects.member_of(parent_service.stored.tags) is not None:
             return await self.projects.start_worker(parent_service, request)
 
@@ -2340,9 +2315,7 @@ class ConversationService:
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
-            parent_agent = _without_project_role(
-                cast(AgentBase, parent_service.get_conversation().agent)
-            )
+            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
             # A child spends under the same cap as its parent.
             max_budget_per_run = parent_service.get_conversation().max_budget_per_run
             child_id = uuid4()
@@ -2369,7 +2342,6 @@ class ConversationService:
                         self.acp_skill_sourcing, enable_browser=self.enable_browser
                     ),
                     extra_suffixes=[worktree.guidance] if worktree else (),
-                    withheld_tools=PROJECT_TOOLS,
                 )
             )
             workspace = (

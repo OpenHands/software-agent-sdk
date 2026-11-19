@@ -23,14 +23,14 @@ written by a newer schema, is never overwritten: every route answers 409.
 
 Projects is an experimental feature, `projects`, off by default. Turn it on
 first with `PATCH /api/settings/experimental/projects {"enabled": true}`. While
-it is off, every `/api/projects` route answers 404, new conversations get no
-project tools (they are withheld even when the agent spec lists them) and no
-worker guidance, a member's child is an ordinary child (default prompt, no
-project tools) that keeps a copy of its parent's tags, `project` included, so
-it joins the board when Projects is back on, and no update or user copy
-reaches a coordinator. Projects on disk are kept, and conversations started
-while it was on keep their `project` tag and tools; each project tool answers
-that Projects is turned off.
+it is off, every `/api/projects` route answers 404, the server starts no
+coordinators or workers, a member's child is an ordinary child, copied from
+its parent as on main, that keeps its parent's tags, `project` included, so it
+joins the board when Projects is back on, and no update or user copy reaches a
+coordinator. Projects on disk are kept, and conversations started while it was
+on keep their `project` tag and tools; each project tool answers that Projects
+is turned off, and outside a project that the conversation is not part of
+one.
 
 Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
 

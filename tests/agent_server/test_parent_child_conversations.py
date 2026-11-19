@@ -909,65 +909,6 @@ async def test_with_projects_off_a_members_child_is_an_ordinary_child(
     assert launch.child.tags == {"project": _PROJECT}
 
 
-def test_an_ordinary_child_does_not_copy_a_coordinators_role():
-    from openhands.agent_server.conversation_service import _without_project_role
-    from openhands.sdk.context import AgentContext
-
-    coordinator = Agent(
-        llm=LLM(model="gpt-4o", usage_id="test-llm"),
-        system_prompt_filename=PROJECT_COORDINATOR_PROMPT,
-        agent_context=AgentContext(
-            project_context="Project: P", system_message_suffix="Cite paths."
-        ),
-    )
-    planner = coordinator.model_copy(
-        update={
-            "system_prompt_filename": "system_prompt_planning.j2",
-            "agent_context": None,
-        }
-    )
-
-    child = cast(Agent, _without_project_role(coordinator))
-
-    assert child.system_prompt_filename == "system_prompt.j2"
-    assert child.agent_context is not None
-    assert child.agent_context.project_context is None
-    assert child.agent_context.system_message_suffix == "Cite paths."
-    assert _without_project_role(planner) is planner
-
-
-@pytest.mark.projects_off
-@pytest.mark.asyncio
-async def test_with_projects_off_a_new_conversation_gets_no_project_tools(
-    tmp_path, workspace_dir
-):
-    services: dict[UUID, Any] = {}
-    start = _start_request(workspace_dir).model_copy(
-        update={
-            "agent": Agent(
-                llm=LLM(model="gpt-4o", usage_id="test-llm"),
-                tools=[
-                    Tool(name="terminal"),
-                    Tool(name="list_workers"),
-                    Tool(name="message_worker"),
-                ],
-            )
-        }
-    )
-    with patch(
-        "openhands.agent_server.conversation_service.EventService",
-        side_effect=_event_service_factory(services),
-    ):
-        async with ConversationService(
-            conversations_dir=tmp_path / "conversations",
-            conversation_worktree_root=tmp_path / "worktrees",
-        ) as service:
-            info, _ = await service.start_conversation(start)
-
-    agent = services[info.id].get_conversation().agent
-    assert [tool.name for tool in agent.tools] == ["terminal"]
-
-
 # A coordinator the server starts with a new project
 
 
