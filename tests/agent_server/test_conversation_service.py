@@ -1029,9 +1029,13 @@ async def test_prepare_for_sandbox_pause_blocks_new_hydration(
 
             finish_close.set()
             await asyncio.wait_for(pause_task, timeout=1)
-            assert service._event_services == {}
-            assert not hydration_entered.is_set()
+            # The pause must have closed the pre-existing service. A hydration
+            # that resumed the moment the pause released the lifecycle gate may
+            # already have added its own service, so assert on the closed one
+            # rather than on the dict being empty.
+            assert existing_id not in service._event_services
             assert await asyncio.wait_for(hydration_task, timeout=1) is hydrated
+            assert service._event_services[conversation_id] is hydrated
     finally:
         finish_close.set()
         await service.__aexit__(None, None, None)
