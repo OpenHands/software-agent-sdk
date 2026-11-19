@@ -530,6 +530,10 @@ class Config(BaseModel):
             "Distinct from LLM completion logging and from Laminar/OTel tracing."
         ),
     )
+    capture_llm_streams: bool = Field(
+        default=False,
+        description="Record masked LLM streams in private conversation sidecars.",
+    )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
     _secret_key_was_blank: bool = PrivateAttr(default=False)
 

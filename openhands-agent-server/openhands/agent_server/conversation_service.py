@@ -608,6 +608,7 @@ class ConversationService:
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
     enable_browser: bool = True
+    capture_llm_streams: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -2577,6 +2578,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            capture_llm_streams=config.capture_llm_streams,
         )
 
     async def _start_event_service(
@@ -2610,6 +2612,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            capture_llm_streams=self.capture_llm_streams,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
