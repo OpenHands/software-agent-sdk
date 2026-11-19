@@ -2,7 +2,7 @@
 
 A Python program calls `Conversation(agent=..., workspace=...)` with a local workspace (a path string or `LocalWorkspace`) and gets a `LocalConversation` that runs the agent in the same process. Around the step loop (family S01) it owns the conversation's lifecycle: a stable `conversation.id`, optional on-disk persistence under `persistence_dir/<id.hex>/` (`base_state.json` plus one `events/event-NNNNN-<event_id>.json` per event) that a second `Conversation(..., persistence_dir=..., conversation_id=same_id)` reloads and continues, `pause()` from another thread, `arun()` on an asyncio loop with `interrupt()` cancelling mid-LLM-call, `update_secrets(...)` that inject values as environment variables into terminal commands and mask them in output, a pluggable visualizer (Rich console output by default, `visualizer=None` for silence), `fork()` into an independent copy or a branch from a chosen event, and `close()`. Helpers next to it read results out of a finished conversation: `get_agent_final_response(events)`, `conversation.conversation_stats` (per-`usage_id` LLM metrics), `generate_title()`, and `run_goal(...)`, which re-prompts the agent until a second judge LLM agrees an objective is complete, and stops with `GoalAsked` when the agent's `ask_user` question awaits the user.
 
-Source: `openhands-sdk/openhands/sdk/conversation/conversation.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/base.py`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/conversation/persistence_const.py`, `openhands-sdk/openhands/sdk/conversation/cancellation.py`, `openhands-sdk/openhands/sdk/conversation/secret_registry.py`, `openhands-sdk/openhands/sdk/conversation/visualizer/`, `openhands-sdk/openhands/sdk/conversation/goal/`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `openhands-sdk/openhands/sdk/conversation/conversation_stats.py`, `openhands-sdk/openhands/sdk/conversation/title_utils.py`, `openhands-sdk/openhands/sdk/conversation/types.py`, `openhands-sdk/openhands/sdk/secret/`, `openhands-sdk/openhands/sdk/utils/async_utils.py`
+Source: `openhands-sdk/openhands/sdk/conversation/conversation.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/base.py`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/conversation/persistence_const.py`, `openhands-sdk/openhands/sdk/conversation/cancellation.py`, `openhands-sdk/openhands/sdk/conversation/secret_registry.py`, `openhands-sdk/openhands/sdk/conversation/visualizer/`, `openhands-sdk/openhands/sdk/conversation/goal/`, `openhands-sdk/openhands/sdk/conversation/resolution.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `openhands-sdk/openhands/sdk/conversation/conversation_stats.py`, `openhands-sdk/openhands/sdk/conversation/title_utils.py`, `openhands-sdk/openhands/sdk/conversation/types.py`, `openhands-sdk/openhands/sdk/secret/`, `openhands-sdk/openhands/sdk/utils/async_utils.py`
 
 Needs: `llm`, `tmux`, `network`, `uvx`
 
@@ -41,6 +41,9 @@ Examples: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`, `
 - `S04.final-response`: `get_agent_final_response(conversation.state.events)` returns the text of whichever came last of the agent's `finish` call and its plain-text `MessageEvent`, else `""`. Unit: `tests/sdk/conversation/test_agent_final_response.py`. Example: none. Real-LLM: `tests/integration/tests/t08_image_file_viewing.py`.
 - `S04.stats`: `conversation.conversation_stats` keeps `Metrics` per LLM `usage_id`, combines them with `get_combined_metrics()`, restores them on resume, and stats update events carry a snapshot rather than the full history. Unit: `tests/sdk/conversation/test_conversation_stats.py`, `tests/sdk/conversation/test_stats_update_event_snapshot.py`. Example: `examples/01_standalone_sdk/11_async.py` (prints cost). Real-LLM: none.
 - `S04.title-and-tags`: `generate_title(llm=None, max_length=50)` asks an LLM (the agent's by default) for a title from the first user message, falls back to truncation on error, and strips reasoning text; `tags={...}` keys must be lowercase alphanumeric. Unit: `tests/sdk/conversation/test_generate_title.py`, `tests/sdk/conversation/test_tags.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py` (`title=`). Real-LLM: none.
+- `S04.conversation-sender`: `conversation_sender(conversation_id)` (`openhands.sdk.conversation.types`) is `CONVERSATION_SENDER_PREFIX` (`"conversation:"`) plus the id's hex; `send_message(text, sender=...)` records it on the saved user `MessageEvent`, a plain `send_message` records no sender, and both survive a reload from `persistence_dir`. Unit: **none (untested)** in the SDK; `tests/agent_server/test_event_router.py` covers the server's use of it. Example: none. Real-LLM: none.
+- `S04.resolution-verdict`: `verdict_from_judgments(judgments)` (`openhands.sdk.conversation.resolution`) turns the seven yes/no judgments of `RESOLUTION_QUESTIONS` into a `ResolutionVerdict`: `owed` `nothing` (resolved) only when `handled` and `task_done` are both at least 0.85 and every hand-off stays below 0.2; otherwise the strongest hand-off at or above 0.5 (`answer`, `review`, `decide`, `check`), else `unfinished` when the work is not done, else `unclear`; `probability` is `min(handled, task_done, 1 - strongest hand-off)`, `needs_user` is true only for a question, review, choice or check (not a reported problem), and judgments are clamped to 0..1, a non-numeric one counting as 0. Unit: `tests/sdk/conversation/test_resolution.py`. Example: none. Real-LLM: none.
+- `S04.resolution-judge`: `resolution_judge(fallback_llm, LLMProfileStore(...), cipher=None)` loads the saved LLM profile `resolution_judge`, first saving a copy of the fallback LLM under that name (with its key, encrypted on disk when a cipher is given) when the store has none; an existing profile wins over a later fallback. The returned `LLMDecisionModel` runs on that profile with a 60 s timeout and no LLM-level retries (`usage_id` `resolution_judge`), and `await judge_resolution(judge, ResolutionState(...))` sends the turn and every question in one chat request and returns the verdict with the profile's model; a reply that is not JSON raises `ValueError` after one request. Unit: `tests/sdk/conversation/test_resolution.py`. Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
 
@@ -51,6 +54,7 @@ Examples: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`, `
 - `openhands.sdk.conversation.visualizer.ConversationVisualizerBase`, `DefaultConversationVisualizer`: `S04.visualizer-*`.
 - `conversation.fork(conversation_id=, agent=, title=, tags=, reset_metrics=True, from_event_id=)`, `conversation.navigate_to(event_id)`: `S04.fork`, `S04.fork-branch`; `LocalConversation(..., cipher=Cipher(key))` (`openhands.sdk.utils.cipher`; the `Conversation` factory does not take a cipher): `S04.fork-keeps-secrets`.
 - `openhands.sdk.conversation.goal.run_goal`, `GoalController`, `judge_goal`: `S04.goal-loop`; `GoalAsked` (a round that ended on an `ask_user` question, `openhands.tools.ask_user`, see S16): `S04.goal-asked`, `S04.goal-asked-branch`.
+- `openhands.sdk.conversation.types.conversation_sender`, `CONVERSATION_SENDER_PREFIX`, `conversation.send_message(..., sender=...)`: `S04.conversation-sender`. `openhands.sdk.conversation.resolution` (`verdict_from_judgments`, `resolution_judge`, `judge_resolution`, `ResolutionState`, `ResolutionVerdict`, `LLMDecisionModel`, `RESOLUTION_JUDGE_PROFILE_NAME`): `S04.resolution-verdict`, `S04.resolution-judge`; the profile lives in an `LLMProfileStore` directory (see S03).
 - `openhands.sdk.conversation.response_utils.get_agent_final_response`: `S04.final-response`. `conversation.conversation_stats` / `conversation.state.stats`: `S04.stats`. `conversation.generate_title()`: `S04.title-and-tags`. `conversation.close()`: `S04.close`.
 - Env: `LLM_API_KEY` (required), `LLM_MODEL` (default `gpt-5.5`; `anthropic/claude-sonnet-4-5-20250929` in example 50), `LLM_BASE_URL`; example 50 also reads `AUTO_CANCEL_SECONDS` (default 8).
 
@@ -335,6 +339,46 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check first_run.agent_cost eq 0.28 --check first_run.secondary_cost eq 0.14 --check first_run.combined_cost eq 0.42 \
     --check resumed.restored_agent_cost eq 0.28 --check resumed.agent_cost_after eq 0.42 --check resumed.status eq finished
   ```
+- **A message from another conversation (`S04.conversation-sender`).** Two persisted conversations; the second gets one plain message and one sent with `sender=conversation_sender(first.id)`, then is closed and reopened from `persistence_dir`. Scripted: nothing runs.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S04/sender \
+    --check prefix eq "conversation:" --check value_is_prefix_plus_hex eq true --check hex_parses eq true \
+    --check in_memory len-eq 2 --check in_memory.0.text eq QA_S04_FROM_USER --check in_memory.0.sender eq null \
+    --check in_memory.1.text eq QA_S04_FROM_CONVERSATION --check in_memory.1.sender matches '^conversation:[0-9a-f]{32}$' \
+    --check after_reload len-eq 2 --check after_reload.0.sender eq null \
+    --check after_reload.1.sender matches '^conversation:[0-9a-f]{32}$'
+  ```
+  Expected: the helper's value is `conversation:` plus the sender's hex id; only the relayed message carries it, in memory and after the reload.
+- **Resolution verdicts (`S04.resolution-verdict`).** Fixed judgment sets through `verdict_from_judgments`, no model.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S04/resolution --arg verdicts \
+    --check questions eq '["asks_to_check", "asks_user", "handled", "hands_off_review", "offers_choice", "reports_problem", "task_done"]' \
+    --check done.owed eq nothing --check done.resolved eq true --check done.probability eq 0.9 --check done.note eq "0.90 nothing" \
+    --check asks.owed eq answer --check asks.needs_user eq true --check asks.probability eq 0.2 \
+    --check review.owed eq review --check review.needs_user eq true \
+    --check unfinished.owed eq unfinished --check unfinished.needs_user eq false --check unfinished.probability eq 0.4 \
+    --check unclear.owed eq unclear --check unclear.resolved eq false --check unclear.probability eq 0.7 \
+    --check problem.owed eq check --check problem.needs_user eq false \
+    --check out_of_range.owed eq unfinished --check out_of_range.probability eq 0.0
+  ```
+  Expected: all done with low hand-offs resolves (probability the weakest signal, 0.9); a question, a review, a choice or a check is owed when its judgment holds; unfinished work with no hand-off is `unfinished`; a weak hand-off (0.3) on finished work is `unclear`; a reported problem owes a `check` without needing the user; a non-numeric `task_done` counts as 0.
+- **The judge on its saved profile (`S04.resolution-judge`).** An empty profile store and a fallback LLM pointed at a local OpenAI-compatible endpoint (`programs/S16/fake_openai.py`) that answers with fixed JSON (the agent asks the user); then a second fallback, a cipher store, and an endpoint that answers in prose.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S04/resolution --arg judge \
+    --check profiles_before len-eq 0 --check profiles_after eq '["resolution_judge.json"]' \
+    --check saved.model eq openai/qa-judge-a --check saved.api_key_kept eq true \
+    --check judge.usage_id eq resolution_judge --check judge.llm_timeout eq 60 --check judge.llm_num_retries eq 0 \
+    --check verdict.owed eq answer --check verdict.needs_user eq true --check verdict.resolved eq false \
+    --check verdict.model eq openai/qa-judge-a --check verdict.judgments len-eq 7 \
+    --check request.has_state eq true --check request.names_questions eq true \
+    --check reused_model eq openai/qa-judge-a \
+    --check cipher.plain_key_on_disk eq false --check cipher.loaded_key_matches eq true \
+    --check bad_reply_error contains "did not reply with JSON" --check bad_reply_requests eq 1
+  ```
+  Expected: the first call saves `resolution_judge.json` from the fallback (model and key), the judge runs on it with a 60 s timeout and no LLM retries, and one request carrying the turn and all seven question names yields `owed` `answer` from the profile's model; a later fallback (`qa-judge-b`) does not replace the saved profile; with a cipher the key is not in the file in plain text but loads back; a prose reply raises `ValueError` after one request.
 - **A real model across a resume (`S04.factory`, `S04.resume`, `S04.final-response`).** Live; each `control-sdk` command reopens the conversation from disk.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -370,6 +414,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
 
 ## Gotchas
 
+- `RemoteConversation.send_message(..., sender=...)` does not record the sender: the server saves the message with `sender: null` ([#7004](https://github.com/OpenHands/software-agent-sdk/issues/7004)); `S04.conversation-sender` holds for local conversations only. Over REST only a conversation sender is recorded (agent-server `F06.send-sender-conversation`).
 - `run_goal` and `GoalController.on_run_finished` look for a pending `ask_user` question in the whole event log, not the active branch, so a question left on an abandoned branch still stops a goal ([#6907](https://github.com/OpenHands/software-agent-sdk/issues/6907), `S04.goal-asked-branch`).
 - `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py` is in `_EXCLUDED_EXAMPLES` in `tests/examples/test_examples.py`, so the `test-examples` label never runs it; it also prints no `EXAMPLE_COST:` line, which that harness would require.
 - Examples run under the harness with `uv run pytest tests/examples/test_examples.py --run-examples -k <name>`; without `--run-examples` every case is skipped.
