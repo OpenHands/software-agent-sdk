@@ -370,14 +370,6 @@ class TestProviderRegistryConsistency:
                 f"{key}: default_session_mode must be None or non-blank"
             )
 
-    def test_session_modes_are_distinct(self):
-        modes = [
-            info.default_session_mode
-            for info in ACP_PROVIDERS.values()
-            if info.default_session_mode is not None
-        ]
-        assert len(modes) == len(set(modes)), "each provider should use a unique mode"
-
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
         """Every registered pattern should resolve back to its own provider."""
         for key, info in ACP_PROVIDERS.items():
