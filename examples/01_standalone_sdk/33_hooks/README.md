@@ -31,26 +31,33 @@ python main.py
 
 | Hook | When it runs | Can block? |
 |------|--------------|------------|
-| PreToolUse | Before tool execution | Yes (exit 2) |
+| PreToolUse | Before tool execution | Yes (exit 2 or JSON denial) |
 | PostToolUse | After tool execution | No |
-| UserPromptSubmit | Before processing user message | Yes (exit 2) |
-| Stop | When agent tries to finish | Yes (exit 2) |
+| UserPromptSubmit | Before processing user message | Yes (exit 2 or JSON denial) |
+| Stop | When agent tries to finish | Yes (exit 2 or JSON denial) |
 | SessionStart | When conversation starts | No |
 | SessionEnd | When conversation ends | No |
 
 ## Exit Codes
 
-Hook scripts signal their result via the exit code (matching the Claude Code
-hook contract):
+For synchronous command hooks, the exit code belongs to the configured shell
+command. The SDK records execution success separately from blocking:
 
-- **`0` — success.** The operation proceeds. `stdout` is parsed as JSON for
-  structured output (`decision`, `reason`, `additionalContext`).
-- **`2` — block.** The operation is denied. For `Stop` hooks, this prevents
-  the agent from finishing and the agent continues running. `stderr` /
-  `reason` is surfaced as feedback.
-- **Any other non-zero exit code — non-blocking error.** The error is
-  logged, but the operation still proceeds.
+| Exit code | `success` | Blocking decision |
+| --- | --- | --- |
+| `0` | `True` | A JSON denial can still block. |
+| `2` | `False` | Blocks, even if JSON says to allow or continue. |
+| Other non-zero, including `1` | `False` | Does not block by itself; a JSON denial can still block. |
 
-> **Note:** Only exit code `2` blocks. Exit code `1` (the conventional Unix
-> failure code) is treated as a non-blocking error. A hook that is meant to
-> enforce a policy must exit with `2`.
+The SDK attempts to parse stdout as JSON on every exit code. `"decision": "deny"`
+or `"continue": false` blocks. Exit `1` with plain-text output is non-blocking;
+exit `1` with `{"decision": "deny"}` blocks while still reporting `success=False`.
+
+JSON `reason` and `additionalContext` remain available on exit `2`. Blocking
+explanations prefer `reason`, then stderr, then a default message. For `Stop`
+hooks, blocking prevents completion and lets the agent continue; feedback uses
+`additionalContext` when present, otherwise the blocking reason.
+
+For new hooks, use exit `0` with a JSON decision, or exit `2` with a reason on
+stderr. A JSON allow cannot override exit `2`. Background hooks (`async: true`)
+do not wait for a result and cannot block through their exit code or output.
