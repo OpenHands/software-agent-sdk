@@ -62,7 +62,7 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.oauth-inline-writeback`: an OAuth server passed inline on a conversation's agent (not in settings) whose access token has expired is refreshed when the conversation connects, keeps its tools, and the rotated tokens are posted with the run's session key to the webhook's `/mcp-oauth-state`, not stored in settings.
 - `F19.oauth-stored-state`: the returned `oauth_state` used as `auth.state` connects without consent (test, and start without `authorization_url`), and stored through the settings route it is redacted, encrypted on disk and decrypted to the real token.
 - `F19.disabled-server`: a conversation started from the settings exposes the tools of enabled servers (including the OAuth server from its stored tokens) and neither exposes nor spawns a disabled server.
-- `F19.conversation-tool`: a model-driven conversation calls the configured stdio server's `qa_echo` tool, the `ObservationEvent` (REST and WebSocket) carries `QA_MCP_ECHO:hi`, and deleting the conversation stops the stdio child; an embedded resource's text and a structured-only result reach the observation (known bug #6993: both are dropped), and a single server that advertises `terminal` next to the built-in terminal gets it as `<server>_terminal` while both run (known bug #6992: the first message is 500 `Duplicate tool names found: {'terminal'}`).
+- `F19.conversation-tool`: a model-driven conversation calls the configured stdio server's `qa_echo` tool, the `ObservationEvent` (REST and WebSocket) carries `QA_MCP_ECHO:hi`, and deleting the conversation stops the stdio child; an embedded resource's text and a structured-only result reach the observation (known bug #6993: both are dropped), and a single server that advertises `terminal` next to the built-in terminal gets it as `<server>_terminal` while both run (known bug #6992: a server that joins after the startup budget loses all its tools, so its other tools are `not found`; one ready within the budget makes the first message 500 `Duplicate tool names found: {'terminal'}`).
 - `F19.oauth-refresh-writeback`: when a stored OAuth server's access token has expired, the next conversation refreshes it, keeps the server's tools, and writes the rotated token and new expiry back into the settings (encrypted on disk) without posting them to the webhook.
 - `F19.conversation-secrets-at-rest`: a conversation started from the settings persists its agent's MCP credentials (a disabled server's `env`, OAuth tokens) encrypted, and no MCP credential this family used appears in plaintext under the conversations directory or in the server log.
 - `F19.restart`: stored MCP servers and their credentials survive a restart (plaintext GET and the SDK's `RemoteWorkspace.get_mcp_config()`), while in-memory OAuth jobs are gone (404).
@@ -199,10 +199,16 @@ Preconditions:
       mcp.run()
   EOF
   cat > "$F19/qa_f19_payload.py" <<'EOF'
-  """F19 stdio MCP fixture: non-text results, and a tool named like the built-in terminal."""
+  """F19 stdio MCP fixture: non-text results, and a tool named like the built-in terminal; argv[1] delays the MCP handshake."""
+  import sys
+  import time
+
   from fastmcp import FastMCP
   from fastmcp.tools import ToolResult
   from mcp import types
+
+  if len(sys.argv) > 1:
+      time.sleep(float(sys.argv[1]))
 
   mcp = FastMCP("qa-f19-payload")
 
@@ -1051,29 +1057,34 @@ Preconditions:
   consumer sees the payload.
 - **A server tool named like a built-in (`F19.conversation-tool`), known bug #6992.**
   The agent has the built-in `terminal`, and the payload fixture (which also
-  advertises `terminal`) is its only MCP server. The conversation is
-  created without a message (nothing connects yet); the first message
-  initializes the agent. The `llm-stub` model runs the built-in terminal,
-  then `qa_sibling`.
+  advertises `terminal`) is its only MCP server, with its handshake delayed
+  by 3 s so it always joins after the 1 s startup budget (see Gotchas): the
+  path a slow-starting server takes, whatever the machine's load. The
+  `llm-stub` model runs the built-in terminal, then `qa_sibling`.
   ```sh
   SH_STUB=$(control-agent-server fixture llm-stub --name qa-f19-sh-stub --step 'tool:terminal:{"command":"echo QA_F19_BUILTIN_TERMINAL"}' --step 'tool:qa_sibling:{}' --step 'tool:finish:{"message":"QA_F19_SH_DONE"}' --print-path)
-  SH_AGENT=$(jq -nc --arg b "$SH_STUB/v1" --argjson s "$PAYLOAD_SRV" '{llm: {model: "openai/qa-stub", api_key: "qa-stub-key", base_url: $b, num_retries: 0}, tools: [{name: "terminal"}], mcp_config: {"qa-f19-shadow": $s}}')
+  SH_AGENT=$(jq -nc --arg b "$SH_STUB/v1" --argjson s "$PAYLOAD_SRV" '{llm: {model: "openai/qa-stub", api_key: "qa-stub-key", base_url: $b, num_retries: 0}, tools: [{name: "terminal"}], mcp_config: {"qa-f19-shadow": ($s + {args: ($s.args + ["3"])})}}')
   SHCID=$(control-agent-server conversation start --body-json "$(jq -nc --argjson a "$SH_AGENT" '{agent: $a}')" --no-autotitle --print-id)
   trap 'control-agent-server api DELETE "/api/conversations/$SHCID" --expect 200,404 >/dev/null || true' EXIT
   control-agent-server api POST "/api/conversations/$SHCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "Use both tools."}], "run": true}' \
-    --expect 200 --save F19.conversation-tool/shadow-first-message # bug: status eq 500 && response.body.exception eq "Duplicate tool names found: {'terminal'}"
+    --expect 200 --save F19.conversation-tool/shadow-first-message
   control-agent-server conversation wait "$SHCID" --until finished --timeout 90
-  control-agent-server sink read --name qa-f19-sh-stub --contains '"name": "qa-f19-shadow_terminal"' --expect-min 1
   control-agent-server conversation events "$SHCID" --kinds ObservationEvent --contains QA_F19_BUILTIN_TERMINAL --expect-kind ObservationEvent
-  control-agent-server conversation events "$SHCID" --kinds ObservationEvent --contains QA_F19_SIBLING --expect-kind ObservationEvent --save F19.conversation-tool/shadow-sibling
+  control-agent-server conversation events "$SHCID" --kinds ObservationEvent --contains QA_F19_SIBLING --expect-kind ObservationEvent \
+    --save F19.conversation-tool/shadow-sibling # bug: matching eq 0 && kinds.AgentErrorEvent eq 1
+  control-agent-server sink read --name qa-f19-sh-stub --contains '"name": "qa-f19-shadow_terminal"' --expect-min 1
   ```
-  The first message should be accepted, the model offered the built-in
-  `terminal` plus the server's `qa-f19-shadow_terminal` and `qa_sibling`, and
-  both calls should return their output. Today the message is 500
-  (`exception: Duplicate tool names found: {'terminal'}`): a single
-  server's tools are never prefixed, so the SDK refuses the second
-  `terminal` while initializing the agent; the conversation stays `idle`
-  with no events and every later message fails the same way.
+  The built-in terminal runs (the control). The server's tools should join
+  as `qa-f19-shadow_terminal` and `qa_sibling`, so the sibling call returns
+  `QA_F19_SIBLING`. Today the late join is refused as a whole (the log says
+  `Could not add MCP tools of qa-f19-shadow: Dynamically advertised MCP
+  tools conflict with existing runtime tools: ['terminal']`), the model is
+  offered no tool of that server, and the sibling call ends in an
+  `AgentErrorEvent` `Tool 'qa_sibling' not found`; the run still finishes.
+  A server that is ready within the budget hits the same collision during
+  initialization instead, and the first message is 500 `Duplicate tool
+  names found: {'terminal'}` with the conversation left `idle`; that
+  variant depends on start-up speed, so the recipe does not drive it.
 - **Stored OAuth token refresh (`F19.oauth-refresh-writeback`).** Expire the
   stored `qa-oauth` token with a sparse patch (client-side expiry only), then
   let a new conversation connect.
