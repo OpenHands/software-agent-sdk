@@ -1104,7 +1104,6 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
     monkeypatch.setattr(module, "launch_source", fake_launch_source)
     services: dict[UUID, Any] = {}
     project_hex = uuid4().hex
-    reserved = uuid4()
     with patch(
         "openhands.agent_server.conversation_service.EventService",
         side_effect=_event_service_factory(services),
@@ -1119,7 +1118,6 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
                 str(workspace_dir),
                 agent_profile_id=uuid4(),
                 options={
-                    "conversation_id": reserved,
                     "tags": {"insidercat": "1", "project": "other"},
                     "agent_launch_additions": AgentLaunchAdditions(
                         system_message_suffix_append="<INSIDER_CONTROLLER/>"
@@ -1127,15 +1125,7 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
                     "max_iterations": 7,
                 },
             )
-            with pytest.raises(ValueError, match="already exists"):
-                await service.projects.start_coordinator(
-                    project_hex,
-                    str(workspace_dir),
-                    agent_profile_id=uuid4(),
-                    options={"conversation_id": reserved},
-                )
 
-    assert info.id == reserved
     assert info.tags == {"insidercat": "1", "project": project_hex}
     (request,) = seen
     additions = request.agent_launch_additions
@@ -1196,54 +1186,6 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
         "Project: Ship docs\nGoal: Docs for 1.0\nYou are this project's coordinator."
     )
     assert "<PROJECT>\nProject: Ship docs" in agent.dynamic_context
-
-
-@pytest.mark.asyncio
-async def test_two_projects_cannot_share_a_reserved_coordinator_id(
-    tmp_path, workspace_dir, monkeypatch
-):
-    """Review: two project creations reserving the same coordinator id at
-    once both succeeded with one coordinator, tagged for the first project
-    only. The second is now refused."""
-    import asyncio
-
-    from openhands.agent_server import conversation_service as module
-
-    monkeypatch.setattr(
-        module,
-        "launch_source",
-        lambda request, stores, cipher: Agent(
-            llm=LLM(model="gpt-4o", usage_id="cat-profile"), tools=[]
-        ),
-    )
-    services: dict[UUID, Any] = {}
-    reserved = uuid4()
-    with patch(
-        "openhands.agent_server.conversation_service.EventService",
-        side_effect=_event_service_factory(services),
-    ):
-        async with ConversationService(
-            conversations_dir=tmp_path / "conversations",
-            conversation_worktree_root=tmp_path / "worktrees",
-            stores=ServerStores.from_config(Config()),
-        ) as service:
-            results = await asyncio.gather(
-                *(
-                    service.projects.start_coordinator(
-                        uuid4().hex,
-                        str(workspace_dir),
-                        agent_profile_id=uuid4(),
-                        options={"conversation_id": reserved},
-                    )
-                    for _ in range(2)
-                ),
-                return_exceptions=True,
-            )
-
-    started = [r for r in results if not isinstance(r, BaseException)]
-    refused = [r for r in results if isinstance(r, ValueError)]
-    assert [info.id for info in started] == [reserved]
-    assert len(refused) == 1 and "already exists" in str(refused[0])
 
 
 # ---------------------------------------------------------------------------

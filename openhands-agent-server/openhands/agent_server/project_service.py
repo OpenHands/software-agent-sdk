@@ -544,10 +544,9 @@ class ProjectService:
         the server, and joins the project through its ``project`` tag. It gets
         no first message: it waits for the user. ``options`` are more
         ``StartConversationRequest`` fields from the client (its own tags,
-        a reserved ``conversation_id``, launch additions, policies).
+        launch additions, policies).
 
-        Raises ValueError when there is no profile to run, the reserved id is
-        taken, or it cannot start.
+        Raises ValueError when there is no profile to run or it cannot start.
         """
         self.conversations.ensure_active()
         stores = self.stores
@@ -601,9 +600,6 @@ class ProjectService:
                 start,
                 title=title,
                 server_tools=server_tools,
-                # A concurrent create with the same reserved id must not
-                # hand one coordinator to two projects.
-                reuse_existing=False,
             )
         except Exception as exc:
             if not isinstance(exc, LaunchFailure):

@@ -1641,24 +1641,19 @@ class ConversationService:
         title: str | None = None,
         initial_sender: str | None = None,
         server_tools: Sequence[Tool] = (),
-        reuse_existing: bool = True,
     ) -> ConversationInfo:
         """Create a conversation with what the server adds to ``request``.
 
         ``title``, the ``initial_sender`` of its first message, and
         ``server_tools`` the server adds to its agent. It takes a run slot
-        unless the caller holds one. Without ``reuse_existing``, a taken id is
-        refused with ``ValueError``.
+        unless the caller holds one.
         """
         self.ensure_active()
         conversation_id = request.conversation_id or uuid4()
-        if not reuse_existing and self._has_conversation(conversation_id):
-            raise ValueError(f"Conversation {conversation_id} already exists")
         options: dict[str, Any] = dict(
             title=title,
             initial_sender=initial_sender,
             server_tools=server_tools,
-            reuse_existing=reuse_existing,
         )
         if run_slot is not None:
             info, _ = await self._create_conversation(
@@ -1681,13 +1676,10 @@ class ConversationService:
         initial_sender: str | None = None,
         server_tools: Sequence[Tool] = (),
         gateway_run: bool = False,
-        reuse_existing: bool = True,
     ) -> tuple[ConversationInfo, bool]:
         """Create a conversation from ``request``.
 
-        See :meth:`create_conversation` for the rest. Without
-        ``reuse_existing``, an id another create took meanwhile is refused
-        instead of reused.
+        See :meth:`create_conversation` for the rest.
         """
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
@@ -1917,7 +1909,7 @@ class ConversationService:
             gateway_run=gateway_run,
             initial_message=first_message,
             initial_sender=initial_sender,
-            reuse_request=request if reuse_existing else None,
+            reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
 

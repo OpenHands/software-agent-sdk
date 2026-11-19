@@ -76,8 +76,6 @@ export interface NewProjectCoordinator {
   /** Unset, the user's active agent profile. */
   agent_profile_id?: string;
   title?: string;
-  /** Reserved by the client so it can find the coordinator after a lost response. */
-  conversation_id?: string;
   /** More tags; the server adds `project`. */
   tags?: Record<string, string>;
   /** The following are as in a conversation start request. */

@@ -183,13 +183,6 @@ class NewProjectCoordinator(BaseModel):
         max_length=256,
         description="Conversation title. Unset, it is titled automatically.",
     )
-    conversation_id: UUID | None = Field(
-        default=None,
-        description=(
-            "Id for the coordinator, reserved by the client so it can find the "
-            "conversation after a lost response. Must not exist yet."
-        ),
-    )
     tags: ConversationTags = Field(
         default_factory=dict,
         description="More tags for the coordinator; the server adds `project`.",
@@ -233,7 +226,6 @@ class NewProjectCoordinator(BaseModel):
         """The fields passed on to the coordinator's start request."""
         options: dict[str, Any] = {"tags": dict(self.tags)}
         for name in (
-            "conversation_id",
             "conversation_runtime",
             "agent_launch_additions",
             "confirmation_policy",
