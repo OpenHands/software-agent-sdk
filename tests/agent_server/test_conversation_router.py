@@ -35,6 +35,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.launch import LaunchRuntime, LaunchStores, finalize
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.router import MultimodalRouter
 from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
@@ -3091,6 +3092,108 @@ def test_switch_conversation_llm_missing_provider_connection_rejects_before_swit
         assert response.status_code == 422
         assert "ghost-conn" in response.json()["detail"]
         mock_conversation.switch_llm.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+# --- model_router endpoint tests ---
+
+
+def _server_test_router() -> MultimodalRouter:
+    return MultimodalRouter(
+        llms_for_routing={
+            MultimodalRouter.PRIMARY_MODEL_KEY: LLM(model="primary-model"),
+            MultimodalRouter.SECONDARY_MODEL_KEY: LLM(model="secondary-model"),
+        }
+    ).with_manual_route(MultimodalRouter.SECONDARY_MODEL_KEY)
+
+
+def test_get_conversation_model_router_status(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/model_router"
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "enabled": True,
+            "selection": {
+                "mode": "manual",
+                "manual_route_name": "secondary",
+            },
+            "last_route_name": None,
+            "routes": [
+                {"name": "primary", "model": "primary-model", "label": "primary"},
+                {"name": "secondary", "model": "secondary-model", "label": "secondary"},
+            ],
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_update_conversation_model_router_manual_selection(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}/model_router",
+            json={
+                "selection": {
+                    "mode": "manual",
+                    "manual_route_name": "primary",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        mock_conversation.update_model_router_selection.assert_called_once()
+        selection = mock_conversation.update_model_router_selection.call_args.args[0]
+        assert selection.mode == "manual"
+        assert selection.manual_route_name == "primary"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_update_conversation_model_router_auto_selection(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}/model_router",
+            json={"selection": {"mode": "auto"}},
+        )
+
+        assert response.status_code == 200
+        mock_conversation.update_model_router_selection.assert_called_once()
+        selection = mock_conversation.update_model_router_selection.call_args.args[0]
+        assert selection.mode == "auto"
+        assert selection.manual_route_name is None
     finally:
         client.app.dependency_overrides.clear()
 

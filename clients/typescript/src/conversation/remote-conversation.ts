@@ -18,6 +18,8 @@ import {
   AgentBase,
   SecretValue,
   LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
 } from '../types/base';
 import {
   ConversationInfo,
@@ -334,6 +336,44 @@ export class RemoteConversation implements IConversation {
    */
   async switchLlm(llm: LLM): Promise<void> {
     await this.client.post(`/api/conversations/${this.id}/switch_llm`, { llm });
+  }
+
+  /**
+   * Return model-router state for this conversation.
+   */
+  async getModelRouter(): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Update route selection for this RouterLLM-backed conversation.
+   */
+  async updateModelRouter(selection: ModelRouterSelection): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  /**
+   * Switch a RouterLLM-backed conversation to a manual route.
+   */
+  async switchModelRouter(routeName: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter({
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  /**
+   * Return a RouterLLM-backed conversation to automatic routing.
+   */
+  async resumeAutoModelRouting(): Promise<ModelRouterStatus> {
+    return this.updateModelRouter({ mode: 'auto' });
   }
 
   /**

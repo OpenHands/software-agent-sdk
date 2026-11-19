@@ -575,6 +575,57 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient supports model-router endpoints', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'manual', manual_route_name: 'primary' },
+            last_route_name: 'primary',
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const status = await client.getModelRouter('c1');
+    await client.switchModelRouter('c1', 'secondary');
+    await client.resumeAutoModelRouting('c1');
+
+    expect(status.selection?.manual_route_name).toBe('primary');
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_name: 'secondary' },
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
+      })
+    );
+  });
+
   it('ACPClient.discoverModels posts the agent and secrets and returns the discovery', async () => {
     const discovery = {
       agent_name: 'pi-acp',
@@ -1784,6 +1835,62 @@ describe('Auxiliary API clients', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ llm }),
+      })
+    );
+  });
+
+  it('RemoteConversation supports model-router endpoints', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto' },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    const status = await conversation.getModelRouter();
+    await conversation.switchModelRouter('secondary');
+    await conversation.resumeAutoModelRouting();
+
+    expect(status.selection?.mode).toBe('auto');
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_name: 'secondary' },
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
       })
     );
   });

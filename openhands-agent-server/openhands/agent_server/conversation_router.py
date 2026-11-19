@@ -74,6 +74,11 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import (
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
@@ -684,6 +689,55 @@ async def switch_conversation_llm(
     except ValueError as e:
         raise Invalid(str(e))
     return Success()
+
+
+def _model_router_status(llm: LLM) -> ModelRouterStatus:
+    if not isinstance(llm, RouterLLM):
+        return ModelRouterStatus(enabled=False)
+    return llm.status()
+
+
+@conversation_router.get(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses({NotFound: "Conversation not found"}),
+)
+async def get_conversation_model_router(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Return model-router state for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.patch(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: "Conversation is not backed by a model router or key is invalid",
+            NotFound: "Conversation not found",
+        }
+    ),
+)
+async def update_conversation_model_router(
+    conversation_id: UUID,
+    request: ModelRouterUpdateRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Update model-router selection for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    conversation = event_service.get_conversation()
+    try:
+        conversation.update_model_router_selection(request.selection)
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(conversation.agent.llm)
 
 
 @conversation_router.post(
