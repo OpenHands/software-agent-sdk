@@ -170,6 +170,15 @@ class RouterLLM(LLM):
             routes=list(self.route_infos()),
         )
 
+    def with_route(self, route_name: str, llm: LLM) -> Self:
+        if not route_name:
+            raise ValueError("Model router route_name cannot be empty")
+        if route_name in self.llms_for_routing:
+            raise ValueError(f"Model router route already exists: {route_name}")
+        return self.model_copy(
+            update={"llms_for_routing": {**self.llms_for_routing, route_name: llm}}
+        )
+
     def with_selection(self, selection: ModelRouterSelection) -> Self:
         if selection.manual_route_name is not None:
             self._validate_route_name(selection.manual_route_name)

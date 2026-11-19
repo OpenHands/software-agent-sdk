@@ -78,6 +78,7 @@ from openhands.sdk.llm import (
     LLM,
     Message,
     ModelRouterSelection,
+    ModelRouterStatus,
     RouterLLM,
     TextContent,
     content_to_str,
@@ -2132,6 +2133,14 @@ class LocalConversation(BaseConversation):
                 "conversations; use switch_acp_model instead."
             )
 
+    def _register_agent_llms(self, agent: AgentBase) -> None:
+        registered = set(self.llm_registry.list_usage_ids())
+        for llm in agent.get_all_llms():
+            if llm.usage_id in registered:
+                continue
+            self.llm_registry.add(llm)
+            registered.add(llm.usage_id)
+
     def _replace_agent_llm(self, new_llm: LLM) -> None:
         # Tool-triggered switches may run on a worker while the run loop holds
         # the state lock awaiting that tool; re-acquiring would deadlock (#3485).
@@ -2144,8 +2153,51 @@ class LocalConversation(BaseConversation):
                 new_llm,
             )
             self.agent = self.agent.model_copy(update=update)
+            self._register_agent_llms(self.agent)
             self._state.agent = self.agent
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+
+    def _add_model_router_route_llm(
+        self,
+        route_name: str,
+        llm: LLM,
+        *,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        self._reject_llm_switch_on_acp()
+        if llm.usage_id == "default" and route_name != "default":
+            llm = llm.model_copy(update={"usage_id": route_name})
+        llm = create_subscription_llm_from_config(llm) if type(llm) is LLM else llm
+
+        current_llm = self.agent.llm
+        if isinstance(current_llm, RouterLLM):
+            updated_llm = current_llm.with_route(route_name, llm)
+        else:
+            router = RouterLLM(llms_for_routing={base_route_name: current_llm})
+            updated_llm = router.with_route(route_name, llm)
+        self._replace_agent_llm(updated_llm)
+        return updated_llm.status()
+
+    def add_model_router_route(
+        self,
+        profile_name: str,
+        *,
+        route_name: str | None = None,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        """Add a saved LLM profile as a model-router route."""
+        resolved_route_name = route_name or profile_name
+        usage_id = f"profile:{profile_name}"
+        try:
+            llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            llm = loaded.model_copy(update={"usage_id": usage_id})
+        return self._add_model_router_route_llm(
+            resolved_route_name,
+            llm,
+            base_route_name=base_route_name,
+        )
 
     def update_model_router_selection(self, selection: ModelRouterSelection) -> None:
         """Update route selection for a RouterLLM-backed conversation."""
