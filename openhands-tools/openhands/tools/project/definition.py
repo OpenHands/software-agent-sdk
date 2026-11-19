@@ -80,17 +80,15 @@ ARTIFACT_TEXT_MAX_BYTES = 32 * 1024
 
 
 _LIST_DESCRIPTION = (
-    "List the workers of the project you coordinate: the conversations you "
-    "started with start_child_conversation.\n\n"
-    "Workers come grouped by `attention`: `needs_you` (waiting for "
-    "confirmation, paused, error or stuck), `asking` (finished with a "
-    "question for the user, shown after `asks:`), `working` (running), "
-    "`idle` (not running and not resolved) and "
-    "`resolved` (the user, the conversation itself or the resolution judge "
-    "found nothing left in it). "
-    "`idle` does not say the task succeeded, so "
-    "read the conversation before reporting an outcome. Call this again to refresh; "
-    "a previous result is not the current state."
+    "List the workers of the project you coordinate: the conversations you started "
+    "with start_child_conversation.\n\n"
+    "Workers come grouped by `human attention`: `needs_you` (here 'you' is the human; "
+    "waiting for confirmation, paused, error or stuck), `asking` (finished with a "
+    "question for the user, shown after `asks:`), `working` (running), `idle` (not "
+    "running and not resolved) and `resolved` (the user, the conversation itself or "
+    "the resolution judge found nothing left in it). `idle` does not say the task "
+    "succeeded, so read the conversation before reporting an outcome. Call this again "
+    "to refresh; a previous result is not the current state."
 )
 
 
@@ -153,7 +151,7 @@ class MessageWorkerAction(Action):
     message: str = Field(
         min_length=1,
         description=(
-            "Self-contained message for the conversation. It cannot see this "
+            "Self-contained message for the worker conversation. It cannot see this "
             "conversation, so include the context it needs."
         ),
     )
@@ -194,20 +192,18 @@ class MessageWorkerObservation(Observation):
 
 
 _MESSAGE_DESCRIPTION = (
-    "Send a follow-up message to one of your project's workers and "
-    "ask it to run: to correct, resume or extend its task. Only workers that "
-    "list_workers reports can be messaged; start a new worker with "
+    "Send a follow-up message to one of your project's workers and ask it to run: to "
+    "correct, resume or extend its task, ask it a question or relay one from the user."
+    " Only workers that list_workers reports can be messaged; start a new worker with "
     "start_child_conversation for a distinct task.\n\n"
-    "A running conversation receives the message in its current run; a finished "
-    "or idle conversation is run to handle it. A conversation that waits on the "
-    "user is never run by this tool: waiting for them to approve an action "
-    "(running would approve it), paused by them, or stopped on an error or stuck "
-    "(running would resume or retry what they have not seen). It is refused, and "
-    "you should tell the user what it waits on. A successful result means "
-    "the message was saved and a run was requested, not that the conversation "
-    "acted on it; check "
-    "list_workers or read the conversation before reporting "
-    "progress. After an error that says the message may still be delivered, "
+    "A running conversation receives the message in its current run; a finished or "
+    "idle conversation is run to handle it. A conversation that waits on the user is "
+    "never run by this tool: waiting for them to approve an action (running would "
+    "approve it), paused by them, or stopped on an error or stuck (running would "
+    "resume or retry what they have not seen). It is refused, and you should tell the "
+    "user what it waits on. A successful result means the message was saved and a run "
+    "was requested; you can check list_workers or read the conversation before "
+    "reporting progress. After an error that says the message may still be delivered, "
     "do not resend it."
 )
 
@@ -304,11 +300,11 @@ class WriteArtifactObservation(Observation):
 
 
 _WRITE_ARTIFACT_DESCRIPTION = (
-    "Save a file you made as an artifact of this conversation's project, so "
-    "the user finds it on the project board. Use it for deliverables that "
-    "do not belong in a source repository: reports, write-ups, images, "
-    "exports, data files. Do not use it for files that are committed to a "
-    "repository. The file is copied, so save it again after changing it."
+    "Save a file you made as an artifact of this project, so the user finds it on the "
+    "project board. Use it for deliverables that do not belong in a source repository:"
+    " reports, write-ups, helper apps, images, exports, data files. Do not use it for "
+    "files that are committed to a repository. The file is copied, so save it again "
+    "after changing it."
 )
 
 
@@ -403,10 +399,10 @@ class ReadArtifactObservation(Observation):
 
 
 _READ_ARTIFACT_DESCRIPTION = (
-    "Read a file from this conversation's project artifacts: one the user "
-    "uploaded or another conversation of the project wrote. A small text file "
-    "is returned directly; give a path to copy any file into your workspace "
-    "instead. Use list_artifacts to see what there is."
+    "Read a file from this project's artifacts: one the user uploaded or another "
+    "conversation of the project wrote. A small text file is returned directly; give a"
+    " path to copy any file into your workspace instead. Use list_artifacts to see "
+    "what there is."
 )
 
 
@@ -469,9 +465,8 @@ class ListArtifactsObservation(Observation):
 
 
 _LIST_ARTIFACTS_DESCRIPTION = (
-    "List the files in this conversation's project artifacts, with their size, "
-    "who added them (the user, or which conversation) and when. Read one "
-    "with read_artifact."
+    "List the files in this project's artifacts, with their size, who added them (the "
+    "user, or which conversation) and when. Read one with read_artifact."
 )
 
 
@@ -516,7 +511,9 @@ class ReadWorkerAction(Action):
     """Read the latest messages of one of this project's workers."""
 
     conversation_id: str = Field(
-        description=("Id of the worker to read, as list_workers returned it.")
+        description=(
+            "Id of the worker conversation to read, as list_workers returned it."
+        )
     )
     limit: int = Field(
         default=20, ge=1, le=100, description="How many recent messages to read."
@@ -671,7 +668,10 @@ class UpdateProjectMemoryAction(Action):
         ),
     )
     content: str = Field(
-        description="The whole new file. Keep what is still true from the old one."
+        description=(
+            "The whole new file. Keep what is still true from the old one, and"
+            " prune out what is no longer true."
+        )
     )
     base_revision: str | None = Field(
         default=None,
@@ -759,13 +759,13 @@ class ResolveConversationObservation(Observation):
 
 
 _RESOLVE_CONVERSATION_DESCRIPTION = (
-    "Mark this conversation resolved, so the user's project board shows it "
-    "as done and stops asking for their attention. Call it as your last step "
-    "when nothing is left in this conversation for the user or for you: "
-    "for example the user says the pull request is merged, or thanks you "
-    "for finished work. Do not call it when your reply asks the user "
-    "something, waits on their review, CI or another step, or when part of "
-    "your task is undone. The user's next message reopens the conversation."
+    "Mark this conversation resolved, so the user's project board shows it as resolved"
+    " and stops asking for their attention. Call it as your last step when nothing is "
+    "left in this conversation for the user or for you: for example the user says the "
+    "pull request is merged, or thanks you for finished work. Do not call it when your"
+    " reply asks the user something, waits on their review, CI or another step, or "
+    "when part of your task is undone. The user has the ability to reopen a "
+    "conversation with their next message."
 )
 
 
