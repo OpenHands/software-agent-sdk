@@ -15,6 +15,7 @@ from openhands.sdk.launch import (
     ResolvedLaunch,
     finalize,
 )
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
@@ -234,16 +235,13 @@ def test_client_tools_are_added_once():
     assert _tool_names(launched) == ["canvas_ui", "launch_child"]
 
 
-def test_a_deployment_role_sets_the_prompt_and_the_project_block():
+def test_a_project_role_sets_the_prompt_and_the_project_block():
     agent = _agent(AgentContext(system_message_suffix="PROFILE"))
 
     launched = finalize(
         agent,
         LaunchRuntime(),
-        additions=AgentLaunchAdditions(
-            system_prompt_filename=PROJECT_WORKER_PROMPT,
-            project_context="  Project: Docs  ",
-        ),
+        project_role=ProjectRole(PROJECT_WORKER_PROMPT, "  Project: Docs  "),
     )
 
     assert isinstance(launched.agent, Agent)
@@ -263,7 +261,7 @@ def test_an_inline_system_prompt_keeps_its_text():
     launched = finalize(
         agent,
         LaunchRuntime(),
-        additions=AgentLaunchAdditions(system_prompt_filename=PROJECT_WORKER_PROMPT),
+        project_role=ProjectRole(PROJECT_WORKER_PROMPT, ""),
     )
 
     assert isinstance(launched.agent, Agent)
@@ -278,10 +276,7 @@ def test_an_acp_agent_takes_no_project_role():
     launched = finalize(
         agent,
         LaunchRuntime(),
-        additions=AgentLaunchAdditions(
-            system_prompt_filename=PROJECT_WORKER_PROMPT,
-            project_context="Project: Docs",
-        ),
+        project_role=ProjectRole(PROJECT_WORKER_PROMPT, "Project: Docs"),
     )
 
     context = launched.agent.agent_context

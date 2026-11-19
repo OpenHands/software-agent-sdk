@@ -127,28 +127,6 @@ class AgentLaunchAdditions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    system_prompt_filename: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description=(
-            "Deployment-assigned role: the `system_prompt_filename` the resolved "
-            "OpenHands agent uses, whatever its profile says, such as "
-            "`system_prompt_project_coordinator.j2` for a project's coordinator. "
-            "None keeps the agent's own; an agent with an inline `system_prompt` "
-            "keeps it. Not for ACP agents, which Projects do not run."
-        ),
-    )
-    project_context: str | None = Field(
-        default=None,
-        max_length=32768,
-        exclude_if=lambda value: value is None,
-        description=(
-            "The project the conversation belongs to, rendered into its "
-            "<PROJECT> prompt block. Not for ACP agents, which Projects do "
-            "not run."
-        ),
-    )
-
     system_message_suffix_append: str | None = Field(
         default=None,
         max_length=32768,

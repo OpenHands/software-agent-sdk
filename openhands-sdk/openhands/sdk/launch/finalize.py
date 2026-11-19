@@ -73,6 +73,7 @@ def finalize(
     client_tools: Sequence[Tool] = (),
     experimental_feature_tools: Sequence[Tool] = (),
     withheld_tools: Collection[type[ToolDefinition]] = (),
+    project_role: ProjectRole | None = None,
     load_memory: bool = False,
     managed_secrets: Collection[str] = (),
     launched_at: datetime | None = None,
@@ -90,6 +91,8 @@ def finalize(
     tool classes the agent does not get even when its spec lists them, such as
     those of a feature the user turned off. A tool is matched by the class
     registered under its name, so another tool with the same name is kept.
+    ``project_role`` is set only by the agent server, for the coordinator and
+    workers of a project; no launch request carries it.
     """
     if isinstance(source, ResolvedLaunch):
         settings = _settings_for_runtime(source.settings, runtime)
@@ -109,8 +112,8 @@ def finalize(
     for suffix in (appended, *extra_suffixes):
         if suffix.strip():
             agent = _append_system_message_suffix(agent, suffix.strip())
-    if additions is not None:
-        agent = _with_project_role(agent, additions)
+    if project_role is not None:
+        agent = _with_project_role(agent, project_role)
     agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if additions and additions.skills:
         agent = _with_launch_skills(agent, additions.skills)
@@ -217,28 +220,39 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     )
 
 
-def _with_project_role(agent: AgentBase, additions: AgentLaunchAdditions) -> AgentBase:
-    """Apply the deployment's prompt role and project context.
+@dataclass(frozen=True)
+class ProjectRole:
+    """What the agent server gives a project's coordinator or worker: its
+    prompt, the ``<PROJECT>`` block it renders and the project tools."""
 
-    An OpenHands agent takes the role's prompt filename and renders the
-    context in its own ``<PROJECT>`` block. Projects do not run ACP agents,
-    so any other agent is left as it is.
+    prompt_filename: str
+    context: str | None = None
+    tools: Sequence[Tool] = ()
+
+
+def _with_project_role(agent: AgentBase, role: ProjectRole) -> AgentBase:
+    """Give an OpenHands agent the role's prompt, project context and tools.
+
+    Projects do not run ACP agents, so any other agent is left as it is. An
+    agent with an inline ``system_prompt`` keeps it.
     """
     if not isinstance(agent, Agent):
         return agent
-    if additions.system_prompt_filename is not None and agent.system_prompt is None:
+    if agent.system_prompt is None:
         agent = agent.model_copy(
-            update={"system_prompt_filename": additions.system_prompt_filename}
+            update={"system_prompt_filename": role.prompt_filename}
         )
-    if additions.project_context and additions.project_context.strip():
+    if role.context and role.context.strip():
         context = _context_of(agent)
         agent = agent.model_copy(
             update={
                 "agent_context": context.model_copy(
-                    update={"project_context": additions.project_context.strip()}
+                    update={"project_context": role.context.strip()}
                 )
             }
         )
+    if role.tools:
+        agent = _with_client_tools(agent, role.tools)
     return agent
 
 

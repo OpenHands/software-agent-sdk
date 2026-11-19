@@ -1129,9 +1129,9 @@ async def test_a_new_coordinator_keeps_the_clients_start_options(
     (request,) = seen
     additions = request.agent_launch_additions
     assert additions.system_message_suffix_append == "<INSIDER_CONTROLLER/>"
-    assert additions.system_prompt_filename == PROJECT_COORDINATOR_PROMPT
     assert request.max_iterations == 7
     agent = services[info.id].get_conversation().agent
+    assert agent.system_prompt_filename == PROJECT_COORDINATOR_PROMPT
     assert [tool.name for tool in agent.tools] == list(PROJECT_COORDINATOR_TOOLS)
     assert agent.system_prompt_filename == PROJECT_COORDINATOR_PROMPT
     assert agent.agent_context.system_message_suffix == "<INSIDER_CONTROLLER/>"

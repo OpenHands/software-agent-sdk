@@ -24,7 +24,7 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StartConversationRequest
-from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.persistence import PersistedProjects, ServerStores
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
 from openhands.agent_server.project_turns import card_text
 from openhands.agent_server.project_wake import notify_coordinator, pass_on_answer
@@ -282,13 +282,19 @@ async def _start(service: ConversationService, tmp_path: Path) -> UUID:
 async def _project(client, service, tmp_path) -> tuple[str, UUID, UUID]:
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
-    # As the coordinator's start does.
-    await service.projects.set_conversation_tag(worker, "project", project["id"])
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    # As starting a new coordinator, and then its worker, leaves them.
+    for member in (cat, worker):
+        await service.projects.set_conversation_tag(member, "project", project["id"])
+
+    def lead(current: PersistedProjects) -> PersistedProjects:
+        projects = [
+            p.model_copy(update={"coordinator_conversation_id": cat})
+            for p in current.projects
+        ]
+        return current.model_copy(update={"projects": projects})
+
+    service.stores.projects.update(lead)
     return project["id"], cat, worker
 
 

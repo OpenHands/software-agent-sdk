@@ -11,8 +11,8 @@ secrets and skills. The user can edit them like any other profile; the
 server never overwrites one that exists.
 
 The role itself does not depend on these profiles: the server assigns the
-prompt at launch (``AgentLaunchAdditions.system_prompt_filename``), so a coordinator
-or worker started from any other profile still gets its role's prompt.
+prompt at launch (``finalize``'s ``project_role``), so a coordinator or worker
+started from any other profile still gets its role's prompt.
 """
 
 from typing import Literal

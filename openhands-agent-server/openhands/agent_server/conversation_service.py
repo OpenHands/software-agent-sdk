@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -116,11 +116,11 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, LaunchStoreError, LaunchStores, finalize
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.tool import Tool
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -1602,12 +1602,13 @@ class ConversationService:
         request: StartConversationRequest,
         *,
         gateway_run: bool = False,
-        server_tools: Sequence[Tool] = (),
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
-        """Start a conversation; ``server_tools`` are added to its agent by the
-        server, such as a project's tools."""
+        """Start a conversation. ``project_role`` gives a project's
+        coordinator or worker its prompt, project context and tools; only the
+        server sets it."""
         return await self._start_conversation(
-            request, gateway_run=gateway_run, server_tools=server_tools
+            request, gateway_run=gateway_run, project_role=project_role
         )
 
     async def start_acp_conversation(
@@ -1620,7 +1621,7 @@ class ConversationService:
         request: StartConversationRequest,
         *,
         gateway_run: bool = False,
-        server_tools: Sequence[Tool] = (),
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
@@ -1638,7 +1639,7 @@ class ConversationService:
                 conversation_id,
                 run_slot,
                 gateway_run=gateway_run,
-                server_tools=server_tools,
+                project_role=project_role,
             )
 
     async def _create_conversation(
@@ -1648,7 +1649,7 @@ class ConversationService:
         run_slot: RunSlot,
         *,
         gateway_run: bool = False,
-        server_tools: Sequence[Tool] = (),
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
@@ -1768,13 +1769,14 @@ class ConversationService:
                 ),
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
-                client_tools=[*client_tools, *server_tools],
+                client_tools=client_tools,
                 experimental_feature_tools=experimental_feature_tools(
                     experimental_features
                 ),
                 withheld_tools=experimental_feature_withheld_tools(
                     experimental_features
                 ),
+                project_role=project_role,
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()

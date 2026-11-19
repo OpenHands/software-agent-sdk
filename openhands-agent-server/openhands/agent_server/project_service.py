@@ -62,7 +62,7 @@ from openhands.agent_server.resolution_judge import make_resolution_judge
 from openhands.sdk import LLM, TextContent
 from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT
 from openhands.sdk.conversation.message_request import SendMessageRequest
-from openhands.sdk.conversation.request import AgentLaunchAdditions, ConversationConfig
+from openhands.sdk.conversation.request import ConversationConfig
 from openhands.sdk.conversation.types import (
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
@@ -71,6 +71,7 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.errors import Conflict, Unprocessable
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
@@ -577,34 +578,26 @@ class ProjectService:
         context, _ = await _project_prompt(
             stores, project_hex, None, coordinator_id=conversation_id
         )
-        additions = AgentLaunchAdditions.model_validate(
-            extra.pop("agent_launch_additions", None) or {}
-        ).model_copy(
-            update={
-                "system_prompt_filename": PROJECT_COORDINATOR_PROMPT,
-                "project_context": context,
-            }
-        )
         start = StartConversationRequest(
             **extra,
             conversation_id=conversation_id,
-            agent_launch_additions=additions,
             workspace=LocalWorkspace(working_dir=working_dir),
             agent_profile_id=profile_id,
             tags=tags,
             autotitle=title is None,
         )
-        server_tools = [Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS]
+        tools = [Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS]
         if await feature_enabled_now(ASK_USER.key, stores.settings if stores else None):
             # Its ask_user also passes on the members' questions, so the user
             # answers them all in the coordinator's conversation. It takes the
             # place of the plain ask_user the feature gives every conversation.
-            server_tools.append(
+            tools.append(
                 Tool(name=ASK_USER_TOOL_NAME, params={"for_conversations": True})
             )
         try:
             info, _ = await self.conversations.start_conversation(
-                start, server_tools=server_tools
+                start,
+                project_role=ProjectRole(PROJECT_COORDINATOR_PROMPT, context, tools),
             )
         except Exception as exc:
             if not isinstance(exc, LaunchFailure):
@@ -750,10 +743,7 @@ class ProjectService:
             worktree_options=None,
             secrets_encrypted=False,
             client_tools=[],
-            agent_launch_additions=AgentLaunchAdditions(
-                system_prompt_filename=PROJECT_WORKER_PROMPT,
-                project_context=context,
-            ),
+            agent_launch_additions=None,
             # The coordinator sends the task, which opens with its header.
             initial_message=SendMessageRequest(
                 role="user",
@@ -776,7 +766,11 @@ class ProjectService:
         try:
             info, _ = await self.conversations.start_conversation(
                 start,
-                server_tools=[Tool(name=name) for name in PROJECT_WORKER_TOOLS],
+                project_role=ProjectRole(
+                    PROJECT_WORKER_PROMPT,
+                    context,
+                    [Tool(name=name) for name in PROJECT_WORKER_TOOLS],
+                ),
             )
         except Exception as exc:
             if not isinstance(exc, LaunchFailure):

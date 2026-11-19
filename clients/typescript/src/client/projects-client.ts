@@ -89,9 +89,8 @@ export interface NewProjectCoordinator {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
-  /** Start a new coordinator. Giving it with `coordinator_conversation_id` is a 422. */
+  /** Start the project's coordinator, a new conversation. */
   coordinator?: NewProjectCoordinator;
-  coordinator_conversation_id?: string | null;
   worker_agent_profile_id?: string | null;
 }
 
