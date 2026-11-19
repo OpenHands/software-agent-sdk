@@ -56,6 +56,8 @@
     "summarize:agent-server-api": "node ./scripts/summarize-agent-server-api.mjs",
     "test:agent-server-api-tooling": "node ./scripts/test-agent-server-api-tooling.mjs",
     "test:endpoint-audit-tooling": "node ./scripts/test-endpoint-audit.mjs",
+    "check:behavior-parity": "node ./scripts/check-client-behavior-parity.mjs",
+    "test:behavior-parity-tooling": "node ./scripts/test-client-behavior-parity.mjs",
     "check:public-type-budget": "npm run build --silent && node ./scripts/check-public-type-budget.mjs",
     "test:public-type-budget": "node ./scripts/check-public-type-budget.mjs --self-test",
     "lint": "eslint src/**/*.ts",
