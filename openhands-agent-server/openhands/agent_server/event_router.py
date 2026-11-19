@@ -46,7 +46,7 @@ from openhands.agent_server.persistence import (
     SettingsStore,
     run_store,
 )
-from openhands.agent_server.project_wake import project_sender_header
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -303,7 +303,7 @@ async def send_message(
                 conversation_id,
             )
             header = (
-                await project_sender_header(
+                await project_sender_line(
                     context.conversation_service,
                     request.sender_conversation_id,
                     event_service.stored.tags,

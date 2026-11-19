@@ -71,7 +71,7 @@ from openhands.agent_server.persistence import (
     run_store,
 )
 from openhands.agent_server.project_service import ProjectService
-from openhands.agent_server.project_wake import project_sender_header
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -1680,7 +1680,7 @@ class ConversationService:
             if sender_id is not None:
                 header = await sender_message_header(self, sender_id, conversation_id)
                 header = (
-                    await project_sender_header(self, sender_id, request.tags) or header
+                    await project_sender_line(self, sender_id, request.tags) or header
                 )
                 content.insert(0, TextContent(text=header))
                 initial_sender = conversation_sender(sender_id)
