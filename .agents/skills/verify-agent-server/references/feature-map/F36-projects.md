@@ -668,10 +668,10 @@ Preconditions:
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$CAT" --check agent.system_prompt_filename eq system_prompt_project_coordinator.j2 \
     --check agent.agent_context.project_context contains "You are this project's coordinator" \
-    --check . contains message_worker --save F36.restore/coordinator
+    --check agent.tools contains message_worker --save F36.restore/coordinator
   control-agent-server api GET "/api/conversations/$CHILD" --check agent.system_prompt_filename eq system_prompt_project_worker.j2 \
     --check agent.agent_context.project_context contains 'the coordinator of this project' \
-    --check . contains resolve_conversation --check . not-contains message_worker --save F36.restore/worker
+    --check agent.tools contains resolve_conversation --check agent.tools not-contains message_worker --save F36.restore/worker
   BEFORE=$(control-agent-server conversation events "$CAT" --kinds ActionEvent --contains list_workers --expect-min 0 | jq .matching)
   control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Call list_workers once and tell me how many conversations it lists. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ActionEvent --contains list_workers --expect-min $((BEFORE + 1)) --save F36.restore/coordinator-acts
