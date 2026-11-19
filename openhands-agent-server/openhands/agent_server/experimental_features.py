@@ -92,11 +92,23 @@ MESSAGE_EDITS = ExperimentalFeatureDefinition(
     ),
 )
 
+# Read by clients only: the agent server gives this feature no tools or routes.
+SOFTWARE_FACTORY = ExperimentalFeatureDefinition(
+    key="software_factory",
+    label="Software factory",
+    description=(
+        "Shows Factories in the sidebar: named groups of automations that "
+        "together run a software development process. Needs an automation "
+        "service that supports factories."
+    ),
+)
+
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
     ASK_USER,
     CONVERSATION_MENTIONS,
     MESSAGE_EDITS,
+    SOFTWARE_FACTORY,
 ]
 
 
