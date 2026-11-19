@@ -19,7 +19,17 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
-from openhands.sdk.settings.model import ACPServerKind
+from openhands.sdk.settings.model import ACPAgentSettings, ACPServerKind
+
+
+@pytest.mark.parametrize("command", [[], ["/opt/antigravity/bin/agy", "acp"]])
+def test_antigravity_settings_preserve_native_command(command: list[str]) -> None:
+    settings = ACPAgentSettings(acp_server="antigravity", acp_command=command)
+    restored = ACPAgentSettings.model_validate_json(settings.model_dump_json())
+    agent = restored.create_agent()
+
+    assert agent.acp_server == "antigravity"
+    assert agent.acp_command == (command or ["agy", "acp"])
 
 
 class TestACPProviderInfo:

@@ -484,8 +484,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_command=("agy", "acp"),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var=None,
-            # Verified against agy 1.5.3: default, accept-edits and plan.
-            # Keep the permission-respecting default.
             default_session_mode="default",
             agent_name_patterns=("antigravity",),
             supports_set_session_model=True,
