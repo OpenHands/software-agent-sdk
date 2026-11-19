@@ -21,6 +21,11 @@ ConversationID = uuid.UUID
 TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
 TAG_VALUE_MAX_LENGTH = 256
 
+GOAL_LOOP_SENDER = "goal"
+"""``sender`` of the messages a ``/goal`` loop sends its own conversation: the
+goal and each round's follow-up. They continue the user's turn; they are not
+the user's words."""
+
 PROJECT_TAG_KEY = "project"
 """Tag whose value is the id (hex) of the agent-server project a conversation
 belongs to. The workers a project's coordinator starts get it too."""
@@ -94,12 +99,6 @@ def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) ->
     text = re.sub(r"[\s\"\[\]()\\`]+", " ", title or "").strip()
     text = text[:_MENTION_TITLE_MAX].strip() or "untitled conversation"
     return f"[{text}]({CONVERSATION_MENTION_SCHEME}{hex_id})"
-
-
-GOAL_LOOP_SENDER = "goal"
-"""``sender`` of the messages a ``/goal`` loop sends its own conversation: the
-goal and each round's follow-up. They continue the user's turn; they are not
-the user's words."""
 
 
 def conversation_sender(conversation_id: uuid.UUID) -> str:

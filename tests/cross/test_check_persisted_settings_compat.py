@@ -424,6 +424,7 @@ def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> 
         "--python",
         "/tmp/fake-python",
         "--quiet",
+        "--no-config",
         "--refresh-package",
         "openhands-sdk",
         "--refresh-package",

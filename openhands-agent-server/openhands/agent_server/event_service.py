@@ -77,6 +77,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.conversation.types import (
+    GOAL_LOOP_SENDER,
     ConversationCallbackType,
 )
 from openhands.sdk.credential import (
@@ -999,7 +1000,7 @@ class EventService:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         if _from_goal_loop and sender is None:
-            sender = "goal"
+            sender = GOAL_LOOP_SENDER
         send_message = (
             partial(self._conversation.send_message, sender=sender)
             if sender is not None
@@ -1034,21 +1035,21 @@ class EventService:
                         run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
-                except ValueError as e:
-                    # run() refused. If a run is still wrapping up (its
-                    # wait_for_pending tail), the message we just appended won't
-                    # be picked up by it, so record explicit run intent for
+                except ConversationAlreadyRunning:
+                    # If a run is still wrapping up (its wait_for_pending
+                    # tail), the message we just appended won't be picked up
+                    # by it, so record explicit run intent for
                     # _run_and_publish to honor once that task clears. Tracking
                     # the request — rather than inferring it later from an IDLE
                     # status — is what keeps a deliberate run=False append, or an
                     # IDLE reached via another path, from triggering an unwanted
-                    # run. ServiceInactive is terminal and must not re-arm.
-                    if (
-                        str(e) == "conversation_already_running"
-                        and not active_acp_prompt_has_latest_message
-                    ):
+                    # run.
+                    if not active_acp_prompt_has_latest_message:
                         self._rerun_requested = True
                         self._acp_internal_rerun_requested = True
+                except ValueError:
+                    # ServiceInactive is terminal and must not re-arm.
+                    pass
                 finally:
                     self._unpin_run_session()
             else:
@@ -1067,12 +1068,11 @@ class EventService:
                         "reached. Retry POST /api/conversations/"
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
-                except ValueError as e:
-                    if (
-                        str(e) == "conversation_already_running"
-                        and not active_acp_prompt_has_latest_message
-                    ):
+                except ConversationAlreadyRunning:
+                    if not active_acp_prompt_has_latest_message:
                         self._rerun_requested = True
+                except ValueError:
+                    pass
 
     async def run_saved_message_when_free(self) -> None:
         """Run for a message already saved, waiting for a free run slot.
@@ -1703,10 +1703,10 @@ class EventService:
             # _run_task first: a live run holds the state lock across its step
             # (a tool call can last minutes), so reading execution status would
             # block this request behind it instead of answering at once.
-            if self._run_task is not None and not self._run_task.done():
-                raise ConversationAlreadyRunning()
-            status = await self._get_execution_status()
-            if status == ConversationExecutionStatus.RUNNING:
+            if (self._run_task is not None and not self._run_task.done()) or (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
                 raise ConversationAlreadyRunning()
             if self._closing:
                 raise ServiceInactive()
