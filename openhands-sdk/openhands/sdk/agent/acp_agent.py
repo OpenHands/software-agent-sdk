@@ -42,16 +42,17 @@ from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
-from acp.helpers import image_block, text_block
 from acp.meta import AGENT_METHODS
 from acp.schema import (
     AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ConnectMcpResponse,
     CreateElicitationResponse,
     CreateTerminalResponse,
     DeclineElicitationResponse,
+    DisconnectMcpResponse,
     ElicitationMode,
     EnvVariable,
     HttpHeader,
@@ -1073,13 +1074,13 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
         try:
             header, data = url.split(",", 1)
             mime_type = header.split(":", 1)[1].split(";", 1)[0]
-            return image_block(data=data, mime_type=mime_type)
+            return ImageContentBlock(data=data, mime_type=mime_type)
         except (ValueError, IndexError):
             logger.warning("Failed to parse data URI for ACP image block")
             return None
     # Plain URL — pass as uri with a generic MIME type; the ACP server
     # can fetch and detect the actual type.
-    return image_block(data="", mime_type="image/png", uri=url)
+    return ImageContentBlock(data="", mime_type="image/png", uri=url)
 
 
 def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
@@ -1863,6 +1864,41 @@ class _OpenHandsACPBridge:
         self, session_id: str, terminal_id: str, **kwargs: Any
     ) -> KillTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
+
+    # MCP-over-ACP methods — part of the unstable ``Client`` protocol in
+    # agent-client-protocol 1.0.0. The bridge never proxies MCP servers to the
+    # ACP server, so these are defensive stubs.
+    async def connect_mcp(
+        self,
+        server_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ConnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def disconnect_mcp(
+        self,
+        connection_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> DisconnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def mcp_message(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Any:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def notify_mcp(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        raise NotImplementedError("ACP server manages its own MCP connections")
 
     async def ext_method(
         self,
@@ -3858,7 +3894,7 @@ class ACPAgent(AgentBase):
         blocks: list[TextContentBlock | ImageContentBlock] = []
         for content in message.content:
             if isinstance(content, TextContent) and content.text.strip():
-                blocks.append(text_block(content.text))
+                blocks.append(TextContentBlock(text=content.text))
             elif isinstance(content, ImageContent):
                 for url in content.image_urls:
                     acp_block = _image_url_to_acp_block(url)
@@ -3868,7 +3904,7 @@ class ACPAgent(AgentBase):
             self._suffix_install_state == "pending_first_prompt"
             and self._installed_suffix
         ):
-            blocks.append(text_block(self._installed_suffix))
+            blocks.append(TextContentBlock(text=self._installed_suffix))
             # NOTE: do NOT flip ``_suffix_install_state`` here.  If the
             # caller (step/astep) is cancelled or fails before the ACP
             # server persists this first turn (more likely on the async
@@ -4667,7 +4703,7 @@ class ACPAgent(AgentBase):
                 usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await conn.prompt(
                     session_id=fork_session_id,
-                    prompt=[text_block(question)],
+                    prompt=[TextContentBlock(text=question)],
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:
