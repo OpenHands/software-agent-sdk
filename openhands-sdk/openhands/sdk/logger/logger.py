@@ -13,7 +13,6 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 
-import litellm
 from pythonjsonlogger.json import JsonFormatter
 from rich.console import Console
 
@@ -64,15 +63,24 @@ if ENV_DEBUG_LLM:
     )
     if confirmation.lower() == "y":
         _ENABLE_LITELLM_DEBUG = True
+    else:
+        print("DEBUG_LLM disabled due to lack of confirmation")
+
+
+def apply_litellm_debug_flags() -> None:
+    """Apply the LiteLLM debug flags.
+
+    Idempotent, and safe to call once litellm is imported. Kept out of module
+    import so that requesting a logger does not import the provider stack.
+    """
+    import litellm
+
+    if _ENABLE_LITELLM_DEBUG:
         litellm.suppress_debug_info = False
         litellm.set_verbose = True  # type: ignore
     else:
-        print("DEBUG_LLM disabled due to lack of confirmation")
         litellm.suppress_debug_info = True
         litellm.set_verbose = False  # type: ignore
-else:
-    litellm.suppress_debug_info = True
-    litellm.set_verbose = False  # type: ignore
 
 
 def disable_logger(name: str, level: int = logging.CRITICAL) -> None:
