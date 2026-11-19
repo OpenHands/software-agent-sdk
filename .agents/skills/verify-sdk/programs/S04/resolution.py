@@ -129,7 +129,9 @@ again = resolution_judge(fallback(url, "openai/qa-judge-b", "qa-key-b"), store)
 
 cipher = Cipher("qa-s04-resolution-secret")
 cipher_store = LLMProfileStore(cipher_dir)
-resolution_judge(fallback(url, "openai/qa-judge-c", "qa-key-c"), cipher_store, cipher=cipher)
+resolution_judge(
+    fallback(url, "openai/qa-judge-c", "qa-key-c"), cipher_store, cipher=cipher
+)
 cipher_file = (cipher_dir / f"{RESOLUTION_JUDGE_PROFILE_NAME}.json").read_text()
 cipher_loaded = cipher_store.load(RESOLUTION_JUDGE_PROFILE_NAME, cipher=cipher)
 

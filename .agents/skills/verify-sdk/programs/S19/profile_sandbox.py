@@ -33,7 +33,11 @@ out["old_dump_sandbox"] = old.model_dump(mode="json").get("sandbox", "absent")
 
 variants = {}
 for kind in ("openhands", "acp"):
-    payload: dict = {"agent_kind": kind, "name": f"qa-{kind}", "sandbox": {"spec_id": SPEC}}
+    payload: dict = {
+        "agent_kind": kind,
+        "name": f"qa-{kind}",
+        "sandbox": {"spec_id": SPEC},
+    }
     if kind == "openhands":
         payload["llm_profile_ref"] = "fast"
     else:
@@ -43,7 +47,8 @@ for kind in ("openhands", "acp"):
         "type": type(profile).__name__,
         "spec_id": profile.sandbox.spec_id if profile.sandbox else None,
         "is_settings_type": isinstance(profile.sandbox, ProfileSandboxSettings),
-        "round_trip": validate_agent_profile(profile.model_dump(mode="json")) == profile,
+        "round_trip": validate_agent_profile(profile.model_dump(mode="json"))
+        == profile,
     }
 out["variants"] = variants
 
@@ -55,14 +60,22 @@ for label, sandbox in {
     "string": "img",
 }.items():
     try:
-        validate_agent_profile({"name": "bad", "llm_profile_ref": "fast", "sandbox": sandbox})
+        validate_agent_profile(
+            {"name": "bad", "llm_profile_ref": "fast", "sandbox": sandbox}
+        )
         refused[label] = "accepted"
     except ValidationError as exc:
         refused[label] = exc.errors()[0]["type"]
 out["refused"] = refused
 
 agents = AgentProfileStore()
-agents.save(OpenHandsAgentProfile(name="qa-sbx", llm_profile_ref="fast", sandbox=ProfileSandboxSettings(spec_id=SPEC)))
+agents.save(
+    OpenHandsAgentProfile(
+        name="qa-sbx",
+        llm_profile_ref="fast",
+        sandbox=ProfileSandboxSettings(spec_id=SPEC),
+    )
+)
 loaded = agents.load("qa-sbx")
 out["store"] = {
     "spec_id": loaded.sandbox.spec_id if loaded.sandbox else None,
@@ -70,7 +83,11 @@ out["store"] = {
 }
 
 llms = LLMProfileStore()
-llms.save("fast", LLM(model="openai/fast-model", api_key=SecretStr("sk-fast"), usage_id="agent"), include_secrets=True)
+llms.save(
+    "fast",
+    LLM(model="openai/fast-model", api_key=SecretStr("sk-fast"), usage_id="agent"),
+    include_secrets=True,
+)
 stores = LaunchStores(llm_profiles=llms, mcp_config={}, skills=lambda: [])
 
 
@@ -82,7 +99,11 @@ def resolved_dump(profile: OpenHandsAgentProfile) -> dict:
 
 plain = resolved_dump(OpenHandsAgentProfile(name="plain", llm_profile_ref="fast"))
 with_sandbox = resolved_dump(
-    OpenHandsAgentProfile(name="plain", llm_profile_ref="fast", sandbox=ProfileSandboxSettings(spec_id=SPEC))
+    OpenHandsAgentProfile(
+        name="plain",
+        llm_profile_ref="fast",
+        sandbox=ProfileSandboxSettings(spec_id=SPEC),
+    )
 )
 out["resolve"] = {
     "same_settings": plain == with_sandbox,
