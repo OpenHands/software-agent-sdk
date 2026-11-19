@@ -5,12 +5,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from openhands.sdk.conversation.event_store import LOCK_FILE_NAME, EventLog
+from openhands.sdk.conversation.event_store import (
+    LOCK_FILE_NAME,
+    UNREADABLE_EVENT_FILE_CODE,
+    EventLog,
+)
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
     EVENT_NAME_RE,
     EVENTS_DIR,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
@@ -205,10 +210,13 @@ def test_event_log_missing_event_file():
     # Cached access still works — the event was cached on append
     assert log[0].id == "test-event"
 
-    # Clear cache to test the disk-access path
+    # On the disk-access path the lost file reads as a stand-in that keeps
+    # the event's id and place.
     log._event_cache.clear()
-    with pytest.raises(FileNotFoundError):
-        log[0]
+    stand_in = log[0]
+    assert isinstance(stand_in, ConversationErrorEvent)
+    assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+    assert stand_in.id == "test-event"
 
 
 def test_event_log_corrupted_json_in_file():
@@ -310,10 +318,11 @@ def test_event_log_iteration_with_missing_files():
     # Cached iteration still works — all 3 events were cached on append
     assert [e.id for e in log] == ["event-1", "event-2", "event-3"]
 
-    # Clear cache to test the disk-access path
+    # On the disk-access path the lost file reads as a stand-in.
     log._event_cache.clear()
-    with pytest.raises(FileNotFoundError):
-        list(log)
+    read = list(log)
+    assert [e.id for e in read] == ["event-1", "event-2", "event-3"]
+    assert isinstance(read[1], ConversationErrorEvent)
 
 
 def test_event_log_iteration_backfills_missing_mappings():
@@ -822,3 +831,105 @@ def test_path_to_root_legacy_chain_spans_a_gap():
         "aaaaaaaa-0000",
         "cccccccc-0000",
     ]
+
+
+@pytest.mark.parametrize(
+    ("damage", "reason"), [("{not json", "unreadable"), ("", "empty")]
+)
+def test_damaged_event_file_reads_as_stand_in(caplog, damage, reason):
+    """An empty or corrupt event file (a crash, a bad copy) reads as a stand-in
+    error event with the same id and place; the other events stay readable,
+    appends keep working, and the damage is reported once."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    for c in "abc":
+        log.append(create_test_event(f"{c * 8}-0000", c))
+    fs.write(log._path(1), damage)
+
+    reloaded = EventLog(fs)
+    with caplog.at_level("WARNING"):
+        events = list(reloaded)
+        reloaded._event_cache.clear()
+        assert reloaded[1].id == "bbbbbbbb-0000"
+    assert [e.id for e in events] == ["aaaaaaaa-0000", "bbbbbbbb-0000", "cccccccc-0000"]
+    stand_in = events[1]
+    assert isinstance(stand_in, ConversationErrorEvent)
+    assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+    assert reason in stand_in.detail
+    assert stand_in.timestamp == events[0].timestamp
+    assert caplog.text.count("using a stand-in") == 1
+    # The tree bridges over it: the leaf's branch still reaches the root.
+    assert [e.id for e in reloaded.path_to_root("cccccccc-0000")] == [
+        "aaaaaaaa-0000",
+        "bbbbbbbb-0000",
+        "cccccccc-0000",
+    ]
+
+    assert reloaded.append(create_test_event("dddddddd-0000", "d")) == 3
+    assert fs.read(reloaded._path(1)) == damage  # the file is left as it was
+
+
+def _counting_reads(log: EventLog) -> list[int]:
+    """Record each index ``log`` reads an event from."""
+    reads: list[int] = []
+    read = log._get_single_item
+
+    def counted(idx):
+        reads.append(int(idx))
+        return read(idx)
+
+    log._get_single_item = counted  # type: ignore[method-assign]
+    return reads
+
+
+def _chain(log: EventLog, n: int) -> list[str]:
+    ids = [f"{i:08d}-0000" for i in range(n)]
+    log.append(create_test_event(ids[0]))
+    for parent, child in zip(ids, ids[1:]):
+        log.append(_child(child, parent))
+    return ids
+
+
+def test_walk_back_reads_only_as_far_as_the_caller_goes():
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 50)
+    reads = _counting_reads(log)
+
+    walk = log.walk_back(ids[-1])
+    assert [next(walk).id, next(walk).id] == [ids[-1], ids[-2]]
+    assert reads == [49, 48]
+
+
+def test_walk_back_until_stops_at_the_event():
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 50)
+    reads = _counting_reads(log)
+
+    assert [e.id for e in log.walk_back(ids[-1], until=ids[-3])] == ids[-1:-4:-1]
+    assert reads == [49, 48, 47]
+    assert list(log.walk_back(ids[-1], until="missing")) == []
+
+
+def test_walk_back_until_off_the_branch_stops_behind_it():
+    """An event on another branch ends the walk once the walk is past it in
+    the log, not at the root."""
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 40)
+    side = "side0000-0000"
+    log.append(_child(side, ids[29]))  # a branch off event 29, at index 40
+    log.append(_child("tip00000-0000", ids[-1]))  # the main branch goes on
+    reads = _counting_reads(log)
+
+    walked = list(log.walk_back("tip00000-0000", until=ids[35]))
+    assert walked[-1].id == ids[35]
+    off_branch = [e.id for e in log.walk_back("tip00000-0000", until=side)]
+    assert off_branch == ["tip00000-0000"]
+    assert reads == [41, *range(39, 34, -1), 41]
+
+
+def test_path_to_root_is_the_whole_walk_reversed():
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 10)
+
+    assert [e.id for e in log.path_to_root(ids[-1])] == ids
+    assert [e.id for e in log.path_to_root(ids[-1], limit=3)] == ids[-3:]

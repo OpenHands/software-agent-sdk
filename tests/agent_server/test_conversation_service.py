@@ -4,7 +4,9 @@ import socket
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +23,6 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
-    UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
     _create_conversation_worktree,
@@ -29,6 +30,7 @@ from openhands.agent_server.conversation_service import (
     _plan_conversation_worktree,
 )
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive, UnavailableAgentTool
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -128,6 +130,28 @@ def sample_stored_conversation():
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
     )
+
+
+def test_conversation_info_takes_tags_from_the_metadata(sample_stored_conversation):
+    """A tag PATCH saves ``meta.json`` before the state, which waits for its lock.
+
+    Until the state catches up, the conversation still shows the new tags.
+    """
+    stored = sample_stored_conversation.model_copy(
+        update={"tags": {"project": "p1", "resolved": "user"}}
+    )
+    state = ConversationState(
+        id=stored.id,
+        agent=_sample_agent(),
+        workspace=stored.workspace,
+        execution_status=ConversationExecutionStatus.RUNNING,
+        confirmation_policy=stored.confirmation_policy,
+        tags={"project": "p1"},
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tags == {"project": "p1", "resolved": "user"}
 
 
 @pytest.mark.asyncio
@@ -1326,6 +1350,31 @@ async def test_search_refreshes_cached_info_on_metadata_only_update(
 
 
 @pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_a_tags_only_update(
+    persisted_conversation,
+):
+    """New tags in meta.json show on a cached row before the state is saved."""
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        initial = await service.search_conversations()
+        assert initial.items[0].tags == {}
+        assert service._conversation_records[conversation_id].cached_info is not None
+
+        # Change only the tags in meta.json; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(
+            update={"tags": {"resolved": "user"}}
+        )
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert page.items[0].tags == {"resolved": "user"}
+
+
+@pytest.mark.asyncio
 async def test_waiting_hydration_cannot_restore_deleted_conversation(
     persisted_conversation,
 ):
@@ -1481,7 +1530,7 @@ class TestConversationServiceSearchConversations:
         """Test that search_conversations raises ValueError when service is inactive."""
         conversation_service._event_services = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.search_conversations()
 
     @pytest.mark.asyncio
@@ -1848,7 +1897,7 @@ class TestConversationServiceCountConversations:
         """Test that count_conversations raises ValueError when service is inactive."""
         conversation_service._event_services = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.count_conversations()
 
     @pytest.mark.asyncio
@@ -2165,6 +2214,58 @@ class TestConversationServiceStartConversation:
         assert str(expected_worktree) in suffix
         assert expected_branch in suffix
         assert "Do all file and git work inside this worktree" in suffix
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_runs_worktree_git_off_the_event_loop(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=repo_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+        loop_thread = threading.get_ident()
+        threads: dict[str, int] = {}
+
+        def _recording(name, fn):
+            def wrapper(*args, **kwargs):
+                threads[name] = threading.get_ident()
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=cast(AgentBase, kwargs.get("agent")) or _sample_agent(),
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        module = "openhands.agent_server.conversation_service"
+        with (
+            patch(f"{module}.EventService", side_effect=_event_service_factory),
+            patch(
+                f"{module}._plan_conversation_worktree",
+                _recording("plan", _plan_conversation_worktree),
+            ),
+            patch(
+                f"{module}._create_conversation_worktree",
+                _recording("create", _create_conversation_worktree),
+            ),
+        ):
+            await conversation_service.start_conversation(request)
+
+        assert set(threads) == {"plan", "create"}
+        assert loop_thread not in threads.values()
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_preserves_relative_workspace(
@@ -2920,6 +3021,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Test that tag updates hold the ConversationState lock."""
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -2955,6 +3057,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Waiting on the state lock must not stall unrelated async work."""
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         state = ConversationState(
@@ -3017,6 +3120,63 @@ class TestConversationServiceUpdateConversation:
         )
 
     @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_leaves_default_executor_free(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """A run holds the state lock across whole tool steps. A tag PATCH
+        waiting on it must not park a default-executor thread: event reads of
+        every conversation need that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        state_executor = ThreadPoolExecutor(max_workers=1)
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = partial(
+            loop.run_in_executor, state_executor
+        )
+        mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.RUNNING,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+        held, release = threading.Event(), threading.Event()
+
+        def hold_state_lock() -> None:
+            with state:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_state_lock)
+        holder.start()
+        assert held.wait(timeout=1.0)
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            update = asyncio.create_task(
+                conversation_service.update_conversation(
+                    conversation_id, UpdateConversationRequest(tags={"env": "prod"})
+                )
+            )
+            try:
+                await asyncio.sleep(0.05)
+                free = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: "free"), timeout=2
+                )
+                assert free == "free"
+            finally:
+                release.set()
+                holder.join()
+            assert await asyncio.wait_for(update, timeout=2)
+        state_executor.shutdown()
+        assert state.tags == {"env": "prod"}
+
+    @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
         """Test updating a non-existent conversation returns False."""
         non_existent_id = uuid4()
@@ -3033,7 +3193,7 @@ class TestConversationServiceUpdateConversation:
         conversation_service._event_services = None
 
         request = UpdateConversationRequest(title="New Title")
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.update_conversation(uuid4(), request)
 
     @pytest.mark.asyncio
@@ -3043,6 +3203,7 @@ class TestConversationServiceUpdateConversation:
         """Test that updating a conversation triggers webhook notifications."""
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -3091,6 +3252,7 @@ class TestConversationServiceUpdateConversation:
             updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
         )
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -3239,7 +3401,7 @@ class TestConversationServiceDeleteConversation:
         """Test that delete_conversation raises ValueError when service is inactive."""
         conversation_service._event_services = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await conversation_service.delete_conversation(uuid4())
 
     @pytest.mark.asyncio
@@ -3832,22 +3994,22 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="cheap-model")
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
             ) as mock_generate_title,
         ):
-            mock_store_instance = MockStore.return_value
+            mock_store_instance = profile_store
             mock_store_instance.load.return_value = mock_llm
 
-            subscriber = AutoTitleSubscriber(service=service)
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
-            MockStore.assert_called_once_with()
             mock_store_instance.load.assert_called_once_with(
                 "cheap-model", cipher=service.cipher
             )
@@ -3864,20 +4026,21 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="nonexistent-profile")
         agent_llm = service._conversation.agent.llm
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
         ):
-            mock_store_instance = MockStore.return_value
+            mock_store_instance = profile_store
             mock_store_instance.load.side_effect = FileNotFoundError(
                 "Profile 'nonexistent-profile' not found"
             )
 
-            subscriber = AutoTitleSubscriber(service=service)
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
@@ -3914,18 +4077,19 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="corrupted-profile")
         agent_llm = service._conversation.agent.llm
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
         ):
-            mock_store_instance = MockStore.return_value
+            mock_store_instance = profile_store
             mock_store_instance.load.side_effect = ValueError("Invalid profile format")
 
-            subscriber = AutoTitleSubscriber(service=service)
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
@@ -3967,16 +4131,17 @@ class TestAutoTitle:
         service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
         profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
+        profile_store = MagicMock(spec=LLMProfileStore)
+
         with (
-            patch(
-                "openhands.agent_server.persistence.store.get_llm_profile_store"
-            ) as MockStore,
             patch(
                 self._TITLE_WITH_LLM_PATH, return_value="Profile Title"
             ) as mock_llm_title,
         ):
-            MockStore.return_value.load.return_value = profile_llm
-            subscriber = AutoTitleSubscriber(service=service)
+            profile_store.load.return_value = profile_llm
+            subscriber = AutoTitleSubscriber(
+                service=service, llm_profile_store=profile_store
+            )
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
@@ -4044,23 +4209,17 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        # Point the agent-server profile store singleton at our tmp dir via
-        # OH_PERSISTENCE_DIR so the real _load_title_llm code path finds our
-        # on-disk profile under `{tmp_path}/profiles`.
-        from openhands.agent_server.persistence import reset_stores
-
-        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
-        reset_stores()
-        # Clear the singleton at teardown even if an assertion raises, so the
-        # stale store (pointing at the soon-deleted tmp_path) can't leak.
-        request.addfinalizer(reset_stores)
-
         with patch(
             "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
             side_effect=fake_generate,
         ):
-            subscriber = AutoTitleSubscriber(service=service)
+            # The real _load_title_llm code path, reading the on-disk
+            # profile under `{tmp_path}/profiles`.
+            subscriber = AutoTitleSubscriber(
+                service=service,
+                llm_profile_store=LLMProfileStore(base_dir=profile_dir),
+            )
             await subscriber(self._user_message_event("Fix the login bug"))
             # Wait for the background executor task to complete. The production
             # code uses run_in_executor, so sleep(0) is not enough.
@@ -4141,20 +4300,17 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        from openhands.agent_server.persistence import reset_stores
-
-        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
-        reset_stores()
-        # Clear the singleton at teardown even if an assertion raises, so the
-        # stale store (pointing at the soon-deleted tmp_path) can't leak.
-        request.addfinalizer(reset_stores)
-
         with patch(
             "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
             side_effect=fake_generate,
         ):
-            subscriber = AutoTitleSubscriber(service=service)
+            # The real _load_title_llm code path, reading the on-disk
+            # profile under `{tmp_path}/profiles`.
+            subscriber = AutoTitleSubscriber(
+                service=service,
+                llm_profile_store=LLMProfileStore(base_dir=profile_dir),
+            )
             await subscriber(self._user_message_event("Fix the login bug"))
             for _ in range(50):
                 await asyncio.sleep(0.02)
@@ -4358,6 +4514,50 @@ class TestConversationTreeForkAndNavigate:
                 await svc.fork_conversation(info.id, from_event_id="evt-missing")
             # Validation must fail-fast before any fork dir is written to disk.
             assert {p.name for p in conversations_dir.iterdir()} == before
+
+    @pytest.mark.asyncio
+    async def test_cipher_backed_fork_resumes_with_credentials(self, tmp_path):
+        """A cipher-backed fork survives a restart with its secrets (#5465)."""
+        conversations_dir = tmp_path / "conversations"
+        cipher = Cipher("fork-resume-test-key")
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(
+                    model="gpt-4o",
+                    api_key=SecretStr("sk-fork-test"),
+                    usage_id="test-llm",
+                ),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        )
+
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as svc:
+            info, _ = await svc.start_conversation(request)
+            source_service = await svc.get_event_service(info.id)
+            assert source_service is not None
+            source_service.get_conversation().update_secrets({"MY_TOKEN": "tok-123"})
+
+            fork_info = await svc.fork_conversation(info.id)
+            assert fork_info is not None
+
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as restarted:
+            # Resume path: the restarted server loads the fork from its
+            # persisted base_state.json with agent=None.
+            fork_service = await restarted.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_conversation = fork_service.get_conversation()
+            api_key = fork_conversation.agent.llm.api_key
+            assert isinstance(api_key, SecretStr)
+            assert api_key.get_secret_value() == "sk-fork-test"
+            assert (
+                fork_conversation.state.secret_registry.get_secret_value("MY_TOKEN")
+                == "tok-123"
+            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -217,9 +217,11 @@ c = Conversation(
     visualizer=None,
     secrets={"API_TOKEN": "tok-s13-raise-123"},
     callbacks=[
-        lambda e: seen.append(e.model_dump(mode="json"))
-        if isinstance(e, SecurityAnalysisEvent)
-        else None
+        lambda e: (
+            seen.append(e.model_dump(mode="json"))
+            if isinstance(e, SecurityAnalysisEvent)
+            else None
+        )
     ],
 )
 c.set_security_analyzer(FlakyAnalyzer())

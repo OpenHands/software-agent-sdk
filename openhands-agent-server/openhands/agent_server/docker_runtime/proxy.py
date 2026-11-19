@@ -11,12 +11,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import websockets
-from fastapi import HTTPException, status
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 from websockets.typing import Subprotocol
 
+from openhands.sdk.errors import Unprocessable, UpstreamFailed
 from openhands.sdk.logger import get_logger
 
 
@@ -58,10 +58,6 @@ _HOP_BY_HOP_HEADERS = frozenset(
 # without de-duplicating, so copying the upstream's would send two of each.
 _RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
 
-# Stream chunk size for request/response bodies. Set it explicitly so proxy
-# behavior does not depend on an httpx implementation default.
-_CHUNK_SIZE = 64 * 1024
-
 
 def _filter_headers(headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
@@ -98,7 +94,7 @@ async def proxy_http(
     workspace: ProxyTarget,
     *,
     upstream_path: str,
-    timeout: float | None = None,
+    read_timeout: float | None = None,
     body: bytes | None = None,
     on_close: Callable[[], Any] | None = None,
     reject_redirects: bool = False,
@@ -112,8 +108,8 @@ async def proxy_http(
             agent-server to forward to. Typically the same path the outer
             server received, since the inner agent-server exposes the same
             API surface.
-        timeout: Per-request timeout in seconds. ``None`` (the default) means
-            no read timeout — conversation event streams can be long-lived.
+        read_timeout: Upstream read timeout in seconds. ``None`` (the default)
+            means no read timeout — conversation event streams can be long-lived.
         body: Replacement request body. By default the incoming body is streamed.
         on_close: Awaited or invoked once the streamed response is fully consumed,
             client disconnects, or connection fails. Callers use this to release
@@ -130,7 +126,7 @@ async def proxy_http(
         story trivial.
     """
     if request.headers.get("x-expose-secrets"):
-        raise HTTPException(422, "Runtime secret exposure is unsupported")
+        raise Unprocessable("Runtime secret exposure is unsupported")
     url = workspace.host + strip_auth_query(upstream_path)
     headers = _filter_headers(request.headers)
     # If the client authenticated via the workspace-session cookie (used by
@@ -161,7 +157,9 @@ async def proxy_http(
     try:
         client = await stack.enter_async_context(
             httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
+                timeout=httpx.Timeout(
+                    connect=10.0, read=read_timeout, write=30.0, pool=10.0
+                )
             )
         )
         upstream = await stack.enter_async_context(
@@ -173,18 +171,12 @@ async def proxy_http(
         if not isinstance(exc, httpx.HTTPError):
             raise
         logger.warning("Conversation upstream connection failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Conversation container unreachable",
-        ) from exc
+        raise UpstreamFailed("Conversation container unreachable") from exc
 
     if reject_redirects and upstream.is_redirect:
         await stack.aclose()
         await _invoke_close(on_close)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Upstream redirect is not allowed",
-        )
+        raise UpstreamFailed("Upstream redirect is not allowed")
 
     async def _response_body() -> AsyncIterator[bytes]:
         try:

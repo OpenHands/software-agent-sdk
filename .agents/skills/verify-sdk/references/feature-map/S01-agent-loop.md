@@ -1,6 +1,6 @@
 # Agent step loop
 
-A Python program builds `Agent(llm=..., tools=[...])`, wraps it in `Conversation(agent=..., workspace=...)`, calls `send_message(...)` and then `run()` (or `await arun()`). `run()` repeatedly calls `Agent.step()`: each step builds the LLM message list from the event view (condensing first if the condenser asks), calls `LLM.generate`, and dispatches the reply. Tool calls become `ActionEvent`s that are executed (sequentially by default, or concurrently up to `Agent.tool_concurrency_limit`) and answered by `ObservationEvent`s; a plain text reply or a `FinishAction` sets the status to `FINISHED`; a reasoning-only or empty reply gets a corrective nudge and the loop continues. The loop stops on `FINISHED`, `PAUSED`, `WAITING_FOR_CONFIRMATION`, `STUCK` (the stuck detector saw a repeating pattern), or `ERROR` with a `ConversationErrorEvent` (`MaxIterationsReached` after `max_iteration_per_run` steps, `MaxBudgetReached` after `max_budget_per_run` dollars). Messages sent from another thread while `run()` is busy are picked up by the next step. Images go in as `ImageContent` inside a `Message`; a non-vision model gets a capability message instead of a call. `conversation.ask_agent(question)` asks a side question that leaves no trace in the conversation. A tool spec with `params={"response_schema": Model}` turns that tool's arguments (typically `finish`) into typed structured output.
+A Python program builds `Agent(llm=..., tools=[...])`, wraps it in `Conversation(agent=..., workspace=...)`, calls `send_message(...)` and then `run()` (or `await arun()`). `run()` repeatedly calls `Agent.step()`: each step builds the LLM message list from the event view (condensing first if the condenser asks), calls `LLM.generate`, and dispatches the reply. Tool calls become `ActionEvent`s that are executed (sequentially by default, or concurrently up to `Agent.tool_concurrency_limit`) and answered by `ObservationEvent`s; a plain text reply or a `FinishAction` sets the status to `FINISHED`; a reasoning-only reply gets a corrective nudge and the loop continues, while a reply with no text, no tool call and no reasoning never reaches the agent: the LLM call retries it. The loop stops on `FINISHED`, `PAUSED`, `WAITING_FOR_CONFIRMATION`, `STUCK` (the stuck detector saw a repeating pattern), or `ERROR` with a `ConversationErrorEvent` (`MaxIterationsReached` after `max_iteration_per_run` steps, `MaxBudgetReached` after `max_budget_per_run` dollars). Messages sent from another thread while `run()` is busy are picked up by the next step. Images go in as `ImageContent` inside a `Message`; a non-vision model gets a capability message instead of a call. `conversation.ask_agent(question)` asks a side question that leaves no trace in the conversation. A tool spec with `params={"response_schema": Model}` turns that tool's arguments (typically `finish`) into typed structured output.
 
 Source: `openhands-sdk/openhands/sdk/agent/agent.py`, `openhands-sdk/openhands/sdk/agent/base.py`, `openhands-sdk/openhands/sdk/agent/response_dispatch.py`, `openhands-sdk/openhands/sdk/agent/parallel_executor.py`, `openhands-sdk/openhands/sdk/agent/stream_context.py`, `openhands-sdk/openhands/sdk/agent/utils.py`, `openhands-sdk/openhands/sdk/agent/critic_mixin.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/stuck_detector.py`, `openhands-sdk/openhands/sdk/conversation/types.py`, `openhands-sdk/openhands/sdk/tool/builtins/finish.py`, `openhands-sdk/openhands/sdk/tool/tool.py`
 
@@ -12,7 +12,7 @@ Examples: `examples/01_standalone_sdk/01_hello_world.py`, `examples/01_standalon
 
 - `S01.run-to-finish`: `send_message` + `run()` steps until the agent finishes; status moves IDLE to RUNNING to FINISHED, a second `run()` on a finished conversation returns at once, and a new message moves FINISHED back to IDLE. Unit: `tests/sdk/conversation/local/test_agent_status_transition.py`. Example: `examples/01_standalone_sdk/01_hello_world.py`. Real-LLM: `tests/integration/tests/t01_fix_simple_typo.py`, `tests/integration/tests/t02_add_bash_hello.py`.
 - `S01.response-dispatch`: each LLM reply is classified as tool calls, content, reasoning-only or empty; tool calls execute, content sets FINISHED, and the batch's `ActionEvent`s are emitted consecutively. Unit: `tests/sdk/agent/test_response_dispatch.py`. Example: none. Real-LLM: none.
-- `S01.empty-reply-nudge`: a reasoning-only or completely empty reply injects a corrective user nudge and the loop continues instead of finishing; the nudge does not reset the stuck-detection window. Unit: `tests/sdk/agent/test_reasoning_only_responses.py`, `tests/sdk/agent/test_tool_call_recovery.py`, `tests/sdk/agent/test_response_dispatch.py::test_corrective_nudge_does_not_reset_stuck_detection_window`. Example: none. Real-LLM: none.
+- `S01.empty-reply-nudge`: a reasoning-only reply (reasoning or thinking, no text, no tool call) injects a corrective user nudge and the loop continues instead of finishing; the nudge does not reset the stuck-detection window. A content-free reply (no text, no tool call, no reasoning) is not an agent turn: the LLM call retries it (`S02.no-response-retry`), so no empty agent message or nudge is recorded and the run goes on with the next reply; when every attempt is content-free the run ends `ERROR` with one retryable `ConversationErrorEvent` (code `LLMNoResponseError`), not `STUCK`. Unit: `tests/sdk/agent/test_reasoning_only_responses.py`, `tests/sdk/agent/test_tool_call_recovery.py`, `tests/sdk/conversation/local/test_empty_response_retry.py`, `tests/sdk/agent/test_response_dispatch.py::test_corrective_nudge_does_not_reset_stuck_detection_window`. Example: none. Real-LLM: none.
 - `S01.max-iterations`: after `max_iteration_per_run` steps (default 500) the run stops with status ERROR and a `ConversationErrorEvent(code="MaxIterationsReached")`, unless the last step finished, which keeps FINISHED. Unit: `tests/sdk/conversation/local/test_agent_status_transition.py::test_execution_status_error_on_max_iterations`, `::test_execution_status_finished_on_final_iteration`. Example: `examples/01_standalone_sdk/28_ask_agent_example.py` (`max_iteration_per_run=5`). Real-LLM: none.
 - `S01.max-budget`: with `max_budget_per_run` set, the run stops with ERROR and `MaxBudgetReached` once the combined cost of all the conversation's LLMs reaches it; a finished run stays FINISHED. Unit: `tests/sdk/conversation/local/test_agent_status_transition.py::test_execution_status_error_on_max_budget`, `::test_finished_preserved_even_when_over_budget`. Example: none. Real-LLM: none.
 - `S01.stuck-detect`: with `stuck_detection=True` (default) the detector flags repeated action/observation pairs (4), repeated action/error pairs (3), agent monologue (3) and alternating patterns (6) in the events since the last user message, and sets status STUCK. Unit: `tests/cross/test_stuck_detector.py`. Example: `examples/01_standalone_sdk/20_stuck_detector.py`. Real-LLM: none.
@@ -25,7 +25,7 @@ Examples: `examples/01_standalone_sdk/01_hello_world.py`, `examples/01_standalon
 - `S01.message-while-running`: `send_message` from another thread while `run()` or `arun()` is mid-step is absorbed by the next step instead of being lost or ending the run; a message during a confirmation wait supersedes the pending action. Unit: `tests/sdk/agent/test_message_during_streaming_arun.py`, `tests/sdk/agent/test_message_while_finishing.py`. Example: `examples/01_standalone_sdk/18_send_message_while_processing.py`. Real-LLM: none.
 - `S01.async-step`: `arun()`/`astep()` follow the same control flow and release the state lock while the LLM call is in flight, so other threads can read state and send messages. Unit: `tests/sdk/agent/test_astep_releases_state_lock.py`. Example: none. Real-LLM: none.
 - `S01.image-input`: a user `Message` with `ImageContent(image_urls=[...])` (http URL or base64 `data:` URL) reaches a vision model; with more than 20 images to an Anthropic model, base64 images are downscaled to 2000x2000 px. Unit: `tests/sdk/llm/test_vision_support.py`, `tests/sdk/llm/test_llm_image_resizing.py`. Example: `examples/01_standalone_sdk/17_image_input.py`. Real-LLM: none (`tests/integration/tests/t08_image_file_viewing.py` covers images read by a tool, not user input).
-- `S01.image-non-vision`: images sent to a non-vision model produce an agent message saying the model cannot see images and the run finishes without an LLM call; if a vision profile tool is available the images are replaced by references the agent can inspect with that tool. Unit: `tests/sdk/agent/test_non_multimodal_image_input.py`. Example: none. Real-LLM: none.
+- `S01.image-non-vision`: an image in the latest user message to a non-vision model produces an agent message saying the model cannot see images and the run finishes without an LLM call; if the vision inspect tool (`inspect_image_with_vision`, added when a saved vision-capable LLM profile exists) is available, every image in the conversation, in user messages and tool observations alike, is replaced by a reference numbered in conversation order that the agent can inspect with that tool; without the tool, images only in older messages or tool observations do not stop the run. Unit: `tests/sdk/agent/test_non_multimodal_image_input.py`. Example: none. Real-LLM: none.
 - `S01.ask-agent`: `conversation.ask_agent(question)` returns a direct LLM answer built from the current history, adds no events and leaves status unchanged, works while `run()` is in flight, drops unanswered tool calls from the context, and raises on context-window errors. Unit: `tests/sdk/conversation/test_ask_agent.py`. Example: `examples/01_standalone_sdk/28_ask_agent_example.py`. Real-LLM: none.
 - `S01.structured-output`: `Tool(name=..., params={"response_schema": Model})` extends that tool's action schema with the model's fields, validates the LLM's arguments against it, and `tool.parse_last_response(events)` returns the latest typed instance. Invalid schemas (object-level constraints, dynamic fields, field collisions, reserved names, toolsets) are rejected. Unit: `tests/sdk/tool/test_response_schema.py`. Example: `examples/01_standalone_sdk/56_structured_output.py`. Real-LLM: none.
 - `S01.malformed-tool-call`: malformed tool arguments are repaired when possible (control characters, stringified JSON); a native tool call that still fails validation becomes an `AgentErrorEvent` naming the validation error (a malformed prompted-mode `<function=...>` reply becomes a user `MessageEvent` instead) and the loop continues. Unit: `tests/sdk/agent/test_fix_malformed_tool_arguments.py`, `tests/sdk/agent/test_tool_validation_error_message.py`. Example: none. Real-LLM: none.
@@ -78,7 +78,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check kinds.2 eq ObservationEvent --check kinds.3 eq ObservationEvent \
     --check events.0.tool eq file_editor --check events.1.tool eq terminal
   ```
-- **Recovering inside a step (`S01.empty-reply-nudge`, `S01.malformed-tool-call`, `S01.unknown-tool`, `S01.content-policy`).** One scripted run meets an unknown tool, arguments that fail validation, a stringified JSON list (repaired), a content-filter block and an empty reply, then finishes.
+- **Recovering inside a step (`S01.malformed-tool-call`, `S01.unknown-tool`, `S01.content-policy`).** One scripted run meets an unknown tool, arguments that fail validation, a stringified JSON list (repaired) and a content-filter block, then finishes.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   CID=$(control-sdk conversation new --script S01/step_errors.json --field id)
@@ -91,15 +91,27 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check events.0.tool eq task_tracker --check events.0.is_error eq false --check events.0.text contains "1 item"
   control-sdk conversation events "$CID" --kind MessageEvent --source user \
     --check events.1.text contains "blocked by the model's content filter"
-  control-sdk conversation events "$CID" --kind MessageEvent --source environment \
-    --check count eq 1 --check events.0.text contains "did not include a function call"
   ```
-- **A reasoning-only reply (`S01.empty-reply-nudge`).** A reply with `reasoning_content` and no text or tool call gets the same nudge.
+- **A reasoning-only reply (`S01.empty-reply-nudge`).** A scripted reply with `reasoning_content` and no text or tool call gets the corrective nudge.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S01/loop --arg reasoning-only \
     --check status eq finished --check llm_calls eq 2 --check nudges eq 1 --check nudge_text contains "did not include a function call"
   ```
+- **A content-free reply from a real model (`S01.empty-reply-nudge`).** A real `LLM` (`openai/gpt-4o-mini`, `temperature=0`) against `programs/S02/fake_provider.py`: two replies with empty text and no tool call or reasoning, then an answer (`num_retries=5`); a reasoning-only reply, then `finish`; and only content-free replies (`num_retries=2`).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S01/loop --arg content-free \
+    --check empty_then_answer.status eq finished --check empty_then_answer.requests eq 3 \
+    --check empty_then_answer.temperatures.1 eq 1.0 --check empty_then_answer.nudges eq 0 \
+    --check empty_then_answer.agent_messages len-eq 1 --check empty_then_answer.agent_messages.0 eq "The answer is ready." \
+    --check reasoning_only.status eq finished --check reasoning_only.requests eq 2 --check reasoning_only.nudges eq 1 \
+    --check exhausted.status eq error --check exhausted.raised eq ConversationRunError --check exhausted.requests eq 2 \
+    --check exhausted.nudges eq 0 --check exhausted.agent_messages len-eq 0 \
+    --check exhausted.error_codes len-eq 1 --check exhausted.error_codes.0 eq LLMNoResponseError \
+    --check exhausted.error_classifications.0.kind eq transient --check exhausted.error_classifications.0.retryable eq true
+  ```
+  The two empty replies are retried inside one LLM call (the temperature bumped from 0 to 1.0), so the conversation holds one agent message and no nudge. The reasoning-only reply is a turn of its own and gets the nudge. When both attempts are empty the run ends `ERROR` (`run()` raises `ConversationRunError`) with one transient, retryable `LLMNoResponseError` event, no empty agent message and no `STUCK`.
 - **The iteration cap (`S01.max-iterations`).** `max_iteration_per_run=2` with three steps of work, and with the finish on step two.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -119,7 +131,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check finish_over_budget.status eq finished --check finish_over_budget.codes len-eq 0 \
     --check factory_accepts_budget eq true
   ```
-  Fixed: a known failure on 2026-10-13 (the public `Conversation(...)` factory refused `max_budget_per_run` with a `TypeError`); the factory takes it since #6257, and the bullet passes again on 2026-11-03.
+  Expected: the public `Conversation(...)` factory accepts `max_budget_per_run` (`factory_accepts_budget` is true).
 - **Stuck on a repeating action (`S01.stuck-detect`, `S01.stuck-recover`).** Five identical `ls` calls: the fourth pair sets STUCK; a new message moves it to IDLE and the run then reaches the script's `finish`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -135,7 +147,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
   control-sdk conversation send "$CID" --text "List files" --run --check execution_status eq stuck
   control-sdk conversation run "$CID" --check script_left lt 2
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): `run()` resets STUCK to RUNNING, but the detector sees the same repeated pairs since the last user message before any LLM call and sets STUCK again (`script_left` stays 2, status `stuck`). Only a new user message gets a detected-stuck conversation moving; the unit test `test_run_recovers_from_stuck` sets STUCK by hand with no repeating events, so it never meets this.
+  Expected: `run()` on a detector-STUCK conversation makes at least one more LLM call: resuming starts a fresh detection window, as a new user message does.
 - **Custom thresholds (`S01.stuck-thresholds`).** Three identical `ls` calls with the defaults (no stuck) and with `stuck_detection_thresholds={"action_observation": 2}`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -202,9 +214,10 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check anthropic_2_images.max_side eq 2600
   control-sdk program S01/loop --arg image-non-vision \
     --check vision_active eq false --check status eq finished --check llm_calls eq 0 \
-    --check agent_reply contains "does not support image"
+    --check agent_reply contains "does not support image" \
+    --check followup.status eq finished --check followup.llm_calls eq 1 --check followup.agent_messages eq 2
   ```
-  The vision-profile substitution needs a vision profile tool configured; it is not driven here.
+  A following text-only turn, when the image sits in an older message, calls the model as usual. The vision-profile substitution needs a vision profile tool configured; it is not driven here.
 - **Side questions (`S01.ask-agent`).** `ask_agent` while `run()` is in flight, after it ends, and when the side call overflows the context.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -265,6 +278,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
 
 ## Gotchas
 
+- A rejected `response_schema` on a terminal tool raises `ValueError` after the terminal has already started its tmux server, and nothing closes it: `close()` leaves the server running after the program exits ([#6748](https://github.com/OpenHands/software-agent-sdk/issues/6748)). `S01.structured-output` passes but leaves two such servers per run; end them with `TMUX_TMPDIR=<run tmux dir> tmux -L <socket> kill-server`.
 - `01_hello_world.py` is in `_EXCLUDED_EXAMPLES` in `tests/examples/test_examples.py`, so the `test-examples` label never runs it; the other seven examples here do run there (`pytest tests/examples/test_examples.py --run-examples`).
 - All examples read `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`; `56_structured_output.py` defaults `LLM_MODEL` to `anthropic/claude-sonnet-4-5-20250929`, the rest to `gpt-5.5`. `17_image_input.py` asserts `llm.vision_is_active()` and fails fast on a text-only model; it also fetches an image from python.org.
 - Examples run with the repo root as workspace and write files there (`FACTS.txt`, `image_report.md`, the document from example 18).
@@ -278,3 +292,4 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
 - `ConversationStateUpdateEvent`s are not delivered to `callbacks` in a local run; poll `conversation.state.execution_status` (from another thread) to watch status changes.
 - Once a run has ended STUCK, calling `run()` again is re-detected as STUCK straight away with no LLM call; only a new user message lets the agent continue.
 - `ConversationErrorEvent` is not exported from `openhands.sdk.event`; import it from `openhands.sdk.event.conversation_error`.
+- `TestLLM` skips the LLM's response validation, so a scripted reply with empty text and no tool call still reaches the agent and gets the corrective nudge; only a real `LLM` (here against the local endpoint) shows a content-free reply being retried.

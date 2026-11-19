@@ -23,6 +23,8 @@ Examples: `examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py`, `examp
 - `S14.terminal-secret-masking`: secret values registered on the conversation are masked in terminal output and in tmux debug logs. Unit: `tests/tools/terminal/test_secrets_masking.py`, `tests/tools/terminal/test_tmux_log_redaction.py`. Example: `examples/01_standalone_sdk/12_custom_secrets.py`. Real-LLM: none.
 - `S14.terminal-cleanup`: closing the conversation closes the terminal session (and tmux panes), and executor shutdown tolerates interpreter teardown. Unit: `tests/tools/terminal/test_conversation_cleanup.py`, `tests/tools/terminal/test_shutdown_handling.py`. Example: none. Real-LLM: none.
 - `S14.terminal-windows`: the PowerShell backend runs commands, sends keys and handles Ctrl+C on Windows. Unit: `tests/tools/terminal/test_windows_terminal.py`, `tests/tools/terminal/test_windows_ctrl_c.py` (both skip off Windows), `tests/tools/terminal/test_windows_terminal_send_keys.py` (runs anywhere). Example: none. Real-LLM: none.
+- `S14.terminal-observation-wait-cap`: `Tool(name="terminal", params={"max_observation_wait_seconds": N})` (also `TerminalExecutor(max_observation_wait_seconds=N)`) caps how long one call waits for output, even under a larger `timeout`: after about N seconds the call returns the still-running observation (`exit_code` -1, not an error, the "timed out after N seconds" note) without killing the command, and each empty `is_input` poll waits at most N seconds again until the command's output and exit code arrive. The cap holds on tmux and subprocess and across a reset; 0, a negative, NaN or infinite value raises `ValueError` when the tool is created; `None` (the default) keeps the old waits. Unit: `tests/tools/terminal/test_observation_wait.py`. Example: none. Real-LLM: none.
+- `S14.terminal-shell-exit`: when the shell itself ends (`exit 7`) on the subprocess backend, the call returns an error observation (`exit_code` -1) that keeps the command's last output and says "The terminal was closed before command completion ... Use reset=True"; later commands return the same closed-terminal error without running, and `reset=True` starts a working shell. Unit: `tests/tools/terminal/test_observation_wait.py` (`test_eof_preserves_final_output`, `test_shell_death_returns_and_cleans_up`, `test_reset_recovers_dead_shell`). Example: none. Real-LLM: none.
 - `S14.file-editor-view`: `view` lists a directory (two levels deep, symlinks, truncated when large; hidden entries are left out and counted in a note such as "1 hidden files/directories"), shows a file with line numbers or a `view_range`, and returns image content for images and text for a PDF it can read (an ASCII PDF shows its text), while other binary files are refused ("appears to be binary"). Unit: `tests/tools/file_editor/test_basic_operations.py`, `tests/tools/file_editor/test_view_supported_binary_files.py`. Example: none. Real-LLM: `tests/integration/tests/t08_image_file_viewing.py` (needs a vision model).
 - `S14.file-editor-edit`: `create` (fails on an existing file), `str_replace` (must match exactly once), `insert` at a line, and `undo_edit` (per-file history) change files and return a diff snippet. Unit: `tests/tools/file_editor/test_basic_operations.py`, `tests/tools/file_editor/test_file_editor_tool.py`, `tests/tools/file_editor/utils/test_history.py`, `tests/tools/file_editor/test_visualize_diff.py`. Example: `examples/01_standalone_sdk/01_hello_world.py`. Real-LLM: `tests/integration/tests/t01_fix_simple_typo.py`.
 - `S14.file-editor-validation`: relative paths, missing files, binary files, oversized files and invalid parameters return error observations; paths resolve against the workspace root; non-UTF-8 files keep their encoding; memory use stays bounded on large files. Unit: `tests/tools/file_editor/test_file_validation.py`, `tests/tools/file_editor/test_error_handling.py`, `tests/tools/file_editor/test_exceptions.py`, `tests/tools/file_editor/test_workspace_root.py`, `tests/tools/file_editor/utils/test_encoding.py`, `tests/tools/file_editor/utils/test_file_cache.py`, `tests/tools/file_editor/test_memory_usage.py`. Example: none. Real-LLM: none.
@@ -37,7 +39,7 @@ Examples: `examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py`, `examp
 
 ## How to get to it (agent POV)
 
-- Tool specs: `from openhands.sdk import Tool`; `Tool(name="terminal")`, `Tool(name="file_editor")`, `Tool(name="apply_patch")`, `Tool(name="read_file")` etc., `Tool(name="glob")`, `Tool(name="grep")`. Import the tool module first (`from openhands.tools.terminal import TerminalTool`) so it registers; use `TerminalTool.name` rather than a string. `Tool(name=..., params={...})` forwards keyword arguments to the tool's `create()` (for the terminal: `terminal_type`, `shell_path`, `no_change_timeout_seconds`, `username`, `env`). All sub-features.
+- Tool specs: `from openhands.sdk import Tool`; `Tool(name="terminal")`, `Tool(name="file_editor")`, `Tool(name="apply_patch")`, `Tool(name="read_file")` etc., `Tool(name="glob")`, `Tool(name="grep")`. Import the tool module first (`from openhands.tools.terminal import TerminalTool`) so it registers; use `TerminalTool.name` rather than a string. `Tool(name=..., params={...})` forwards keyword arguments to the tool's `create()` (for the terminal: `terminal_type`, `shell_path`, `no_change_timeout_seconds`, `username`, `env`, `max_observation_wait_seconds`). All sub-features.
 - `from openhands.tools.gemini import GEMINI_FILE_TOOLS` is the list of four Gemini specs (`S14.gemini-file-tools`).
 - Presets: `openhands.tools.preset.default` (`get_default_tools`, `get_default_agent`, `register_default_tools`), `openhands.tools.preset.gpt5` (`get_gpt5_tools`, `get_gpt5_agent`), `openhands.tools.preset.gemini` (`get_gemini_tools`, `get_gemini_agent`). `openhands.sdk.tool.default_tool_specs()` is the SDK-side default list. `S14.preset-*`.
 - Direct use without an LLM: `TerminalExecutor(working_dir=..., terminal_type=...)` with `TerminalAction`, `FileEditorExecutor(workspace_root=...)` with `FileEditorAction`, or `conversation.execute_tool("terminal", TerminalAction(command="ls"))` on a live conversation.
@@ -125,14 +127,14 @@ Preconditions:
     --check steps.prompt.exit_code eq -1 --check steps.answer.text contains "hello bob" \
     --check steps.more.is_error eq false --check steps.ctrl_c.exit_code eq 130
   ```
-  Expected: as on the subprocess backend, `is_input` answers the prompt, `""` shows more output and `C-c` stops the idle command. Known failure (reproduced 2026-10-13, not yet filed): on the default tmux backend every one of these calls returns `is_error` with "No previous running command to interact with." (or "... to retrieve logs from."). `TerminalExecutor._prepare_pooled_session` interrupts a still-running command whenever a pane is checked out, so the follow-up the observation itself recommends ("You may wait longer ... by sending empty command '', ... send keys ("C-c", ...)") can never reach the process.
+  Expected: as on the subprocess backend, `is_input` answers the prompt, `""` shows more output and `C-c` stops the idle command. On the default tmux backend a follow-up (input, an empty command, or a `C-x` key) gets the pane whose command is still running, and that command is left alone.
 - **Terminal query sequences under tmux (`S14.terminal-input-encoding`).** A command prints a DSR cursor-position query, then the agent runs `echo next`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S14/terminal --arg auto \
     --check escape_filtered eq true --check dsr_reply_visible eq false --check after_dsr_clean eq true
   ```
-  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-10-13, not yet filed): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
+  Expected: the query is dropped and nothing else shows, as on the subprocess backend. Known failure (reproduced 2026-11-17, [#6652](https://github.com/OpenHands/software-agent-sdk/issues/6652)): the query itself is filtered, but tmux answers it into the shell's input; the observation shows `^[[13;2R` and the next command's output starts with the echoed earlier command and `bash: syntax error near unexpected token ';'`.
 - **A reset keeps the configured backend (`S14.terminal-reset`, `S14.terminal-backend-select`).** The subprocess run's `echo shell=$0` after `reset=True`, and the session type at the end.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -140,7 +142,53 @@ Preconditions:
     --check steps.shell.text contains my-shell \
     --check steps.shell_after_reset.text contains my-shell --check backend_at_end eq SubprocessTerminal
   ```
-  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-10-13, not yet filed): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-17, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+- **A timed-out command is flagged (`S14.terminal-timeout`).** With `no_change_timeout_seconds: 2`, a scripted agent runs `sleep 5` with `timeout` 1 (the hard limit) and `sleep 30` with none (no new output for 2 s), each stopped with `C-c`; on tmux, then on the subprocess backend.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  for backend in tmux subprocess; do
+    control-sdk program S14/terminal_flags --arg "$backend" \
+      --check steps.hard.exit_code eq -1 --check steps.hard.is_error eq false \
+      --check steps.hard.text contains "timed out after 1.0 seconds" --check steps.hard.timeout eq true \
+      --check steps.idle.exit_code eq -1 --check steps.idle.text contains "no new output after 2 seconds" \
+      --check steps.idle.timeout eq true
+  done
+  ```
+  Expected: both observations carry `timeout=True`, so a hook or observer can tell a timed-out command from its fields; text, exit code (-1) and `is_error` (false) as they are. Known failure (reproduced 2026-11-19, [#6991](https://github.com/OpenHands/software-agent-sdk/issues/6991)): on both backends the text says the command timed out but `timeout` is `false`: `TerminalSession._handle_hard_timeout_command` and `_handle_nochange_timeout_command` build the `TerminalObservation` without `timeout=True`.
+- **A command that starts with a comment line (`S14.terminal-exec`).** The same program: `sleep 2 && printf '%s-%s\n' synthetic status-output` (only its output, not the command line, holds `synthetic-status-output`), then the same command after a `# Read-only: ...` line; on tmux, then on the subprocess backend.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  for backend in tmux subprocess; do
+    control-sdk program S14/terminal_flags --arg "$backend" \
+      --check steps.control.exit_code eq 0 --check steps.control.text contains synthetic-status-output \
+      --check steps.comment.exit_code eq 0 --check steps.comment.seconds ge 1.5 \
+      --check steps.comment.text contains synthetic-status-output
+  done
+  ```
+  Expected: the leading comment changes nothing; the call waits for the command and returns its output. Known failure (reproduced 2026-11-19, [#6972](https://github.com/OpenHands/software-agent-sdk/issues/6972)): on both backends the commented call returns exit 0 within about 0.2 s, its text holding only the echoed command lines and no `synthetic-status-output` (Bash prints a prompt after the comment line, which the session takes for completion); on the subprocess backend the missing output turns up at the start of the next call's observation.
+- **A one-second observation wait cap and a shell that exits, subprocess backend (`S14.terminal-observation-wait-cap`, `S14.terminal-shell-exit`).** `Tool(name="terminal", params={"terminal_type": "subprocess", "max_observation_wait_seconds": 1})`; a scripted agent starts `sleep 3; echo finished` with `timeout` 600 and polls it with `""` until it finishes, then runs `printf ...; exit 7`, `echo still-here`, a reset and `echo back`. The program also creates the tool with a cap of 0 and of -1.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S14/terminal_wait --arg subprocess \
+    --check execution_status eq finished \
+    --check steps.long.exit_code eq -1 --check steps.long.is_error eq false --check steps.long.seconds lt 2.5 \
+    --check steps.long.text contains "timed out after 1 seconds" \
+    --check max_poll_seconds lt 2.5 --check finished_seen eq true --check polls_until_done le 3 \
+    --check steps.exit.is_error eq true --check steps.exit.exit_code eq -1 --check steps.exit.text contains final-output \
+    --check steps.exit.text contains "The terminal was closed before command completion" \
+    --check steps.after_exit.is_error eq true --check steps.after_exit.text contains "Use reset=True" \
+    --check steps.after_exit.text not-contains "still-here" \
+    --check steps.after_reset.exit_code eq 0 --check steps.after_reset.text contains back \
+    --check invalid.0 contains "must be finite and positive" --check invalid.-1 contains "must be finite and positive"
+  ```
+- **The observation wait cap on the tmux pane pool (`S14.terminal-observation-wait-cap`).** The same program on tmux (no `exit` steps).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S14/terminal_wait --arg tmux \
+    --check steps.long.exit_code eq -1 --check steps.long.is_error eq false --check steps.long.seconds lt 2.5 \
+    --check max_poll_seconds lt 2.5 --check finished_seen eq true --check polls_until_done le 3 \
+    --check invalid.0 contains "must be finite and positive"
+  ```
 - **Windows PowerShell backend (`S14.terminal-windows`), blocked.** Needs a Windows host; on Linux `terminal_type="powershell"` has no PowerShell to start.
 - **The file editor over a small repository (`S14.file-editor-view`, `S14.file-editor-edit`, `S14.file-editor-validation`, `S14.tool-output-masking`).** The program lays out a nested tree, a hidden file, a PNG, an ASCII PDF, a binary blob, an 11 MB log, a Latin-1 file and a file holding a registered secret; a scripted agent views and edits them.
   ```sh
@@ -186,7 +234,7 @@ Preconditions:
     --check same_files eq true --check rg.glob_in_path.count eq 100 --check same_truncated eq true \
     --check rg.glob_in_path.truncated eq false
   ```
-  Expected: both backends report 100 files and `truncated` false. Fixed: a known failure on 2026-10-13 (ripgrep `glob` reported `truncated: true` for exactly 100 matches); it passes since #6342, re-verified 2026-11-03.
+  Expected: both backends report 100 files and `truncated` false.
 - **Tool presets build working agents (`S14.preset-default`, `S14.preset-gpt5-gemini`, `S14.gemini-file-tools`, `S14.apply-patch`).** Each preset's agent does a scripted task with its own file tools; the default preset also reports the tool lists of all three and the SDK's `default_tool_specs()`, and builds a structured finish tool.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -256,4 +304,6 @@ Preconditions:
 - `glob` with the Python fallback uses a process-wide `os.chdir`, so it declares itself not parallel-safe; with ripgrep it is.
 - The subprocess backend leaks bracketed-paste switches (`\x1b[?2004l`, `\x1b[?2004h`) into observation text; the tmux backend does not.
 - `TerminalObservation.timeout` stays `false` even when a hard `timeout` fires; read `exit_code` (-1) and the "[The command timed out after ...]" note instead.
-- With the tmux pane pool, checking a pane out interrupts whatever is still running in it, so a command left running by a no-change timeout cannot be continued with `""`, `is_input` or `C-c` (see the known failure in Driving it).
+- With the tmux pane pool, a follow-up (`is_input`, an empty command or a `C-x` key) reaches a command left running by a no-change timeout, but a plain command does not: the pool sends that command Ctrl+C and types `clear` before running the new command, so a REPL that ignores Ctrl+C sees `KeyboardInterrupt` and `NameError: name 'clear' is not defined` ([#6752](https://github.com/OpenHands/software-agent-sdk/issues/6752), open, waiting on a decision of which behavior is intended; `S04.interactive-terminal` carries the known failure). The subprocess backend refuses the plain command instead and tells the model to use `is_input`.
+- `max_observation_wait_seconds` bounds the wait inside one call's output loop only, not the whole tool call: shell setup, pane-pool queueing and blocking backend I/O come on top, so allow some slack over N. A command that is still running when the cap hits keeps running; poll it with `""` or stop it with `C-c`.
+- The closed-terminal observation after `exit` on the subprocess backend carries the whole last screen, including the previous prompt's raw `###PS1JSON###` block and the typed command, not only the command's own output.
