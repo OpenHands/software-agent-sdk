@@ -143,6 +143,29 @@ Preconditions:
     --check steps.shell_after_reset.text contains my-shell --check backend_at_end eq SubprocessTerminal
   ```
   Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-17, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+- **A timed-out command is flagged (`S14.terminal-timeout`).** With `no_change_timeout_seconds: 2`, a scripted agent runs `sleep 5` with `timeout` 1 (the hard limit) and `sleep 30` with none (no new output for 2 s), each stopped with `C-c`; on tmux, then on the subprocess backend.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  for backend in tmux subprocess; do
+    control-sdk program S14/terminal_flags --arg "$backend" \
+      --check steps.hard.exit_code eq -1 --check steps.hard.is_error eq false \
+      --check steps.hard.text contains "timed out after 1.0 seconds" --check steps.hard.timeout eq true \
+      --check steps.idle.exit_code eq -1 --check steps.idle.text contains "no new output after 2 seconds" \
+      --check steps.idle.timeout eq true
+  done
+  ```
+  Expected: both observations carry `timeout=True`, so a hook or observer can tell a timed-out command from its fields; text, exit code (-1) and `is_error` (false) as they are. Known failure (reproduced 2026-11-19, [#6991](https://github.com/OpenHands/software-agent-sdk/issues/6991)): on both backends the text says the command timed out but `timeout` is `false`: `TerminalSession._handle_hard_timeout_command` and `_handle_nochange_timeout_command` build the `TerminalObservation` without `timeout=True`.
+- **A command that starts with a comment line (`S14.terminal-exec`).** The same program: `sleep 2 && printf '%s-%s\n' synthetic status-output` (only its output, not the command line, holds `synthetic-status-output`), then the same command after a `# Read-only: ...` line; on tmux, then on the subprocess backend.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  for backend in tmux subprocess; do
+    control-sdk program S14/terminal_flags --arg "$backend" \
+      --check steps.control.exit_code eq 0 --check steps.control.text contains synthetic-status-output \
+      --check steps.comment.exit_code eq 0 --check steps.comment.seconds ge 1.5 \
+      --check steps.comment.text contains synthetic-status-output
+  done
+  ```
+  Expected: the leading comment changes nothing; the call waits for the command and returns its output. Known failure (reproduced 2026-11-19, [#6972](https://github.com/OpenHands/software-agent-sdk/issues/6972)): on both backends the commented call returns exit 0 within about 0.2 s, its text holding only the echoed command lines and no `synthetic-status-output` (Bash prints a prompt after the comment line, which the session takes for completion); on the subprocess backend the missing output turns up at the start of the next call's observation.
 - **A one-second observation wait cap and a shell that exits, subprocess backend (`S14.terminal-observation-wait-cap`, `S14.terminal-shell-exit`).** `Tool(name="terminal", params={"terminal_type": "subprocess", "max_observation_wait_seconds": 1})`; a scripted agent starts `sleep 3; echo finished` with `timeout` 600 and polls it with `""` until it finishes, then runs `printf ...; exit 7`, `echo still-here`, a reset and `echo back`. The program also creates the tool with a cap of 0 and of -1.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
