@@ -1,15 +1,15 @@
 """Messages one conversation sends another, and the coordinator's wake-up.
 
-:func:`project_sender_header` holds a project member's
+:func:`project_sender_line` holds a project member's
 ``sender_conversation_id`` to its project and writes the line its message
 opens with. :func:`notify_coordinator` wakes a project's coordinator when one of its
 conversations finishes a run the coordinator asked for.
 
 The coordinator gets the member's final message, not its events: one user
 message that records the member as ``sender`` and opens with
-:func:`~openhands.agent_server.project_prompts.update_header`. A member the
+:func:`~openhands.agent_server.project_prompts.update_line`. A member the
 coordinator started that stops on the user instead (confirmation, error,
-stuck) sends :func:`~openhands.agent_server.project_prompts.stop_header`, and a
+stuck) sends :func:`~openhands.agent_server.project_prompts.stop_line`, and a
 pause is saved for awareness (:func:`notify_coordinator_of_stop`). An update
 to a coordinator that waits for confirmation is saved without a run, since a
 run would approve its pending actions. The coordinator reads more with
@@ -40,14 +40,14 @@ from openhands.agent_server.message_sender import (
 from openhands.agent_server.persistence import PersistedProjects
 from openhands.agent_server.project_prompts import (
     SenderRole,
-    card_header,
-    paused_header,
-    sender_header,
-    stop_header,
-    update_header,
+    card_line,
+    paused_line,
+    sender_line,
+    stop_line,
+    update_line,
     update_text,
-    user_message_header,
-    user_turn_header,
+    user_message_line,
+    user_turn_line,
 )
 from openhands.agent_server.project_turns import (
     TurnOutcome,
@@ -107,13 +107,13 @@ async def _coordinator_id(
     return project.coordinator_conversation_id if project else None
 
 
-async def project_sender_header(
+async def project_sender_line(
     service: "ConversationService", sender_id: UUID, target_tags: dict[str, str]
 ) -> str | None:
     """The line a message from a project member opens with, or ``None`` when
-    the sender is in no project (the generic header applies).
+    the sender is in no project (the generic sender line applies).
 
-    Called beside :func:`~openhands.agent_server.message_sender.sender_message_header`,
+    Called beside :func:`~openhands.agent_server.message_sender.sender_message_line`,
     which checks the sender exists and is not the target.
 
     Raises :class:`SenderError` when the target is not in the sender's
@@ -132,7 +132,7 @@ async def project_sender_header(
         raise SenderError("Sender is not a conversation of this project")
     coordinator = project.coordinator_conversation_id == sender_id
     role: SenderRole = "coordinator" if coordinator else "worker"
-    return sender_header(sender.title, sender_id, role=role)
+    return sender_line(sender.title, sender_id, role=role)
 
 
 async def _coordinator(
@@ -276,16 +276,16 @@ async def notify_coordinator(
         if member_events is not None:
             card = await asyncio.to_thread(member_events.pending_ask)
     if by_user:
-        header = user_turn_header(title, member_id, asked=asked)
+        line = user_turn_line(title, member_id, asked=asked)
     elif card is not None:
-        header = card_header(title, member_id)
+        line = card_line(title, member_id)
     else:
-        header = update_header(title, member_id, asked=asked)
+        line = update_line(title, member_id, asked=asked)
     await _deliver(
         coordinator_id,
         coordinator,
         member_id,
-        [TextContent(text=header), TextContent(text=update_text(text))],
+        [TextContent(text=line), TextContent(text=update_text(text))],
         run=not by_user,
     )
     return True
@@ -324,16 +324,16 @@ async def notify_coordinator_of_stop(
         # delivers this, with the status the member comes back in.
         return False
     paused = status == "paused"
-    header = (
-        paused_header(title, member_id)
+    line = (
+        paused_line(title, member_id)
         if paused
-        else stop_header(title, member_id, status=status)
+        else stop_line(title, member_id, status=status)
     )
     await _deliver(
         coordinator_id,
         coordinator,
         member_id,
-        [TextContent(text=header), TextContent(text=update_text(text))],
+        [TextContent(text=line), TextContent(text=update_text(text))],
         run=not paused,
     )
     return True
@@ -365,7 +365,7 @@ async def relay_user_message(
         member_id,
         [
             TextContent(
-                text=user_message_header(member.title if member else None, member_id)
+                text=user_message_line(member.title if member else None, member_id)
             ),
             TextContent(text=update_text(text)),
         ],

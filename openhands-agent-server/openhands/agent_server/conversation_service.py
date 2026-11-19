@@ -53,7 +53,7 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
-from openhands.agent_server.message_sender import sender_message_header
+from openhands.agent_server.message_sender import sender_message_line
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -71,7 +71,7 @@ from openhands.agent_server.persistence import (
     run_store,
 )
 from openhands.agent_server.project_service import ProjectService
-from openhands.agent_server.project_wake import project_sender_header
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -1678,11 +1678,14 @@ class ConversationService:
             content = list(initial_message.content)
             sender_id = initial_message.sender_conversation_id
             if sender_id is not None:
-                header = await sender_message_header(self, sender_id, conversation_id)
-                header = (
-                    await project_sender_header(self, sender_id, request.tags) or header
+                sender_line = await sender_message_line(
+                    self, sender_id, conversation_id
                 )
-                content.insert(0, TextContent(text=header))
+                sender_line = (
+                    await project_sender_line(self, sender_id, request.tags)
+                    or sender_line
+                )
+                content.insert(0, TextContent(text=sender_line))
                 initial_sender = conversation_sender(sender_id)
             first_message = Message(role=initial_message.role, content=content)
 
