@@ -21,6 +21,11 @@ ConversationID = uuid.UUID
 TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
 TAG_VALUE_MAX_LENGTH = 256
 
+GOAL_LOOP_SENDER = "goal"
+"""``sender`` of the messages a ``/goal`` loop sends its own conversation: the
+goal and each round's follow-up. They continue the user's turn; they are not
+the user's words."""
+
 CONVERSATION_MENTION_SCHEME = "conversation:"
 """Link scheme of a conversation mention: ``[Title](conversation:<id hex>)``.
 UIs render such a link as a way to open that conversation; anywhere else it

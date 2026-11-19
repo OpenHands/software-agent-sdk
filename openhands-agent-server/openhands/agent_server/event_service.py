@@ -23,8 +23,10 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.exceptions import (
     CondensationUnavailable,
+    ConversationAlreadyRunning,
     ConversationRunLimitExceeded,
     CredentialBindingActivationTooLate,
+    GoalAlreadyRunning,
     ServiceInactive,
 )
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
@@ -74,7 +76,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.conversation.types import ConversationCallbackType
+from openhands.sdk.conversation.types import (
+    GOAL_LOOP_SENDER,
+    ConversationCallbackType,
+)
 from openhands.sdk.credential import (
     CredentialBindingError,
     CredentialNeedsReauthentication,
@@ -959,7 +964,7 @@ class EventService:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         if _from_goal_loop and sender is None:
-            sender = "goal"
+            sender = GOAL_LOOP_SENDER
         send_message = (
             partial(self._conversation.send_message, sender=sender)
             if sender is not None
@@ -994,21 +999,21 @@ class EventService:
                         run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
-                except ValueError as e:
-                    # run() refused. If a run is still wrapping up (its
-                    # wait_for_pending tail), the message we just appended won't
-                    # be picked up by it, so record explicit run intent for
+                except ConversationAlreadyRunning:
+                    # If a run is still wrapping up (its wait_for_pending
+                    # tail), the message we just appended won't be picked up
+                    # by it, so record explicit run intent for
                     # _run_and_publish to honor once that task clears. Tracking
                     # the request — rather than inferring it later from an IDLE
                     # status — is what keeps a deliberate run=False append, or an
                     # IDLE reached via another path, from triggering an unwanted
-                    # run. ServiceInactive is terminal and must not re-arm.
-                    if (
-                        str(e) == "conversation_already_running"
-                        and not active_acp_prompt_has_latest_message
-                    ):
+                    # run.
+                    if not active_acp_prompt_has_latest_message:
                         self._rerun_requested = True
                         self._acp_internal_rerun_requested = True
+                except ValueError:
+                    # ServiceInactive is terminal and must not re-arm.
+                    pass
                 finally:
                     self._unpin_run_session()
             else:
@@ -1027,12 +1032,11 @@ class EventService:
                         "reached. Retry POST /api/conversations/"
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
-                except ValueError as e:
-                    if (
-                        str(e) == "conversation_already_running"
-                        and not active_acp_prompt_has_latest_message
-                    ):
+                except ConversationAlreadyRunning:
+                    if not active_acp_prompt_has_latest_message:
                         self._rerun_requested = True
+                except ValueError:
+                    pass
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -1650,7 +1654,7 @@ class EventService:
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
-                raise ValueError("conversation_already_running")
+                raise ConversationAlreadyRunning()
             if self._closing:
                 raise ServiceInactive()
             # Re-check: the status read above can yield to a late stop too.
@@ -1789,8 +1793,8 @@ class EventService:
 
                     # Re-arm a run for input stranded while this task was
                     # wrapping up. A send_message(run=True) that arrived during
-                    # the wait_for_pending() tail above had its run() rejected as
-                    # "conversation_already_running" and suppressed, setting
+                    # the wait_for_pending() tail above had its run() rejected
+                    # with ConversationAlreadyRunning and suppressed, setting
                     # _rerun_requested. Honor it while the conversation is IDLE
                     # (pending input) or internally ACP-interrupted PAUSED (the
                     # old task finished its interrupt before the replacement run
@@ -1840,14 +1844,11 @@ class EventService:
                                     # token beats a 429 that would strand it.
                                     wait_for_capacity=True,
                                 )
-                            except ValueError as e:
-                                if str(e) == "conversation_already_running":
-                                    self._rerun_requested = True
-                                    self._acp_internal_rerun_requested = (
-                                        acp_internal_rerun_requested
-                                    )
-                                else:
-                                    raise
+                            except ConversationAlreadyRunning:
+                                self._rerun_requested = True
+                                self._acp_internal_rerun_requested = (
+                                    acp_internal_rerun_requested
+                                )
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
@@ -1907,14 +1908,14 @@ class EventService:
             if self._closing:
                 raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
-                raise ValueError("goal_already_running")
+                raise GoalAlreadyRunning()
             # _run_task first: a live run holds the state lock across its step,
             # so reading execution status would block behind it.
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
-                raise ValueError("conversation_already_running")
+                raise ConversationAlreadyRunning()
             # Re-check after the await above: close() runs without _run_lock, so
             # it may have begun teardown meanwhile (mirrors run()'s post-status
             # _closing re-check) -- avoid spawning a task close() won't cancel.
@@ -2014,9 +2015,8 @@ class EventService:
             while True:
                 try:
                     await self.run()
-                except ValueError as e:
-                    if str(e) != "conversation_already_running":
-                        raise
+                except ConversationAlreadyRunning:
+                    pass
                 run_task = self._run_task
                 if run_task is not None:
                     await asyncio.wait({run_task})
@@ -2185,12 +2185,12 @@ class EventService:
             if self._closing:
                 raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
-                raise ValueError("goal_already_running")
+                raise GoalAlreadyRunning()
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
-                raise ValueError("conversation_already_running")
+                raise ConversationAlreadyRunning()
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ServiceInactive()
             self._goal_loop_outcome = None
@@ -2200,14 +2200,9 @@ class EventService:
         if request.accept:
             try:
                 await self.run()
-            except ValueError as e:
-                # Treat "already running" as a no-op success
-                if str(e) == "conversation_already_running":
-                    logger.debug(
-                        "Confirmation accepted but conversation already running"
-                    )
-                else:
-                    raise
+            except ConversationAlreadyRunning:
+                # A no-op success.
+                logger.debug("Confirmation accepted but conversation already running")
         else:
             await self.reject_pending_actions(request.reason)
 

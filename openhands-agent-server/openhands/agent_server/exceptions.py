@@ -24,6 +24,20 @@ class ConversationRunLimitExceeded(RateLimited, RuntimeError):
     """The server has no capacity to start another conversation run."""
 
 
+class ConversationAlreadyRunning(ValueError):
+    """A run was refused because the conversation is running already."""
+
+    def __init__(self) -> None:
+        super().__init__("conversation_already_running")
+
+
+class GoalAlreadyRunning(ValueError):
+    """A goal loop was refused because one is running already."""
+
+    def __init__(self) -> None:
+        super().__init__("goal_already_running")
+
+
 class CondensationUnavailable(ValueError):
     """The conversation's agent has no condenser that handles requests."""
 
