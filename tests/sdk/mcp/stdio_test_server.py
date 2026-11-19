@@ -1,12 +1,16 @@
 """Run the deterministic stdio MCP test server."""
 
+import os
 from typing import Annotated
 
 from fastmcp import FastMCP
 from pydantic import Field
 
 
-mcp = FastMCP("stdio-test-server")
+mcp = FastMCP(
+    "stdio-test-server",
+    instructions=os.environ.get("MCP_TEST_INSTRUCTIONS"),
+)
 
 
 @mcp.tool()
