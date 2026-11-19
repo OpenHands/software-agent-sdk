@@ -198,6 +198,25 @@ def test_digitalocean_provider_routes_to_openai_compatible_endpoint(mock_complet
     assert llm.to_persisted()["model"] == "digitalocean/glm-5.3"
 
 
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_coralbricks_provider_routes_to_openai_compatible_endpoint(mock_completion):
+    mock_completion.return_value = create_mock_litellm_response("ok")
+
+    llm = LLM(
+        model="coralbricks/glm-5.3-fast",
+        api_key=SecretStr("cb-key"),
+        usage_id="test-coralbricks",
+        num_retries=0,
+    )
+    llm.completion(messages=[Message(role="user", content=[TextContent(text="Hi")])])
+
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "glm-5.3-fast"
+    assert kwargs["custom_llm_provider"] == "openai"
+    assert kwargs["api_base"] == "https://inference.coralbricks.ai/v1"
+    assert llm.to_persisted()["model"] == "coralbricks/glm-5.3-fast"
+
+
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_kimi_k2_5_uses_provider_defaults(mock_get):
     """Test that kimi-k2.5 uses provider defaults (None) for temperature and top_p."""
