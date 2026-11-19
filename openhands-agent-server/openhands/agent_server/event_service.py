@@ -70,6 +70,7 @@ from openhands.sdk.conversation.impl.local_conversation import (
     LocalConversation,
 )
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
+from openhands.sdk.conversation.recovery import RecoveryReport
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -1560,6 +1561,7 @@ class EventService:
 
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
+        self._conversation.set_recovery_owner_generation(self._lease_generation)
 
         # Register state change callback to automatically publish updates
         self._conversation._state.set_on_state_change(
@@ -1631,6 +1633,11 @@ class EventService:
         # the status on purpose). Record it as interrupted so it reads as
         # stopped and stays resumable.
         await self.run_state_op(self._reconcile_stale_goal_status)
+
+        await asyncio.to_thread(
+            self._conversation.recover_interrupted_run,
+            allow_legacy_recovery=True,
+        )
 
         # Publish initial state update
         await self._publish_state_update()
@@ -2695,6 +2702,27 @@ class EventService:
         if not self._conversation:
             raise ServiceInactive()
         return get_agent_final_response(self._conversation._state.active_branch())
+
+    async def get_recovery_report(self) -> RecoveryReport | None:
+        """Return the last persisted run recovery report, if available."""
+        if not self._conversation:
+            raise ServiceInactive()
+        status = await self._get_execution_status()
+        run_task = self._run_task
+        if (
+            status
+            in (
+                ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
+            )
+            and run_task is not None
+            and not run_task.done()
+        ):
+            try:
+                await asyncio.shield(run_task)
+            except Exception:
+                logger.warning("Run task failed while reading its recovery report")
+        return await asyncio.to_thread(self._conversation.get_recovery_report)
 
     async def get_agent_final_response(self) -> str:
         """Extract the agent's final response from the conversation events.

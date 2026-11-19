@@ -6,6 +6,17 @@ from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.recovery import (
+    AgentUpdate,
+    EvidenceCoverage,
+    IncompleteTask,
+    RecoveryEvidence,
+    RecoveryReport,
+    RunOutcome,
+    RunReceipt,
+    RunReceiptPhase,
+    UncertainOperation,
+)
 from openhands.sdk.conversation.resource_lock_manager import (
     ResourceLockManager,
     ResourceLockTimeout,
@@ -48,5 +59,14 @@ __all__ = [
     "RemoteConversation",
     "EventsListBase",
     "get_agent_final_response",
+    "AgentUpdate",
+    "EvidenceCoverage",
+    "IncompleteTask",
+    "RecoveryEvidence",
+    "RecoveryReport",
+    "RunOutcome",
+    "RunReceipt",
+    "RunReceiptPhase",
+    "UncertainOperation",
     "WebSocketConnectionError",
 ]

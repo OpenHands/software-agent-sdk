@@ -37,6 +37,11 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.recovery import (
+    EvidenceCoverage,
+    RecoveryReport,
+    RunOutcome,
+)
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.launch import LaunchRuntime, LaunchStores, finalize
 from openhands.sdk.llm import llm_profile_store
@@ -429,6 +434,39 @@ def test_get_conversation_invalid_uuid(client, mock_conversation_service):
         response = client.get("/api/conversations/invalid-uuid")
 
         assert response.status_code == 422  # Validation error for invalid UUID
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_get_conversation_recovery_report(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    report = RecoveryReport(
+        run_id="run-1",
+        outcome=RunOutcome.FAILED,
+        reason_code="LLMRateLimitError",
+        summary="The model provider rate limit was reached.",
+        started_at=utc_now(),
+        evidence_coverage=EvidenceCoverage.COMPLETE,
+        omitted_event_count=0,
+    )
+    mock_event_service.get_recovery_report.return_value = report
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/recovery_report"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["run_id"] == report.run_id
+        assert response.json()["reason_code"] == report.reason_code
+        mock_conversation_service.get_event_service.assert_awaited_once_with(
+            sample_conversation_id
+        )
     finally:
         client.app.dependency_overrides.clear()
 

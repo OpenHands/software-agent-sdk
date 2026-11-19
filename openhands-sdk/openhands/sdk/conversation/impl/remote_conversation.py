@@ -31,6 +31,7 @@ from openhands.sdk.conversation.exceptions import (
     RemoteConversationValueError,
     WebSocketConnectionError,
 )
+from openhands.sdk.conversation.recovery import RecoveryReport
 from openhands.sdk.conversation.secret_registry import (
     SecretRegistry,
     SecretValue,
@@ -1380,6 +1381,19 @@ class RemoteConversation(BaseConversation):
     def state(self) -> RemoteState:
         """Access to remote conversation state."""
         return self._state
+
+    def get_recovery_report(self) -> RecoveryReport | None:
+        """Fetch the latest persisted recovery report from the Agent Server."""
+        response = _send_request(
+            self._client,
+            "GET",
+            f"{CONVERSATIONS_PATH}/{self._id}/recovery_report",
+            acceptable_status_codes={404},
+        )
+        if response.status_code == 404:
+            return None
+        payload = response.json()
+        return RecoveryReport.model_validate(payload) if payload is not None else None
 
     @property
     def max_budget_per_run(self) -> float | None:

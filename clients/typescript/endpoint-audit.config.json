@@ -97,6 +97,11 @@
       "reason": "Browser-safe batch-events route added with its typed client in the same change; the pinned Agent Server release predates it. The canonical GET batch operation requires a GET body that fetch/browsers reject.",
       "owner": "OpenHands TypeScript client maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/4756"
+    },
+    {
+      "endpoints": ["GET /api/conversations/{}/recovery_report"],
+      "reason": "Typed client and Agent Server endpoint are introduced together and will ship in the same SDK release.",
+      "owner": "OpenHands SDK maintainers"
     }
   ],
 

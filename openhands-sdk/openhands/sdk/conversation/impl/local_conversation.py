@@ -21,6 +21,15 @@ from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.recovery import (
+    RecoveryReport,
+    RunOutcome,
+    RunReceipt,
+    begin_run,
+    finish_run,
+    legacy_interrupted_receipt,
+    read_receipt,
+)
 from openhands.sdk.conversation.secret_registry import SecretRegistry, SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -264,6 +273,7 @@ class LocalConversation(BaseConversation):
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
+    _recovery_owner_generation: int | None
     _cancel_token: CancellationToken | None
     # True while run()/arun() executes an agent step while holding the state
     # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
@@ -404,6 +414,7 @@ class LocalConversation(BaseConversation):
         self._late_mcp_ready = []
         self._cleanup_complete = False
         self._arun_task = None
+        self._recovery_owner_generation = None
         self._cancel_token = None
         self._step_holds_state_lock = False
 
@@ -2643,6 +2654,100 @@ class LocalConversation(BaseConversation):
             state._save_depth = save_depth
             self._step_holds_state_lock = held_flag
 
+    def set_recovery_owner_generation(self, generation: int | None) -> None:
+        """Set the Agent Server lease generation for recovery write fencing."""
+        self._recovery_owner_generation = generation
+
+    def recover_interrupted_run(
+        self, *, allow_legacy_recovery: bool = False
+    ) -> RecoveryReport | None:
+        """Finalize a prior run that the Agent Server found interrupted."""
+        try:
+            saved = read_receipt(self._state._fs)
+        except Exception:
+            logger.warning("Could not read interrupted run receipt", exc_info=True)
+            return None
+        if saved is None:
+            if (
+                self._state.execution_status != ConversationExecutionStatus.ERROR
+                or not allow_legacy_recovery
+            ):
+                return None
+            receipt = legacy_interrupted_receipt(
+                self._state,
+                owner_generation=self._recovery_owner_generation,
+            )
+        else:
+            receipt, report = saved
+            if receipt.phase == "settled":
+                return report
+        _, report = finish_run(
+            self._state,
+            receipt,
+            reason_code="ServerRestarted",
+            owner_generation=self._recovery_owner_generation,
+            legacy_recovery=receipt.legacy_recovery,
+            outcome_override=RunOutcome.INTERRUPTED_UNKNOWN,
+        )
+        return report
+
+    def get_recovery_report(self) -> RecoveryReport | None:
+        """Return the latest settled run's evidence-based recovery report."""
+        try:
+            saved = read_receipt(self._state._fs)
+        except Exception:
+            logger.warning("Could not read conversation recovery report", exc_info=True)
+            return None
+        if saved is None:
+            return None
+        receipt, report = saved
+        if receipt.phase != "settled":
+            return None
+        return report
+
+    def _begin_recovery_run(self) -> RunReceipt | None:
+        try:
+            receipt = begin_run(
+                self._state,
+                owner_generation=self._recovery_owner_generation,
+            )
+        except Exception:
+            logger.warning("Could not persist run recovery boundary", exc_info=True)
+            return None
+        return receipt
+
+    def _finish_recovery_run(
+        self, receipt: RunReceipt | None, error: BaseException | None = None
+    ) -> None:
+        try:
+            if receipt is not None:
+                failure = (
+                    error.original_exception
+                    if isinstance(error, ConversationRunError)
+                    else error
+                )
+                finish_run(
+                    self._state,
+                    receipt,
+                    reason_code=(
+                        "RunCancelled"
+                        if isinstance(error, asyncio.CancelledError)
+                        else type(failure).__name__
+                        if failure
+                        else None
+                    ),
+                    owner_generation=self._recovery_owner_generation,
+                    outcome_override=(
+                        RunOutcome.INTERRUPTED_UNKNOWN
+                        if isinstance(error, asyncio.CancelledError)
+                        else RunOutcome.FAILED
+                        if error
+                        else None
+                    ),
+                )
+        except Exception:
+            logger.warning("Could not persist run recovery report", exc_info=True)
+
     @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
@@ -2665,7 +2770,15 @@ class LocalConversation(BaseConversation):
                 as an LLM error.
         """
         with llm_call_context_scope(self._llm_call_context):
-            self._run()
+            receipt = self._begin_recovery_run()
+            error: Exception | None = None
+            try:
+                self._run()
+            except Exception as exc:
+                error = exc
+                raise
+            finally:
+                self._finish_recovery_run(receipt, error)
 
     def _run(self) -> None:
         """Implement :meth:`run` inside the active LLM context scope."""
@@ -2878,7 +2991,18 @@ class LocalConversation(BaseConversation):
         the LLM conversation history stays consistent.
         """
         with llm_call_context_scope(self._llm_call_context):
-            await self._arun()
+            receipt = self._begin_recovery_run()
+            error: BaseException | None = None
+            try:
+                await self._arun()
+            except asyncio.CancelledError as exc:
+                error = exc
+                raise
+            except Exception as exc:
+                error = exc
+                raise
+            finally:
+                self._finish_recovery_run(receipt, error)
 
     async def _arun(self) -> None:
         """Implement :meth:`arun` inside the active LLM context scope."""

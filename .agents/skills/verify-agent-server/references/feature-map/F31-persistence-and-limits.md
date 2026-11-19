@@ -1,22 +1,22 @@
 # Persistence, restart recovery, leases and limits
 
-What a consumer can rely on across the server's own lifecycle, with no route
-of its own: conversations, settings, secrets and LLM profiles live on disk
-and read back unchanged after a graceful restart or a crash; a conversation
-that was mid tool call when the process died comes back `error` with the
-interrupted call answered; every loaded conversation is owned through an
-`owner_lease.json` lease, so a second server sharing the same conversations
-directory can read it but not drive it until the owner dies or stops
-renewing; idle conversations are unloaded after a TTL and load again on
-access; creating a conversation needs a free run slot; nothing secret is
-stored in plaintext; and the configuration file and `OH_*` variables that set
-these limits are applied (or refused) at startup.
+What a consumer can rely on across the server's own lifecycle: conversations,
+settings, secrets and LLM profiles live on disk and read back unchanged after
+a graceful restart or a crash; a conversation that was mid tool call when the
+process died comes back `error` with the interrupted call answered and a
+bounded recovery report describing uncertain operations; every loaded
+conversation is owned through an `owner_lease.json` lease, so a second server
+sharing the same conversations directory can read it but not drive it until
+the owner dies or stops renewing; idle conversations are unloaded after a TTL
+and load again on access; creating a conversation needs a free run slot;
+nothing secret is stored in plaintext; and the configuration file and `OH_*`
+variables that set these limits are applied (or refused) at startup.
 
-Source: `openhands-agent-server/openhands/agent_server/conversation_lease.py`, `openhands-agent-server/openhands/agent_server/conversation_service.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/config.py`, `openhands-agent-server/openhands/agent_server/env_parser.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/persistence/`, `openhands-agent-server/openhands/agent_server/storage/`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/conversation/event_store.py`
+Source: `openhands-agent-server/openhands/agent_server/conversation_lease.py`, `openhands-agent-server/openhands/agent_server/conversation_service.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/config.py`, `openhands-agent-server/openhands/agent_server/env_parser.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/persistence/`, `openhands-agent-server/openhands/agent_server/storage/`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/conversation/event_store.py`, `openhands-sdk/openhands/sdk/conversation/recovery.py`
 
 Needs: `llm`, `tmux`
 
-Routes: none
+Routes: `GET /api/conversations/{conversation_id}/recovery_report`
 
 ## Sub-features
 
@@ -26,6 +26,7 @@ Routes: none
 - `F31.lease-dead-owner-takeover`: after a SIGKILL the lease still names the dead pid; the restarted server takes it over on first load with generation 2 and logs the takeover.
 - `F31.lease-zombie-owner-takeover`: a restarted server serves its own conversation at once and takes the lease over as generation 2 also when the SIGKILLed owner's pid is still in the process table as a zombie (killed, not reaped); the lease records the owner's process start time (`owner_started_at`).
 - `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` (`recovery_reason: server_restart`) answering the interrupted call and no observation, and the resumed run hands that error to the model.
+- `F31.recovery-report`: after a restart interrupts a run, the recovery-report endpoint returns `interrupted_unknown` with the server-restart reason and the action whose side effect is uncertain.
 - `F31.state-survives-restarts`: a conversation's title, tags and events, the settings, a stored secret and the LLM profiles read back unchanged after a graceful restart and after a SIGKILL.
 - `F31.no-plaintext-at-rest`: after a real model run, the provider key, a stored secret and a conversation secret appear nowhere in the run's persisted files or the server log, while the server still hands out the provider key and the stored secret and keeps the conversation secret encrypted in its registry.
 - `F31.second-instance-catalog`: a second server sharing the conversations directory lists, counts and reads conversations that existed when it started, without claiming their leases.
@@ -77,10 +78,13 @@ Routes: none
   (`F31.config-silent-env`). The CLI writes the file
   (`launch|restart --config-json`) and passes variables (`--env`);
   `control-agent-server config` shows both.
-- SDK and TypeScript client: no method of their own. `RemoteConversation`
-  reconnects its events socket after a restart and sees the statuses and
-  events these bullets assert; an orchestrator that runs several servers on
-  shared storage relies on the lease to keep one owner per conversation.
+- SDK and TypeScript client: `RemoteConversation.get_recovery_report()` and
+  `ConversationClient.getRecoveryReport()` read the latest report. An
+  orchestrator can retrieve the outcome and uncertain operations after a
+  server restart without parsing conversation events itself. `RemoteConversation`
+  also reconnects its events socket after a restart; an orchestrator that runs
+  several servers on shared storage relies on the lease to keep one owner per
+  conversation.
 - Agent Canvas (context only): conversations listed after a sandbox
   restarts, and a `429` when a sandbox is at its run limit.
 
@@ -234,14 +238,13 @@ Preconditions:
   is gone
   (`F31.lease-dead-owner-takeover`): a pid in state `Z` (or `X`) counts as
   dead. Evidence lands in `Z`'s `evidence/`.
-- **Crash during a tool call (`F31.crash-tool-call`).** `T`'s model asks for
-  `terminal` `sleep 300`; the server is SIGKILLed while it runs, then the
-  stub is rewritten to call `finish` and the run resumes.
+- **Crash during a tool call and recovery report (`F31.crash-tool-call`, `F31.recovery-report`).** `T`'s model asks for `terminal` `sleep 300`; the server is SIGKILLed while it runs, then the stub is rewritten to call `finish` and the run resumes.
   ```sh
   control-agent-server conversation send "$T" --text 'hi' --no-run
   control-agent-server api POST "/api/conversations/$T/run" --expect 200 --check success eq true
   control-agent-server api GET "/api/conversations/$T/events/count" --query kind=$ACTION_KIND --check . eq 1 --until-ok 30
   TCALL=$(control-agent-server api GET "/api/conversations/$T/events/search" --query kind=$ACTION_KIND --field items.0.tool_call_id)
+  AID=$(control-agent-server api GET "/api/conversations/$T/events/search" --query kind=$ACTION_KIND --field items.0.id)
   control-agent-server state cat base_state.json --conversation "$T" --check execution_status eq running
   control-agent-server restart --hard
   PIDT=$(jq -r .pid "$AGENT_SERVER_VERIFY_RUN/run.json")
@@ -252,6 +255,11 @@ Preconditions:
     --check items.0.recovery_reason eq server_restart --check items.0.classification.kind eq internal \
     --check items.0.classification.retryable eq false --save F31.crash-tool-call/agent-error
   control-agent-server api GET "/api/conversations/$T/events/count" --query kind=$OBSERVATION_KIND --check . eq 0
+  control-agent-server api GET "/api/conversations/$T/recovery_report" --expect 200 \
+    --check outcome eq interrupted_unknown --check reason_code eq ServerRestarted \
+    --check evidence_coverage eq complete --check uncertain_operations len-eq 1 \
+    --check uncertain_operations.0.action_event_id eq "$AID" \
+    --check uncertain_operations.0.tool_name eq terminal --save F31.recovery-report/report
   control-agent-server fixture llm-stub --name qa-f31-tool --step 'tool:finish:{"message":"QA_F31_RESUMED"}'
   control-agent-server api POST "/api/conversations/$T/run" --expect 200 --check success eq true
   control-agent-server conversation wait "$T" --until finished --timeout 60
