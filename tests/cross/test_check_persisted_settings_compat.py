@@ -377,13 +377,7 @@ def test_validate_baseline_allows_additive_same_version_fields() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("sdk_version", "dependencies"),
-    [("1.2.3", []), ("1.63.0", ["litellm==1.108.3"])],
-)
-def test_generate_baseline_payloads_uses_uv_with_release_cutoff(
-    monkeypatch, sdk_version: str, dependencies: list[str]
-) -> None:
+def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> None:
     monkeypatch.setattr(_prod, "_venv_python", lambda _path: Path("/tmp/fake-python"))
     calls: list[list[str]] = []
 
@@ -416,7 +410,7 @@ def test_generate_baseline_payloads_uses_uv_with_release_cutoff(
     monkeypatch.setattr(_prod, "_uv_run", _fake_uv_run)
 
     cases = _prod.generate_baseline_payloads(
-        sdk_version=sdk_version,
+        sdk_version="1.2.3",
         agent_server_version="1.2.3",
         exclude_newer="2026-01-02T00:00:00Z",
     )
@@ -437,9 +431,9 @@ def test_generate_baseline_payloads_uses_uv_with_release_cutoff(
         "openhands-agent-server",
         "--exclude-newer",
         "2026-01-02T00:00:00Z",
-        f"openhands-sdk=={sdk_version}",
+        "openhands-sdk==1.2.3",
         "openhands-agent-server==1.2.3",
-        *dependencies,
+        "litellm<1.109",
     ]
 
 

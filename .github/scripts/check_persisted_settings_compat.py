@@ -62,9 +62,6 @@ _FIXTURE_SURFACE_PREFIXES = {
     "persisted_settings": "persisted_settings",
 }
 _PYPI_USER_AGENT = "openhands-persisted-settings-compat/1.0"
-# 1.63.0 imports OpenAIGPT5Config from a module removed by LiteLLM 1.109.2.
-# Reproduce its working release environment without inheriting current constraints.
-_BASELINE_DEPENDENCIES = {"1.63.0": ("litellm==1.108.3",)}
 _BASELINE_PAYLOAD_SCRIPT = r"""
 from __future__ import annotations
 
@@ -665,6 +662,13 @@ def _validate_single_payload(
         )
 
 
+# Released openhands-sdk 1.63.0 allows litellm<1.110, but litellm 1.109 removed a
+# module it imports (#7014), so the release cannot be imported as resolved.
+# Hold litellm to what that release was built and tested against; drop this once
+# the baseline release carries its own cap.
+_BASELINE_EXTRA_REQUIREMENTS: tuple[str, ...] = ("litellm<1.109",)
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if sys.platform == "win32":  # pragma: no cover - CI uses Linux
         return venv_dir / "Scripts" / "python.exe"
@@ -711,7 +715,7 @@ def generate_baseline_payloads(
                     "--exclude-newer",
                     exclude_newer,
                     *packages,
-                    *_BASELINE_DEPENDENCIES.get(sdk_version, ()),
+                    *_BASELINE_EXTRA_REQUIREMENTS,
                 ]
             )
             _uv_run(install_args)
