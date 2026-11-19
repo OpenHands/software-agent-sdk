@@ -80,17 +80,19 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
   `F14.sdk-workspace` (an `exec` program, both scopes) and `F14.upload-size`
   (the upload result's `file_size`, against `LocalWorkspace.file_upload`).
 - TypeScript client: `FileClient.uploadFile`, `uploadTextFile`, `downloadFile`,
-  `downloadTextFile`, `downloadTrajectory` (scoped through the runtime
-  transport when a `conversationId` is set), `getHome`,
-  `searchSubdirectories`; `RemoteConversation.downloadTrajectory()` uses the
+  `downloadTextFile`, `downloadTrajectory`, `downloadArchive` (a `Blob`)
+  and `downloadArchiveBuffer` (an `ArrayBuffer`) with `{format, baseRef,
+  useDefaultExcludes, exclude}` (all scoped through the runtime transport
+  when a `conversationId` is set; the archive methods are driven by
+  `F34.file-archive`), `getHome`, `searchSubdirectories`; `RemoteConversation.downloadTrajectory()` uses the
   global trajectory route; `RemoteWorkspace.fileUpload`/`fileDownload` call
   `/api/file/upload|download` (the TypeScript `write_file` tool reports
   `fileUpload`'s `file_size`). `F14.upload-size` drives
   `RemoteWorkspace.fileUpload` from the built `clients/typescript/dist`.
 - Agent Canvas (context only): the workspace picker uses `home` and
   `search_subdirs`; file upload and "download trajectory" use the transfer
-  routes. `archive` and `create_directory` have no in-repo consumer; the
-  hosting app calls them to persist a workspace before deleting a runtime.
+  routes. `create_directory` has no in-repo consumer and `archive` none
+  but the TypeScript methods above; the hosting app calls them to persist a workspace before deleting a runtime.
 
 ## Driving it with control-agent-server
 

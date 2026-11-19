@@ -4,7 +4,9 @@ import socket
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,14 +23,14 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
-    UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
     _create_conversation_worktree,
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
-from openhands.agent_server.event_service import EventService, ServiceInactive
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive, UnavailableAgentTool
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -128,6 +130,28 @@ def sample_stored_conversation():
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
     )
+
+
+def test_conversation_info_takes_tags_from_the_metadata(sample_stored_conversation):
+    """A tag PATCH saves ``meta.json`` before the state, which waits for its lock.
+
+    Until the state catches up, the conversation still shows the new tags.
+    """
+    stored = sample_stored_conversation.model_copy(
+        update={"tags": {"project": "p1", "resolved": "user"}}
+    )
+    state = ConversationState(
+        id=stored.id,
+        agent=_sample_agent(),
+        workspace=stored.workspace,
+        execution_status=ConversationExecutionStatus.RUNNING,
+        confirmation_policy=stored.confirmation_policy,
+        tags={"project": "p1"},
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tags == {"project": "p1", "resolved": "user"}
 
 
 @pytest.mark.asyncio
@@ -1323,6 +1347,31 @@ async def test_search_refreshes_cached_info_on_metadata_only_update(
         assert page.items[0].title == "Generated Title"
         assert service._event_services is not None
         assert set(service._event_services) == {conversation_id}
+
+
+@pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_a_tags_only_update(
+    persisted_conversation,
+):
+    """New tags in meta.json show on a cached row before the state is saved."""
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        initial = await service.search_conversations()
+        assert initial.items[0].tags == {}
+        assert service._conversation_records[conversation_id].cached_info is not None
+
+        # Change only the tags in meta.json; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(
+            update={"tags": {"resolved": "user"}}
+        )
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert page.items[0].tags == {"resolved": "user"}
 
 
 @pytest.mark.asyncio
@@ -2972,6 +3021,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Test that tag updates hold the ConversationState lock."""
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -3007,6 +3057,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Waiting on the state lock must not stall unrelated async work."""
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         state = ConversationState(
@@ -3069,6 +3120,63 @@ class TestConversationServiceUpdateConversation:
         )
 
     @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_leaves_default_executor_free(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """A run holds the state lock across whole tool steps. A tag PATCH
+        waiting on it must not park a default-executor thread: event reads of
+        every conversation need that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        state_executor = ThreadPoolExecutor(max_workers=1)
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = partial(
+            loop.run_in_executor, state_executor
+        )
+        mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.RUNNING,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+        held, release = threading.Event(), threading.Event()
+
+        def hold_state_lock() -> None:
+            with state:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_state_lock)
+        holder.start()
+        assert held.wait(timeout=1.0)
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            update = asyncio.create_task(
+                conversation_service.update_conversation(
+                    conversation_id, UpdateConversationRequest(tags={"env": "prod"})
+                )
+            )
+            try:
+                await asyncio.sleep(0.05)
+                free = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: "free"), timeout=2
+                )
+                assert free == "free"
+            finally:
+                release.set()
+                holder.join()
+            assert await asyncio.wait_for(update, timeout=2)
+        state_executor.shutdown()
+        assert state.tags == {"env": "prod"}
+
+    @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
         """Test updating a non-existent conversation returns False."""
         non_existent_id = uuid4()
@@ -3095,6 +3203,7 @@ class TestConversationServiceUpdateConversation:
         """Test that updating a conversation triggers webhook notifications."""
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
@@ -3143,6 +3252,7 @@ class TestConversationServiceUpdateConversation:
             updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
         )
         mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = asyncio.to_thread
         mock_service.stored = stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(

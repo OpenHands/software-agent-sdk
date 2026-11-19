@@ -34,6 +34,16 @@ class ConversationRunInProgressError(RuntimeError):
     """
 
 
+class RemoteConversationRunInProgressError(
+    httpx.HTTPStatusError, ConversationRunInProgressError
+):
+    """An active remote run rejected navigation (HTTP 409).
+
+    Preserves the HTTP request and response while sharing the local navigation
+    error, so callers can handle either the SDK error or the HTTP status.
+    """
+
+
 class ConversationRunError(RuntimeError):
     """Raised when a conversation run fails.
 

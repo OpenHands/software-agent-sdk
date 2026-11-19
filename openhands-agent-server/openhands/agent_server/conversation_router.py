@@ -19,11 +19,7 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    InvalidParentConversation,
-    UnavailableAgentTool,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_cipher,
     get_conversation_registry,
@@ -31,11 +27,17 @@ from openhands.agent_server.dependencies import (
     get_llm_profile_store,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import CondensationUnavailable
+from openhands.agent_server.exceptions import (
+    CondensationUnavailable,
+    InvalidParentConversation,
+    UnavailableAgentTool,
+)
 from openhands.agent_server.launch import launch_error
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AddMCPServersRequest,
+    AddModelRouterRouteRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -74,6 +76,11 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import (
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
@@ -353,7 +360,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidParentConversation, UnavailableAgentTool, SenderError) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
@@ -684,6 +691,90 @@ async def switch_conversation_llm(
     except ValueError as e:
         raise Invalid(str(e))
     return Success()
+
+
+def _model_router_status(llm: LLM) -> ModelRouterStatus:
+    if not isinstance(llm, RouterLLM):
+        return ModelRouterStatus(enabled=False)
+    return llm.status()
+
+
+@conversation_router.get(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses({NotFound: "Conversation not found"}),
+)
+async def get_conversation_model_router(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Return model-router state for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.post(
+    "/{conversation_id}/model_router/routes",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: "Conversation cannot add this model router route",
+            NotFound: "Conversation or profile not found",
+        }
+    ),
+)
+async def add_conversation_model_router_route(
+    conversation_id: UUID,
+    route_request: AddModelRouterRouteRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Add a saved LLM profile as a conversation model-router route."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    route_name = route_request.route_name or route_request.profile_name
+    try:
+        await event_service.add_model_router_route(
+            route_request.profile_name,
+            route_name=route_name,
+            base_route_name=route_request.base_route_name,
+        )
+    except FileNotFoundError:
+        raise NotFound(f"Profile '{route_request.profile_name}' not found")
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.patch(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: (
+                "Conversation is not backed by a model router or route name is invalid"
+            ),
+            NotFound: "Conversation not found",
+        }
+    ),
+)
+async def update_conversation_model_router(
+    conversation_id: UUID,
+    request: ModelRouterUpdateRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Update model-router selection for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    conversation = event_service.get_conversation()
+    try:
+        conversation.update_model_router_selection(request.selection)
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(conversation.agent.llm)
 
 
 @conversation_router.post(

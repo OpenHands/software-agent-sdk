@@ -156,7 +156,11 @@ def main() -> int:
 
     print("\n=== MUTATION: drop the guard -> regression must come back ===")
     state_mut, agent2_mut, err_mut = scenario(navigate_before)
-    check("reverted guard again corrupts lineage", agent2_mut[1] == "user1", f"parent={agent2_mut[1]}")
+    check(
+        "reverted guard again corrupts lineage",
+        agent2_mut[1] == "user1",
+        f"parent={agent2_mut[1]}",
+    )
     check("reverted guard again accepts navigation", not err_mut, f"errors={err_mut}")
 
     print(f"\n{checks - len(failures)}/{checks} checks passed")

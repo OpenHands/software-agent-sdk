@@ -42,6 +42,17 @@ def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) ->
     return f"[{text}]({CONVERSATION_MENTION_SCHEME}{hex_id})"
 
 
+CONVERSATION_SENDER_PREFIX = "conversation:"
+"""Prefix of a user message's ``sender`` when another conversation sent it.
+The rest is the sending conversation's id (hex). A ``sender`` of ``None``
+means the user wrote the message."""
+
+
+def conversation_sender(conversation_id: uuid.UUID) -> str:
+    """The ``sender`` recorded on a message another conversation sent."""
+    return f"{CONVERSATION_SENDER_PREFIX}{conversation_id.hex}"
+
+
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:
         return {}

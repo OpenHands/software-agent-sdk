@@ -60,7 +60,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.ask_user import (
     AskUserAnswerEvent,
     answer_message_text,
-    find_pending_ask,
+    find_pending_ask_back,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
@@ -77,7 +77,15 @@ from openhands.sdk.hooks import (
     create_hook_callback,
 )
 from openhands.sdk.io import FileStore, LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm import (
+    LLM,
+    Message,
+    ModelRouterSelection,
+    ModelRouterStatus,
+    RouterLLM,
+    TextContent,
+    content_to_str,
+)
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
@@ -2132,6 +2140,89 @@ class LocalConversation(BaseConversation):
                 "conversations; use switch_acp_model instead."
             )
 
+    def _register_agent_llms(self, agent: AgentBase) -> None:
+        registered = set(self.llm_registry.list_usage_ids())
+        for llm in agent.get_all_llms():
+            if llm.usage_id in registered:
+                continue
+            self.llm_registry.add(llm)
+            registered.add(llm.usage_id)
+
+    def _replace_agent_llm(self, new_llm: LLM) -> None:
+        # Tool-triggered switches may run on a worker while the run loop holds
+        # the state lock awaiting that tool; re-acquiring would deadlock (#3485).
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
+        with lock:
+            update: dict[str, object] = {"llm": new_llm}
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
+            self.agent = self.agent.model_copy(update=update)
+            self._register_agent_llms(self.agent)
+            self._state.agent = self.agent
+            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+
+    def _add_model_router_route_llm(
+        self,
+        route_name: str,
+        llm: LLM,
+        *,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        self._reject_llm_switch_on_acp()
+        if llm.usage_id == "default" and route_name != "default":
+            llm = llm.model_copy(update={"usage_id": route_name})
+        llm = create_subscription_llm_from_config(llm) if type(llm) is LLM else llm
+
+        current_llm = self.agent.llm
+        if isinstance(current_llm, RouterLLM):
+            updated_llm = current_llm.with_route(route_name, llm)
+        else:
+            router = RouterLLM(llms_for_routing={base_route_name: current_llm})
+            updated_llm = router.with_route(route_name, llm)
+        self._replace_agent_llm(updated_llm)
+        return updated_llm.status()
+
+    def add_model_router_route(
+        self,
+        profile_name: str,
+        *,
+        route_name: str | None = None,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        """Add a saved LLM profile as a model-router route."""
+        resolved_route_name = route_name or profile_name
+        usage_id = f"profile:{profile_name}"
+        try:
+            llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            llm = loaded.model_copy(update={"usage_id": usage_id})
+        return self._add_model_router_route_llm(
+            resolved_route_name,
+            llm,
+            base_route_name=base_route_name,
+        )
+
+    def update_model_router_selection(self, selection: ModelRouterSelection) -> None:
+        """Update route selection for a RouterLLM-backed conversation."""
+        self._reject_llm_switch_on_acp()
+        if not isinstance(self.agent.llm, RouterLLM):
+            raise ValueError("Current agent LLM is not a RouterLLM.")
+        self._replace_agent_llm(self.agent.llm.with_selection(selection))
+
+    def switch_routed_llm(self, route_name: str) -> None:
+        """Switch a RouterLLM-backed conversation to a manual route."""
+        self.update_model_router_selection(
+            ModelRouterSelection(mode="manual", manual_route_name=route_name)
+        )
+
+    def resume_auto_llm_routing(self) -> None:
+        """Return a RouterLLM-backed conversation to automatic routing."""
+        self.update_model_router_selection(ModelRouterSelection(mode="auto"))
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -2161,26 +2252,7 @@ class LocalConversation(BaseConversation):
             if registered is not None:
                 self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
-        # A switch_llm tool runs on a worker thread while run()/arun() holds the
-        # state lock across the agent step on another thread, blocked awaiting
-        # this very tool. Re-acquiring _state here would deadlock, so skip it:
-        # the run loop is parked and no other mutator can run, so the swap is
-        # safe without the lock (#3485). Only skip when the lock is held by a
-        # different thread (the run loop); when the caller already owns it (a
-        # sync step, or the switch endpoint reentering on the event-loop thread)
-        # acquire normally — FIFOLock is reentrant for the owning thread.
-        skip_lock = self._step_holds_state_lock and not self._state.owned()
-        lock = contextlib.nullcontext() if skip_lock else self._state
-        with lock:
-            update: dict[str, object] = {"llm": new_llm}
-            update["condenser"] = self._condenser_for_switched_llm(
-                self.agent.llm,
-                new_llm,
-            )
-            self.agent = self.agent.model_copy(update=update)
-            self._state.agent = self.agent
-            # Invalidate the cached ask-agent LLM so it re-clones.
-            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+        self._replace_agent_llm(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -2491,7 +2563,7 @@ class LocalConversation(BaseConversation):
                 not exist, or the answer has neither an option nor text.
         """
         with self._state:
-            pending = find_pending_ask(self._state.active_branch())
+            pending = find_pending_ask_back(self._state.walk_back())
             if pending is None or pending.ask_id != ask_id:
                 raise ValueError("That question is not waiting for an answer.")
             if option_index is not None and not (
@@ -2624,7 +2696,7 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
-                        if find_pending_ask(self._state.active_branch()) is not None:
+                        if find_pending_ask_back(self._state.walk_back()) is not None:
                             break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
@@ -2860,7 +2932,7 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
-                        if find_pending_ask(self._state.active_branch()) is not None:
+                        if find_pending_ask_back(self._state.walk_back()) is not None:
                             break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
@@ -3635,10 +3707,11 @@ class LocalConversation(BaseConversation):
             )
             self.llm_registry.add(question_llm)
 
-        # Pass agent tools so LLM can understand tool_calls in conversation history
+        # Tool schemas are part of the cached prefix even for a text-only question.
         response = question_llm.generate(
             messages=messages,
             tools=list(self.agent.tools_map.values()),
+            add_security_risk_prediction=True,
             store=False,
             call_context=self._llm_call_context,
         )

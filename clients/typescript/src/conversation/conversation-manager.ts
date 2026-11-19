@@ -33,7 +33,14 @@ import {
   CreateACPConversationRequest,
   UpdateConversationRequest,
 } from '../models/conversation';
-import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from '../types/base';
+import {
+  AgentBase,
+  ConversationExecutionStatus,
+  ConversationID,
+  ModelRouterSelection,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
 
 export class ACPConversationNamespace {
   constructor(private readonly manager: ConversationManager) {}
@@ -379,6 +386,66 @@ export class ConversationManager {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_profile`, {
       profile_name: profileName,
     });
+  }
+
+  /**
+   * Return model-router state for a conversation.
+   */
+  async getModelRouter(conversationId: ConversationID): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Add a saved LLM profile as a route to the conversation's model router.
+   */
+  async addModelRouterRoute(
+    conversationId: ConversationID,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  /**
+   * Update route selection for a RouterLLM-backed conversation.
+   */
+  async updateModelRouter(
+    conversationId: ConversationID,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  /**
+   * Switch a RouterLLM-backed conversation to a manual route.
+   */
+  async switchModelRouter(
+    conversationId: ConversationID,
+    routeName: string
+  ): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  /**
+   * Return a RouterLLM-backed conversation to automatic routing.
+   */
+  async resumeAutoModelRouting(conversationId: ConversationID): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
   }
 
   /**

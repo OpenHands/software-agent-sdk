@@ -28,6 +28,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
+    RemoteConversationRunInProgressError,
     RemoteConversationValueError,
     WebSocketConnectionError,
 )
@@ -59,7 +60,13 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import (
+    LLM,
+    Message,
+    ModelRouterSelection,
+    ModelRouterStatus,
+    TextContent,
+)
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import (
     OPERATION_METADATA_KEY,
@@ -1745,6 +1752,53 @@ class RemoteConversation(BaseConversation):
             json={"plugin_ref": plugin_ref},
         )
 
+    def get_model_router(self) -> ModelRouterStatus:
+        resp = _send_request(
+            self._client,
+            "GET",
+            f"{CONVERSATIONS_PATH}/{self._id}/model_router",
+        )
+        return ModelRouterStatus.model_validate(resp.json())
+
+    def add_model_router_route(
+        self,
+        profile_name: str,
+        *,
+        route_name: str | None = None,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        payload = {
+            "profile_name": profile_name,
+            "route_name": route_name,
+            "base_route_name": base_route_name,
+        }
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"{CONVERSATIONS_PATH}/{self._id}/model_router/routes",
+            json=payload,
+        )
+        return ModelRouterStatus.model_validate(resp.json())
+
+    def update_model_router_selection(
+        self, selection: ModelRouterSelection
+    ) -> ModelRouterStatus:
+        resp = _send_request(
+            self._client,
+            "PATCH",
+            f"{CONVERSATIONS_PATH}/{self._id}/model_router",
+            json={"selection": selection.model_dump(mode="json")},
+        )
+        return ModelRouterStatus.model_validate(resp.json())
+
+    def switch_routed_llm(self, route_name: str) -> ModelRouterStatus:
+        return self.update_model_router_selection(
+            ModelRouterSelection(mode="manual", manual_route_name=route_name)
+        )
+
+    def resume_auto_llm_routing(self) -> ModelRouterStatus:
+        return self.update_model_router_selection(ModelRouterSelection(mode="auto"))
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 
@@ -1951,6 +2005,8 @@ class RemoteConversation(BaseConversation):
             RemoteConversationValueError: If the server does not know the event
                 id. It is both a ``ValueError`` and an ``httpx.HTTPStatusError``
                 (404).
+            RemoteConversationRunInProgressError: If a run is still active.
+                Also an ``httpx.HTTPStatusError`` with status 409.
             httpx.HTTPStatusError: For other server errors.
         """
         try:
@@ -1961,6 +2017,10 @@ class RemoteConversation(BaseConversation):
                 json={"event_id": event_id},
             )
         except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                raise RemoteConversationRunInProgressError(
+                    str(error), request=error.request, response=error.response
+                ) from error
             if error.response.status_code == 404:
                 raise RemoteConversationValueError.from_http_error(error) from error
             raise
