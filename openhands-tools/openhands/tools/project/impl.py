@@ -737,6 +737,7 @@ class ReadProjectMemoryExecutor(
                 if (
                     isinstance(cause, httpx.HTTPStatusError)
                     and cause.response.status_code == 404
+                    and response_detail(cause.response) != PROJECTS_OFF_DETAIL
                 ):
                     return ReadProjectMemoryObservation.from_text(
                         text=(

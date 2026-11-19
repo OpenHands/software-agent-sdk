@@ -15,6 +15,8 @@ from openhands.tools.project import (
     MessageWorkerAction,
     MessageWorkerExecutor,
     MessageWorkerTool,
+    ReadProjectMemoryAction,
+    ReadProjectMemoryExecutor,
     ReadWorkerAction,
     ReadWorkerExecutor,
     ReadWorkerTool,
@@ -188,19 +190,27 @@ def test_list_reports_server_errors(tmp_path):
     assert "(404): Project not found" in observation.text
 
 
-def test_tools_say_so_when_projects_was_turned_off(tmp_path):
+@pytest.mark.parametrize(
+    ("executor_type", "action"),
+    [
+        (ListWorkersExecutor, ListWorkersAction()),
+        (ReadProjectMemoryExecutor, ReadProjectMemoryAction(name="MEMORY.md")),
+    ],
+)
+def test_tools_say_so_when_projects_was_turned_off(tmp_path, executor_type, action):
     """A coordinator started while Projects was on keeps its tools; once the
-    user turns the feature off, each call tells it so instead of a bare 404."""
+    user turns the feature off, each call tells it so instead of a bare 404
+    (or, for memory, a missing file to create)."""
 
     def projects_off(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"detail": "Projects are turned off"})
 
-    executor = ListWorkersExecutor(
+    executor = executor_type(
         _conv_state(tmp_path, tags={"project": uuid4().hex}),
         transport=httpx.MockTransport(projects_off),
     )
 
-    observation = executor(ListWorkersAction())
+    observation = executor(action)
 
     assert observation.is_error
     assert "Projects is turned off" in observation.text
