@@ -11,7 +11,6 @@ from fastapi import (
     Body,
     Depends,
     Header,
-    HTTPException,
     Query,
     Request,
     Response,
@@ -65,11 +64,11 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
+from openhands.agent_server.persistence import run_store
 from openhands.agent_server.search_index import (
     DEFAULT_SEARCH_LIMIT,
     MAX_SEARCH_LIMIT,
 )
-from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -275,7 +274,7 @@ async def search_conversation_content(
     service = getattr(request.app.state, "content_search_service", None)
     if service is None:
         # Unreachable when mounted correctly; kept as a hard stop.
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise NotFound()
     hits, capped = await asyncio.to_thread(service.search, query, limit)
     return ContentSearchResponse(
         results=[ContentSearchHit(**h) for h in hits],
