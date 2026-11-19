@@ -5,6 +5,7 @@ when tool_concurrency_limit > 1, including event ordering, state transitions,
 FinishTool truncation, and blocked action handling.
 """
 
+import asyncio
 import threading
 import time
 from collections.abc import Sequence
@@ -15,7 +16,10 @@ from pydantic import Field, ValidationError
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
@@ -25,7 +29,6 @@ from openhands.sdk.tool.tool import DeclaredResources, ToolDefinition
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
-    from openhands.sdk.conversation.state import ConversationState
 
 
 # --- Test tools ---
@@ -313,6 +316,62 @@ def test_finish_tool_truncates_subsequent_tools():
         assert (
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
+
+
+@pytest.mark.parametrize("use_arun", [False, True], ids=["run", "arun"])
+def test_tool_call_after_finish_never_runs_on_a_later_turn(use_arun):
+    """A call discarded after FinishTool gets a result and stays unexecuted."""
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    _tool_call("call_finish", "finish", '{"message": "All done"}'),
+                    _tool_call(
+                        "call_after", "slow_tool", '{"delay": 0.01, "label": "after"}'
+                    ),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Answered")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+
+    collected = []
+    conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
+
+    def run() -> None:
+        if use_arun:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+
+    conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
+    run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert ConversationState.get_unmatched_actions(conversation.state.events) == []
+
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="One more question")])
+    )
+    run()
+
+    assert not any(
+        isinstance(e, ObservationEvent)
+        and isinstance(e.observation, SlowObservation)
+        and e.observation.label == "after"
+        for e in collected
+    )
+    results = [
+        e
+        for e in collected
+        if isinstance(e, (ObservationEvent, AgentErrorEvent))
+        and e.tool_call_id == "call_after"
+    ]
+    assert len(results) == 1
+    assert isinstance(results[0], AgentErrorEvent)
+    assert "not executed" in results[0].error
 
 
 def test_error_in_parallel_batch_preserves_other_results():
