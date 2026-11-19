@@ -530,6 +530,14 @@ class Config(BaseModel):
             "Distinct from LLM completion logging and from Laminar/OTel tracing."
         ),
     )
+    forward_subagent_events: bool = Field(
+        default=False,
+        description=(
+            "Forward sub-agent inner events to the parent conversation's live "
+            "event stream (tagged with parent_tool_use_id), without persisting "
+            "them into the parent's state.events. Default off."
+        ),
+    )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
     _secret_key_was_blank: bool = PrivateAttr(default=False)
 

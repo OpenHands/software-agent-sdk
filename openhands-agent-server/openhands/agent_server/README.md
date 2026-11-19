@@ -58,6 +58,7 @@ The server can be configured using environment variables or a JSON configuration
 | `OH_CONVERSATION_RUNTIME` | Conversation runtime execution mode: `local` (in-process) or `docker` (isolated per-conversation containers). | `local` |
 | `OH_CONVERSATION_IDLE_TTL_SECONDS` | Seconds an idle terminal conversation runtime stays active before suspension (Docker) or in-memory eviction (local). Set to empty/null to disable. | `1200.0` |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
+| `OH_FORWARD_SUBAGENT_EVENTS` | Forward sub-agent inner events (`TaskToolSet`) to the parent conversation's live event stream tagged with `parent_tool_use_id`, without persisting them into the parent's event log (`true` / `false`). | `false` |
 | `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
 | `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
 | `OH_TELEMETRY_POSTHOG_HOST` | PostHog ingestion host. | `https://us.i.posthog.com` |

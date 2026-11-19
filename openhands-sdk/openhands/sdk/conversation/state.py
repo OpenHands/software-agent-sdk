@@ -338,6 +338,7 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+    _sub_event_sink: ConversationCallbackType | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")
     @classmethod
@@ -588,6 +589,14 @@ class ConversationState(OpenHandsModel):
                      or None to remove the callback
         """
         self._on_state_change = callback
+
+    def set_sub_event_sink(self, sink: ConversationCallbackType | None) -> None:
+        """Register a publish-only callback for forwarded sub-agent inner events."""
+        self._sub_event_sink = sink
+
+    def get_sub_event_sink(self) -> ConversationCallbackType | None:
+        """Return the registered sub-agent event sink, if any."""
+        return self._sub_event_sink
 
     def set_write_guard(
         self,

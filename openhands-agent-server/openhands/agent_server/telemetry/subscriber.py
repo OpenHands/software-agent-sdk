@@ -106,6 +106,8 @@ class TelemetrySubscriber(Subscriber[Event]):
             logger.debug("Telemetry subscriber failed to handle event", exc_info=True)
 
     def _handle(self, event: Event) -> None:
+        if event.parent_tool_use_id is not None:
+            return
         self._event_count += 1
 
         match event:

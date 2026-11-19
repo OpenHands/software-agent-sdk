@@ -43,9 +43,11 @@ from openhands.sdk.subagent.scope import (
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.event import ActionEvent
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
+    from openhands.sdk.event import ActionEvent, Event
 
 ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
+SubEventSink = Callable[["Event"], None]
 
 
 logger = get_logger(__name__)
@@ -66,6 +68,46 @@ class TaskStatus(StrEnum):
     """The task failed to complete due to an unhandled exception or system fault."""
 
 
+class _ForwardingCallback:
+    """Best-effort callback that stamps, secret-masks, and forwards sub-agent events."""
+
+    def __init__(
+        self,
+        sink: SubEventSink,
+        parent_tool_use_id: str | None,
+        secret_registry: "SecretRegistry | None" = None,
+    ) -> None:
+        self._sink: SubEventSink | None = sink
+        self._parent_tool_use_id = parent_tool_use_id
+        self._secret_registry = secret_registry
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        """Disable forwarding and release sink/registry references."""
+        self._closed = True
+        self._sink = None
+        self._secret_registry = None
+
+    def __call__(self, event: "Event") -> None:
+        sink = self._sink
+        if self._closed or sink is None:
+            return
+        try:
+            # Event models are frozen (Pydantic frozen=True); copy with stamped id.
+            stamped = event.model_copy(
+                update={"parent_tool_use_id": self._parent_tool_use_id}
+            )
+            if self._secret_registry is not None:
+                stamped = self._secret_registry.mask_secrets_in_model(stamped)
+            sink(stamped)
+        except Exception:
+            logger.warning("sub-agent event forwarding failed", exc_info=True)
+
+
 class Task(BaseModel):
     """Represents a task."""
 
@@ -82,6 +124,11 @@ class Task(BaseModel):
         default=None,
         exclude=True,
         description="Conversation state of the task.",
+    )
+    forwarding_callback: _ForwardingCallback | None = Field(
+        default=None,
+        exclude=True,
+        description="Active live-stream forwarding callback for the current run.",
     )
 
     def set_result(self, result: str) -> None:
@@ -104,10 +151,12 @@ class TaskManager:
         self,
         confirmation_handler: ConfirmationHandler | None = None,
         sub_agent_scope: SubAgentScope | None = None,
+        sub_event_sink: SubEventSink | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
         self._sub_agent_scope = sub_agent_scope or SubAgentScope()
+        self._sub_event_sink = sub_event_sink
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
@@ -161,12 +210,52 @@ class TaskManager:
         uuid_ = uuid.uuid4()
         return task_id, uuid_
 
+    def _detach_forwarding(self, task: Task) -> None:
+        if task.forwarding_callback is not None:
+            task.forwarding_callback.close()
+            task.forwarding_callback = None
+
     def _evict_task(self, task: Task) -> None:
+        self._detach_forwarding(task)
         if task.conversation:
             task.conversation.pause()
             task.conversation.close()
         with self._tasks_lock:
-            self._tasks[task.id] = task.model_copy(update={"conversation": None})
+            self._tasks[task.id] = task.model_copy(
+                update={"conversation": None, "forwarding_callback": None}
+            )
+
+    def _resolve_sub_event_sink(self) -> SubEventSink | None:
+        if self._sub_event_sink is not None:
+            return self._sub_event_sink
+        parent = self._parent_conversation
+        if parent is not None and hasattr(parent.state, "get_sub_event_sink"):
+            return parent.state.get_sub_event_sink()
+        return None
+
+    def _make_forwarding_callback(
+        self, parent_tool_use_id: str | None
+    ) -> _ForwardingCallback | None:
+        """Return a best-effort callback that stamps and forwards sub-agent events.
+
+        Returns None when no sink is configured so callers can skip attaching it.
+        The callback stamps ``event.parent_tool_use_id``, applies the parent's
+        ``SecretRegistry`` masking, and invokes the sink without mutating the
+        parent conversation's persisted event log or LLM context.
+        """
+        sink = self._resolve_sub_event_sink()
+        if sink is None:
+            return None
+        secret_registry = (
+            self._parent_conversation.state.secret_registry
+            if self._parent_conversation is not None
+            else None
+        )
+        return _ForwardingCallback(
+            sink=sink,
+            parent_tool_use_id=parent_tool_use_id,
+            secret_registry=secret_registry,
+        )
 
     def start_task(
         self,
@@ -175,6 +264,7 @@ class TaskManager:
         resume: str | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
+        parent_tool_use_id: str | None = None,
     ) -> Task:
         """Start a blocking sub-agent task.
 
@@ -184,6 +274,8 @@ class TaskManager:
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
             conversation: Parent conversation (set on first call).
+            parent_tool_use_id: Tool-call ID of the spawning TaskAction, used
+                to stamp forwarded sub-agent inner events.
 
         Returns:
             TaskState with the final result.
@@ -195,11 +287,13 @@ class TaskManager:
             task = self._resume_task(
                 resume=resume,
                 subagent_type=subagent_type,
+                parent_tool_use_id=parent_tool_use_id,
             )
         else:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
+                parent_tool_use_id=parent_tool_use_id,
             )
 
         return self._run_task(
@@ -207,7 +301,12 @@ class TaskManager:
             prompt=prompt,
         )
 
-    def _resume_task(self, resume: str, subagent_type: str) -> Task:
+    def _resume_task(
+        self,
+        resume: str,
+        subagent_type: str,
+        parent_tool_use_id: str | None = None,
+    ) -> Task:
         """Resume a sub-agent task."""
         with self._tasks_lock:
             if resume not in self._tasks:
@@ -219,6 +318,7 @@ class TaskManager:
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
+            fwd = self._make_forwarding_callback(parent_tool_use_id)
             with detached_delegate_context() as link:
                 conversation = LocalConversation(
                     agent=worker_agent,
@@ -233,6 +333,7 @@ class TaskManager:
                     mcp_tool_provider=self.parent_conversation._mcp_tool_provider,
                     _mcp_config_from_parent=True,
                     delete_on_close=True,
+                    callbacks=[fwd] if fwd is not None else [],
                     observability_metadata=self._delegate_observability_metadata(
                         task_id=resume, subagent_type=subagent_type, link=link
                     ),
@@ -247,6 +348,7 @@ class TaskManager:
             self._tasks[resume] = self._tasks[resume].model_copy(
                 update={
                     "conversation": conversation,
+                    "forwarding_callback": fwd,
                     "status": TaskStatus.RUNNING,
                 }
             )
@@ -257,6 +359,7 @@ class TaskManager:
         self,
         subagent_type: str,
         description: str | None,
+        parent_tool_use_id: str | None = None,
     ) -> Task:
         """Create a fresh task.
 
@@ -280,6 +383,7 @@ class TaskManager:
 
         with self._tasks_lock:
             task_id, conversation_id = self._generate_ids()
+            fwd = self._make_forwarding_callback(parent_tool_use_id)
 
             sub_conversation = self._get_conversation(
                 description=description,
@@ -290,6 +394,7 @@ class TaskManager:
                 worker_agent=worker_agent,
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
+                forwarding_callback=fwd,
             )
 
             self._set_confirmation_policy(
@@ -301,6 +406,7 @@ class TaskManager:
                 id=task_id,
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
+                forwarding_callback=fwd,
                 status=TaskStatus.RUNNING,
             )
             return self._tasks[task_id]
@@ -315,6 +421,8 @@ class TaskManager:
         worker_agent: Agent,
         hook_config: HookConfig | None = None,
         max_budget_per_run: float | None = None,
+        parent_tool_use_id: str | None = None,
+        forwarding_callback: _ForwardingCallback | None = None,
     ) -> LocalConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
@@ -324,6 +432,7 @@ class TaskManager:
             label = description or task_id
             visualizer = parent_visualizer.create_sub_visualizer(label)
 
+        fwd = forwarding_callback or self._make_forwarding_callback(parent_tool_use_id)
         with detached_delegate_context() as link:
             return LocalConversation(
                 agent=worker_agent,
@@ -340,6 +449,7 @@ class TaskManager:
                 _mcp_config_from_parent=True,
                 delete_on_close=True,
                 prompt_cache_key=str(parent.state.id),
+                callbacks=[fwd] if fwd is not None else [],
                 observability_metadata=self._delegate_observability_metadata(
                     task_id=task_id, subagent_type=subagent_type, link=link
                 ),
@@ -437,6 +547,9 @@ class TaskManager:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
+            # Stop forwarding before _evict_task (which emits PauseEvent/SessionEnd)
+            # and before TaskObservation is returned to the parent stream.
+            self._detach_forwarding(task)
             self._update_parent_metrics(parent, task)
             self._evict_task(task)
 
