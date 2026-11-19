@@ -660,13 +660,15 @@ Preconditions:
   Needs: `llm`, `tmux`
   ```sh
   control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_worker to tell the qa-f36-asks conversation: go ahead. Then stop.'
-  control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'would approve that action' --expect-min 1 \
+  control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'would approve that action' --expect-min 0 \
     --save F36.tool-message-refuses-confirmation/events
   control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
   control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
   ```
-  The tool reports an error, the conversation keeps waiting for the user, and it
-  has only its two earlier messages.
+  The conversation keeps waiting for the user and has only its two earlier
+  messages. The coordinator either calls message_worker, which refuses with
+  "would approve that action" (saved above), or declines on its own because
+  its prompt says only the user approves; both keep the approval with the user.
 - **Corrupted file (`F36.corrupted-file`).** Run last: it replaces the file.
   ```sh
   printf '{not json' > "$PJ_FILE"
